@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Panel comerciales · EyG Core</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/core.css">
+<style>
+  .ovfeat{margin-bottom:26px}
+  .lidercard{display:block;background:linear-gradient(140deg,var(--teal),var(--teal-deep));color:#fff;border-radius:18px;padding:24px 26px;box-shadow:0 12px 34px rgba(6,65,62,.22);position:relative;overflow:hidden;text-decoration:none;transition:transform .14s,box-shadow .14s}
+  a.lidercard:hover{transform:translateY(-3px);box-shadow:0 18px 44px rgba(6,65,62,.3)}
+  .lidercard::after{content:"";position:absolute;right:-40px;top:-40px;width:180px;height:180px;background:radial-gradient(circle,rgba(95,200,191,.35),transparent 70%)}
+  .lidercard .lb{display:inline-block;background:var(--gold);color:#3a2c07;font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;padding:3px 10px;border-radius:20px;margin-bottom:12px}
+  .lidercard .lic{font-size:30px;position:absolute;right:26px;top:22px}
+  .lidercard h3{font-size:22px;font-weight:800;margin-bottom:6px}
+  .lidercard p{font-size:14px;color:#eafaf8;max-width:560px}
+  .lidercard .go{margin-top:14px;font-weight:800;font-size:14px}
+  .lidercard.soon{opacity:.9;cursor:default} .lidercard.soon .go{opacity:.75}
+  .ovh{font-size:14px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--teal-med);margin:6px 0 14px;display:flex;align-items:center;gap:10px}
+  .ovgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:16px}
+  .ovcard{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px 20px;box-shadow:var(--shadow);text-decoration:none;color:inherit;display:block;transition:transform .13s,box-shadow .13s,border-color .13s;animation:fadeup .4s both}
+  a.ovcard:hover{transform:translateY(-3px);box-shadow:0 12px 30px rgba(6,65,62,.13);border-color:var(--teal-med)}
+  .ovcard h3{font-size:16px;font-weight:800;margin-bottom:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mrow{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;color:var(--gris);padding:5px 0;border-top:1px dashed var(--line)}
+  .mrow b{color:var(--ink);font-weight:800;font-size:14px}
+  .mrow.small{font-size:12px;color:var(--gris2);border-top:1px solid var(--line);margin-top:4px;padding-top:8px}
+  .mrow.small .go{color:var(--teal);font-weight:700}
+  .spin-sm{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--teal);border-radius:50%;display:inline-block;animation:spin 1s linear infinite}
+</style>
+</head>
+<body>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../assets/core.js"></script>
+<script>
+EYG.requireAuth(["admin","direccion","lider"], perfil=>{
+  document.body.innerHTML = EYG.layout(perfil, "panel", '<div id="ov"><div class="loading"><div class="spinner"></div>Cargando el equipo desde Odoo…</div></div>', "Panel comerciales");
+  cargar();
+});
+async function cargar(){
+  let sellers=[];
+  try{
+    const grp = await EYG.rpc("res.partner","read_group",[[["user_id","!=",false],["customer_rank",">",0]],["id"],["user_id"]],{lazy:false});
+    sellers = grp.map(g=>({uid:g.user_id[0],name:g.user_id[1],n:g.__count}))
+      .filter(s=>s.n>=25 && !/marcela/i.test(s.name))  // Marcela = líder → va en la tarjeta destacada
+      .sort((a,b)=>b.n-a.n);
+  }catch(e){ document.getElementById("ov").innerHTML='<div class="errbox">No pude leer los comerciales: '+EYG.esc(e.message)+'</div>'; return; }
+  const inicioMes = new Date().toISOString().slice(0,8)+"01";
+  const hoy = new Date().toISOString().slice(0,10);
+  const cards=[];
+  render(cards,false);
+  for(const s of sellers){
+    try{
+      const cartera = await EYG.rpc("res.partner","search",[[["user_id","=",s.uid]]]);
+      const [fac,nc,cob,ml] = await Promise.all([
+        EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
+        EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
+        EYG.rpc("account.payment","read_group",[[["partner_id","in",cartera],["payment_type","=","inbound"],["state","=","posted"],["date",">=",inicioMes]],["amount:sum"],[]],{lazy:false}),
+        EYG.rpc("account.move.line","search_read",[[["partner_id","in",cartera],["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false]]],{fields:["amount_residual","date_maturity"],limit:0}),
+      ]);
+      let deuda=0,venc=0; for(const l of ml){const r=l.amount_residual||0; if(r>0){deuda+=r; if(l.date_maturity&&l.date_maturity<hoy)venc+=r;}}
+      cards.push({name:s.name, cartera:cartera.length, factMes:(fac[0]?.amount_untaxed||0)-(nc[0]?.amount_untaxed||0), cobMes:cob[0]?.amount||0, deuda, venc, vencPct: deuda>0?Math.round(venc/deuda*100):0});
+    }catch(e){ cards.push({name:s.name, err:true}); }
+    render(cards,false);
+  }
+  render(cards,true);
+}
+function render(cards, done){
+  const ov=document.getElementById("ov"); if(!ov) return;
+  const M=EYG.money, esc=EYG.esc;
+  const feat = `<div class="lidercard soon"><span class="lb">Líder</span><span class="lic">🏆</span>
+    <h3>Panel del Líder</h3><p>El equipo completo: comparativa de comerciales, cumplimiento de objetivos y alertas de cobranza e inactividad.</p>
+    <div class="go">Próximamente</div></div>`;
+  const grid = cards.map(c=>{
+    if(c.err) return `<div class="ovcard"><h3>${esc(c.name)}</h3><div class="mrow"><span>Sin datos</span><b>—</b></div></div>`;
+    const vcol=c.vencPct>=40?'var(--coral)':c.vencPct>=25?'var(--gold)':'var(--teal)';
+    return `<a class="ovcard" href="panel.html?c=${encodeURIComponent(c.name)}">
+      <h3>${esc(c.name)}</h3>
+      <div class="mrow"><span>Facturado del mes</span><b>${M(c.factMes)}</b></div>
+      <div class="mrow"><span>Cobrado</span><b>${M(c.cobMes)}</b></div>
+      <div class="mrow"><span>Vencido</span><b style="color:${vcol}">${M(c.venc)} · ${c.vencPct}%</b></div>
+      <div class="mrow small"><span>${c.cartera} clientes</span><span class="go">Ver su panel →</span></div>
+    </a>`;
+  }).join("");
+  ov.innerHTML = `<div class="ovfeat">${feat}</div>
+    <h2 class="ovh">Comerciales ${done?"":'<span class="spin-sm"></span>'}</h2>
+    <div class="ovgrid">${grid || '<div class="loading"><div class="spinner"></div>Cargando…</div>'}</div>`;
+}
+</script>
+</body>
+</html>

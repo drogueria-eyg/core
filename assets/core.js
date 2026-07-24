@@ -105,8 +105,11 @@ window.EYG = (function(){
     {key:"admin",     nom:"Sistema"},
   ];
   const MODULOS = [
-    {key:"panel",     dept:"comercial", cat:"Comercial", ico:"⚡", titulo:"Mi Panel", desc:"Tu sesión de venta: objetivos del día y semana, comisión, salud de cuenta y tu cartera a mano.", roles:["comercial","lider"], ready:true, path:p=>`comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`},
-    {key:"lider",     dept:"comercial", cat:"Comercial · Líder", ico:"🏆", titulo:"Panel de Líder", desc:"El equipo de un vistazo: comparativa de comerciales, cumplimiento y alertas de cobranza e inactividad.", roles:["lider"], ready:false, path:()=>"comercial/lider.html"},
+    {key:"panel", dept:"comercial", cat:"Comercial", ico:"⚡",
+      titulo:p=>(p.rol==="admin"||p.rol==="direccion")?"Panel comerciales":"Mi Panel",
+      desc:p=>(p.rol==="admin"||p.rol==="direccion")?"El equipo: métricas resumidas de cada comercial + acceso a su panel individual y al panel del líder.":(p.rol==="lider"?"Tu panel de líder: el equipo, cumplimiento y alertas.":"Tu sesión de venta: objetivos, comisión, salud y tu cartera a mano."),
+      roles:["comercial","lider"], ready:true,
+      path:p=>{ if(p.rol==="admin"||p.rol==="direccion") return "comercial/comerciales.html"; if(p.rol==="lider") return "comercial/lider.html"; return `comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`; }},
     {key:"crm",       dept:"comercial", cat:"Comercial", ico:"👥", titulo:"CRM · Clientes", desc:"Segmentá farmacias e instituciones por frecuencia y contactá por WhatsApp.", roles:["comercial","lider"], ready:false, path:()=>"comercial/crm.html"},
     {key:"precios",   dept:"comercial", cat:"Precios", ico:"🏷️", titulo:"Rentabilidad y Precios", desc:"Costo, escalera de precios por cantidad y margen por tramo.", roles:["comercial","lider","finanzas"], ready:false, path:()=>"comercial/precios.html"},
     {key:"cobranzas", dept:"finanzas", cat:"Finanzas", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","lider"], ready:true, path:()=>"finanzas/cobranzas.html"},
@@ -116,6 +119,7 @@ window.EYG = (function(){
     {key:"usuarios",  dept:"admin", cat:"Sistema", ico:"👤", titulo:"Usuarios y accesos", desc:"Altas de personal, roles y qué módulo puede ver cada uno.", roles:["admin"], ready:false, path:()=>"admin/usuarios.html"},
   ];
   function puedeVer(m, rol){ return rol==="admin"||rol==="direccion" ? true : m.roles.includes(rol); }
+  function T(v,p){ return typeof v==="function" ? v(p) : v; }  // título/desc pueden depender del rol
 
   function sidebar(perfil, activeKey){
     const vis = MODULOS.filter(m=>puedeVer(m,perfil.rol));
@@ -126,7 +130,7 @@ window.EYG = (function(){
         <a class="item ${activeKey==="home"?"active":""}" href="/"><span class="ic">🏠</span>Inicio</a>
         ${grupos.map(({d,mods})=>`<div class="grp">${d.nom}</div>`+mods.map(m=>{
           const dis=!m.ready; const href=dis?"#":m.path(perfil);
-          return `<a class="item ${activeKey===m.key?"active":""} ${dis?"dis":""}" href="${href}" ${dis?'onclick="return false"':""}><span class="ic">${m.ico}</span><span class="tx">${esc(m.titulo)}</span>${dis?'<span class="soon">pronto</span>':""}</a>`;
+          return `<a class="item ${activeKey===m.key?"active":""} ${dis?"dis":""}" href="${href}" ${dis?'onclick="return false"':""}><span class="ic">${m.ico}</span><span class="tx">${esc(T(m.titulo,perfil))}</span>${dis?'<span class="soon">pronto</span>':""}</a>`;
         }).join("")).join("")}
       </nav>
       <div class="sfoot"><div class="u"><b>${esc(perfil.nombre||perfil.email)}</b><span>${esc(perfil.rol)}</span></div><button class="out" onclick="EYG.logout()">Salir ↪</button></div>
@@ -145,7 +149,7 @@ window.EYG = (function(){
       ${grupos.map(({d,mods})=>`<div class="dept"><h2>${d.nom}</h2><div class="grid">${mods.map(m=>{
         const dis=!m.ready; const href=dis?"#":m.path(perfil);
         const badge=dis?'<span class="badge soon">Próximamente</span>':'<span class="badge ready">Abrir</span>';
-        const inner=`${badge}<div class="ico">${m.ico}</div><div class="cat">${esc(m.cat)}</div><h3>${esc(m.titulo)}</h3><p>${esc(m.desc)}</p>`;
+        const inner=`${badge}<div class="ico">${m.ico}</div><div class="cat">${esc(T(m.cat,perfil))}</div><h3>${esc(T(m.titulo,perfil))}</h3><p>${esc(T(m.desc,perfil))}</p>`;
         return dis?`<div class="card soon">${inner}</div>`:`<a class="card" href="${href}">${inner}</a>`;
       }).join("")}</div></div>`).join("")}`;
   }
