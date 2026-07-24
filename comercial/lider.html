@@ -40,15 +40,45 @@
   .tbl a.row{color:inherit;text-decoration:none}
   .muted{color:var(--gris2);font-size:12px}
   @media(max-width:720px){ .tbl .row{grid-template-columns:1.2fr 1fr 1fr;} .tbl .col-sem,.tbl .col-ano,.tbl .spark{display:none} }
+  /* productos más vendidos */
+  .prodsbox{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:16px 20px;margin-bottom:22px}
+  .prodsbox h2{font-size:16px;font-weight:800;margin-bottom:6px}
+  .prow{display:grid;grid-template-columns:26px 1fr 92px 112px;gap:10px;align-items:center;padding:7px 0;border-top:1px solid var(--line);font-size:13.5px}
+  .prow.h{border-top:0;font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--gris2);font-weight:800}
+  .prow .rk{font-weight:800;color:var(--teal-med);text-align:center}
+  .prow .pn{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .prow .pq{text-align:right;color:var(--gris);font-size:12.5px}
+  .prow .pv{text-align:right;font-weight:800}
+  /* ficha desplegable por comercial */
+  .crow .row{cursor:pointer}
+  .crow .ficha{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s ease;background:#F6FBFA;border-top:1px solid var(--line)}
+  .crow.open .ficha{grid-template-rows:1fr}
+  .crow .ficha>.fw{overflow:hidden}
+  .fichin{padding:12px 20px 22px}
+  .chev{color:var(--gris2);font-size:11px;transition:transform .25s;margin-left:4px} .crow.open .chev{transform:rotate(180deg)}
+  .fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:4px 0 16px}
+  .fstat{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .fstat .l{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--gris);font-weight:700}
+  .fstat .v{font-size:18px;font-weight:900;margin-top:2px;letter-spacing:-.3px} .fstat .s{font-size:11px;color:var(--gris2);margin-top:1px}
+  .fsub{font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--teal-med);margin:14px 0 8px}
+  .prm{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;margin:7px 0 3px}
+  .pb{height:6px;background:#EDF2F1;border-radius:4px;overflow:hidden} .pb>i{display:block;height:100%;border-radius:4px}
+  .logros{display:flex;flex-wrap:wrap;gap:8px}
+  .lg{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;padding:6px 11px;border-radius:20px;border:1px solid var(--line)}
+  .lg.on{background:linear-gradient(135deg,#FFF6E4,#fff);border-color:var(--gold);color:#8a6414} .lg.off{opacity:.45;filter:grayscale(.5)}
+  .floading{padding:18px;text-align:center;color:var(--gris);font-size:13px}
+  .fplink{display:inline-block;margin-top:14px;color:var(--teal);font-weight:800;font-size:13px;text-decoration:none}
+  .cols2{display:grid;grid-template-columns:1fr 1fr;gap:22px} @media(max-width:640px){.cols2{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js"></script>
+<script src="../assets/metrics.js"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const COLORS=["#048782","#EC8B5E","#0AA89F","#E5A93B","#5FC8BF","#B0413E","#6E8B86","#04635F"];
-let COM=[], UIDS=[], DATA=[], TODAY=[], chartTimer=null;
+let COM=[], UIDS=[], DATA=[], TODAY=[], PRODS=[], FICHAS={}, chartTimer=null;
 
 EYG.requireAuth(["lider","admin","direccion"], perfil=>{
   document.body.innerHTML = EYG.layout(perfil, "panel",
@@ -79,6 +109,7 @@ async function init(){
     await refreshHoy();
     render();
     chartTimer=setInterval(tick, 60000);
+    cargarProductos();
   }catch(e){ const el=document.getElementById("ld"); if(el) el.innerHTML='<div class="errbox">No pude cargar el tablero: '+esc(e.message)+'</div>'; }
 }
 async function refreshHoy(){
@@ -92,8 +123,24 @@ async function refreshHoy(){
 function tick(){ refreshHoy().then(()=>{ renderKpis(); renderChart(); renderTabla(); }).catch(()=>{}); }
 
 function render(){
-  document.getElementById("ld").innerHTML = `<div id="kpis"></div><div id="chart"></div><div id="tabla"></div>`;
-  renderKpis(); renderChart(); renderTabla();
+  document.getElementById("ld").innerHTML = `<div id="kpis"></div><div id="chart"></div><div id="prods"></div><div id="tabla"></div>`;
+  renderKpis(); renderChart(); renderProds(); renderTabla();
+}
+async function cargarProductos(){
+  try{
+    const y=argToday().slice(0,4);
+    const g=await EYG.rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",y+"-01-01"]],["price_subtotal:sum","product_uom_qty:sum"],["product_id"]],{lazy:false});
+    PRODS=g.filter(r=>r.product_id).map(r=>({name:r.product_id[1], monto:r.price_subtotal||0, qty:r.product_uom_qty||0})).sort((a,b)=>b.monto-a.monto).slice(0,12);
+  }catch(e){ PRODS=[]; }
+  renderProds();
+}
+function renderProds(){
+  const box=document.getElementById("prods"); if(!box)return;
+  if(!PRODS.length){ box.innerHTML=`<div class="prodsbox"><h2>🏆 Productos más vendidos</h2><div class="floading"><span class="spin-sm"></span> cargando el año…</div></div>`; return; }
+  box.innerHTML=`<div class="prodsbox"><h2>🏆 Productos más vendidos <span class="muted" style="font-weight:600;font-size:12px">· del año</span></h2>
+    <div class="prow h"><div class="rk">#</div><div>Producto</div><div class="pq">Unidades</div><div class="pv">Facturado</div></div>
+    ${PRODS.map((p,i)=>`<div class="prow"><div class="rk">${i+1}</div><div class="pn">${esc(p.name)}</div><div class="pq">${Math.round(p.qty).toLocaleString("es-AR")}</div><div class="pv">${M(p.monto)}</div></div>`).join("")}
+  </div>`;
 }
 function tot(k){ return DATA.reduce((s,d)=>s+d[k],0); }
 function renderKpis(){
@@ -135,22 +182,106 @@ function renderChart(){
 }
 function renderTabla(){
   const box=document.getElementById("tabla"); if(!box)return;
+  const abiertos=[...box.querySelectorAll(".crow.open")].map(c=>c.dataset.uid);
+  const curH=Math.floor(nowFrac());
   const rows=DATA.slice().sort((a,b)=>b.hoy-a.hoy).map(d=>{
-    const hmax=Math.max(...d.horas,1); const curH=new Date().getHours();
+    const hmax=Math.max(...d.horas,1);
     const spark=d.horas.map((v,h)=>`<i class="${h===curH?'now':''}" style="height:${Math.round(v/hmax*100)}%" title="${h}h: ${M(v)}"></i>`).join("");
-    return `<a class="row" href="panel.html?c=${encodeURIComponent(d.name)}">
-      <div class="nm"><span class="dotc" style="background:${d.color}"></span>${esc(d.name)}</div>
-      <div class="num col-ano">${M(d.ano)}</div>
-      <div class="num col-mes">${M(d.mes)}</div>
-      <div class="num col-sem">${M(d.sem)}</div>
-      <div class="num hoy">${M(d.hoy)}</div>
-      <div class="spark" title="Hoy hora por hora">${spark}</div>
-    </a>`;
+    return `<div class="crow" id="crow-${d.uid}" data-uid="${d.uid}">
+      <div class="row" onclick="toggleFicha(${d.uid},'${d.name.replace(/'/g,"\\'")}')">
+        <div class="nm"><span class="dotc" style="background:${d.color}"></span>${esc(d.name)}<span class="chev">▾</span></div>
+        <div class="num col-ano">${M(d.ano)}</div>
+        <div class="num col-mes">${M(d.mes)}</div>
+        <div class="num col-sem">${M(d.sem)}</div>
+        <div class="num hoy">${M(d.hoy)}</div>
+        <div class="spark" title="Hoy hora por hora">${spark}</div>
+      </div>
+      <div class="ficha"><div class="fw"></div></div>
+    </div>`;
   }).join("");
-  box.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;margin:0 4px 12px"><h2 style="font-size:16px;font-weight:800">Rendimiento por comercial</h2><span class="muted">clic en un comercial para entrar a su panel · hora por hora = hoy</span></div>
+  box.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;margin:0 4px 12px;flex-wrap:wrap;gap:6px"><h2 style="font-size:16px;font-weight:800">Rendimiento por comercial</h2><span class="muted">tocá un comercial para ver su ficha completa · hora por hora = hoy</span></div>
   <div class="tbl">
     <div class="row head"><div>Comercial</div><div class="num col-ano">Año</div><div class="num col-mes">Mes</div><div class="num col-sem">Semana</div><div class="num">Hoy</div><div>Hoy · hora x hora</div></div>
     ${rows}
+  </div>`;
+  abiertos.forEach(uid=>{ const cr=document.getElementById("crow-"+uid); if(cr){ cr.classList.add("open"); const fw=cr.querySelector(".fw"); if(FICHAS[uid]) fw.innerHTML=fichaHTML(FICHAS[uid]); } });
+}
+function toggleFicha(uid, name){
+  const cr=document.getElementById("crow-"+uid); if(!cr)return;
+  const abrir=!cr.classList.contains("open");
+  cr.classList.toggle("open",abrir);
+  if(abrir){
+    const fw=cr.querySelector(".fw");
+    if(FICHAS[uid]){ fw.innerHTML=fichaHTML(FICHAS[uid]); return; }
+    fw.innerHTML='<div class="floading"><span class="spin-sm"></span> Cargando ficha…</div>';
+    fichaData(uid,name).then(d=>{ FICHAS[uid]=d; if(cr.classList.contains("open")) fw.innerHTML=fichaHTML(d); }).catch(e=>{ fw.innerHTML='<div class="floading">No pude cargar la ficha: '+esc(e.message)+'</div>'; });
+  }
+}
+async function fichaData(uid, name){
+  const t=argToday(), y=t.slice(0,4), mo=t.slice(0,7), inicioMes=mo+"-01", inicioAno=y+"-01-01";
+  const cartera=await EYG.rpc("res.partner","search",[[["user_id","=",uid]]]);
+  const [facM,ncM,cobM,ml,facHist,cob3,nuevos,ord6,pf,mg]=await Promise.all([
+    EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
+    EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
+    EYG.rpc("account.payment","read_group",[[["partner_id","in",cartera],["payment_type","=","inbound"],["state","=","posted"],["date",">=",inicioMes]],["amount:sum"],[]],{lazy:false}),
+    EYG.rpc("account.move.line","search_read",[[["partner_id","in",cartera],["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false]]],{fields:["amount_residual","date_maturity"],limit:0}),
+    EYG.rpc("account.move","search_read",[[["partner_id","in",cartera],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",EYG.hace(190)]]],{fields:["invoice_date","amount_untaxed","move_type"],limit:0}),
+    EYG.rpc("account.payment","read_group",[[["partner_id","in",cartera],["payment_type","=","inbound"],["state","=","posted"],["date",">=",EYG.hace(100)]],["amount:sum"],[]],{lazy:false}),
+    EYG.rpc("res.partner","search_count",[[["user_id","=",uid],["create_date",">=",inicioMes]]]),
+    EYG.rpc("sale.order","search_read",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",EYG.hace(190)]]],{fields:["partner_id","date_order","amount_untaxed"],limit:0}),
+    EYG.rpc("res.partner","search_read",[[["user_id","=",uid]]],{fields:["vat","phone","mobile","email","street"],limit:0}),
+    EYG.rpc("sale.order.line","read_group",[[["order_id.user_id","=",uid],["order_id.state","in",["sale","done"]],["order_id.date_order",">=",inicioAno]],["margin:sum","price_subtotal:sum"],[]],{lazy:false}),
+  ]);
+  const factMes=(facM[0]?.amount_untaxed||0)-(ncM[0]?.amount_untaxed||0), cobradoMes=cobM[0]?.amount||0;
+  let porCobrar=0,vencido=0; for(const l of ml){const r=l.amount_residual||0; if(r>0){porCobrar+=r; if(l.date_maturity&&l.date_maturity<t)vencido+=r;}}
+  const fbk={}; for(const x of facHist){const m=(x.invoice_date||"").slice(0,7); if(!m)continue; fbk[m]=(fbk[m]||0)+(x.move_type==="out_refund"?-1:1)*(x.amount_untaxed||0);}
+  const fprev=Object.keys(fbk).filter(m=>m<mo); const factBaseline=fprev.length?fprev.reduce((s,m)=>s+fbk[m],0)/fprev.length:0;
+  const objetivoCobro=(cob3[0]?.amount||0)/3*1.1;
+  const bk={}; let sumTot=0,cnt=0; for(const o of ord6){const m=(o.date_order||"").slice(0,7); if(!m)continue; (bk[m]=bk[m]||{ped:0,cli:new Set()}); bk[m].ped++; if(o.partner_id)bk[m].cli.add(o.partner_id[0]); sumTot+=o.amount_untaxed||0; cnt++;}
+  const prev=Object.keys(bk).filter(m=>m<mo), nP=prev.length||1;
+  const promPed=Math.round(prev.reduce((s,m)=>s+bk[m].ped,0)/nP)||1, promCli=Math.round(prev.reduce((s,m)=>s+bk[m].cli.size,0)/nP)||1;
+  const cur=bk[mo]||{ped:0,cli:new Set()};
+  const actividadRatio=(Math.min(cur.ped/promPed,1)+Math.min((cur.cli.size||0)/promCli,1))/2;
+  const avgTicket=cnt?sumTot/cnt:0;
+  const compl=pf.filter(p=>p.vat&&(p.phone||p.mobile)&&p.email&&p.street).length, fichasPct=pf.length?compl/pf.length:0;
+  const rentabilidad=(mg[0]&&mg[0].price_subtotal)?(mg[0].margin/mg[0].price_subtotal):null;
+  const dd=new Date(), dim=new Date(dd.getFullYear(),dd.getMonth()+1,0).getDate(), diaMesFrac=dd.getDate()/dim;
+  const perfil=EYGM.perfilDe(name, avgTicket);
+  const d={nombre:name, perfil, factMes, factBaseline, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, combos:0, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad};
+  d.nivel=EYGM.nivel(d); d.salud=EYGM.salud(d); d.com=EYGM.comision(d);
+  return d;
+}
+function fichaHTML(d){
+  const perfilNom=d.perfil==="externo"?"Externo (3/4%)":(d.perfil==="inst"?"Instituciones":"Farmacias");
+  const rent=d.rentabilidad!=null?Math.round(d.rentabilidad*100)+"%":"—";
+  const vencPct=d.porCobrar>0?Math.round(d.vencido/d.porCobrar*100):0;
+  const meta=d.factBaseline*1.3, cumpl=meta>0?Math.round(d.factMes/meta*100):0, cobroPct=d.objetivoCobro>0?Math.round(d.cobradoMes/d.objetivoCobro*100):0;
+  const scol=d.salud.salud>=80?'var(--teal)':d.salud.salud>=60?'var(--gold)':'var(--coral)';
+  const niv=d.perfil==="externo"?`<div class="fsub">Sistema</div><div class="muted">Externo · comisión fija 3/4%, sin nivel ni salud.</div>`:
+    `<div class="fsub">Nivel ${d.nivel.emoji} ${d.nivel.nombre} · ×${d.nivel.mult.toFixed(2)} · ${Math.round(d.nivel.pts)}/100</div>`+
+    d.nivel.params.map(p=>{const pct=Math.round(p.pts/p.max*100);const c=pct>=80?'var(--teal)':pct>=40?'var(--coral)':'#C0554A';return `<div class="prm"><span>${p.ic} ${p.lab} <span class="muted">${p.det}</span></span><b>${p.pts.toFixed(1)}/${p.max}</b></div><div class="pb"><i style="width:${pct}%;background:${c}"></i></div>`;}).join("");
+  const sal=d.perfil==="externo"?"":`<div class="fsub">🩺 Salud ${Math.round(d.salud.salud)}/100 ${d.salud.penaltyPt>0.01?`· recorte −${d.salud.penaltyPt.toFixed(2)}pt`:""}</div><div class="pb" style="margin-bottom:8px"><i style="width:${Math.round(d.salud.salud)}%;background:${scol}"></i></div>`+
+    d.salud.items.map(it=>{const pct=Math.round(it.pts/it.max*100);const c=pct<=20?'var(--teal)':pct<=55?'var(--coral)':'#C0554A';return `<div class="prm"><span>${it.ic} ${it.lab} <span class="muted">${it.det}</span></span><b style="color:${c}">−${it.pts.toFixed(0)}</b></div>`;}).join("");
+  const obj=d.perfil==="externo"?"":`<div class="fsub">🎯 Objetivos del mes</div>
+    <div class="prm"><span>Facturado vs meta (+30% = ${M(meta)})</span><b>${cumpl}%</b></div><div class="pb"><i style="width:${Math.min(100,cumpl)}%;background:var(--teal)"></i></div>
+    <div class="prm"><span>Cobro vs objetivo (${M(d.objetivoCobro)})</span><b>${cobroPct}%</b></div><div class="pb"><i style="width:${Math.min(100,cobroPct)}%;background:var(--gold)"></i></div>
+    <div class="prm"><span>Clientes nuevos (meta 3)</span><b>${d.nuevos}/3</b></div><div class="pb"><i style="width:${Math.min(100,d.nuevos/3*100)}%;background:var(--coral)"></i></div>`;
+  const logros=[{em:"💰",l:"Meta de venta",on:cumpl>=100},{em:"🤝",l:"Cobró bien",on:cobroPct>=100},{em:"🆕",l:"Trae nuevos",on:d.nuevos>=3},{em:"🟢",l:"Cartera sana",on:vencPct<15},{em:"✨",l:"Fichas ok",on:d.fichasPct>=0.6}];
+  return `<div class="fichin">
+    <div class="fgrid">
+      <div class="fstat"><div class="l">Facturado del mes</div><div class="v">${M(d.factMes)}</div><div class="s">${perfilNom}</div></div>
+      <div class="fstat"><div class="l">Comisión estimada</div><div class="v" style="color:var(--teal-deep)">${M(d.com.total)}</div><div class="s">${d.perfil==="externo"?"3/4% fijo":"base "+M(d.com.base)+" × "+d.com.mult.toFixed(2)}</div></div>
+      <div class="fstat"><div class="l">Rentabilidad</div><div class="v">${rent}</div><div class="s">margen s/ ventas (año)</div></div>
+      <div class="fstat"><div class="l">Ticket promedio</div><div class="v">${M(d.avgTicket)}</div><div class="s">neto por pedido</div></div>
+      <div class="fstat"><div class="l">Cobrado del mes</div><div class="v">${M(d.cobradoMes)}</div></div>
+      <div class="fstat"><div class="l">Vencido</div><div class="v" style="color:${vencPct>=40?'var(--coral)':vencPct>=25?'var(--gold)':'var(--ink)'}">${M(d.vencido)}</div><div class="s">${vencPct}% de ${M(d.porCobrar)}</div></div>
+      <div class="fstat"><div class="l">Clientes nuevos</div><div class="v">${d.nuevos}</div><div class="s">este mes</div></div>
+      <div class="fstat"><div class="l">Cartera</div><div class="v">${d.cartera}</div><div class="s">clientes</div></div>
+    </div>
+    ${d.perfil==="externo"?niv:`<div class="cols2"><div>${niv}</div><div>${sal}</div></div>${obj}`}
+    <div class="fsub">🏅 Logros</div>
+    <div class="logros">${logros.map(l=>`<span class="lg ${l.on?'on':'off'}">${l.em} ${l.l}${l.on?' ✓':''}</span>`).join("")}</div>
+    <a class="fplink" href="panel.html?c=${encodeURIComponent(d.nombre)}">Entrar al panel completo de ${esc(d.nombre.split(" ")[0])} →</a>
   </div>`;
 }
 </script>
