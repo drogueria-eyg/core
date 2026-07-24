@@ -45,6 +45,17 @@ window.EYG = (function(){
     cb(p);
   }
 
+  /* Guard para módulos con HTML propio (NO borra el body en caso OK). Devuelve el perfil o nunca resuelve (mostrando login/no-autorizado). */
+  async function guard(roles){
+    let s; try{ s = await session(); }catch(e){ showLogin(); return new Promise(()=>{}); }
+    if(!s){ showLogin(); return new Promise(()=>{}); }
+    const p = await perfil();
+    if(!p || !p.activo){ gateMsg("🔒","Sin acceso","Tu cuenta todavía no tiene un perfil activo en el Core. Avisá al administrador.",false); return new Promise(()=>{}); }
+    const ok = p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
+    if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return new Promise(()=>{}); }
+    return p;
+  }
+
   function gateMsg(ic,t,d,back){
     document.body.innerHTML = `<div class="gate"><div class="big">${ic}</div><h3>${esc(t)}</h3><p>${esc(d)}</p>`+
       (back?'<div style="margin-top:16px"><a class="btn-teal" href="/">Ir al inicio</a></div>':"")+
@@ -94,11 +105,11 @@ window.EYG = (function(){
     {key:"admin",     nom:"Sistema"},
   ];
   const MODULOS = [
-    {key:"panel",     dept:"comercial", cat:"Comercial", ico:"⚡", titulo:"Mi Panel", desc:"Tu sesión de venta: objetivos del día y semana, comisión, salud de cuenta y tu cartera a mano.", roles:["comercial","lider"], ready:false, path:p=>`comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`},
+    {key:"panel",     dept:"comercial", cat:"Comercial", ico:"⚡", titulo:"Mi Panel", desc:"Tu sesión de venta: objetivos del día y semana, comisión, salud de cuenta y tu cartera a mano.", roles:["comercial","lider"], ready:true, path:p=>`comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`},
     {key:"lider",     dept:"comercial", cat:"Comercial · Líder", ico:"🏆", titulo:"Panel de Líder", desc:"El equipo de un vistazo: comparativa de comerciales, cumplimiento y alertas de cobranza e inactividad.", roles:["lider"], ready:false, path:()=>"comercial/lider.html"},
     {key:"crm",       dept:"comercial", cat:"Comercial", ico:"👥", titulo:"CRM · Clientes", desc:"Segmentá farmacias e instituciones por frecuencia y contactá por WhatsApp.", roles:["comercial","lider"], ready:false, path:()=>"comercial/crm.html"},
     {key:"precios",   dept:"comercial", cat:"Precios", ico:"🏷️", titulo:"Rentabilidad y Precios", desc:"Costo, escalera de precios por cantidad y margen por tramo.", roles:["comercial","lider","finanzas"], ready:false, path:()=>"comercial/precios.html"},
-    {key:"cobranzas", dept:"finanzas", cat:"Finanzas", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","lider"], ready:false, path:()=>"finanzas/cobranzas.html"},
+    {key:"cobranzas", dept:"finanzas", cat:"Finanzas", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","lider"], ready:true, path:()=>"finanzas/cobranzas.html"},
     {key:"stock",     dept:"inventario", cat:"Inventario", ico:"📦", titulo:"Stock y Sobrestock", desc:"Plata inmovilizada, rotación por producto y vencimientos. Qué frenar y qué liquidar.", roles:["finanzas","inventario"], ready:false, path:()=>"inventario/stock.html"},
     {key:"contactos", dept:"datos", cat:"Datos", ico:"🗂️", titulo:"Contactos", desc:"Calidad de datos (teléfono, email, condición fiscal), duplicados y ventas por comercial.", roles:["comercial","lider","admin"], ready:false, path:()=>"datos/contactos.html"},
     {key:"radiografia",dept:"direccion", cat:"Dirección", ico:"📊", titulo:"Radiografía", desc:"Ventas, facturación, márgenes, cobranza y stock de toda la droguería en un tablero.", roles:["direccion"], ready:false, path:()=>"direccion/radiografia.html"},
@@ -139,5 +150,5 @@ window.EYG = (function(){
       }).join("")}</div></div>`).join("")}`;
   }
 
-  return { supa, rpc, money, esc, hace, session, perfil, login, logout, requireAuth, showLogin, gateMsg, topbar, DEPTS, MODULOS, puedeVer, sidebar, layout, homeMain };
+  return { supa, rpc, money, esc, hace, session, perfil, login, logout, requireAuth, guard, showLogin, gateMsg, topbar, DEPTS, MODULOS, puedeVer, sidebar, layout, homeMain };
 })();

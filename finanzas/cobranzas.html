@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cobranzas · EyG Core</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/core.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../assets/core.js"></script>
+<style>
+  :root{
+    --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
+    --agua:#E2F1EF; --coral:#EC8B5E; --ink:#0E1F1D; --gris:#5F716E; --gris2:#8A9A97;
+    --surface:#fff; --bg:#F4F8F7; --line:#DCE8E6; --radius:12px; --wa:#25D366;
+    --shadow:0 1px 2px rgba(6,65,62,.05), 0 6px 24px rgba(6,65,62,.06);
+    /* tramos de mora */
+    --t0:#1E7D46; --t0bg:#E4F5E9;   /* por vencer / al día */
+    --t1:#0A6BB0; --t1bg:#E4F0FA;   /* 1-20 */
+    --t2:#8A6D1A; --t2bg:#FBF3D9;   /* +21 */
+    --t3:#B7791F; --t3bg:#FBE9CF;   /* +30 */
+    --t4:#C4602A; --t4bg:#FBE3D4;   /* +60 */
+    --t5:#B0413E; --t5bg:#FBE0DF;   /* +90 */
+    --t6:#8A1F1C; --t6bg:#F7D2D0;   /* +120 incobrable */
+    --treg:#5B3FA6; --tregbg:#ECE6F6; /* gris: falta certificado/OP */
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Archivo',system-ui,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+  .topbar{background:var(--teal-deep);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:13px;position:sticky;top:0;z-index:30}
+  .mono{font-family:Georgia,serif;font-weight:700;font-size:23px;letter-spacing:.5px;line-height:1}
+  .mono .y{color:var(--aqua)}
+  .topbar .tag{font-weight:700;font-size:11px;letter-spacing:2px;text-transform:uppercase;background:rgba(255,255,255,.14);padding:3px 9px;border-radius:20px}
+  .topbar .title{font-weight:700;font-size:15px;margin-left:4px}
+  .topbar .back{margin-left:auto;color:#fff;text-decoration:none;font-size:13px;font-weight:600;opacity:.85}
+  .topbar .back:hover{opacity:1}
+  .wrap{max-width:1240px;margin:0 auto;padding:22px 22px 90px}
+
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:10px;margin-bottom:18px}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:13px 14px;cursor:pointer;transition:border-color .12s,box-shadow .12s}
+  .kpi:hover{border-color:var(--teal-med)}
+  .kpi.on{border-color:var(--teal);box-shadow:0 0 0 2px rgba(4,135,130,.15)}
+  .kpi .n{font-size:22px;font-weight:800;line-height:1.15}
+  .kpi .money{font-size:12px;font-weight:600;color:var(--gris);margin-top:1px}
+  .kpi .l{font-size:11.5px;color:var(--gris);font-weight:600;margin-top:3px}
+  .kpi .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}
+  .kpi.rub .l{color:var(--teal-deep)}
+  /* Secciones de tarjetas (separan mora de rubros) */
+  .cardsec{border-radius:var(--radius);padding:13px 15px 15px;margin-bottom:14px;border:1px solid var(--line)}
+  .cardsec.sec-mora{background:#F2F7F6;border-color:#DDE9E7}
+  .cardsec.sec-rubro{background:#E8F3F1;border-color:#CFE6E2}
+  .cardsec .sectitle{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--teal-deep);margin-bottom:12px}
+  .cardsec .sectitle .secclr{font-size:11.5px;font-weight:700;letter-spacing:0;text-transform:none;color:var(--teal);cursor:pointer;white-space:nowrap}
+  .cardsec .sectitle .secclr:hover{text-decoration:underline}
+  .cardsec .kpis{margin-bottom:0}
+
+  /* Panorama (evolución + composición) */
+  .panorama{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 18px;margin-bottom:14px}
+  .panorama .ptop{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+  .panorama h3{font-size:13.5px;font-weight:800;letter-spacing:.2px;color:var(--ink)}
+  .panorama .cap{font-size:12px;color:var(--gris)}
+  .panorama .cap b{color:var(--teal-deep)}
+  .panorama .cap .up{color:#B0413E;font-weight:700}
+  .evosvg{width:100%;height:auto;display:block;overflow:visible}
+  .compo{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+  .compo .clbl{font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--gris);margin-bottom:7px}
+  .compo .cbar{display:flex;height:16px;border-radius:6px;overflow:hidden;background:var(--bg)}
+  .compo .cbar > span{height:100%;transition:width .3s}
+  .compo .cleg{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:9px}
+  .compo .cleg .it{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--gris)}
+  .compo .cleg .it b{color:var(--ink);font-weight:700}
+  .compo .cleg .dot{width:9px;height:9px;border-radius:3px;flex-shrink:0}
+
+  .resumen{background:var(--teal-deep);color:#fff;border-radius:var(--radius);padding:16px 20px;margin-bottom:14px;display:flex;flex-wrap:wrap;gap:26px;align-items:center}
+  .resumen .big{font-size:26px;font-weight:800}
+  .resumen .mid{font-size:19px;font-weight:800}
+  .resumen .lbl{font-size:12px;color:var(--aqua);font-weight:600;text-transform:uppercase;letter-spacing:1px}
+  .resumen .sub{font-size:11px;color:rgba(255,255,255,.6);font-weight:500;margin-top:2px}
+
+  .hint{background:var(--tregbg);border:1px solid #D6C9EE;color:#4A3488;border-radius:10px;padding:11px 14px;font-size:12.5px;line-height:1.5;margin-bottom:14px}
+  .hint b{color:#3A2870}
+
+  .toolbar{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;margin-bottom:14px;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+  .search{flex:1;min-width:220px;display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:9px 12px}
+  .search input{border:0;background:none;outline:none;font-family:inherit;font-size:14px;width:100%;color:var(--ink)}
+  .search svg{width:17px;height:17px;color:var(--gris2);flex-shrink:0}
+  select,.mini-btn{font-family:inherit;font-size:13px;border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:9px 12px;color:var(--ink);cursor:pointer;font-weight:500}
+  .count-line{font-size:13px;color:var(--gris);margin-bottom:10px}
+  .count-line b{color:var(--ink)}
+
+  .tablecard{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+  .thead,.row{display:grid;grid-template-columns:2.2fr 1.2fr 1fr 1.15fr 1fr 88px;gap:12px;align-items:center;padding:11px 16px}
+  .thead{background:#F0F6F5;border-bottom:1px solid var(--line);font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--gris);position:sticky;top:51px;z-index:10;border-radius:var(--radius) var(--radius) 0 0}
+  .row{border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
+  .row:hover{background:#F7FBFA}
+  .row:last-child{border-bottom:0;border-radius:0 0 var(--radius) var(--radius)}
+  .thead>div,.row>div{min-width:0}
+  .cname{font-weight:700;font-size:14px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cmeta{font-size:12px;color:var(--gris2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .com{color:var(--teal-deep);font-weight:600}.com-off{color:var(--coral)}
+  .badge{display:inline-block;font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .gflag{display:inline-block;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--tregbg);color:var(--treg);white-space:nowrap}
+  .num{font-variant-numeric:tabular-nums;font-weight:700;font-size:14px}
+  .pbar{position:relative;height:7px;background:#E7ECEB;border-radius:4px;overflow:hidden;margin:5px 0 3px}
+  .pbar>i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--t0);transition:width .3s}
+  .morac{display:inline-block;font-variant-numeric:tabular-nums;font-weight:700;font-size:12.5px;padding:2px 9px;border-radius:20px;white-space:nowrap}
+  .muted{color:var(--gris2);font-size:12px;font-weight:400}
+  .grismini{color:var(--treg);font-size:11.5px;font-weight:600}
+  .actions{display:flex;gap:7px;justify-content:flex-end}
+  .icobtn{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);background:var(--surface);cursor:pointer;color:var(--gris);text-decoration:none}
+  .icobtn svg{width:17px;height:17px}
+  .icobtn.wa{background:var(--wa);border-color:var(--wa);color:#fff}
+  .icobtn.wa[data-off]{background:#EFF1F1;border-color:var(--line);color:#C3CCCA;cursor:not-allowed}
+  .icobtn.call{background:#EAF4F3;border-color:#CDE6E3;color:var(--teal-deep)}
+  .icobtn:hover{border-color:var(--teal-med)}
+
+  .loading,.empty{text-align:center;padding:70px 20px;color:var(--gris)}
+  .spinner{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--teal);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .errbox{background:#FBE4E3;border:1px solid #F3B5B2;color:#8A2E2B;padding:16px;border-radius:12px;font-size:14px}
+
+  /* Drawer */
+  .scrim{position:fixed;inset:0;background:rgba(6,65,62,.35);opacity:0;pointer-events:none;transition:opacity .2s;z-index:40}
+  .scrim.on{opacity:1;pointer-events:auto}
+  .drawer{position:fixed;top:0;right:0;height:100%;width:480px;max-width:94vw;background:var(--surface);z-index:50;box-shadow:-8px 0 40px rgba(6,65,62,.18);transform:translateX(100%);transition:transform .24s ease;display:flex;flex-direction:column}
+  .drawer.on{transform:none}
+  .dhead{padding:20px 22px;border-bottom:1px solid var(--line);background:var(--teal-deep);color:#fff}
+  .dhead .x{float:right;cursor:pointer;opacity:.85;font-size:22px;line-height:1}
+  .dhead h2{font-size:18px;font-weight:800;padding-right:24px;line-height:1.25}
+  .dhead .deuda{margin-top:8px;font-size:24px;font-weight:800}
+  .dhead .dsub{font-size:12.5px;color:var(--aqua);font-weight:600;margin-top:2px}
+  .dhead .badges{margin-top:9px;display:flex;gap:7px;flex-wrap:wrap}
+  .dbody{padding:20px 22px;overflow-y:auto;flex:1}
+  .dsec{margin-bottom:22px}
+  .dsec h4{font-size:11.5px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--teal-med);margin-bottom:10px}
+  .kv{display:flex;justify-content:space-between;gap:12px;font-size:13.5px;padding:5px 0;border-bottom:1px dashed var(--line)}
+  .kv .k{color:var(--gris)} .kv .v{font-weight:600;text-align:right}
+  .fac{display:grid;grid-template-columns:1fr auto auto;gap:8px;font-size:12.5px;padding:7px 0;border-bottom:1px solid var(--line);align-items:center}
+  .fac .fv{color:var(--gris)} .fac .fr{font-variant-numeric:tabular-nums;font-weight:700;text-align:right}
+  .odoo-link{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--teal);text-decoration:none;margin-top:2px}
+  .odoo-link:hover{text-decoration:underline}
+  .msgbox{width:100%;font-family:inherit;font-size:13.5px;border:1px solid var(--line);border-radius:10px;padding:12px;min-height:120px;resize:vertical;color:var(--ink);line-height:1.5}
+  .wa-send{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;background:var(--wa);color:#fff;border:0;border-radius:10px;padding:13px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer;margin-top:10px;text-decoration:none}
+  .wa-send[data-off]{background:#EFF1F1;color:#B3BDBB;cursor:not-allowed}
+  /* Botón editar + formulario de ficha */
+  .editbtn{width:100%;margin-top:12px;background:#EAF4F3;border:1px solid #CDE6E3;color:var(--teal-deep);border-radius:9px;padding:10px;font-family:inherit;font-size:13.5px;font-weight:700;cursor:pointer}
+  .editbtn:hover{background:#DCEEEC}
+  .eform .fld{margin-bottom:13px}
+  .eform label{display:block;font-size:12px;font-weight:600;color:var(--gris);margin-bottom:5px}
+  .eform input,.eform select{width:100%;font-family:inherit;font-size:14px;border:1px solid var(--line);border-radius:9px;padding:10px 11px;color:var(--ink);background:var(--surface)}
+  .eform input:focus,.eform select:focus{outline:none;border-color:var(--teal-med);box-shadow:0 0 0 3px rgba(4,135,130,.1)}
+  .eform .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .eform .hint{font-size:11px;color:var(--gris2);margin-top:4px}
+  .eform .prev{font-size:12px;color:var(--teal);font-weight:600;margin-top:4px}
+  .dfoot{padding:14px 22px;border-top:1px solid var(--line);background:var(--surface)}
+  .btn-save{width:100%;background:var(--teal);color:#fff;border:0;border-radius:10px;padding:13px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer}
+  .btn-save:disabled{opacity:.6;cursor:default}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:600;z-index:100;box-shadow:0 8px 30px rgba(6,65,62,.28);opacity:0;pointer-events:none;transition:opacity .2s;max-width:90vw;text-align:center}
+  .toast.on{opacity:1}
+  @media(max-width:860px){ .thead{grid-template-columns:2fr 1.1fr 88px} .row{grid-template-columns:2fr 1.1fr 88px} .hide-sm{display:none} }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="mono">E<span class="y">y</span>G</span>
+    <span class="tag">Core</span>
+    <span class="title">Cobranzas</span>
+    <a class="back" href="../index.html">← Core</a>
+  </div>
+  <div class="wrap"><div id="app"><div class="loading"><div class="spinner"></div>Cruzando facturas, pagos y cuenta corriente desde Odoo…</div></div></div>
+  <div class="scrim" id="scrim" onclick="cerrar()"></div>
+  <div class="drawer" id="drawer"></div>
+
+<script>
+const RPC="https://yxotopoklgjowcudveoj.supabase.co/functions/v1/odoo-rpc";
+const ODOO="https://drogueriaeyg.odoo.com";
+const money=n=>"$"+Math.round(n||0).toLocaleString("es-AR");
+const soloDig=s=>(s||"").replace(/\D/g,"");
+function waNumber(m,p){for(const c of[m,p]){let d=soloDig(c);if(!d)continue;if(d.startsWith("00"))d=d.slice(2);if(d.startsWith("54"))d=d.slice(2);d=d.replace(/^0/,"");d=d.replace(/^(\d{2,4})15(\d{6,8})$/,"$1$2");if(d.length>=10)return"549"+d;}return"";}
+const telLink=(m,p)=>{let d=soloDig(m||p);if(d.length<6)return"";if(!d.startsWith("54"))d="54"+d.replace(/^0/,"");return"+"+d;};
+const esc=s=>(s||"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+// rpc con reintento (Odoo.sh a veces rechaza el pico de consultas concurrentes)
+async function rpc(model,method,args,kwargs={}){
+  let last;
+  for(let i=0;i<3;i++){
+    try{
+      const r=await fetch(RPC,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model,method,args,kwargs})});
+      const j=await r.json();
+      if(!j.ok)throw new Error(j.error||"Error Odoo");
+      return j.result;
+    }catch(e){ last=e; if(i<2) await new Promise(r=>setTimeout(r,600*(i+1))); }
+  }
+  throw last;
+}
+
+// Tramos de mora (por vencimiento vencido más viejo, sobre la deuda REAL)
+const TRAMOS=[
+  {k:"vencer", l:"Por vencer / al día", t:"t0", test:d=>d<=0},
+  {k:"d1",     l:"1–20 días",   t:"t1", test:d=>d>0&&d<21},
+  {k:"d21",    l:"+21 días",    t:"t2", test:d=>d>=21&&d<31},
+  {k:"d30",    l:"+30 días",    t:"t3", test:d=>d>=31&&d<61},
+  {k:"d60",    l:"+60 días",    t:"t4", test:d=>d>=61&&d<91},
+  {k:"d90",    l:"+90 días",    t:"t5", test:d=>d>=91&&d<121},
+  {k:"d120",   l:"+120 · incobrable?", t:"t6", test:d=>d>=121},
+];
+function tramoDe(d){ return TRAMOS.find(t=>t.test(d)) || TRAMOS[0]; }
+const TRAMO_GRIS ={k:"gris",   l:"Falta certificado/OP", t:"treg"}; // ya pagó, falta imputar
+const TRAMO_FAVOR={k:"afavor", l:"Saldo a favor",        t:"t1"};
+
+// Rubro del cliente (vive en category_id / etiquetas de Odoo). Mismo criterio que el panel del comercial.
+const RUBROS=[{v:30,l:"Farmacia"},{v:32,l:"Sanatorio / Clínica"},{v:37,l:"Empresa de salud"},{v:33,l:"Institución / Mutual"},{v:34,l:"Distribuidora"},{v:35,l:"Veterinaria"},{v:62,l:"SAMCO"}];
+const RUBRO_LBL={30:"Farmacia",32:"Sanatorio / Clínica",37:"Empresa de salud",33:"Institución / Mutual",34:"Distribuidora",35:"Veterinaria",62:"SAMCO"};
+const RUBRO_MAP={28:30,29:30,30:30, 8:35,35:35, 7:34,34:34, 31:33,33:33,36:33, 20:32,32:32, 37:37, 62:62};
+const rubroActual=cats=>{ for(const t of (cats||[])) if(RUBRO_MAP[t]) return RUBRO_MAP[t]; return 0; };
+
+// ===== Edición de ficha (mismo sistema que el panel de vendedores) =====
+const IDT={cuit:4,dni:5,cuil:6};
+const digits=soloDig;
+function fmtDoc(raw,idtypeId){const d=digits(raw);if(!d)return"";if(idtypeId===IDT.dni){if(d.length<7||d.length>8)return raw.trim();return d.replace(/\B(?=(\d{3})+(?!\d))/g,".");}if(idtypeId===IDT.cuit||idtypeId===IDT.cuil){if(d.length!==11)return raw.trim();return d.slice(0,2)+"-"+d.slice(2,10)+"-"+d.slice(10);}return raw.trim();}
+function fmtTel(raw){let d=digits(raw);if(!d)return"";if(d.startsWith("0054"))d=d.slice(4);if(d.startsWith("54"))d=d.slice(2);d=d.replace(/^0/,"");if(d.length>10)d=d.replace(/^(\d{2,4})15(\d{6,8})$/,"$1$2");if(d.length<8)return raw.trim();let area,local;if(d.length===10){if(d.startsWith("11")){area="11";local=d.slice(2);}else{area=d.slice(0,3);local=d.slice(3);}}else if(d.length===11){area=d.slice(0,4);local=d.slice(4);}else return"+54 "+d;const ls=local.length>=8?local.slice(0,4)+"-"+local.slice(4):local.slice(0,3)+"-"+local.slice(3);return"+54 "+area+" "+ls;}
+function oracion(s){s=(s||"").trim().replace(/\s+/g," ");if(!s)return"";return s.charAt(0).toUpperCase()+s.slice(1).toLowerCase();}
+const PFIELDS_COB=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id"];
+let CAT={fiscal:[],idt:[],prov:[]};
+function toast(msg){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";t.className="toast";document.body.appendChild(t);}t.textContent=msg;t.classList.add("on");clearTimeout(toast._t);toast._t=setTimeout(()=>t.classList.remove("on"),2600);}
+
+const hoy=new Date(); hoy.setHours(0,0,0,0);
+const hoyStr=hoy.toISOString().slice(0,10);
+const diasMora=f=> f? Math.floor((hoy-new Date(f+"T00:00:00"))/86400000) : 0;
+const fmtFecha=f=> f? f.split("-").reverse().join("/") : "—";
+
+let CLI=[], EVO=[], filtro={tramo:"", comercial:"", rubro:"", q:"", orden:"prioridad"};
+
+async function cargar(){
+  try{
+    // 1) TODA la cuenta corriente real: líneas del receivable sin conciliar, con saldo.
+    //    Netea facturas (+), NC (−), recibos/pagos posteados sin imputar (−) y saldo inicial migración (+).
+    const ml=await rpc("account.move.line","search_read",
+      [[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual","!=",0]]],
+      {fields:["partner_id","move_name","move_type","date","date_maturity","amount_residual","balance"],limit:0});
+    // 2) Pagos en BORRADOR (dinero recibido pero no asentado — retenciones a la espera del certificado/OP)
+    const draft=await rpc("account.payment","search_read",
+      [[["partner_type","=","customer"],["payment_type","=","inbound"],["state","=","draft"]]],
+      {fields:["name","partner_id","amount","date"],limit:0});
+    // 3) Evolución: saldo de la cuenta corriente al cierre de cada mes = suma acumulada del receivable
+    const evoRaw=await rpc("account.move.line","read_group",
+      [[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"]],["balance:sum"],["date:month"]],
+      {lazy:false,orderby:"date asc"});
+    EVO=[]; let acc=0;
+    for(const g of evoRaw){
+      const from=g.__range&&g.__range["date:month"]?g.__range["date:month"].from:null;
+      acc+=g.balance||0;
+      if(from && from>="2025-03-01") EVO.push({ym:from.slice(0,7), val:acc});
+    }
+
+    // --- Agregar por cliente ---
+    const P={};
+    for(const l of ml){
+      if(!l.partner_id) continue;
+      const id=l.partner_id[0];
+      const r=l.amount_residual||0;
+      if(Math.abs(r)<0.5) continue;
+      const p=P[id]||(P[id]={id,nombre:l.partner_id[1],saldo:0,deudaFac:0,saldoIni:0,cobradoSinImp:0,
+                              baseBruto:0,vencidoGross:0,minVencVenc:null,minVencAny:null,movs:[]});
+      let tipo;
+      if(l.move_type==="out_invoice") tipo="factura";
+      else if(l.move_type==="out_refund") tipo="nc";
+      else if(r<0) tipo="recibo";      // RE-X: cobro posteado sin imputar (gris)
+      else tipo="inicial";             // saldo anterior / migración
+      const venc=l.date_maturity||l.date||null;
+      p.saldo+=r;
+      if(tipo==="factura"||tipo==="nc") p.deudaFac+=r;
+      else if(tipo==="recibo") p.cobradoSinImp+=(-r);
+      else if(tipo==="inicial") p.saldoIni+=r;
+      if(r>0){
+        p.baseBruto+=(l.balance||r); // monto original de lo abierto (para la barra de % cobrado)
+        if(venc){
+          if(!p.minVencAny||venc<p.minVencAny) p.minVencAny=venc;
+          if(venc<hoyStr){ p.vencidoGross+=r; if(!p.minVencVenc||venc<p.minVencVenc) p.minVencVenc=venc; }
+        }
+      }
+      p.movs.push({name:l.move_name,tipo,fecha:l.date,venc,r});
+    }
+    // Pagos en borrador por cliente
+    const draftMap={}, DRAFT={};
+    for(const d of draft){ if(!d.partner_id)continue; const id=d.partner_id[0];
+      draftMap[id]=(draftMap[id]||0)+(d.amount||0); (DRAFT[id]=DRAFT[id]||[]).push(d); }
+
+    // Deudores = tienen saldo real, dinero en gris, o saldo a favor
+    const raw=Object.values(P).filter(p=>{
+      const borrador=draftMap[p.id]||0;
+      const deudaReal=p.saldo-borrador;
+      const gris=p.cobradoSinImp+borrador;
+      return deudaReal>1 || gris>1 || p.saldo<-1;
+    });
+
+    // Contactos
+    const ids=raw.map(p=>p.id);
+    const parts=ids.length?await rpc("res.partner","read",[ids],{fields:PFIELDS_COB,context:{lang:"es_AR"}}):[];
+    const byId={}; parts.forEach(p=>byId[p.id]=p);
+    // Catálogos para el formulario de edición (dropdowns), 1 sola vez
+    if(!CAT.prov.length){ try{
+      const [fiscal,idt,prov]=await Promise.all([
+        rpc("l10n_ar.afip.responsibility.type","search_read",[[]],{fields:["id","name"],context:{lang:"es_AR"}}),
+        rpc("l10n_latam.identification.type","search_read",[[["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}}),
+        rpc("res.country.state","search_read",[[["country_id.code","=","AR"]]],{fields:["id","name"],limit:0})
+      ]);
+      CAT={fiscal,idt,prov};
+    }catch(e){ console.warn("No se pudieron cargar catálogos de edición",e); } }
+
+    CLI=raw.map(p=>{
+      const c=byId[p.id]||{};
+      const borrador=draftMap[p.id]||0;
+      const saldoReal=p.saldo;
+      const deudaReal=saldoReal-borrador;
+      const gris=p.cobradoSinImp+borrador;
+      // vencido real: la plata en gris se aplica primero a lo vencido (aprox., el gris no está mapeado a facturas puntuales)
+      let vencidoReal=Math.max(0, p.vencidoGross-gris);
+      vencidoReal=Math.min(vencidoReal, Math.max(0,deudaReal));
+
+      let situacion, tramo, mora;
+      if(saldoReal<-1){ situacion="afavor"; tramo=TRAMO_FAVOR; mora=0; }
+      else if(deudaReal<=1){ situacion="cubierto"; tramo=TRAMO_GRIS; mora=0; }
+      else {
+        mora = vencidoReal>1 ? diasMora(p.minVencVenc) : 0;
+        tramo = tramoDe(mora);
+        situacion = mora>=121 ? "incobrable" : (vencidoReal>1 ? "vencido" : "porvencer");
+      }
+      const tieneGris=gris>1;
+      // prioridad de gestión: plata vencida real que hay que ir a cobrar
+      const prioridad = vencidoReal;
+      // barra de % todavía adeudado sobre lo facturado abierto (bajo = hubo cobro parcial)
+      const aCobrar=Math.max(0,deudaReal);
+      const base=p.baseBruto; // monto original de facturas + saldo inicial abiertos
+      const pctDebe = base>1 ? Math.max(0,Math.min(1, aCobrar/base)) : (aCobrar>1?1:0);
+
+      return {
+        id:p.id, nombre:p.nombre, movs:p.movs,
+        saldoReal, deudaReal, deudaFac:p.deudaFac, saldoIni:p.saldoIni, base, pctDebe,
+        cobradoSinImp:p.cobradoSinImp, borrador, gris, vencidoReal, mora, tramo, situacion, tieneGris, prioridad,
+        venc:p.minVencVenc||p.minVencAny, nfac:p.movs.filter(m=>m.tipo==="factura"&&m.r>0).length,
+        drafts:DRAFT[p.id]||[],
+        wa:waNumber(c.mobile,c.phone), tellink:telLink(c.mobile,c.phone),
+        telv:(c.mobile||c.phone||""), email:c.email||"", ciudad:c.city||"",
+        comercial:c.user_id?c.user_id[1]:"Sin asignar",
+        rubro:rubroActual(c.category_id), part:c
+      };
+    });
+    render();
+  }catch(e){
+    document.getElementById("app").innerHTML='<div class="errbox"><b>No pude calcular la deuda.</b><br>'+esc(e.message||e)+'</div>';
+  }
+}
+
+function visibles(){
+  return CLI.filter(c=>{
+    if(filtro.tramo==='gris'){ if(!c.tieneGris) return false; }
+    else if(filtro.tramo==='cubierto'){ if(c.situacion!=='cubierto') return false; }
+    else if(filtro.tramo && c.tramo.k!==filtro.tramo) return false;
+    if(filtro.comercial && c.comercial!==filtro.comercial) return false;
+    if(filtro.rubro!==""){ if(filtro.rubro==="sin"){ if(c.rubro) return false; } else if(c.rubro!==filtro.rubro) return false; }
+    if(filtro.q){const q=filtro.q.toLowerCase(); if(!c.nombre.toLowerCase().includes(q)) return false;}
+    return true;
+  });
+}
+function ordenar(l){
+  const a=[...l];
+  if(filtro.orden==="prioridad") a.sort((x,y)=> y.prioridad-x.prioridad || y.deudaReal-x.deudaReal);
+  else if(filtro.orden==="deuda") a.sort((x,y)=>y.deudaReal-x.deudaReal);
+  else if(filtro.orden==="mora") a.sort((x,y)=>y.mora-x.mora);
+  else if(filtro.orden==="gris") a.sort((x,y)=>y.gris-x.gris);
+  else a.sort((x,y)=>x.nombre.localeCompare(y.nombre));
+  return a;
+}
+
+// ---- Gráficos (SVG/CSS puro) ----
+const MESAB=["","ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+const fmtM=v=> Math.abs(v)>=1e6 ? "$"+(v/1e6).toFixed(0)+"M" : Math.abs(v)>=1e3 ? "$"+(v/1e3).toFixed(0)+"k" : "$"+Math.round(v);
+function evoSVG(){
+  if(EVO.length<2) return "";
+  const W=1000,H=210,pl=54,pr=14,pt=16,pb=26;
+  const maxV=Math.max(...EVO.map(p=>p.val),0);
+  const niceMax=Math.ceil(maxV/1e8)*1e8||1e8;
+  const n=EVO.length;
+  const X=i=> pl + i*(W-pl-pr)/(n-1);
+  const Y=v=> H-pb - (v/niceMax)*(H-pt-pb);
+  let grid=""; const gl=4;
+  for(let i=0;i<=gl;i++){ const v=niceMax*i/gl, y=Y(v);
+    grid+=`<line x1="${pl}" y1="${y.toFixed(1)}" x2="${W-pr}" y2="${y.toFixed(1)}" stroke="#E7F0EE" stroke-width="1"/>`
+        +`<text x="${pl-8}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="12" fill="#8A9A97">${fmtM(v)}</text>`;
+  }
+  let dLine=""; EVO.forEach((p,i)=>{ dLine+=(i?"L":"M")+X(i).toFixed(1)+" "+Y(p.val).toFixed(1)+" "; });
+  const dArea=dLine+`L ${X(n-1).toFixed(1)} ${Y(0).toFixed(1)} L ${X(0).toFixed(1)} ${Y(0).toFixed(1)} Z`;
+  let dots="",xlab=""; const step=Math.max(1,Math.ceil(n/7));
+  EVO.forEach((p,i)=>{ const x=X(i),y=Y(p.val),last=i===n-1,[yy,mm]=p.ym.split("-");
+    if(last) dots+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4.5" fill="#04635F"/>`;
+    if(i%step===0||last) xlab+=`<text x="${x.toFixed(1)}" y="${H-8}" text-anchor="${last?'end':'middle'}" font-size="12" fill="#8A9A97">${MESAB[+mm]} '${yy.slice(2)}</text>`;
+  });
+  const n1=EVO[n-1],lx=X(n-1),ly=Y(n1.val);
+  const lbl=`<text x="${(lx-6).toFixed(1)}" y="${(ly-10).toFixed(1)}" text-anchor="end" font-size="14" font-weight="800" fill="#04635F">${money(n1.val)}</text>`;
+  return `<svg class="evosvg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Evolución de la deuda">
+    <defs><linearGradient id="evg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0AA89F" stop-opacity=".26"/><stop offset="1" stop-color="#0AA89F" stop-opacity="0"/></linearGradient></defs>
+    ${grid}<path d="${dArea}" fill="url(#evg)"/>
+    <path d="${dLine}" fill="none" stroke="#048782" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    ${dots}${lbl}${xlab}</svg>`;
+}
+function compoHTML(porTramo,totalReal){
+  const segs=TRAMOS.filter(t=>porTramo[t.k]&&porTramo[t.k].m>0);
+  if(!segs.length||totalReal<=0) return "";
+  const bar=segs.map(t=>`<span title="${t.l}: ${money(porTramo[t.k].m)}" style="width:${(porTramo[t.k].m/totalReal*100).toFixed(2)}%;background:var(--${t.t})"></span>`).join("");
+  const leg=segs.map(t=>`<div class="it"><span class="dot" style="background:var(--${t.t})"></span>${t.l} <b>${money(porTramo[t.k].m)}</b></div>`).join("");
+  return `<div class="compo"><div class="clbl">Composición de la deuda a cobrar por antigüedad</div>
+    <div class="cbar">${bar}</div><div class="cleg">${leg}</div></div>`;
+}
+
+function render(){
+  const app=document.getElementById("app");
+  const totalReal=CLI.reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
+  const totalVenc=CLI.reduce((s,c)=>s+c.vencidoReal,0);
+  const totalCobradoSinImp=CLI.reduce((s,c)=>s+c.cobradoSinImp,0);
+  const totalBorrador=CLI.reduce((s,c)=>s+c.borrador,0);
+  const totalGris=totalCobradoSinImp+totalBorrador;
+  const porTramo={}; TRAMOS.forEach(t=>porTramo[t.k]={n:0,m:0}); porTramo["cubierto"]={n:0,m:0};
+  CLI.forEach(c=>{ const k=(c.situacion==="cubierto")?"cubierto":c.tramo.k; const b=porTramo[k]||(porTramo[k]={n:0,m:0}); b.n++; b.m+=Math.max(0,c.deudaReal); });
+  const incob=porTramo["d120"];
+  const grisN=CLI.filter(c=>c.tieneGris).length;
+  const cub=porTramo["cubierto"];
+  const favN=CLI.filter(c=>c.situacion==="afavor").length;
+  const favM=CLI.filter(c=>c.situacion==="afavor").reduce((s,c)=>s+(-c.saldoReal),0);
+  const comMap={}; CLI.forEach(c=>comMap[c.comercial]=(comMap[c.comercial]||0)+1);
+  const comercialOpts=`<option value="">Todos los comerciales</option>`+Object.entries(comMap).sort((a,b)=>b[1]-a[1]).map(([n,c])=>`<option value="${esc(n)}" ${filtro.comercial===n?"selected":""}>${esc(n)} (${c})</option>`).join("");
+  // Deuda por RUBRO (tarjetas filtro)
+  const rubMap={}; CLI.forEach(c=>{const k=c.rubro||"sin"; (rubMap[k]=rubMap[k]||{n:0,m:0}); rubMap[k].n++; rubMap[k].m+=Math.max(0,c.deudaReal);});
+  const rubCards=RUBROS.filter(r=>rubMap[r.v]).sort((a,b)=>rubMap[b.v].m-rubMap[a.v].m).map(r=>
+      `<div class="kpi rub ${filtro.rubro===r.v?'on':''}" onclick="setRubro(${r.v})"><div class="n">${rubMap[r.v].n}</div><div class="money">${money(rubMap[r.v].m)}</div><div class="l">🏷️ ${esc(r.l)}</div></div>`).join("")
+    + (rubMap["sin"]?`<div class="kpi rub ${filtro.rubro==='sin'?'on':''}" onclick="setRubro('sin')"><div class="n">${rubMap["sin"].n}</div><div class="money">${money(rubMap["sin"].m)}</div><div class="l">🏷️ Sin rubro</div></div>`:"");
+
+  const evoCap=(EVO.length>=2)?(()=>{const a=EVO[0],b=EVO[EVO.length-1],[ay,am]=a.ym.split("-");const dif=b.val-a.val;
+    return `Pasó de <b>${money(a.val)}</b> (${MESAB[+am]} '${ay.slice(2)}) a <b>${money(b.val)}</b> hoy <span class="up">▲ ${money(dif)}</span>`;})():"";
+
+  app.innerHTML=`
+    <div class="resumen">
+      <div><div class="lbl">Deuda real a cobrar</div><div class="big">${money(totalReal)}</div><div class="sub">saldo contable neto</div></div>
+      <div><div class="lbl">Vencida (con mora)</div><div class="mid" style="color:#FFD7CE">${money(totalVenc)}</div><div class="sub">prioridad de gestión</div></div>
+      <div><div class="lbl">📄 En gris (falta imputar)</div><div class="mid" style="color:var(--aqua)">${money(totalGris)}</div><div class="sub">${money(totalCobradoSinImp)} cobrado + ${money(totalBorrador)} borrador</div></div>
+      <div><div class="lbl">+120 · incobrable?</div><div class="mid" style="color:#FFD7CE">${incob.n} · ${money(incob.m)}</div></div>
+    </div>
+
+    ${EVO.length>=2?`<div class="panorama">
+      <div class="ptop"><h3>📈 Evolución de la deuda</h3><div class="cap">${evoCap}</div></div>
+      ${evoSVG()}
+      ${compoHTML(porTramo,totalReal)}
+    </div>`:''}
+
+    <div class="cardsec sec-mora">
+      <div class="sectitle"><span>⏱️ Deuda por antigüedad de mora</span>${filtro.tramo?`<a class="secclr" onclick="setTramo(filtro.tramo)">✕ quitar filtro</a>`:''}</div>
+      <div class="kpis">
+        <div class="kpi ${!filtro.tramo?'on':''}" onclick="setTramo('')"><div class="n">${CLI.length}</div><div class="money">${money(totalReal)}</div><div class="l">Todos</div></div>
+        ${TRAMOS.map(t=>`<div class="kpi ${filtro.tramo===t.k?'on':''}" onclick="setTramo('${t.k}')">
+          <div class="n">${porTramo[t.k].n}</div><div class="money">${money(porTramo[t.k].m)}</div>
+          <div class="l"><span class="dot" style="background:var(--${t.t})"></span>${t.l}</div></div>`).join("")}
+        <div class="kpi ${filtro.tramo==='gris'?'on':''}" onclick="setTramo('gris')" style="${grisN?'':'opacity:.5'}">
+          <div class="n">${grisN}</div><div class="money">${money(totalGris)}</div>
+          <div class="l"><span class="dot" style="background:var(--treg)"></span>📄 Falta certificado/OP</div></div>
+        <div class="kpi ${filtro.tramo==='cubierto'?'on':''}" onclick="setTramo('cubierto')" style="${cub.n?'':'opacity:.5'}">
+          <div class="n">${cub.n}</div><div class="money">al día</div>
+          <div class="l"><span class="dot" style="background:var(--t0)"></span>✅ Cubierto</div></div>
+        <div class="kpi ${filtro.tramo==='afavor'?'on':''}" onclick="setTramo('afavor')" style="${favN?'':'opacity:.5'}">
+          <div class="n">${favN}</div><div class="money">${money(favM)}</div>
+          <div class="l"><span class="dot" style="background:var(--t1)"></span>💚 Saldo a favor</div></div>
+      </div>
+    </div>
+
+    <div class="cardsec sec-rubro">
+      <div class="sectitle"><span>🏷️ Deuda por rubro</span>${filtro.rubro!==""?`<a class="secclr" onclick="setRubro(filtro.rubro)">✕ quitar filtro</a>`:''}</div>
+      <div class="kpis rubros">${rubCards}</div>
+    </div>
+
+    <div class="hint">📄 <b>Agentes de retención:</b> ${grisN} cliente${grisN===1?"":"s"} tiene${grisN===1?"":"n"} dinero <b>en gris</b> (${money(totalGris)}): pagaron reteniendo o ya cobramos, pero falta el <b>certificado de retención / la orden de pago</b> para imputar el pago. A esos <b>no se les reclama plata</b> — se les pide el comprobante (botón 📄). El saldo real ya descuenta ese dinero, así que dejan de figurar como morosos.</div>
+
+    <div class="toolbar">
+      <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="q" placeholder="Buscar cliente…" value="${esc(filtro.q)}" oninput="onSearch(this.value)"></div>
+      <select onchange="filtro.comercial=this.value;render()">${comercialOpts}</select>
+      <select onchange="filtro.orden=this.value;render()">
+        <option value="prioridad" ${filtro.orden==="prioridad"?"selected":""}>Prioridad (vencida)</option>
+        <option value="deuda" ${filtro.orden==="deuda"?"selected":""}>Mayor deuda real</option>
+        <option value="mora" ${filtro.orden==="mora"?"selected":""}>Más días de mora</option>
+        <option value="gris" ${filtro.orden==="gris"?"selected":""}>Más dinero en gris</option>
+        <option value="nombre" ${filtro.orden==="nombre"?"selected":""}>Nombre (A-Z)</option>
+      </select>
+      <button class="mini-btn" onclick="verResumen()" style="background:var(--teal);color:#fff;border-color:var(--teal)">📋 Resumen del día</button>
+      <button class="mini-btn" onclick="exportarCSV()">Exportar CSV</button>
+    </div>
+    <div id="listwrap"></div>`;
+  renderLista();
+}
+
+function renderLista(){
+  const list=ordenar(visibles());
+  const w=document.getElementById("listwrap");
+  if(!list.length){w.innerHTML='<div class="tablecard"><div class="empty">No hay clientes con ese filtro.</div></div>';return;}
+  const head=`<div class="count-line">Mostrando <b>${list.length}</b> cliente${list.length===1?"":"s"} · saldo al ${fmtFecha(hoyStr)}</div>`;
+  const rows=list.map(c=>{
+    const t=c.tramo;
+    const aCobrar=Math.max(0,c.deudaReal);
+    return `<div class="row" onclick="abrir(${c.id})">
+      <div><div class="cname">${esc(c.nombre)} ${c.tieneGris?`<span class="gflag">📄 ${money(c.gris)} en gris</span>`:''}</div>
+        <div class="cmeta">${esc(c.ciudad||"—")} · <span class="com ${c.comercial==="Sin asignar"?"com-off":""}">👤 ${esc(c.comercial)}</span></div></div>
+      <div class="num">${money(aCobrar)}
+        <div class="pbar" title="Pagó ${Math.round((1-c.pctDebe)*100)}% de lo facturado${(1-c.pctDebe)>0.01&&aCobrar>1?' · pago parcial':''}"><i style="width:${((1-c.pctDebe)*100).toFixed(1)}%"></i></div>
+        <div class="muted">${(1-c.pctDebe)>0.01&&aCobrar>1?'pagó '+Math.round((1-c.pctDebe)*100)+'%':c.nfac+' fac.'}${c.saldoIni>1?' · +saldo ant.':''}</div></div>
+      <div class="hide-sm"><span class="morac" style="background:var(--${c.mora>0?t.t:'t0'}bg);color:var(--${c.mora>0?t.t:'t0'})">${c.mora>0?c.mora+" días":"al día"}</span><div class="muted">${c.venc?"vence "+fmtFecha(c.venc):"—"}</div></div>
+      <div><span class="badge" style="background:var(--${t.t}bg);color:var(--${t.t})">${t.l}</span>
+        ${c.vencidoReal>1&&c.situacion!=="cubierto"?`<div class="muted" style="margin-top:3px">venc. ${money(c.vencidoReal)}</div>`:''}</div>
+      <div class="hide-sm muted">${esc(c.comercial)}</div>
+      <div class="actions" onclick="event.stopPropagation()">
+        ${c.wa?`<a class="icobtn wa" href="https://wa.me/${c.wa}?text=${encodeURIComponent(mensajeCobro(c))}" target="_blank" title="${c.situacion==='cubierto'?'Pedir certificado/OP':'Recordar pago'} por WhatsApp"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2z"/></svg></a>`
+             :`<span class="icobtn wa" data-off><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2z" opacity=".5"/></svg></span>`}
+        ${c.tellink?`<a class="icobtn call" href="tel:${c.tellink}" title="Llamar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3.1-8.7A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.3 1.8.6 2.6a2 2 0 0 1-.5 2.1L8.1 9.5a16 16 0 0 0 6 6l1.1-1.1a2 2 0 0 1 2.1-.5c.8.3 1.7.5 2.6.6a2 2 0 0 1 1.7 2z"/></svg></a>`:""}
+      </div>
+    </div>`;
+  }).join("");
+  w.innerHTML=head+`<div class="tablecard">
+    <div class="thead"><div>Cliente</div><div>A cobrar</div><div class="hide-sm">Mora</div><div>Situación</div><div class="hide-sm">Comercial</div><div style="text-align:right">Contacto</div></div>
+    ${rows}</div>`;
+}
+
+function mensajeCobro(c){
+  if(c.situacion==="cubierto")
+    return `Hola! Te escribimos de Droguería EyG. Registramos tu pago por ${money(c.gris)}, pero nos falta el comprobante de retención / la orden de pago para imputarlo y dejar tu cuenta al día. ¿Nos lo podés enviar? ¡Gracias!`;
+  if(c.situacion==="afavor")
+    return `Hola! Te escribimos de Droguería EyG. Tu cuenta tiene un saldo a favor de ${money(-c.saldoReal)}. Cuando quieras lo aplicamos a tu próxima compra o coordinamos. ¡Gracias!`;
+  const base=`Hola! Te escribimos de Droguería EyG por tu cuenta corriente. Nos figura un saldo pendiente de ${money(Math.max(0,c.deudaReal))}`;
+  const venc=c.venc?` (factura más antigua con vencimiento ${fmtFecha(c.venc)})`:"";
+  if(c.tieneGris)
+    return `${base}${venc}. Ya tenemos registrado ${money(c.gris)} a la espera del certificado de retención / OP; el saldo a cobrar es ${money(Math.max(0,c.deudaReal))}. ¿Lo coordinamos? ¡Gracias!`;
+  return `${base}${venc}. ¿Coordinamos el pago? ¡Gracias!`;
+}
+
+let sT; function onSearch(v){filtro.q=v;clearTimeout(sT);sT=setTimeout(renderLista,180);}
+function setTramo(k){filtro.tramo=filtro.tramo===k?"":k;render();}
+function setRubro(v){filtro.rubro=filtro.rubro===v?"":v;render();}
+
+const TIPO_LBL={factura:"Factura",nc:"Nota de crédito",recibo:"Cobro sin imputar",inicial:"Saldo anterior"};
+function abrir(id){
+  const c=CLI.find(x=>x.id===id); if(!c) return;
+  const t=c.tramo;
+  const facs=c.movs.filter(m=>m.tipo==="factura"&&m.r>0.5).sort((a,b)=>(a.venc||"").localeCompare(b.venc||""));
+  const ncs=c.movs.filter(m=>m.tipo==="nc"&&Math.abs(m.r)>0.5).sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||""));
+  const recs=c.movs.filter(m=>m.tipo==="recibo"&&Math.abs(m.r)>0.5).sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||""));
+  const inis=c.movs.filter(m=>m.tipo==="inicial"&&m.r>0.5);
+  const d=document.getElementById("drawer");
+  // Contabilidad → Clientes → Reportes de seguimiento (acción 698), abierto en el reporte de este cliente
+  const partnerUrl=`${ODOO}/web#action=698&id=${c.id}&model=res.partner&view_type=form`;
+  d.innerHTML=`
+    <div class="dhead">
+      <span class="x" onclick="cerrar()">✕</span>
+      <h2>${esc(c.nombre)}</h2>
+      <div class="deuda">${money(Math.max(0,c.deudaReal))} <span style="font-size:13px;font-weight:600;opacity:.85">a cobrar</span></div>
+      ${c.tieneGris?`<div class="dsub">📄 ${money(c.gris)} en gris (falta certificado/OP)</div>`:''}
+      ${c.saldoReal<-1?`<div class="dsub">💚 saldo a favor ${money(-c.saldoReal)}</div>`:''}
+      <div class="badges"><span class="badge" style="background:rgba(255,255,255,.16);color:#fff">${t.l}</span>
+        <span class="badge" style="background:rgba(255,255,255,.16);color:#fff">${c.mora>0?c.mora+" días de mora":"al día"}</span></div>
+    </div>
+    <div class="dbody">
+      <div class="dsec">
+        <h4>Situación de la cuenta</h4>
+        <div class="kv"><span class="k">Saldo contable (facturas − NC)</span><span class="v">${money(c.deudaFac)}</span></div>
+        ${c.saldoIni>1?`<div class="kv"><span class="k">Saldo anterior (migración)</span><span class="v">${money(c.saldoIni)}</span></div>`:''}
+        ${c.cobradoSinImp>1?`<div class="kv"><span class="k">− Cobrado sin imputar</span><span class="v" style="color:var(--treg)">− ${money(c.cobradoSinImp)}</span></div>`:''}
+        ${c.borrador>1?`<div class="kv"><span class="k">− Pagos en borrador</span><span class="v" style="color:var(--treg)">− ${money(c.borrador)}</span></div>`:''}
+        <div class="kv" style="border-top:2px solid var(--line);padding-top:8px;margin-top:2px"><span class="k"><b>Deuda real a cobrar</b></span><span class="v"><b>${money(Math.max(0,c.deudaReal))}</b></span></div>
+        <div class="kv" style="border:0"><span class="k">Vencida (con mora)</span><span class="v" style="color:var(--t5)">${money(c.vencidoReal)}</span></div>
+        <a class="odoo-link" href="${partnerUrl}" target="_blank">Ver reporte de seguimiento en Odoo →</a>
+      </div>
+
+      <div class="dsec">
+        <h4>Datos de contacto</h4>
+        <div class="kv"><span class="k">Comercial</span><span class="v" style="color:${c.comercial==="Sin asignar"?"var(--coral)":"var(--teal-deep)"}">${esc(c.comercial)}</span></div>
+        <div class="kv"><span class="k">Ubicación</span><span class="v">${esc(c.ciudad||"—")}</span></div>
+        <div class="kv"><span class="k">Teléfono</span><span class="v">${esc(c.telv||"—")}</span></div>
+        <div class="kv"><span class="k">Email</span><span class="v">${esc(c.email||"—")}</span></div>
+        <button class="editbtn" onclick="editarContacto(${c.id})">✏️ Editar / completar datos</button>
+      </div>
+
+      ${(recs.length||c.drafts.length)?`<div class="dsec">
+        <h4>📄 En gris · pagos sin imputar (${recs.length+c.drafts.length})</h4>
+        <p class="muted" style="margin:-4px 0 8px">Dinero ya recibido a la espera del certificado de retención / la orden de pago. No reclamar plata: pedir el comprobante.</p>
+        ${recs.map(m=>`<div class="fac"><span>${esc(m.name||"Cobro")}<div class="fv">${fmtFecha(m.fecha)} · posteado sin imputar</div></span><span></span><span class="fr" style="color:var(--treg)">${money(-m.r)}</span></div>`).join("")}
+        ${c.drafts.map(m=>`<div class="fac"><span>${esc(m.name||"Pago")}<div class="fv">${fmtFecha(m.date)} · en borrador</div></span><span></span><span class="fr" style="color:var(--treg)">${money(m.amount)}</span></div>`).join("")}
+      </div>`:''}
+
+      <div class="dsec">
+        <h4>Facturas impagas (${facs.length})</h4>
+        ${facs.map(m=>{const dm=diasMora(m.venc);return `<div class="fac">
+          <span>${esc(m.name||"")}<div class="fv">emitida ${fmtFecha(m.fecha)}</div></span>
+          <span class="fv" style="text-align:center">vence<br>${fmtFecha(m.venc)}<br><b style="color:${dm>0?'var(--t5)':'var(--t0)'}">${dm>0?dm+"d":"al día"}</b></span>
+          <span class="fr">${money(m.r)}</span></div>`;}).join("")||'<div class="muted">Sin facturas abiertas.</div>'}
+        ${ncs.length?`<div style="margin-top:6px">${ncs.map(m=>`<div class="fac"><span>${esc(m.name||"NC")}<div class="fv">${fmtFecha(m.fecha)} · nota de crédito</div></span><span></span><span class="fr" style="color:var(--t0)">${money(m.r)}</span></div>`).join("")}</div>`:''}
+        ${inis.length?`<div style="margin-top:6px">${inis.map(m=>`<div class="fac"><span>${esc(m.name||"Saldo")}<div class="fv">${fmtFecha(m.fecha)} · saldo anterior</div></span><span></span><span class="fr">${money(m.r)}</span></div>`).join("")}</div>`:''}
+      </div>
+
+      <div class="dsec">
+        <h4>${c.situacion==="cubierto"?"Pedir certificado/OP por WhatsApp":"Recordatorio por WhatsApp"}</h4>
+        <textarea class="msgbox" id="msg">${esc(mensajeCobro(c))}</textarea>
+        ${c.wa?`<a class="wa-send" id="wabtn" href="https://wa.me/${c.wa}?text=${encodeURIComponent(mensajeCobro(c))}" target="_blank">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2z"/></svg> ${c.situacion==="cubierto"?"Pedir comprobante":"Enviar recordatorio"}</a>`
+             :c.tellink?`<a class="wa-send" style="background:var(--teal)" href="tel:${c.tellink}">Llamar ${esc(c.telv)}</a>`
+             :`<button class="wa-send" data-off disabled>Sin teléfono cargado</button>`}
+      </div>
+    </div>`;
+  d.dataset.wa=c.wa||"";
+  d.classList.add("on"); document.getElementById("scrim").classList.add("on");
+}
+document.addEventListener("input",e=>{if(e.target&&e.target.id==="msg"){const d=document.getElementById("drawer"),wa=d.dataset.wa,b=document.getElementById("wabtn");if(b&&wa)b.href=`https://wa.me/${wa}?text=${encodeURIComponent(e.target.value)}`;}});
+function cerrar(){document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");}
+document.addEventListener("keydown",e=>{if(e.key==="Escape")cerrar();});
+
+// ===== Editar ficha del contacto y sincronizar con Odoo =====
+function onTipoCob(){const t=document.getElementById("f_type").value;const l=document.getElementById("lbl_name");if(l)l.textContent=(t==='company'?'Razón social':'Apellido y nombre');const n=document.getElementById("f_name");if(n)n.placeholder=(t==='company'?'Ej: Farmacia del Sol S.R.L.':'Ej: Pérez, Juan');}
+function prevTelCob(){const el=document.getElementById("prev_phone");const v=document.getElementById("f_phone");if(el&&v)el.textContent=v.value?('Se guardará: '+fmtTel(v.value)):'';}
+function prevDocCob(){const t=parseInt(document.getElementById("f_idtype").value||0,10);const v=document.getElementById("f_vat");const el=document.getElementById("prev_doc");if(el&&v)el.textContent=v.value?('→ '+fmtDoc(v.value,t)):'';}
+
+function editarContacto(id){
+  const c=CLI.find(x=>x.id===id); if(!c) return;
+  const p=c.part||{};
+  const tipo=p.is_company?'company':(p.company_type||'person');
+  const optSel=(cat,sel,ph)=>`<option value="">${ph||'— elegir —'}</option>`+(cat||[]).map(o=>`<option value="${o.id}" ${sel&&(Array.isArray(sel)?sel[0]===o.id:sel===o.id)?'selected':''}>${esc(o.name)}</option>`).join("");
+  const rubroSel=c.rubro||"";
+  const rubroOpts=`<option value="">— elegir rubro —</option>`+RUBROS.map(r=>`<option value="${r.v}" ${rubroSel===r.v?'selected':''}>${esc(r.l)}</option>`).join("");
+  const d=document.getElementById("drawer");
+  d.innerHTML=`
+    <div class="dhead"><span class="x" onclick="abrir(${id})">←</span>
+      <h2>Editar datos</h2>
+      <div class="dsub">${esc(c.nombre)} · se sincroniza con Odoo</div>
+    </div>
+    <div class="dbody eform">
+      <div class="fld"><label>Tipo</label><select id="f_type" onchange="onTipoCob()">
+        <option value="person" ${tipo!=='company'?'selected':''}>Persona</option><option value="company" ${tipo==='company'?'selected':''}>Empresa</option></select></div>
+      <div class="fld"><label id="lbl_name">${tipo==='company'?'Razón social':'Apellido y nombre'}</label>
+        <input id="f_name" value="${esc(p.name||c.nombre||'')}" placeholder="${tipo==='company'?'Ej: Farmacia del Sol S.R.L.':'Ej: Pérez, Juan'}"></div>
+      <div class="fld"><label>Rubro</label><select id="f_rubro">${rubroOpts}</select></div>
+      <div class="fld"><label>Teléfono</label><input id="f_phone" value="${esc(p.phone||p.mobile||'')}" oninput="prevTelCob()" placeholder="0341 155033943">
+        <div class="hint">Área sin 0, celular sin 15. Se guarda formateado.</div><div class="prev" id="prev_phone"></div></div>
+      <div class="fld"><label>Email</label><input id="f_email" value="${esc(p.email||'')}" placeholder="nombre@dominio.com"></div>
+      <div class="fld"><label>Dirección</label><input id="f_street" value="${esc(p.street||'')}" placeholder="San martín 1234"><div class="hint">Se guarda tipo oración.</div></div>
+      <div class="grid2">
+        <div class="fld"><label>Código postal</label><input id="f_zip" value="${esc(p.zip||'')}" placeholder="2000"></div>
+        <div class="fld"><label>Localidad</label><input id="f_city" value="${esc(p.city||'')}" placeholder="Rosario"></div>
+      </div>
+      <div class="fld"><label>Provincia</label><select id="f_state">${optSel(CAT.prov,p.state_id,'— provincia —')}</select></div>
+      <div class="grid2">
+        <div class="fld"><label>Tipo de documento</label><select id="f_idtype" onchange="prevDocCob()">${optSel(CAT.idt,p.l10n_latam_identification_type_id,'— tipo —')}</select></div>
+        <div class="fld"><label>Número</label><input id="f_vat" value="${esc(p.vat||'')}" oninput="prevDocCob()" placeholder="20-12345678-9"><div class="prev" id="prev_doc"></div></div>
+      </div>
+      <div class="fld"><label>Condición fiscal (AFIP)</label><select id="f_fiscal">${optSel(CAT.fiscal,p.l10n_ar_afip_responsibility_type_id,'— condición —')}</select></div>
+    </div>
+    <div class="dfoot"><button class="btn-save" id="btnSave" onclick="guardarContacto(${id})">Guardar y sincronizar con Odoo</button></div>`;
+  d.classList.add("on"); document.getElementById("scrim").classList.add("on");
+  prevTelCob(); prevDocCob();
+}
+
+async function guardarContacto(id){
+  const btn=document.getElementById("btnSave"); if(!btn) return;
+  btn.disabled=true; btn.textContent="Guardando…";
+  const val=x=>{const el=document.getElementById(x);return el?el.value.trim():"";};
+  const num=x=>{const v=val(x);return v?parseInt(v,10):false;};
+  const idtype=num("f_idtype");
+  const vals={
+    company_type:val("f_type"), name:val("f_name"),
+    phone: val("f_phone")?fmtTel(val("f_phone")):false, mobile:false,
+    email: val("f_email")||false, street: val("f_street")?oracion(val("f_street")):false,
+    zip: val("f_zip")||false, city: val("f_city")?oracion(val("f_city")):false,
+    state_id: num("f_state"), l10n_latam_identification_type_id: idtype,
+    vat: val("f_vat")?fmtDoc(val("f_vat"),idtype):false,
+    l10n_ar_afip_responsibility_type_id: num("f_fiscal")
+  };
+  const rubro=num("f_rubro");
+  if(rubro) vals.category_id=[[4,rubro]];
+  if(!vals.name){ btn.disabled=false; btn.textContent="Guardar y sincronizar con Odoo"; toast("⚠ Falta el nombre"); return; }
+  try{
+    await rpc("res.partner","write",[[id],vals],{context:{lang:"es_AR"}});
+    const fresh=(await rpc("res.partner","read",[[id]],{fields:PFIELDS_COB,context:{lang:"es_AR"}}))[0];
+    const c=CLI.find(x=>x.id===id);
+    if(c && fresh){
+      c.part=fresh; c.nombre=fresh.name||c.nombre;
+      c.telv=fresh.mobile||fresh.phone||""; c.email=fresh.email||""; c.ciudad=fresh.city||"";
+      c.wa=waNumber(fresh.mobile,fresh.phone); c.tellink=telLink(fresh.mobile,fresh.phone);
+      c.comercial=fresh.user_id?fresh.user_id[1]:"Sin asignar"; c.rubro=rubroActual(fresh.category_id);
+    }
+    toast("✅ Datos guardados y sincronizados con Odoo");
+    render(); abrir(id);
+  }catch(e){
+    btn.disabled=false; btn.textContent="Guardar y sincronizar con Odoo";
+    toast("⚠ No se pudo guardar: "+(e.message||e));
+  }
+}
+
+// ---- Resumen diario (texto listo para pegar en el grupo de WhatsApp del equipo) ----
+function textoResumen(){
+  const hoyStrL=hoy.toLocaleDateString("es-AR",{day:"2-digit",month:"long",year:"numeric"});
+  const real=CLI.reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
+  const vencido=CLI.reduce((s,c)=>s+c.vencidoReal,0);
+  // prioridad de cobro: mayor plata vencida real, excluyendo los que son puro gris
+  const cobrar=CLI.filter(c=>c.vencidoReal>1).sort((a,b)=>b.vencidoReal-a.vencidoReal);
+  const incob=CLI.filter(c=>c.situacion==="incobrable").sort((a,b)=>b.deudaReal-a.deudaReal);
+  const incobM=incob.reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
+  const gris=CLI.filter(c=>c.tieneGris).sort((a,b)=>b.gris-a.gris);
+  const grisM=gris.reduce((s,c)=>s+c.gris,0);
+  const umbrales=[21,31,61,91,121];
+  const porCruzar=CLI.filter(c=>c.vencidoReal>1&&umbrales.some(u=>c.mora>=u-3&&c.mora<u)).sort((a,b)=>b.deudaReal-a.deudaReal);
+  let t=`🏥 *Droguería EyG · Cobranzas ${hoyStrL}*\n\n`;
+  t+=`💰 Deuda real a cobrar: ${money(real)}\n⏰ Vencida (con mora): ${money(vencido)}\n👥 Clientes con saldo: ${CLI.length}\n\n`;
+  t+=`🎯 *Prioridad de cobro (vencido): top ${Math.min(8,cobrar.length)}*\n`;
+  cobrar.slice(0,8).forEach(c=>t+=`• ${c.nombre} — ${money(c.vencidoReal)} vencido (${c.mora}d)${c.tieneGris?` [📄 ${money(c.gris)} en gris]`:''}\n`);
+  t+=`\n📄 *Falta certificado/OP: ${gris.length} · ${money(grisM)} en gris*\n`;
+  gris.slice(0,8).forEach(c=>t+=`• ${c.nombre} — ${money(c.gris)} recibido${c.deudaReal>1?`, queda ${money(Math.max(0,c.deudaReal))} a cobrar`:` (cuenta al día)`}\n`);
+  if(gris.length>8) t+=`…y ${gris.length-8} más\n`;
+  t+=`\n🔴 *Incobrables (+120 días): ${incob.length} · ${money(incobM)}*\n`;
+  incob.slice(0,6).forEach(c=>t+=`• ${c.nombre} — ${money(Math.max(0,c.deudaReal))} (${c.mora}d)\n`);
+  if(incob.length>6) t+=`…y ${incob.length-6} más\n`;
+  if(porCruzar.length){
+    t+=`\n⚠️ *Por cruzar umbral esta semana: ${porCruzar.length}*\n`;
+    porCruzar.slice(0,6).forEach(c=>t+=`• ${c.nombre} — ${money(c.vencidoReal)} (${c.mora}d)\n`);
+  }
+  return t;
+}
+function verResumen(){
+  const txt=textoResumen();
+  const d=document.getElementById("drawer");
+  d.innerHTML=`
+    <div class="dhead"><span class="x" onclick="cerrar()">✕</span><h2>📋 Resumen del día</h2>
+      <div class="badges"><span class="badge" style="background:rgba(255,255,255,.16);color:#fff">para pegar en WhatsApp</span></div></div>
+    <div class="dbody">
+      <textarea class="msgbox" id="resumenTxt" style="min-height:360px;white-space:pre-wrap">${esc(txt)}</textarea>
+      <button class="wa-send" style="background:var(--teal)" onclick="copiarResumen(this)">Copiar resumen</button>
+      <p class="muted" style="margin-top:12px">Pegalo en el grupo del equipo de cobranzas. Para que llegue solo cada mañana, ver la notificación automática.</p>
+    </div>`;
+  d.classList.add("on"); document.getElementById("scrim").classList.add("on");
+}
+function copiarResumen(btn){
+  const ta=document.getElementById("resumenTxt");
+  navigator.clipboard.writeText(ta.value).then(()=>{btn.textContent="✓ Copiado";setTimeout(()=>btn.textContent="Copiar resumen",1800);})
+    .catch(()=>{ta.select();document.execCommand("copy");btn.textContent="✓ Copiado";});
+}
+
+function exportarCSV(){
+  const list=ordenar(visibles());
+  const head=["Cliente","DeudaReal","VencidaReal","CobradoSinImputar","EnBorrador","EnGris","SaldoAnterior","Facturas","DiasMora","VencimientoMasViejo","Situacion","Comercial","Ciudad","Telefono","Email"];
+  const sitLbl={vencido:"A cobrar (vencido)",porvencer:"Por vencer / al día",incobrable:"+120 incobrable?",cubierto:"Cubierto · falta papel",afavor:"Saldo a favor"};
+  const rows=list.map(c=>[c.nombre,Math.round(Math.max(0,c.deudaReal)),Math.round(c.vencidoReal),Math.round(c.cobradoSinImp),Math.round(c.borrador),Math.round(c.gris),Math.round(c.saldoIni),c.nfac,c.mora,c.venc||"",sitLbl[c.situacion]||c.situacion,c.comercial,c.ciudad,c.telv,c.email].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+  const csv="﻿"+[head.join(","),...rows].join("\r\n");
+  const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="cobranzas-eyg.csv";a.click();
+}
+EYG.guard(["finanzas","lider","admin","direccion"]).then(()=>cargar());
+</script>
+</body>
+</html>
