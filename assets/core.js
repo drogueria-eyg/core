@@ -26,7 +26,7 @@ window.EYG = (function(){
   async function perfil(){
     const s = await session(); if(!s) return null;
     const email = (s.user.email||"").toLowerCase();
-    const {data} = await supa().from("core_users").select("email,nombre,rol,comercial_ref,activo").eq("email",email).maybeSingle();
+    const {data} = await supa().from("core_users").select("email,nombre,rol,comercial_ref,activo,debe_cambiar_pwd").eq("email",email).maybeSingle();
     return data;
   }
   async function login(email,pwd){ return await supa().auth.signInWithPassword({email:(email||"").trim().toLowerCase(),password:pwd}); }
@@ -41,6 +41,7 @@ window.EYG = (function(){
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso","Tu cuenta todavía no tiene un perfil activo en el Core. Avisá al administrador.",false); return; }
     const ok = p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return; }
+    if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return; }
     document.body.innerHTML = "";
     cb(p);
   }
@@ -53,6 +54,7 @@ window.EYG = (function(){
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso","Tu cuenta todavía no tiene un perfil activo en el Core. Avisá al administrador.",false); return new Promise(()=>{}); }
     const ok = p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return new Promise(()=>{}); }
+    if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return new Promise(()=>{}); }
     return p;
   }
 
@@ -85,6 +87,38 @@ window.EYG = (function(){
     em.focus();
   }
 
+  /* Marca la fila del usuario como "ya cambió la contraseña" (función SECURITY DEFINER en la DB) */
+  async function markPwdChanged(){ try{ await supa().rpc("mark_password_changed"); }catch(e){} }
+
+  /* Cambio de contraseña. {force:true} = obligatorio en el primer ingreso (sin cancelar). Sin force = autoservicio. */
+  function showChangePwd(opts){
+    const force = !!(opts&&opts.force);
+    document.body.innerHTML = `<div class="login-scrim"><div class="login-card">
+      <div class="brand"><div class="mono">E<span class="y">y</span>G</div><div class="d">DROGUERÍA</div></div>
+      <h2>${force?"Creá tu contraseña":"Cambiar contraseña"}</h2>
+      <div class="sub">${force?"Por seguridad, definí una contraseña propia para continuar.":"Elegí una contraseña nueva para tu cuenta."}</div>
+      <label>Nueva contraseña</label><input id="np1" type="password" autocomplete="new-password" placeholder="Mínimo 8 caracteres">
+      <label>Repetir contraseña</label><input id="np2" type="password" autocomplete="new-password" placeholder="Repetí la contraseña">
+      <button class="btn" id="npb">Guardar contraseña</button>
+      <div class="msg" id="npm"></div>
+      ${force?'<div class="hint">Panel interno de Droguería EyG · uso exclusivo del personal</div>':'<div class="hint"><a href="#" id="npcancel" style="color:var(--gris)">Cancelar</a></div>'}
+    </div></div>`;
+    const a=document.getElementById("np1"), b=document.getElementById("np2"), bt=document.getElementById("npb"), ms=document.getElementById("npm");
+    const cancel=document.getElementById("npcancel"); if(cancel) cancel.onclick=e=>{ e.preventDefault(); location.reload(); };
+    async function go(){
+      ms.className="msg"; ms.textContent="";
+      if((a.value||"").length<8){ ms.className="msg err"; ms.textContent="La contraseña debe tener al menos 8 caracteres."; return; }
+      if(a.value!==b.value){ ms.className="msg err"; ms.textContent="Las contraseñas no coinciden."; return; }
+      bt.disabled=true; bt.textContent="Guardando…";
+      const {error} = await supa().auth.updateUser({password:a.value});
+      if(error){ bt.disabled=false; bt.textContent="Guardar contraseña"; ms.className="msg err"; ms.textContent=error.message; return; }
+      await markPwdChanged();
+      ms.className="msg ok"; ms.textContent="¡Contraseña actualizada!"; setTimeout(()=>location.reload(),600);
+    }
+    bt.onclick=go; b.addEventListener("keydown",e=>{ if(e.key==="Enter") go(); });
+    a.focus();
+  }
+
   /* ---- shell ---- */
   function topbar({title, back, perfil}={}){
     return `<div class="eyg-top"><span class="mono">E<span class="y">y</span>G</span><span class="tag">Core</span>`+
@@ -92,6 +126,7 @@ window.EYG = (function(){
       (title?`<span class="back">${esc(title)}</span>`:"")+
       `<div class="who">`+
       (perfil?`<div style="text-align:right"><b>${esc(perfil.nombre||perfil.email)}</b><span class="rol">${esc(perfil.rol)}</span></div>`:"")+
+      `<a href="#" onclick="EYG.showChangePwd();return false" style="font-size:12px;color:var(--gris);text-decoration:none;margin-right:6px">🔑 Contraseña</a>`+
       `<button class="out" onclick="EYG.logout()">Salir</button></div></div>`;
   }
 
@@ -112,7 +147,7 @@ window.EYG = (function(){
       path:p=>{ if(p.rol==="admin"||p.rol==="direccion") return "comercial/comerciales.html"; if(p.rol==="lider") return "comercial/lider.html"; return `comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`; }},
     {key:"crm",       dept:"comercial", cat:"Comercial", ico:"👥", titulo:"CRM · Clientes", desc:"Segmentá farmacias e instituciones por frecuencia y contactá por WhatsApp.", roles:["comercial","lider"], ready:false, path:()=>"comercial/crm.html"},
     {key:"precios",   dept:"comercial", cat:"Precios", ico:"🏷️", titulo:"Rentabilidad y Precios", desc:"Costo, escalera de precios por cantidad y margen por tramo.", roles:["comercial","lider","finanzas"], ready:false, path:()=>"comercial/precios.html"},
-    {key:"cobranzas", dept:"finanzas", cat:"Finanzas", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","lider"], ready:true, path:()=>"finanzas/cobranzas.html"},
+    {key:"cobranzas", dept:"finanzas", cat:"Finanzas", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","lider","cobranzas"], ready:true, path:()=>"finanzas/cobranzas.html"},
     {key:"stock",     dept:"inventario", cat:"Inventario", ico:"📦", titulo:"Stock y Sobrestock", desc:"Plata inmovilizada, rotación por producto y vencimientos. Qué frenar y qué liquidar.", roles:["finanzas","inventario"], ready:false, path:()=>"inventario/stock.html"},
     {key:"contactos", dept:"datos", cat:"Datos", ico:"🗂️", titulo:"Contactos", desc:"Calidad de datos (teléfono, email, condición fiscal), duplicados y ventas por comercial.", roles:["comercial","lider","admin"], ready:false, path:()=>"datos/contactos.html"},
     {key:"radiografia",dept:"direccion", cat:"Dirección", ico:"📊", titulo:"Radiografía", desc:"Ventas, facturación, márgenes, cobranza y stock de toda la droguería en un tablero.", roles:["direccion"], ready:false, path:()=>"direccion/radiografia.html"},
@@ -133,7 +168,7 @@ window.EYG = (function(){
           return `<a class="item ${activeKey===m.key?"active":""} ${dis?"dis":""}" href="${href}" ${dis?'onclick="return false"':""}><span class="ic">${m.ico}</span><span class="tx">${esc(T(m.titulo,perfil))}</span>${dis?'<span class="soon">pronto</span>':""}</a>`;
         }).join("")).join("")}
       </nav>
-      <div class="sfoot"><div class="u"><b>${esc(perfil.nombre||perfil.email)}</b><span>${esc(perfil.rol)}</span></div><button class="out" onclick="EYG.logout()">Salir ↪</button></div>
+      <div class="sfoot"><div class="u"><b>${esc(perfil.nombre||perfil.email)}</b><span>${esc(perfil.rol)}</span></div><a href="#" onclick="EYG.showChangePwd();return false" style="display:block;font-size:12px;color:var(--gris);text-decoration:none;margin:2px 0 8px">🔑 Cambiar contraseña</a><button class="out" onclick="EYG.logout()">Salir ↪</button></div>
     </aside>`;
   }
   function layout(perfil, activeKey, main, pageTitle){
@@ -154,5 +189,5 @@ window.EYG = (function(){
       }).join("")}</div></div>`).join("")}`;
   }
 
-  return { supa, rpc, money, esc, hace, session, perfil, login, logout, requireAuth, guard, showLogin, gateMsg, topbar, DEPTS, MODULOS, puedeVer, sidebar, layout, homeMain };
+  return { supa, rpc, money, esc, hace, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, sidebar, layout, homeMain };
 })();
