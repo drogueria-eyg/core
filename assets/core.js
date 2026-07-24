@@ -4,6 +4,13 @@ window.EYG = (function(){
   const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl4b3RvcG9rbGdqb3djdWR2ZW9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0OTE3OTAsImV4cCI6MjEwMDA2Nzc5MH0.39DqIenUuRZovmgG89R_JgHco4Lg6OvmP9AgF1Hd7rQ";
   const RPC_URL = SUPABASE_URL + "/functions/v1/odoo-rpc";
 
+  /* ---- BASE del sitio (auto-detectada desde la ubicación de core.js) ----
+     Sirve para que TODOS los links internos sean absolutos desde la raíz del Core
+     (ej. https://drogueriaeyg.com.ar/core/) y no rompan al navegar entre subcarpetas. */
+  const SELF = (typeof document!=="undefined" && document.currentScript && document.currentScript.src) || "";
+  const BASE = (typeof window!=="undefined" && window.EYG_BASE) || SELF.replace(/assets\/core\.js(\?.*)?$/,"") || "/";
+  function abs(p){ if(!p||p==="#") return p||"#"; if(/^(https?:|mailto:|tel:|#)/.test(p)) return p; return BASE + String(p).replace(/^\.?\//,""); }
+
   let sb = null;
   function supa(){ if(!sb){ if(!window.supabase) throw new Error("supabase-js no cargó"); sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON); } return sb; }
 
@@ -30,7 +37,7 @@ window.EYG = (function(){
     return data;
   }
   async function login(email,pwd){ return await supa().auth.signInWithPassword({email:(email||"").trim().toLowerCase(),password:pwd}); }
-  async function logout(){ try{ await supa().auth.signOut(); }catch(e){} location.href="/"; }
+  async function logout(){ try{ await supa().auth.signOut(); }catch(e){} location.href=BASE; }
 
   /* Portón: requireAuth(rolesPermitidos, cb). [] = cualquier logueado. admin/direccion pueden todo. */
   async function requireAuth(roles, cb){
@@ -60,7 +67,7 @@ window.EYG = (function(){
 
   function gateMsg(ic,t,d,back){
     document.body.innerHTML = `<div class="gate"><div class="big">${ic}</div><h3>${esc(t)}</h3><p>${esc(d)}</p>`+
-      (back?'<div style="margin-top:16px"><a class="btn-teal" href="/">Ir al inicio</a></div>':"")+
+      (back?'<div style="margin-top:16px"><a class="btn-teal" href="'+BASE+'">Ir al inicio</a></div>':"")+
       `<div style="margin-top:14px"><a href="#" onclick="EYG.logout();return false" style="font-size:13px;color:var(--gris)">Cerrar sesión</a></div></div>`;
   }
 
@@ -160,11 +167,11 @@ window.EYG = (function(){
     const vis = MODULOS.filter(m=>puedeVer(m,perfil.rol));
     const grupos = DEPTS.map(d=>({d, mods:vis.filter(m=>m.dept===d.key)})).filter(x=>x.mods.length);
     return `<aside class="side" id="eygSide">
-      <div class="sbrand"><a href="/"><span class="mono">E<span class="y">y</span>G</span><span class="ctag">Core</span></a></div>
+      <div class="sbrand"><a href="${BASE}"><span class="mono">E<span class="y">y</span>G</span><span class="ctag">Core</span></a></div>
       <nav class="snav">
-        <a class="item ${activeKey==="home"?"active":""}" href="/"><span class="ic">🏠</span>Inicio</a>
+        <a class="item ${activeKey==="home"?"active":""}" href="${BASE}"><span class="ic">🏠</span>Inicio</a>
         ${grupos.map(({d,mods})=>`<div class="grp">${d.nom}</div>`+mods.map(m=>{
-          const dis=!m.ready; const href=dis?"#":m.path(perfil);
+          const dis=!m.ready; const href=dis?"#":abs(m.path(perfil));
           return `<a class="item ${activeKey===m.key?"active":""} ${dis?"dis":""}" href="${href}" ${dis?'onclick="return false"':""}><span class="ic">${m.ico}</span><span class="tx">${esc(T(m.titulo,perfil))}</span>${dis?'<span class="soon">pronto</span>':""}</a>`;
         }).join("")).join("")}
       </nav>
@@ -182,12 +189,12 @@ window.EYG = (function(){
     const nombre = (perfil.nombre||perfil.email||"").split(" ")[0];
     return `<div class="hero"><h1>Hola, ${esc(nombre)} 👋</h1><p>Tus herramientas de Droguería EyG, conectadas en vivo a Odoo. Elegí un módulo del menú o de las tarjetas.</p></div>
       ${grupos.map(({d,mods})=>`<div class="dept"><h2>${d.nom}</h2><div class="grid">${mods.map(m=>{
-        const dis=!m.ready; const href=dis?"#":m.path(perfil);
+        const dis=!m.ready; const href=dis?"#":abs(m.path(perfil));
         const badge=dis?'<span class="badge soon">Próximamente</span>':'<span class="badge ready">Abrir</span>';
         const inner=`${badge}<div class="ico">${m.ico}</div><div class="cat">${esc(T(m.cat,perfil))}</div><h3>${esc(T(m.titulo,perfil))}</h3><p>${esc(T(m.desc,perfil))}</p>`;
         return dis?`<div class="card soon">${inner}</div>`:`<a class="card" href="${href}">${inner}</a>`;
       }).join("")}</div></div>`).join("")}`;
   }
 
-  return { supa, rpc, money, esc, hace, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, sidebar, layout, homeMain };
+  return { supa, rpc, BASE, abs, money, esc, hace, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, sidebar, layout, homeMain };
 })();
