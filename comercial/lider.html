@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Panel del Líder · EyG Core</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/core.css">
+<style>
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:20px}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow)}
+  .kpi .l{font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--gris);font-weight:700}
+  .kpi .v{font-size:22px;font-weight:900;letter-spacing:-.5px;margin-top:3px}
+  .kpi .s{font-size:11.5px;color:var(--gris2);margin-top:2px}
+  .kpi.hoy{background:linear-gradient(145deg,var(--teal),var(--teal-deep));color:#fff} .kpi.hoy .l,.kpi.hoy .s{color:#d9f1ee}
+  /* chart */
+  .chartbox{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:18px 20px 12px;box-shadow:var(--shadow);margin-bottom:22px}
+  .chartbox .ch-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+  .chartbox h2{font-size:16px;font-weight:800}
+  .chartbox .live{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--teal-med)}
+  .chartbox .live .dot{width:8px;height:8px;border-radius:50%;background:#22e0c6;box-shadow:0 0 8px #22e0c6;animation:liveblink 1.4s ease-in-out infinite}
+  @keyframes liveblink{0%,100%{opacity:1;box-shadow:0 0 10px #22e0c6}50%{opacity:.4;box-shadow:0 0 2px #22e0c6}}
+  .chartbox .ch-tot{font-size:22px;font-weight:900;color:var(--teal-deep)}
+  svg .neon{animation:neondot 1.3s ease-in-out infinite}
+  @keyframes neondot{0%,100%{r:5;opacity:1}50%{r:8;opacity:.75}}
+  /* tabla comerciales */
+  .tbl{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
+  .tbl .row{display:grid;grid-template-columns:1.3fr repeat(4,1fr) 1.4fr;gap:10px;align-items:center;padding:13px 18px;border-top:1px solid var(--line)}
+  .tbl .row.head{border-top:0;background:#F1F7F6;font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--gris);font-weight:800}
+  .tbl .row:hover:not(.head){background:#FAFDFC}
+  .tbl .nm{font-weight:800;font-size:14.5px;display:flex;align-items:center;gap:9px}
+  .tbl .dotc{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+  .tbl .num{text-align:right;font-weight:700;font-size:14px} .tbl .num.hoy{color:var(--teal-deep);font-weight:900}
+  .tbl .num .sub{display:block;font-size:10.5px;color:var(--gris2);font-weight:600}
+  .tbl .spark{display:flex;align-items:flex-end;gap:2px;height:34px}
+  .tbl .spark i{flex:1;background:var(--aqua);border-radius:2px 2px 0 0;min-height:2px;transition:height .5s}
+  .tbl .spark i.now{background:var(--coral)}
+  .tbl a.row{color:inherit;text-decoration:none}
+  .muted{color:var(--gris2);font-size:12px}
+  @media(max-width:720px){ .tbl .row{grid-template-columns:1.2fr 1fr 1fr;} .tbl .col-sem,.tbl .col-ano,.tbl .spark{display:none} }
+</style>
+</head>
+<body>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../assets/core.js"></script>
+<script>
+const M=EYG.money, esc=EYG.esc;
+const COLORS=["#048782","#EC8B5E","#0AA89F","#E5A93B","#5FC8BF","#B0413E","#6E8B86","#04635F"];
+let COM=[], UIDS=[], DATA=[], TODAY=[], chartTimer=null;
+
+EYG.requireAuth(["lider","admin","direccion"], perfil=>{
+  document.body.innerHTML = EYG.layout(perfil, "panel",
+    '<div id="ld"><div class="loading"><div class="spinner"></div>Armando el tablero del equipo…</div></div>',
+    "Panel del Líder");
+  init();
+});
+
+function argToday(){ return new Intl.DateTimeFormat("en-CA",{timeZone:"America/Argentina/Buenos_Aires"}).format(new Date()); }
+function argParts(s){ const d=new Date(s.replace(" ","T")+"Z");
+  const p=new Intl.DateTimeFormat("en-CA",{timeZone:"America/Argentina/Buenos_Aires",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(d);
+  const g={}; p.forEach(x=>g[x.type]=x.value); return {date:`${g.year}-${g.month}-${g.day}`, hour:+g.hour, frac:(+g.hour)+(+g.minute)/60}; }
+function nowFrac(){ const p=new Intl.DateTimeFormat("en-CA",{timeZone:"America/Argentina/Buenos_Aires",hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(new Date()); const g={}; p.forEach(x=>g[x.type]=x.value); return (+g.hour)+(+g.minute)/60; }
+
+async function periodo(desde){
+  const g=await EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],["amount_untaxed:sum"],["user_id"]],{lazy:false});
+  const m={}; for(const r of g){ if(r.user_id) m[r.user_id[0]]=r.amount_untaxed||0; } return m;
+}
+async function init(){
+  try{
+    const grp=await EYG.rpc("res.partner","read_group",[[["user_id","!=",false],["customer_rank",">",0]],["id"],["user_id"]],{lazy:false});
+    COM=grp.map(g=>({uid:g.user_id[0],name:g.user_id[1],n:g.__count})).filter(s=>s.n>=25 && !/marcela/i.test(s.name)).sort((a,b)=>b.n-a.n).map((c,i)=>({...c,color:COLORS[i%COLORS.length]}));
+    UIDS=COM.map(c=>c.uid);
+    const y=argToday().slice(0,4), m=argToday().slice(0,7);
+    const d=new Date(); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow); const inicioSem=lun.toISOString().slice(0,10);
+    const [aA,aM,aS]=await Promise.all([periodo(y+"-01-01"), periodo(m+"-01"), periodo(inicioSem)]);
+    DATA=COM.map(c=>({...c, ano:aA[c.uid]||0, mes:aM[c.uid]||0, sem:aS[c.uid]||0, hoy:0, horas:new Array(24).fill(0)}));
+    await refreshHoy();
+    render();
+    chartTimer=setInterval(tick, 60000);
+  }catch(e){ const el=document.getElementById("ld"); if(el) el.innerHTML='<div class="errbox">No pude cargar el tablero: '+esc(e.message)+'</div>'; }
+}
+async function refreshHoy(){
+  const desde=new Date(Date.now()-30*3600*1000).toISOString().slice(0,10)+" 00:00:00";
+  const ord=await EYG.rpc("sale.order","search_read",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],["user_id","date_order","amount_untaxed"]],{limit:0});
+  const t=argToday();
+  TODAY=ord.map(o=>({uid:o.user_id&&o.user_id[0], amt:o.amount_untaxed||0, ...argParts(o.date_order)})).filter(o=>o.date===t);
+  const byU={}; DATA.forEach(d=>{d.hoy=0; d.horas=new Array(24).fill(0); byU[d.uid]=d;});
+  for(const o of TODAY){ const d=byU[o.uid]; if(d){ d.hoy+=o.amt; d.horas[o.hour]+=o.amt; } }
+}
+function tick(){ refreshHoy().then(()=>{ renderKpis(); renderChart(); renderTabla(); }).catch(()=>{}); }
+
+function render(){
+  document.getElementById("ld").innerHTML = `<div id="kpis"></div><div id="chart"></div><div id="tabla"></div>`;
+  renderKpis(); renderChart(); renderTabla();
+}
+function tot(k){ return DATA.reduce((s,d)=>s+d[k],0); }
+function renderKpis(){
+  const box=document.getElementById("kpis"); if(!box)return;
+  box.innerHTML=`<div class="kpis">
+    <div class="kpi hoy"><div class="l">Hoy · equipo</div><div class="v">${M(tot("hoy"))}</div><div class="s">${TODAY.length} pedidos</div></div>
+    <div class="kpi"><div class="l">Esta semana</div><div class="v">${M(tot("sem"))}</div></div>
+    <div class="kpi"><div class="l">Este mes</div><div class="v">${M(tot("mes"))}</div></div>
+    <div class="kpi"><div class="l">Este año</div><div class="v">${M(tot("ano"))}</div></div>
+    <div class="kpi"><div class="l">Comerciales activos hoy</div><div class="v">${DATA.filter(d=>d.hoy>0).length}<span style="font-size:14px;color:var(--gris2)"> / ${DATA.length}</span></div></div>
+  </div>`;
+}
+function renderChart(){
+  const box=document.getElementById("chart"); if(!box)return;
+  const orders=TODAY.slice().sort((a,b)=>a.frac-b.frac);
+  const x0=7, x1=21; const W=1000, H=210, PADB=22;
+  let cum=0; const pts=[[x0,0]];
+  for(const o of orders){ cum+=o.amt; pts.push([Math.max(x0,Math.min(x1,o.frac)), cum]); }
+  const nf=Math.max(x0,Math.min(x1,nowFrac())); pts.push([nf,cum]);
+  const maxY=Math.max(cum,1);
+  const X=f=>((f-x0)/(x1-x0))*W;
+  const Y=v=>H-PADB-(v/maxY)*(H-PADB-8);
+  const line=pts.map((p,i)=>(i?"L":"M")+X(p[0]).toFixed(1)+" "+Y(p[1]).toFixed(1)).join(" ");
+  const area=line+` L ${X(nf).toFixed(1)} ${H-PADB} L ${X(x0).toFixed(1)} ${H-PADB} Z`;
+  const lastX=X(nf), lastY=Y(cum);
+  const ticks=[]; for(let h=x0;h<=x1;h+=2){ ticks.push(`<text x="${X(h).toFixed(0)}" y="${H-6}" fill="#9AAcA8" font-size="11" text-anchor="middle">${h}h</text><line x1="${X(h)}" y1="0" x2="${X(h)}" y2="${H-PADB}" stroke="#EEF4F3"/>`); }
+  box.innerHTML=`<div class="chartbox">
+    <div class="ch-head"><h2>Evolución de hoy</h2><span class="live"><span class="dot"></span>En vivo · minuto a minuto</span></div>
+    <div class="ch-tot">${M(cum)} <span style="font-size:12px;color:var(--gris2);font-weight:600">acumulado del día</span></div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:210px;display:block;margin-top:6px">
+      <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0AA89F" stop-opacity=".28"/><stop offset="1" stop-color="#0AA89F" stop-opacity="0"/></linearGradient></defs>
+      ${ticks.join("")}
+      <path d="${area}" fill="url(#g)"/>
+      <path d="${line}" fill="none" stroke="#048782" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="9" fill="#22e0c6" opacity=".25"/>
+      <circle class="neon" cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="5" fill="#22e0c6" style="filter:drop-shadow(0 0 6px #22e0c6)"/>
+    </svg>
+  </div>`;
+}
+function renderTabla(){
+  const box=document.getElementById("tabla"); if(!box)return;
+  const rows=DATA.slice().sort((a,b)=>b.hoy-a.hoy).map(d=>{
+    const hmax=Math.max(...d.horas,1); const curH=new Date().getHours();
+    const spark=d.horas.map((v,h)=>`<i class="${h===curH?'now':''}" style="height:${Math.round(v/hmax*100)}%" title="${h}h: ${M(v)}"></i>`).join("");
+    return `<a class="row" href="panel.html?c=${encodeURIComponent(d.name)}">
+      <div class="nm"><span class="dotc" style="background:${d.color}"></span>${esc(d.name)}</div>
+      <div class="num col-ano">${M(d.ano)}</div>
+      <div class="num col-mes">${M(d.mes)}</div>
+      <div class="num col-sem">${M(d.sem)}</div>
+      <div class="num hoy">${M(d.hoy)}</div>
+      <div class="spark" title="Hoy hora por hora">${spark}</div>
+    </a>`;
+  }).join("");
+  box.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;margin:0 4px 12px"><h2 style="font-size:16px;font-weight:800">Rendimiento por comercial</h2><span class="muted">clic en un comercial para entrar a su panel · hora por hora = hoy</span></div>
+  <div class="tbl">
+    <div class="row head"><div>Comercial</div><div class="num col-ano">Año</div><div class="num col-mes">Mes</div><div class="num col-sem">Semana</div><div class="num">Hoy</div><div>Hoy · hora x hora</div></div>
+    ${rows}
+  </div>`;
+}
+</script>
+</body>
+</html>
