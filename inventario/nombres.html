@@ -65,6 +65,17 @@
     .row>.sku{grid-column:1/3}
     .row>.apcell{grid-column:1/3}
   }
+  .kpi.clk{cursor:pointer;transition:all .12s} .kpi.clk:hover{border-color:var(--teal-med);transform:translateY(-1px)}
+  .kpi.on{background:var(--teal);border-color:var(--teal)} .kpi.on .n,.kpi.on .l{color:#fff}
+  .btn-clear{background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:13px;font-weight:600;color:var(--gris);cursor:pointer;font-family:inherit}
+  .btn-clear:hover{border-color:var(--teal-med)}
+  .cnt{font-size:12px;color:var(--gris2);font-weight:600;margin-left:auto}
+  .stk{font-size:10.5px;color:var(--teal-deep);font-weight:700;margin-top:3px} .stk.zero{color:#c2410c}
+  .addb{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  .addb input{width:50px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;font-size:12px;font-family:inherit}
+  .addb select{padding:4px 3px;border:1px solid var(--line);border-radius:6px;font-size:11px;font-family:inherit;max-width:76px}
+  .addb button{background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .addb button:hover{background:var(--teal-deep)} .addb button:disabled{opacity:.6}
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:10px;font-size:14px;font-weight:600;box-shadow:0 8px 26px rgba(0,0,0,.25);z-index:9999;opacity:0;transition:opacity .2s}
   .toast.show{opacity:1}
 </style>
@@ -103,6 +114,7 @@ const TYPOS = [
   [/\bVANIER\b/gi,"VANNIER"], [/COMRPIMIDO/gi,"COMPRIMIDO"], [/COMPRMIDO/gi,"COMPRIMIDO"],
 ];
 function uDisp(u){ return u==="ui"?"UI":u; }
+function normTipo(t){ if(!t) return ""; t=t.toLowerCase().replace(/\.$/,""); if(/tira/.test(t))return"tiras"; if(/^unidad|^u$/.test(t))return"unidades"; if(/^(comp|caps|amp)/.test(t))return t; return t; }
 
 /* ---------- normaliza el NOMBRE y devuelve {sugerido, motivos, desglose} ---------- */
 function analizar(raw){
@@ -131,6 +143,13 @@ function analizar(raw){
   let ventaCerrada=false;
   if(/se vende por caja cerrada/i.test(core)){ ventaCerrada=true; core=core.replace(/\s*se vende por caja cerrada\s*/ig," "); }
 
+  // bulto/caja escrito FUERA del paréntesis -> lo detecto y lo saco del core (se recompone en el paréntesis)
+  let bultoCore=null;
+  { const mbc=core.match(/\b(caja|blister(?:a)?|bulto|pack)\s*x\s*(\d+)\s*(tiras?|comp|caps|amp|unidades?|u)?\b/i);
+    if(mbc){ bultoCore={num:parseInt(mbc[2],10), tipo:normTipo(mbc[3])}; core=core.replace(mbc[0]," "); add("bulto fuera del paréntesis"); }
+    else { const mt=core.match(/\bx\s*(\d+)\s*tiras?\b/i); if(mt){ bultoCore={num:parseInt(mt[1],10), tipo:"tiras"}; core=core.replace(mt[0]," "); add("bulto fuera del paréntesis"); } }
+  }
+
   if(/\b(comprimidos?|c[aá]psulas?|suspensi[oó]n|jarabe|ampollas?|soluci[oó]n|supositorios?)\b/i.test(core)) add("abreviatura");
 
   const preCase=core;
@@ -145,6 +164,7 @@ function analizar(raw){
 
   const desg=desglosar(out,parens,add);
   desg.cajaCerrada = desg.cajaCerrada || ventaCerrada;
+  if(!desg.bultoNum && bultoCore){ desg.bultoNum=bultoCore.num; desg.bultoTipo=bultoCore.tipo; }
 
   const pp=[];
   if(desg.precioX) pp.push("Precio x "+desg.precioX);
@@ -187,7 +207,7 @@ function desglosar(core, parens, add){
 }
 
 /* =========================== estado + carga =========================== */
-let TODOS = [], SUBCATS = [], actual = null, filtro = "";
+let TODOS = [], SUBCATS = [], actual = null, filtro = "", filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false};
 
 async function cargar(){
   const cont = document.getElementById("cont");
@@ -195,13 +215,14 @@ async function cargar(){
   let recs;
   try{
     recs = await EYG.rpc("product.template","search_read",
-      [[["categ_id","child_of",ROOT_CATEG]],["id","default_code","name","categ_id"]],
+      [[["categ_id","child_of",ROOT_CATEG]],["id","default_code","name","categ_id","qty_available"]],
       Object.assign({limit:2000, order:"name"}, LANG));
   }catch(e){ cont.innerHTML='<div class="empty">No se pudieron leer los productos: '+EYG.esc(e.message)+'</div>'; return; }
 
   TODOS = recs.map(r=>{
     const a = analizar(r.name||"");
     return { id:r.id, sku:r.default_code||"", nombre:r.name||"",
+             stock:(r.qty_available!=null?r.qty_available:0),
              sub:(r.categ_id&&r.categ_id[1]||"").replace(/^ALL \/ HOSPITALARIOS( \/ )?/,"")||"(sin subcategoría)",
              ...a, aplicado:false };
   });
@@ -216,22 +237,29 @@ async function cargar(){
 function subFiltrados(){
   let arr = TODOS.filter(p=>p.sub===actual);
   if(filtro){ const q=filtro.toLowerCase(); arr = arr.filter(p=>(p.nombre+" "+p.sku).toLowerCase().includes(q)); }
-  if(document.getElementById("soloCambios")?.checked) arr = arr.filter(p=>p.cambia && !p.aplicado);
+  if(filtros.conCambios) arr = arr.filter(p=>p.cambia && !p.aplicado);
+  if(filtros.sinBulto)   arr = arr.filter(p=>!p.desg.bultoNum);
+  if(filtros.sinConc)    arr = arr.filter(p=>!p.desg.conc);
+  if(filtros.sinStock)   arr = arr.filter(p=>(p.stock||0)<=0);
   return arr;
 }
 
 function render(){
   const cont = document.getElementById("cont");
-  const total = TODOS.length;
-  const conCambio = TODOS.filter(p=>p.cambia && !p.aplicado).length;
-  const sinConc = TODOS.filter(p=>!p.desg.conc).length;
-  const sinBulto = TODOS.filter(p=>!p.desg.bultoNum).length;
+  const enTab = TODOS.filter(p=>p.sub===actual);
+  const total = enTab.length;
+  const conCambio = enTab.filter(p=>p.cambia && !p.aplicado).length;
+  const sinConc = enTab.filter(p=>!p.desg.conc).length;
+  const sinBulto = enTab.filter(p=>!p.desg.bultoNum).length;
+  const sinStock = enTab.filter(p=>(p.stock||0)<=0).length;
 
+  const kpi = (key,n,label,cls)=>`<div class="kpi ${cls||""} ${key?"clk":""} ${key&&filtros[key]?"on":""}" ${key?`onclick="toggleFiltro('${key}')"`:""}><div class="n">${n}</div><div class="l">${label}</div></div>`;
   const kpis = `<div class="kpis">
-    <div class="kpi"><div class="n">${total}</div><div class="l">Productos</div></div>
-    <div class="kpi warn"><div class="n">${conCambio}</div><div class="l">Con corrección sugerida</div></div>
-    <div class="kpi warn"><div class="n">${sinConc}</div><div class="l">Sin concentración</div></div>
-    <div class="kpi warn"><div class="n">${sinBulto}</div><div class="l">Sin bulto/caja</div></div>
+    ${kpi(null,total,"En esta pestaña","")}
+    ${kpi("conCambios",conCambio,"Con corrección","warn")}
+    ${kpi("sinConc",sinConc,"Sin concentración","warn")}
+    ${kpi("sinBulto",sinBulto,"Sin bulto/caja","warn")}
+    ${kpi("sinStock",sinStock,"Sin stock","")}
   </div>`;
 
   const tabs = `<div class="tabs">${SUBCATS.map(sc=>{
@@ -242,10 +270,12 @@ function render(){
 
   const arr = subFiltrados();
   const pendientes = arr.filter(p=>p.cambia && !p.aplicado).length;
+  const algunFiltro = filtros.conCambios||filtros.sinBulto||filtros.sinConc||filtros.sinStock;
   const toolbar = `<div class="toolbar">
     <input type="search" id="buscar" placeholder="Buscar por nombre o SKU…" value="${EYG.esc(filtro)}" oninput="onBuscar(this.value)">
-    <label class="chk"><input type="checkbox" id="soloCambios" onchange="render()"> Solo con cambios</label>
-    <button class="btn-bulk" ${pendientes?"":"disabled"} onclick="aplicarTodos()">Aplicar los ${pendientes} sugeridos de esta pestaña</button>
+    ${algunFiltro?`<button class="btn-clear" onclick="limpiarFiltros()">✕ Quitar filtros</button>`:""}
+    <span class="cnt">${arr.length} en vista</span>
+    <button class="btn-bulk" ${pendientes?"":"disabled"} onclick="aplicarTodos()">Aplicar los ${pendientes} sugeridos</button>
   </div>`;
 
   const head = `<div class="thead"><div>SKU</div><div>Nombre actual (Odoo)</div><div>Nombre sugerido</div><div>Aplicar</div><div>Concentración</div><div>Presentación</div><div>Bulto / caja</div></div>`;
@@ -253,7 +283,7 @@ function render(){
   const rows = arr.length ? arr.map(p=>fila(p)).join("") : '<div class="empty">Sin resultados en esta pestaña.</div>';
 
   cont.innerHTML = `<div class="intro">
-      <b>Estandarizador de nombres — Depósito.</b> Detecta inconsistencias (mayúsculas, acentos, espacios, unidades pegadas, abreviaturas, códigos sueltos) y propone el nombre correcto. Revisá y aplicá con un clic. El desglose (concentración · presentación · bulto) sale del propio nombre.
+      <b>Estandarizador de nombres — Depósito.</b> Detecta inconsistencias (mayúsculas, acentos, espacios, unidades pegadas, abreviaturas, códigos sueltos) y propone el nombre correcto. <b>Tocá una tarjeta</b> de arriba para filtrar (sin bulto, sin concentración, sin stock). Donde falte el <b>bulto/caja</b>, cargalo desde la fila: se agrega al nombre y queda detectado. Revisá y aplicá con un clic.
       <details><summary>Ver la regla de nombres que se aplica</summary>
         <div class="std">
           Formato objetivo: <code>MONODROGA CONCENTRACIÓN forma x contenido - LABORATORIO (Caja x N tipo)</code><br>
@@ -280,10 +310,12 @@ function fila(p){
       : (p.desg.forma?`<span class="cell-mono">${EYG.esc(p.desg.forma)}</span>`:'<span class="miss">—</span>');
   const bulto = p.desg.bultoNum
       ? `<span class="cell-mono">${p.desg.bultoNum}${p.desg.bultoTipo?(" "+EYG.esc(p.desg.bultoTipo)):""}</span>${p.desg.cajaCerrada?'<div class="cell-sub">caja cerrada</div>':""}`
-      : '<span class="miss">— falta</span>';
+      : (p.aplicado ? '<span class="miss">— falta</span>'
+         : `<div class="addb"><input type="number" min="1" id="bn-${p.id}" placeholder="N°"><select id="bt-${p.id}">${["tiras","unidades","comp","caps","amp","ml","gr"].map(t=>`<option>${t}</option>`).join("")}</select><button onclick="agregarBulto(${p.id})">+ bulto</button></div>`);
   const nota = p.desg.ubicacion ? `<div class="nota">Ubicación: ${EYG.esc(p.desg.ubicacion)}</div>` : "";
+  const stk = `<div class="stk ${(p.stock||0)<=0?'zero':''}">${(p.stock||0)<=0?'sin stock':(p.stock+' u')}</div>`;
   return `<div class="row" id="row-${p.id}">
-    <div class="sku">${EYG.esc(p.sku)}</div>
+    <div class="sku">${EYG.esc(p.sku)}${stk}</div>
     <div class="nactual">${EYG.esc(p.aplicado?p.sugerido:p.nombre)}</div>
     <div class="nsug ${same?"same":""}">${EYG.esc(p.sugerido)}${chips?`<div class="motivos">${chips}</div>`:""}</div>
     <div class="apcell">${ap}</div>
@@ -297,6 +329,19 @@ function fila(p){
 window.setSub = sc => { actual=sc; filtro=""; render(); };
 let tBuscar=null;
 window.onBuscar = v => { filtro=v; clearTimeout(tBuscar); tBuscar=setTimeout(render,180); };
+window.toggleFiltro = k => { filtros[k]=!filtros[k]; render(); };
+window.limpiarFiltros = () => { filtros={conCambios:false,sinBulto:false,sinConc:false,sinStock:false}; render(); };
+window.agregarBulto = async id => {
+  const p = TODOS.find(x=>x.id===id); if(!p) return;
+  const nEl=document.getElementById("bn-"+id), tEl=document.getElementById("bt-"+id);
+  const n=parseInt(nEl&&nEl.value,10); if(!n||n<1){ toast("Poné cuántas unidades trae la caja"); if(nEl) nEl.focus(); return; }
+  const tipo=(tEl&&tEl.value)||"";
+  const base = p.aplicado ? p.sugerido : p.nombre;
+  const a = analizar(base + " (Caja x "+n+" "+tipo+")");
+  const btn=document.querySelector("#row-"+id+" .addb button"); if(btn){ btn.disabled=true; btn.textContent="…"; }
+  try{ await escribir(id, a.sugerido); Object.assign(p,a); p.nombre=a.sugerido; p.aplicado=true; p.cambia=false; toast("Bulto agregado ✓"); render(); }
+  catch(e){ if(btn){ btn.disabled=false; btn.textContent="+ bulto"; } toast("Error: "+e.message); }
+};
 
 async function escribir(id, nombre){
   return EYG.rpc("product.template","write",[[id],{name:nombre}], LANG);
