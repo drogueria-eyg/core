@@ -120,7 +120,7 @@ function badge(m){
   return [m.toFixed(0)+'%', t];
 }
 function bucket(m){ return m==null?null: m>=40?'ok2': m>=33?'ok': m>=27?'warn':'bad'; }
-let ST={items:[], q:"", cat:"todos", salud:"todos"};
+let ST={items:[], q:"", cat:"todos", salud:"todos", sinStock:false};
 
 async function cargar(){
   try{
@@ -141,7 +141,7 @@ async function cargar(){
     // 2) info de producto (variante) por template
     const prods=await rpc("product.product","search_read",
       [[["product_tmpl_id","in",tmplIds]]],
-      {fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price"], context:{...ES,active_test:false}, limit:3000});
+      {fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","qty_available"], context:{...ES,active_test:false}, limit:3000});
     const pid2=prods.map(p=>p.id);
     // 3) última compra por producto (costo de reposición)
     const pol=await rpc("purchase.order.line","search_read",
@@ -162,6 +162,7 @@ async function cargar(){
         id:p.id, sku:p.default_code, name:p.name,
         cat:(p.categ_id?p.categ_id[1]:'').replace("ALL / ",""),
         costo, fecha: uc?uc.f:null, fuente,
+        stock: (p.qty_available!=null? p.qty_available : 0),
         tramos: tr, peor: ms.length? Math.min(...ms): null
       };
     }).sort((a,b)=>(a.cat+a.name).localeCompare(b.cat+b.name));
@@ -182,6 +183,8 @@ function render(){
   const alertas = ST.items.filter(x=>x.tramos.some(t=>t.margen!=null && t.margen<26)).length;
   const viejos = ST.items.filter(x=>diasDe(x.fecha)>180).length;
   if(ST.salud!=="todos") arr=arr.filter(x=>bucket(x.peor)===ST.salud);
+  if(ST.sinStock) arr=arr.filter(x=>(x.stock||0)<=0);
+  const nSinStock=ST.items.filter(x=>(x.stock||0)<=0).length;
   const cntS={ok2:0,ok:0,warn:0,bad:0}; ST.items.forEach(x=>{ const b=bucket(x.peor); if(b) cntS[b]++; });
   const pill=(k,lab,color)=>`<div class="chip ${ST.salud===k?'on':''}" onclick="ST.salud='${ST.salud===k?'todos':k}';render()"><span class="dot" style="background:${color}"></span> ${lab} <b>${cntS[k]}</b></div>`;
   const saludbar=`<div class="controls" style="margin:-4px 0 14px"><span style="font-size:12px;color:var(--gris);font-weight:700;align-self:center">Salud (peor tramo):</span><div class="chip ${ST.salud==='todos'?'on':''}" onclick="ST.salud='todos';render()">Todas</div>${pill('ok2','≥40%','var(--m-ok2)')}${pill('ok','33–40%','var(--m-ok)')}${pill('warn','27–33%','var(--m-warn)')}${pill('bad','&lt;27% piso','var(--m-bad)')}</div>`;
@@ -196,7 +199,7 @@ function render(){
       return `<td class="tier"><div class="pr">${money(t.precio)}</div><div class="pmeta">${t.rango}</div><span class="bmg ${cls}">${txt}</span></td>`;
     }).join("");
     return `<tr class="${alerta?'rowalert':''}">
-      <td><div class="pn">${esc(x.name)}</div><div class="pmeta">${esc(x.sku||"")}</div><span class="cat">${esc(x.cat||"—")}</span></td>
+      <td><div class="pn">${esc(x.name)}</div><div class="pmeta">${esc(x.sku||"")} · ${(x.stock||0)<=0?'<b style="color:var(--m-bad)">sin stock</b>':('stock '+x.stock+' u')}</div><span class="cat">${esc(x.cat||"—")}</span></td>
       <td class="costo"><div class="cv">${money(x.costo)}</div><div class="cd ${dias>180?'old':''}">${x.fuente==='compra'? (dias===0?'compra hoy':dias!=null?'compra '+dias+'d':'') : 'costo Odoo'}${dias>180?' ⚠':''}</div></td>
       ${celdas}
     </tr>`;
@@ -214,6 +217,7 @@ function render(){
     ${saludbar}
     <div class="controls">
       <div class="search"><input placeholder="Buscar por nombre o SKU…" value="${esc(ST.q)}" oninput="ST.q=this.value;render()"></div>
+      <div class="chip ${ST.sinStock?'on':''}" onclick="ST.sinStock=!ST.sinStock;render()">📦 Sin stock <b>${nSinStock}</b></div>
       <div class="chip ${ST.cat==='todos'?'on':''}" onclick="ST.cat='todos';render()">Todas</div>
       ${cats.map(c=>`<div class="chip ${ST.cat===c?'on':''}" onclick="ST.cat='${esc(c)}';render()">${esc(c)}</div>`).join("")}
     </div>
