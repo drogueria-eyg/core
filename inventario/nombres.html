@@ -37,7 +37,7 @@
   .btn-bulk:hover{background:var(--teal-deep)} .btn-bulk:disabled{opacity:.5;cursor:default}
 
   .tablecard{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
-  .thead,.row{display:grid;grid-template-columns:78px 1.4fr 1.5fr 96px 92px 118px 120px;gap:12px;align-items:start;padding:11px 16px}
+  .thead,.row{display:grid;grid-template-columns:72px 1.2fr 1.3fr 88px 82px 100px 112px 132px;gap:11px;align-items:start;padding:11px 16px}
   .thead{position:sticky;top:51px;background:#f3f8f7;border-bottom:1px solid var(--line);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;color:var(--gris2);border-radius:14px 14px 0 0;z-index:5}
   .row{border-top:1px solid var(--line);font-size:13px;min-width:0}
   .row:last-child{border-radius:0 0 14px 14px}
@@ -64,6 +64,7 @@
     .row{grid-template-columns:1fr 1fr;gap:8px}
     .row>.sku{grid-column:1/3}
     .row>.apcell{grid-column:1/3}
+    .row>.embcell{grid-column:1/3}
   }
   .kpi.clk{cursor:pointer;transition:all .12s} .kpi.clk:hover{border-color:var(--teal-med);transform:translateY(-1px)}
   .kpi.on{background:var(--teal);border-color:var(--teal)} .kpi.on .n,.kpi.on .l{color:#fff}
@@ -217,7 +218,7 @@ function desglosar(core, parens, add){
 }
 
 /* =========================== estado + carga =========================== */
-let TODOS = [], SUBCATS = [], actual = null, filtro = "", HISTORIAL = [], filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false};
+let TODOS = [], SUBCATS = [], actual = null, filtro = "", HISTORIAL = [], filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false, sinEmbalaje:false};
 
 async function cargar(preservar){
   const prevSub = preservar ? actual : null;
@@ -226,14 +227,28 @@ async function cargar(preservar){
   let recs;
   try{
     recs = await EYG.rpc("product.template","search_read",
-      [[["categ_id","child_of",ROOT_CATEG]],["id","default_code","name","categ_id","qty_available"]],
+      [[["categ_id","child_of",ROOT_CATEG]],["id","default_code","name","categ_id","qty_available","product_variant_id"]],
       Object.assign({limit:2000, order:"name"}, LANG));
   }catch(e){ cont.innerHTML='<div class="empty">No se pudieron leer los productos: '+EYG.esc(e.message)+'</div>'; return; }
 
+  // Embalaje (product.packaging) por variante — la caja real = mínimo de compra
+  const varIds = recs.map(r=>r.product_variant_id&&r.product_variant_id[0]).filter(Boolean);
+  const packByVar = {};
+  if(varIds.length){
+    try{
+      const packs = await EYG.rpc("product.packaging","search_read",
+        [[["product_id","in",varIds]],["id","name","qty","product_id"]], LANG);
+      packs.forEach(k=>{ const v=k.product_id&&k.product_id[0]; if(v && !packByVar[v]) packByVar[v]=k; });
+    }catch(e){ /* si falla, se muestran sin embalaje */ }
+  }
+
   TODOS = recs.map(r=>{
     const a = analizar(r.name||"");
+    const varId = (r.product_variant_id&&r.product_variant_id[0])||null;
+    const pk = varId ? packByVar[varId] : null;
     return { id:r.id, sku:r.default_code||"", nombre:r.name||"",
              stock:(r.qty_available!=null?r.qty_available:0),
+             varId, embalaje: pk?pk.qty:null, embId: pk?pk.id:null, embNombre: pk?pk.name:"",
              sub:(r.categ_id&&r.categ_id[1]||"").replace(/^ALL \/ HOSPITALARIOS( \/ )?/,"")||"(sin subcategoría)",
              ...a, aplicado:false };
   });
@@ -253,6 +268,7 @@ function subFiltrados(){
   if(filtros.sinConc)    arr = arr.filter(p=>!p.desg.conc);
   if(filtros.sinStock)   arr = arr.filter(p=>(p.stock||0)<=0);
   if(filtros.conStock)   arr = arr.filter(p=>(p.stock||0)>0);
+  if(filtros.sinEmbalaje)arr = arr.filter(p=>p.embalaje==null);
   return arr;
 }
 
@@ -263,6 +279,7 @@ function render(){
   const conCambio = enTab.filter(p=>p.cambia && !p.aplicado).length;
   const sinConc = enTab.filter(p=>!p.desg.conc).length;
   const sinBulto = enTab.filter(p=>!p.desg.bultoNum).length;
+  const sinEmb = enTab.filter(p=>p.embalaje==null).length;
   const sinStock = enTab.filter(p=>(p.stock||0)<=0).length;
 
   const kpi = (key,n,label,cls)=>`<div class="kpi ${cls||""} ${key?"clk":""} ${key&&filtros[key]?"on":""}" ${key?`onclick="toggleFiltro('${key}')"`:""}><div class="n">${n}</div><div class="l">${label}</div></div>`;
@@ -271,6 +288,7 @@ function render(){
     ${kpi("conCambios",conCambio,"Con corrección","warn")}
     ${kpi("sinConc",sinConc,"Sin concentración","warn")}
     ${kpi("sinBulto",sinBulto,"Sin bulto/caja","warn")}
+    ${kpi("sinEmbalaje",sinEmb,"Sin embalaje","warn")}
     ${kpi("sinStock",sinStock,"Sin stock","")}
   </div>`;
 
@@ -293,12 +311,12 @@ function render(){
     <button class="btn-bulk" ${pendientes?"":"disabled"} onclick="aplicarTodos()">Aplicar los ${pendientes} sugeridos</button>
   </div>`;
 
-  const head = `<div class="thead"><div>SKU</div><div>Nombre actual (Odoo)</div><div>Nombre sugerido</div><div>Aplicar</div><div>Concentración</div><div>Presentación</div><div>Bulto / caja</div></div>`;
+  const head = `<div class="thead"><div>SKU</div><div>Nombre actual (Odoo)</div><div>Nombre sugerido</div><div>Aplicar</div><div>Concentración</div><div>Presentación</div><div>Bulto / caja</div><div>Embalaje (caja real)</div></div>`;
 
   const rows = arr.length ? arr.map(p=>fila(p)).join("") : '<div class="empty">Sin resultados en esta pestaña.</div>';
 
   cont.innerHTML = `<div class="intro">
-      <b>Estandarizador de nombres — Depósito.</b> Detecta inconsistencias (mayúsculas, acentos, espacios, unidades pegadas, abreviaturas, códigos sueltos) y propone el nombre correcto. <b>Tocá una tarjeta</b> de arriba para filtrar (sin bulto, sin concentración, sin stock). Donde falte el <b>bulto/caja</b>, cargalo desde la fila: se agrega al nombre y queda detectado. Revisá y aplicá con un clic.
+      <b>Estandarizador de nombres — Depósito.</b> Detecta inconsistencias (mayúsculas, acentos, espacios, unidades pegadas, abreviaturas, códigos sueltos) y propone el nombre correcto. <b>Tocá una tarjeta</b> de arriba para filtrar (sin bulto, sin concentración, sin stock). Donde falte el <b>bulto/caja</b>, cargalo desde la fila: se agrega al nombre y queda detectado. Revisá y aplicá con un clic. En la última columna, <b>Embalaje (caja real)</b>: cargá cuántas tiras trae la caja cerrada — es el <b>mínimo de compra</b> y se guarda en Odoo (product.packaging). Usá la tarjeta <b>Sin embalaje</b> para encontrar los que faltan.
       <details><summary>Ver la regla de nombres que se aplica</summary>
         <div class="std">
           Formato objetivo: <code>MONODROGA CONCENTRACIÓN forma x contenido - LABORATORIO (Caja x N tipo)</code><br>
@@ -329,6 +347,7 @@ function fila(p){
          : `<div class="addb"><input type="number" min="1" id="bn-${p.id}" placeholder="N°"><select id="bt-${p.id}">${["tiras","unidades","comp","caps","amp","ml","gr"].map(t=>`<option>${t}</option>`).join("")}</select><button onclick="agregarBulto(${p.id})">+ bulto</button></div>`);
   const nota = p.desg.ubicacion ? `<div class="nota">Ubicación: ${EYG.esc(p.desg.ubicacion)}</div>` : "";
   const stk = `<div class="stk ${(p.stock||0)<=0?'zero':''}">${(p.stock||0)<=0?'sin stock':(p.stock+' u')}</div>`;
+  const emb = embCell(p);
   return `<div class="row" id="row-${p.id}">
     <div class="sku">${EYG.esc(p.sku)}${stk}</div>
     <div class="nactual">${EYG.esc(p.aplicado?p.sugerido:p.nombre)}</div>
@@ -337,7 +356,21 @@ function fila(p){
     <div>${conc}</div>
     <div>${pres}</div>
     <div>${bulto}${nota}</div>
+    <div class="embcell">${emb}</div>
   </div>`;
+}
+
+/* ---------- celda de EMBALAJE (caja real = mínimo de compra) ---------- */
+function embCell(p){
+  if(!p.varId) return '<span class="miss">—</span>';
+  const btnTxt = p.embId ? "Guardar" : "+ caja";
+  const mism = (p.embalaje!=null && p.desg.bultoNum && p.embalaje!==p.desg.bultoNum)
+      ? `<div class="nota">nombre dice x${p.desg.bultoNum}</div>` : "";
+  const actual = p.embalaje!=null ? `<div class="cell-sub">caja real: <b>${p.embalaje}</b> tiras</div>` : "";
+  return `<div class="addb">
+      <input type="number" min="1" id="em-${p.id}" value="${p.embalaje!=null?p.embalaje:""}" placeholder="tiras">
+      <button onclick="guardarEmbalaje(${p.id})">${btnTxt}</button>
+    </div>${actual}${mism}`;
 }
 
 /* =========================== acciones =========================== */
@@ -349,7 +382,7 @@ window.toggleFiltro = k => {
   if(filtros[k]){ if(k==="conStock") filtros.sinStock=false; if(k==="sinStock") filtros.conStock=false; }
   render();
 };
-window.limpiarFiltros = () => { filtros={conCambios:false,sinBulto:false,sinConc:false,sinStock:false,conStock:false}; render(); };
+window.limpiarFiltros = () => { filtros={conCambios:false,sinBulto:false,sinConc:false,sinStock:false,conStock:false,sinEmbalaje:false}; render(); };
 window.agregarBulto = async id => {
   const p = TODOS.find(x=>x.id===id); if(!p) return;
   const nEl=document.getElementById("bn-"+id), tEl=document.getElementById("bt-"+id);
@@ -366,6 +399,21 @@ window.agregarBulto = async id => {
 async function escribir(id, nombre){
   return EYG.rpc("product.template","write",[[id],{name:nombre}], LANG);
 }
+/* crea o actualiza el product.packaging (Embalaje) del producto — se sincroniza con Odoo */
+window.guardarEmbalaje = async id => {
+  const p = TODOS.find(x=>x.id===id); if(!p) return;
+  if(!p.varId){ toast("Este producto no tiene variante para el embalaje"); return; }
+  const el = document.getElementById("em-"+id);
+  const n = parseInt(el&&el.value,10);
+  if(!n||n<1){ toast("Poné cuántas tiras trae la caja real"); if(el) el.focus(); return; }
+  const btn = document.querySelector("#row-"+id+" .embcell button"); if(btn){ btn.disabled=true; btn.textContent="…"; }
+  const nombre = "CAJA "+n+" TIRAS";
+  try{
+    if(p.embId){ await EYG.rpc("product.packaging","write",[[p.embId],{qty:n, name:nombre}], LANG); }
+    else{ const nid = await EYG.rpc("product.packaging","create",[{product_id:p.varId, qty:n, name:nombre, sales:true, purchase:true}], LANG); p.embId=nid; }
+    p.embalaje=n; p.embNombre=nombre; toast("Embalaje guardado ✓"); render();
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent=p.embId?"Guardar":"+ caja"; } toast("Error: "+EYG.esc(e.message)); }
+};
 window.sincronizar = async () => {
   await cargar(true);   // relee de Odoo conservando pestaña/filtros/búsqueda; se pierde el historial de deshacer
   HISTORIAL = [];
