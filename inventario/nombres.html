@@ -70,6 +70,10 @@
   .btn-toggle{background:#fff;border:1px solid var(--line);border-radius:10px;padding:9px 14px;font-size:13px;font-weight:700;color:var(--gris);cursor:pointer;font-family:inherit;white-space:nowrap}
   .btn-toggle:hover{border-color:var(--teal-med)}
   .btn-toggle.on{background:var(--teal);border-color:var(--teal);color:#fff}
+  .btn-sync{background:var(--teal);color:#fff;border:none;border-radius:10px;padding:9px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .btn-sync:hover{background:var(--teal-deep)}
+  .btn-undo{background:#fff;border:1px solid #f59e0b;border-radius:10px;padding:8px 12px;font-size:13px;font-weight:700;color:#b45309;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .btn-undo:hover{background:#fff7ed}
   .btn-clear{background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:13px;font-weight:600;color:var(--gris);cursor:pointer;font-family:inherit}
   .btn-clear:hover{border-color:var(--teal-med)}
   .cnt{font-size:12px;color:var(--gris2);font-weight:600;margin-left:auto}
@@ -143,6 +147,9 @@ function analizar(raw){
   const antesX=core; core=core.replace(/\bx\s*(\d)/gi,"x $1"); if(antesX!==core) add('separación "x"');
   TYPOS.forEach(([re,to])=>{ if(re.test(core)){ core=core.replace(re,to); add("error de tipeo"); } });
 
+  // "HOSPITALARIO/HOSP" en el nombre es redundante (ya está la categoría) -> se saca
+  if(/\b(hospitalari[oa]s?|hosp)\b/i.test(core)){ core=core.replace(/\bhospitalari[oa]s?\b/ig," ").replace(/\bhosp\.?\b/ig," "); add("quita 'Hospitalario'"); }
+
   let ventaCerrada=false;
   if(/se vende por caja cerrada/i.test(core)){ ventaCerrada=true; core=core.replace(/\s*se vende por caja cerrada\s*/ig," "); }
 
@@ -162,7 +169,7 @@ function analizar(raw){
   FORMAS_SIMPLE.forEach(f=>{ out=out.replace(new RegExp(f.re.source,"gi"), f.c); });
   out=out.replace(/\bFRASCO\s+amp\b/gi,"frasco ampolla");
   out=out.replace(/\b(JGA|JER|JERINGA)\.?\s*PRELL\.?/gi,"jga prell");
-  out=out.replace(/\s+-\s*|\s*-\s+/g," - ").replace(/\s+/g," ").trim();
+  out=out.replace(/\s+-\s*|\s*-\s+/g," - ").replace(/(?: - ){2,}/g," - ").replace(/^\s*-\s+|\s+-\s*$/g,"").replace(/\s+/g," ").trim();
   if(preCase!==out && preCase.toLowerCase()===out.toLowerCase()) add("mayúsculas/minúsculas");
 
   const desg=desglosar(out,parens,add);
@@ -210,9 +217,10 @@ function desglosar(core, parens, add){
 }
 
 /* =========================== estado + carga =========================== */
-let TODOS = [], SUBCATS = [], actual = null, filtro = "", filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false};
+let TODOS = [], SUBCATS = [], actual = null, filtro = "", HISTORIAL = [], filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false};
 
-async function cargar(){
+async function cargar(preservar){
+  const prevSub = preservar ? actual : null;
   const cont = document.getElementById("cont");
   cont.innerHTML = '<div class="empty"><div class="spinner"></div>Leyendo productos de Odoo…</div>';
   let recs;
@@ -233,7 +241,7 @@ async function cargar(){
   const bycat = {};
   TODOS.forEach(p=>{ bycat[p.sub]=(bycat[p.sub]||0)+1; });
   SUBCATS = Object.keys(bycat).sort((x,y)=>bycat[y]-bycat[x]);
-  actual = SUBCATS[0];
+  actual = (prevSub && SUBCATS.includes(prevSub)) ? prevSub : SUBCATS[0];
   render();
 }
 
@@ -276,9 +284,11 @@ function render(){
   const pendientes = arr.filter(p=>p.cambia && !p.aplicado).length;
   const algunFiltro = filtros.conCambios||filtros.sinBulto||filtros.sinConc||filtros.sinStock||filtros.conStock;
   const toolbar = `<div class="toolbar">
+    <button class="btn-sync" onclick="sincronizar()">🔄 Actualizar</button>
     <button class="btn-toggle ${filtros.conStock?"on":""}" onclick="toggleFiltro('conStock')">📦 Solo con stock</button>
     <input type="search" id="buscar" placeholder="Buscar por nombre o SKU…" value="${EYG.esc(filtro)}" oninput="onBuscar(this.value)">
     ${algunFiltro?`<button class="btn-clear" onclick="limpiarFiltros()">✕ Quitar filtros</button>`:""}
+    ${HISTORIAL.length?`<button class="btn-undo" onclick="deshacer()">↩ Deshacer (${HISTORIAL.length})</button>`:""}
     <span class="cnt">${arr.length} en vista</span>
     <button class="btn-bulk" ${pendientes?"":"disabled"} onclick="aplicarTodos()">Aplicar los ${pendientes} sugeridos</button>
   </div>`;
@@ -345,33 +355,54 @@ window.agregarBulto = async id => {
   const nEl=document.getElementById("bn-"+id), tEl=document.getElementById("bt-"+id);
   const n=parseInt(nEl&&nEl.value,10); if(!n||n<1){ toast("Poné cuántas unidades trae la caja"); if(nEl) nEl.focus(); return; }
   const tipo=(tEl&&tEl.value)||"";
-  const base = p.aplicado ? p.sugerido : p.nombre;
-  const a = analizar(base + " (Caja x "+n+" "+tipo+")");
+  const antes = p.nombre;
+  const a = analizar(antes + " (Caja x "+n+" "+tipo+")");
   const btn=document.querySelector("#row-"+id+" .addb button"); if(btn){ btn.disabled=true; btn.textContent="…"; }
-  try{ await escribir(id, a.sugerido); Object.assign(p,a); p.nombre=a.sugerido; p.aplicado=true; p.cambia=false; toast("Bulto agregado ✓"); render(); }
+  try{ await escribir(id, a.sugerido); Object.assign(p,a); p.nombre=a.sugerido; p.aplicado=true; p.cambia=false;
+       HISTORIAL.push({cambios:[{id,antes,despues:a.sugerido}], desc:(p.sku||("#"+id))+" · bulto"}); toast("Bulto agregado ✓"); render(); }
   catch(e){ if(btn){ btn.disabled=false; btn.textContent="+ bulto"; } toast("Error: "+e.message); }
 };
 
 async function escribir(id, nombre){
   return EYG.rpc("product.template","write",[[id],{name:nombre}], LANG);
 }
+window.sincronizar = async () => {
+  await cargar(true);   // relee de Odoo conservando pestaña/filtros/búsqueda; se pierde el historial de deshacer
+  HISTORIAL = [];
+  toast("Datos actualizados desde Odoo ✓");
+};
 window.aplicar = async id => {
   const p = TODOS.find(x=>x.id===id); if(!p) return;
+  const antes = p.nombre;
   const btn = document.querySelector(`#row-${id} .btn-ap`); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
-  try{ await escribir(id, p.sugerido); p.nombre=p.sugerido; p.aplicado=true; p.cambia=false; toast("Nombre actualizado ✓"); render(); }
+  try{ await escribir(id, p.sugerido); const despues=p.sugerido; p.nombre=despues; p.aplicado=true; p.cambia=false;
+       HISTORIAL.push({cambios:[{id,antes,despues}], desc:(p.sku||("#"+id))}); toast("Nombre actualizado ✓"); render(); }
   catch(e){ if(btn){ btn.disabled=false; btn.textContent="Aplicar"; } toast("Error: "+e.message); }
 };
 window.aplicarTodos = async () => {
   const arr = subFiltrados().filter(p=>p.cambia && !p.aplicado);
   if(!arr.length) return;
   if(!confirm(`Vas a aplicar ${arr.length} nombres corregidos en esta pestaña. ¿Continuar?`)) return;
-  let ok=0, err=0;
+  let ok=0, err=0; const cambios=[];
   for(const p of arr){
-    try{ await escribir(p.id, p.sugerido); p.nombre=p.sugerido; p.aplicado=true; p.cambia=false; ok++; }
+    const antes = p.nombre;
+    try{ await escribir(p.id, p.sugerido); cambios.push({id:p.id, antes, despues:p.sugerido}); p.nombre=p.sugerido; p.aplicado=true; p.cambia=false; ok++; }
     catch(e){ err++; }
     if((ok+err)%5===0) toast(`Aplicando… ${ok+err}/${arr.length}`);
   }
+  if(cambios.length) HISTORIAL.push({cambios, desc:`${cambios.length} nombres · ${actual}`});
   toast(`Listo: ${ok} aplicados${err?`, ${err} con error`:""}`); render();
+};
+window.deshacer = async () => {
+  const entry = HISTORIAL[HISTORIAL.length-1]; if(!entry) return;
+  if(!confirm(`¿Deshacer el último cambio (${entry.desc})? Se restauran ${entry.cambios.length} nombre(s) en Odoo.`)) return;
+  let ok=0, err=0;
+  for(const c of entry.cambios){
+    try{ await escribir(c.id, c.antes); const p=TODOS.find(x=>x.id===c.id); if(p){ Object.assign(p, analizar(c.antes)); p.nombre=c.antes; p.aplicado=false; } ok++; }
+    catch(e){ err++; }
+  }
+  HISTORIAL.pop();
+  toast(`Deshecho: ${ok} restaurado(s)${err?`, ${err} con error`:""}`); render();
 };
 
 let tToast=null;
