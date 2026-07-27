@@ -120,39 +120,38 @@ function badge(m){
   return [m.toFixed(0)+'%', t];
 }
 function bucket(m){ return m==null?null: m>=40?'ok2': m>=33?'ok': m>=27?'warn':'bad'; }
-let ST={items:[], q:"", cat:"todos", salud:"todos", sinStock:false, conStock:false};
+let ST={items:[], q:"", cat:"todos", salud:"todos", sinStock:false, conStock:false, sinEsc:false};
 
 async function cargar(){
   try{
-    // 1) NUESTROS productos = los que tienen la tabla eyg-ladder (los que actualizamos)
-    const nuestros=await rpc("product.template","search_read",
-      [[["description_ecommerce","ilike","eyg-ladder"],["categ_id","child_of",24]]], {fields:["id"], context:ES, limit:5000});
-    const setT=new Set(nuestros.map(t=>t.id));
-    if(!setT.size){ document.getElementById("app").innerHTML='<div class="empty">Todavía no actualizamos ningún producto con la escalera.</div>'; return; }
-    // sus reglas de precio (escalera) en LISTA 1 EyG
+    // 1) TODOS los hospitalarios (con o sin escalera)
+    const prods=await rpc("product.product","search_read",
+      [[["categ_id","child_of",24]]],
+      {fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","qty_available"], context:{...ES,active_test:false}, limit:5000});
+    if(!prods.length){ document.getElementById("app").innerHTML='<div class="empty">No hay productos en Hospitalarios.</div>'; return; }
+    const allTmpl=[...new Set(prods.map(p=>p.product_tmpl_id&&p.product_tmpl_id[0]).filter(Boolean))];
+    // 2) escaleras (tramos) en LISTA 1 EyG de esos templates
     const raw=await rpc("product.pricelist.item","search_read",
-      [[["pricelist_id","=",LISTA],["applied_on","=","1_product"],["product_tmpl_id","in",[...setT]]]],
-      {fields:["product_tmpl_id","min_quantity","fixed_price","compute_price"]});
+      [[["pricelist_id","=",LISTA],["applied_on","=","1_product"],["min_quantity",">",0],["product_tmpl_id","in",allTmpl]]],
+      {fields:["product_tmpl_id","min_quantity","fixed_price","compute_price"], limit:20000});
     const porT={};
     for(const it of raw){ if(!it.product_tmpl_id) continue; const t=it.product_tmpl_id[0];
       (porT[t]=porT[t]||[]).push({q:it.min_quantity||0, p:it.fixed_price, tipo:it.compute_price}); }
-    const tmplIds=[...setT].filter(t=>porT[t]&&porT[t].length);
-    if(!tmplIds.length){ document.getElementById("app").innerHTML='<div class="empty">Los productos actualizados aún no tienen escalera de precio.</div>'; return; }
-    // 2) info de producto (variante) por template
-    const prods=await rpc("product.product","search_read",
-      [[["product_tmpl_id","in",tmplIds]]],
-      {fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","qty_available"], context:{...ES,active_test:false}, limit:3000});
-    const pid2=prods.map(p=>p.id);
-    // 3) última compra por producto (costo de reposición)
-    const pol=await rpc("purchase.order.line","search_read",
-      [[["product_id","in",pid2],["state","in",["purchase","done"]]]],
-      {fields:["product_id","date_order","price_subtotal","product_qty"], limit:100000});
+    // 3) última compra SOLO de los que tienen escalera (para calcular el margen)
+    const pidLadder=prods.filter(p=>porT[p.product_tmpl_id&&p.product_tmpl_id[0]]).map(p=>p.id);
     const ult={};
-    for(const l of pol){ if(!l.product_id) continue; const id=l.product_id[0];
-      if(!ult[id] || (l.date_order||"")>ult[id].f){ ult[id]={f:l.date_order, c:l.product_qty>0? l.price_subtotal/l.product_qty : 0}; } }
-    // 4) armar filas
+    if(pidLadder.length){
+      const pol=await rpc("purchase.order.line","search_read",
+        [[["product_id","in",pidLadder],["state","in",["purchase","done"]]]],
+        {fields:["product_id","date_order","price_subtotal","product_qty"], limit:100000});
+      for(const l of pol){ if(!l.product_id) continue; const id=l.product_id[0];
+        if(!ult[id] || (l.date_order||"")>ult[id].f){ ult[id]={f:l.date_order, c:l.product_qty>0? l.price_subtotal/l.product_qty : 0}; } }
+    }
+    // 4) armar filas (todas; las sin escalera van marcadas)
     ST.items = prods.map(p=>{
-      const tramos=(porT[p.product_tmpl_id[0]]||[]).slice().sort((a,b)=>a.q-b.q);
+      const tmpl=p.product_tmpl_id&&p.product_tmpl_id[0];
+      const tramos=(porT[tmpl]||[]).slice().sort((a,b)=>a.q-b.q);
+      const sinEscalera=!tramos.length;
       const uc=ult[p.id];
       const costo = uc && uc.c>0 ? uc.c : (p.standard_price||0);
       const fuente = uc && uc.c>0 ? 'compra' : 'odoo';
@@ -161,7 +160,7 @@ async function cargar(){
       return {
         id:p.id, sku:p.default_code, name:p.name,
         cat:(p.categ_id?p.categ_id[1]:'').replace("ALL / ",""),
-        costo, fecha: uc?uc.f:null, fuente,
+        costo, fecha: uc?uc.f:null, fuente, sinEscalera,
         stock: (p.qty_available!=null? p.qty_available : 0),
         tramos: tr, peor: ms.length? Math.min(...ms): null
       };
@@ -185,8 +184,11 @@ function render(){
   if(ST.salud!=="todos") arr=arr.filter(x=>bucket(x.peor)===ST.salud);
   if(ST.sinStock) arr=arr.filter(x=>(x.stock||0)<=0);
   if(ST.conStock) arr=arr.filter(x=>(x.stock||0)>0);
+  if(ST.sinEsc) arr=arr.filter(x=>x.sinEscalera);
   const nSinStock=ST.items.filter(x=>(x.stock||0)<=0).length;
   const nConStock=ST.items.filter(x=>(x.stock||0)>0).length;
+  const nSinEsc=ST.items.filter(x=>x.sinEscalera).length;
+  const nConEsc=ST.items.length-nSinEsc;
   const cntS={ok2:0,ok:0,warn:0,bad:0}; ST.items.forEach(x=>{ const b=bucket(x.peor); if(b) cntS[b]++; });
   const pill=(k,lab,color)=>`<div class="chip ${ST.salud===k?'on':''}" onclick="ST.salud='${ST.salud===k?'todos':k}';render()"><span class="dot" style="background:${color}"></span> ${lab} <b>${cntS[k]}</b></div>`;
   const saludbar=`<div class="controls" style="margin:-4px 0 14px"><span style="font-size:12px;color:var(--gris);font-weight:700;align-self:center">Salud (peor tramo):</span><div class="chip ${ST.salud==='todos'?'on':''}" onclick="ST.salud='todos';render()">Todas</div>${pill('ok2','≥40%','var(--m-ok2)')}${pill('ok','33–40%','var(--m-ok)')}${pill('warn','27–33%','var(--m-warn)')}${pill('bad','&lt;27% piso','var(--m-bad)')}</div>`;
@@ -195,11 +197,13 @@ function render(){
   const filas = arr.map(x=>{
     const alerta = x.tramos.some(t=>t.margen!=null && t.margen<26);
     const dias=diasDe(x.fecha);
-    const celdas = Array.from({length:maxTramos}).map((_,i)=>{
-      const t=x.tramos[i]; if(!t) return '<td class="tier"></td>';
-      const [txt,cls]=badge(t.margen);
-      return `<td class="tier"><div class="pr">${money(t.precio)}</div><div class="pmeta">${t.rango}</div><span class="bmg ${cls}">${txt}</span></td>`;
-    }).join("");
+    const celdas = x.sinEscalera
+      ? `<td class="tier" colspan="${maxTramos}" style="text-align:left"><span class="bmg warn">sin escalera</span></td>`
+      : Array.from({length:maxTramos}).map((_,i)=>{
+          const t=x.tramos[i]; if(!t) return '<td class="tier"></td>';
+          const [txt,cls]=badge(t.margen);
+          return `<td class="tier"><div class="pr">${money(t.precio)}</div><div class="pmeta">${t.rango}</div><span class="bmg ${cls}">${txt}</span></td>`;
+        }).join("");
     return `<tr class="${alerta?'rowalert':''}">
       <td><div class="pn">${esc(x.name)}</div><div class="pmeta">${esc(x.sku||"")} · ${(x.stock||0)<=0?'<b style="color:var(--m-bad)">sin stock</b>':('stock '+x.stock+' u')}</div><span class="cat">${esc(x.cat||"—")}</span></td>
       <td class="costo"><div class="cv">${money(x.costo)}</div><div class="cd ${dias>180?'old':''}">${x.fuente==='compra'? (dias===0?'compra hoy':dias!=null?'compra '+dias+'d':'') : 'costo Odoo'}${dias>180?' ⚠':''}</div></td>
@@ -208,10 +212,11 @@ function render(){
   }).join("");
   app.innerHTML=`
     <div class="hero"><div><h1>Rentabilidad y precios</h1>
-      <div class="msg">Se llena solo a medida que actualizamos productos. Margen = (precio − costo de última compra) / precio.</div></div>
+      <div class="msg">Todos los Hospitalarios. Los que tienen escalera muestran su margen por tramo; los que no, quedan marcados <b>“sin escalera”</b>. Margen = (precio − costo de última compra) / precio.</div></div>
       <div class="syncwrap"><button id="btnSync" class="btnsync" onclick="sincronizar()">🔄 Sincronizar</button><div id="syncStatus" class="syncst">Busca productos nuevos en las categorías definidas</div></div></div>
     <div class="kpis">
-      <div class="kpi"><div class="l">Productos</div><div class="v">${nProd}</div></div>
+      <div class="kpi"><div class="l">Hospitalarios</div><div class="v">${nProd}</div></div>
+      <div class="kpi"><div class="l">Con escalera</div><div class="v">${nConEsc}</div></div>
       <div class="kpi"><div class="l">Margen lista prom.</div><div class="v">${promLista.toFixed(0)}%</div></div>
       <div class="kpi ${alertas?'alert':''}"><div class="l">Bajo el piso (26%)</div><div class="v">${alertas}</div></div>
       <div class="kpi"><div class="l">Costo +6 meses</div><div class="v">${viejos}</div></div>
@@ -221,6 +226,7 @@ function render(){
       <div class="search"><input placeholder="Buscar por nombre o SKU…" value="${esc(ST.q)}" oninput="ST.q=this.value;render()"></div>
       <div class="chip ${ST.conStock?'on':''}" onclick="ST.conStock=!ST.conStock;ST.sinStock=false;render()">📦 Con stock <b>${nConStock}</b></div>
       <div class="chip ${ST.sinStock?'on':''}" onclick="ST.sinStock=!ST.sinStock;ST.conStock=false;render()">📦 Sin stock <b>${nSinStock}</b></div>
+      <div class="chip ${ST.sinEsc?'on':''}" onclick="ST.sinEsc=!ST.sinEsc;render()">🏷️ Sin escalera <b>${nSinEsc}</b></div>
       <div class="chip ${ST.cat==='todos'?'on':''}" onclick="ST.cat='todos';render()">Todas</div>
       ${cats.map(c=>`<div class="chip ${ST.cat===c?'on':''}" onclick="ST.cat='${esc(c)}';render()">${esc(c)}</div>`).join("")}
     </div>
