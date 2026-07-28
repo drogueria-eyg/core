@@ -98,6 +98,14 @@
 <script>
 const RPC="https://yxotopoklgjowcudveoj.supabase.co/functions/v1/odoo-rpc";
 const LISTA=3; // LISTA 1 EyG (web)
+// ===== Regla "IVA al costo" =====
+// Categorías donde el IVA de la compra NO se descarga (no hay crédito fiscal) y se venden exentos:
+// al costo de COMPRA se le suma el IVA y se toma como neto. Para aplicarla a otra cosa,
+// agregá acá otra entrada con su patrón de categoría (se matchea contra el nombre de la categoría).
+const REGLAS_IVA_COSTO = [
+  { nombre:"Parenterales", match:/parenteral/i, iva:0.21 },
+];
+function reglaIvaCosto(cat){ return REGLAS_IVA_COSTO.find(r=>r.match.test(cat||"")) || null; }
 const money=n=>"$"+Math.round(n||0).toLocaleString("es-AR");
 const esc=s=>(s||"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
 async function rpc(model,method,args,kwargs={},intentos=3){
@@ -128,9 +136,9 @@ function bucket(m){ return m==null?null: m>=40?'ok2': m>=33?'ok': m>=27?'warn':'
 // PARENTERALES: al costo de COMPRA se le suma 21% (IVA no descontable); el manual NO se toca (ya se carga con el 21%).
 function costoEfectivo(it){
   const m=it.manualC||0, md=it.manualD||null, uf=it.ucF||null, uc=it.ucC||0;
-  const iva = it.esParenteral ? 1.21 : 1;
+  const iva = 1 + (it.ivaCosto||0);   // regla "IVA al costo" (0 si no aplica)
   if(m>0 && (!uf || (md && md>=uf))) return {costo:m, fuente:'manual', fecha:md};
-  if(uc>0) return {costo:uc*iva, fuente:'compra', fecha:uf, iva:it.esParenteral};
+  if(uc>0) return {costo:uc*iva, fuente:'compra', fecha:uf, iva:(it.ivaCosto>0)};
   return {costo:(it.std||0), fuente:'odoo', fecha:null};
 }
 function aplicarCosto(it){
@@ -140,8 +148,8 @@ function aplicarCosto(it){
   it.peor = ms.length? Math.min(...ms): null;
 }
 function fmtDT(s){ if(!s) return ""; try{ return new Date(String(s).replace(" ","T")+"Z").toLocaleString("es-AR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch(e){ return s; } }
-function fuenteLbl(x,dias){ if(x.fuente==='manual') return '✎ manual '+fmtDT(x.manualD); if(x.fuente==='compra'){ const b=dias===0?'compra hoy':dias!=null?'compra '+dias+'d':'compra'; return b+(x.ivaAplicado?' +21% IVA':''); } return 'costo Odoo'; }
-function costoTip(x){ const p=[]; if(x.manualC>0) p.push('Manual: '+money(x.manualC)+' ('+fmtDT(x.manualD)+')'); if(x.ucC>0) p.push('Última compra: '+money(x.ucC)+(x.esParenteral?(' +21% = '+money(x.ucC*1.21)):'')+' ('+fmtDT(x.ucF)+')'); if(x.esParenteral) p.push('Parenteral: al costo de compra se le suma 21% (IVA no descontable)'); p.push('En uso: '+(x.fuente==='manual'?'costo manual':x.fuente==='compra'?'última compra':'costo Odoo')+' — gana el más reciente'); return p.join(' · '); }
+function fuenteLbl(x,dias){ if(x.fuente==='manual') return '✎ manual '+fmtDT(x.manualD); if(x.fuente==='compra'){ const b=dias===0?'compra hoy':dias!=null?'compra '+dias+'d':'compra'; return b+(x.ivaAplicado?(' +'+Math.round(x.ivaCosto*100)+'% IVA'):''); } return 'costo Odoo'; }
+function costoTip(x){ const p=[]; if(x.manualC>0) p.push('Manual: '+money(x.manualC)+' ('+fmtDT(x.manualD)+')'); if(x.ucC>0) p.push('Última compra: '+money(x.ucC)+(x.ivaCosto>0?(' +'+Math.round(x.ivaCosto*100)+'% = '+money(x.ucC*(1+x.ivaCosto))):'')+' ('+fmtDT(x.ucF)+')'); if(x.ivaCosto>0) p.push('Regla "IVA al costo" ('+x.reglaIva+'): al costo de compra se le suma '+Math.round(x.ivaCosto*100)+'% (IVA no descontable)'); p.push('En uso: '+(x.fuente==='manual'?'costo manual':x.fuente==='compra'?'última compra':'costo Odoo')+' — gana el más reciente'); return p.join(' · '); }
 let ST={items:[], q:"", cat:"todos", salud:"todos", sinStock:false, conStock:false, sinEsc:false};
 
 async function cargar(){
@@ -178,12 +186,13 @@ async function cargar(){
         tramosRaw=tramosRaw.slice(1); tramosRaw[0]={...tramosRaw[0], q:1}; tramoBase=true;
       }
       const uc=ult[p.id]||{};
+      const regIva=reglaIvaCosto((p.categ_id&&p.categ_id[1])||"");
       const it={
         id:p.id, tmpl, sku:p.default_code, name:p.name,
         cat:(p.categ_id?p.categ_id[1]:'').replace("ALL / ",""),
         stock:(p.qty_available!=null?p.qty_available:0),
         sinEscalera:!tramosRaw.length, tramoBase, tramosRaw, std:(p.standard_price||0),
-        esParenteral:/parenteral/i.test((p.categ_id&&p.categ_id[1])||""),
+        ivaCosto:(regIva?regIva.iva:0), reglaIva:(regIva?regIva.nombre:""),
         manualC:(p.x_costo_manual||0), manualD:(p.x_costo_manual_date||null),
         ucF:(uc.f||null), ucC:(uc.c||0)
       };
