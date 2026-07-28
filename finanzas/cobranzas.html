@@ -243,6 +243,8 @@ let CLI=[], EVO=[], BOVEDA={}, filtro={tramo:"", comercial:"", rubro:"", q:"", o
 const BOV_TAG="[BOVEDA]"; // marcador en el chatter del contacto (fuente de verdad, con historial)
 let CONTACTOS={};          // partnerId → fecha/hora (UTC) del último contacto de cobranzas
 const CONTACTO_TAG="[COBRO-CONTACTO]";
+let NOTAS={};              // partnerId → {texto, fecha} última nota/acuerdo de cobranza
+const NOTA_TAG="[COBRO-NOTA]";
 // Formatea fecha/hora del contacto (mensaje en UTC → hora local AR del navegador)
 function fmtContacto(utc){ if(!utc) return null; const d=new Date(utc.replace(" ","T")+"Z"); const h0=new Date(); h0.setHours(0,0,0,0);
   const p=n=>String(n).padStart(2,"0"); const hora=p(d.getHours())+":"+p(d.getMinutes());
@@ -337,6 +339,13 @@ async function cargar(){
       cm.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
       for(const msg of cm){ if(!(msg.res_id in CONTACTOS)) CONTACTOS[msg.res_id]=msg.date; }
     }
+    // Notas / acuerdos: marcador [COBRO-NOTA] en el chatter → última por cliente
+    NOTAS={};
+    if(ids.length){
+      const nm=await rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["body","like","[COBRO-NOTA]"]]],{fields:["res_id","body","date"],limit:0});
+      nm.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+      for(const msg of nm){ if(!(msg.res_id in NOTAS)){ const body=(msg.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," "); const texto=(body.split("]").slice(1).join("]")||"").trim(); NOTAS[msg.res_id]={texto,fecha:msg.date}; } }
+    }
     // Catálogos para el formulario de edición (dropdowns), 1 sola vez
     if(!CAT.prov.length){ try{
       const [fiscal,idt,prov]=await Promise.all([
@@ -385,7 +394,8 @@ async function cargar(){
         rubro:rubroActual(c.category_id), part:c,
         plazo:plazoCorto(c.property_payment_term_id), plazoFull:c.property_payment_term_id?c.property_payment_term_id[1]:"",
         boveda:BOVEDA[p.id]||null,
-        contactado:CONTACTOS[p.id]||null
+        contactado:CONTACTOS[p.id]||null,
+        nota:NOTAS[p.id]||null
       };
     });
     render();
@@ -559,7 +569,7 @@ function renderLista(){
     const cont=fmtContacto(c.contactado);
     return `<div class="row ${cont&&cont.esHoy?'contactado':''}" onclick="abrir(${c.id})">
       <div><div class="cname">${esc(c.nombre)} ${c.tieneGris?`<span class="gflag">📄 ${money(c.gris)} en gris</span>`:''}${c.boveda?`<span class="bovtag ${c.boveda.tipo==='incobrable'?'inc':'acu'}">🔒 ${c.boveda.tipo==='incobrable'?'Incobrable':'Acuerdo'}</span>`:''}</div>
-        <div class="cmeta">${c.plazo?`<span class="plz">⏱ ${esc(c.plazo)}</span> `:''}${esc(c.ciudad||"—")}${cont?` · <span class="ctag">📞 contactado ${cont.texto}</span>`:''}</div></div>
+        <div class="cmeta">${c.plazo?`<span class="plz">⏱ ${esc(c.plazo)}</span> `:''}${esc(c.ciudad||"—")}${cont?` · <span class="ctag">📞 contactado ${cont.texto}</span>`:''}${c.nota?` · <span class="plz" style="background:#EDE7F6;color:#5B3FA6" title="${esc(c.nota.texto)}">📝 nota</span>`:''}</div></div>
       <div class="num">${money(aCobrar)}
         <div class="pbar" title="Pagó ${Math.round((1-c.pctDebe)*100)}% de lo facturado${(1-c.pctDebe)>0.01&&aCobrar>1?' · pago parcial':''}"><i style="width:${((1-c.pctDebe)*100).toFixed(1)}%"></i></div>
         <div class="muted">${(1-c.pctDebe)>0.01&&aCobrar>1?'pagó '+Math.round((1-c.pctDebe)*100)+'%':c.nfac+' fac.'}${c.saldoIni>1?' · +saldo ant.':''}</div></div>
@@ -605,6 +615,17 @@ async function marcarContacto(id){
     toast("📞 Marcado como contactado");
     render(); const dr=document.getElementById("drawer"); if(dr&&dr.classList.contains("on")) abrir(id);
   }catch(e){ toast("⚠ No se pudo marcar: "+(e.message||e)); }
+}
+async function guardarNota(id){
+  const c=CLI.find(x=>x.id===id); if(!c) return;
+  const texto=(document.getElementById("cobronota")?document.getElementById("cobronota").value:"").trim();
+  if(!texto){ toast("Escribí la nota primero"); return; }
+  const iso=new Date().toISOString().slice(0,19).replace("T"," ");
+  try{
+    await rpc("res.partner","message_post",[[id]],{body:`📝 ${NOTA_TAG} ${texto}`,message_type:"comment"});
+    c.nota={texto,fecha:iso}; NOTAS[id]={texto,fecha:iso};
+    toast("💾 Nota guardada"); render(); const dr=document.getElementById("drawer"); if(dr&&dr.classList.contains("on")) abrir(id);
+  }catch(e){ toast("⚠ No se pudo guardar: "+(e.message||e)); }
 }
 async function moverBoveda(id){
   const c=CLI.find(x=>x.id===id); if(!c) return;
@@ -659,19 +680,21 @@ function abrir(id){
       </div>
 
       <div class="dsec">
+        <h4>📝 Nota / acuerdo</h4>
+        ${c.nota?`<p class="muted" style="margin:-4px 0 6px">Última nota · ${(fmtContacto(c.nota.fecha)||{}).texto||''}</p>`:'<p class="muted" style="margin:-4px 0 6px">Anotá el acuerdo u observación de cobranza. Queda guardado en el cliente.</p>'}
+        <textarea class="msgbox" id="cobronota" style="min-height:84px" placeholder="Ej: acuerdo — paga en 3 cuotas desde 08/26. / Reclamado, promete pago el viernes.">${esc(c.nota?c.nota.texto:'')}</textarea>
+        <button class="editbtn" style="margin-top:8px" onclick="guardarNota(${c.id})">💾 Guardar nota</button>
+      </div>
+
+      <div class="dsec">
         <h4>🔒 Bóveda ${c.boveda?`· <span style="color:${c.boveda.tipo==='incobrable'?'var(--t6)':'var(--t1)'}">${c.boveda.tipo==='incobrable'?'Incobrable':'Con acuerdo'}</span>`:''}</h4>
         ${c.boveda?`
-          <p class="muted" style="margin:-4px 0 8px">Fuera de la gestión activa. Editá la nota/acuerdo o volvé a activarlo.</p>
-          <textarea class="msgbox" id="bovnota" style="min-height:74px" placeholder="Acuerdo / motivo…">${esc(c.boveda.nota||'')}</textarea>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button class="editbtn" style="flex:1;margin:0" onclick="moverBoveda(${c.id})">💾 Guardar nota</button>
-            <button class="editbtn" style="flex:1;margin:0;background:#FBE4E3;border-color:#F3B5B2;color:#8A2E2B" onclick="sacarBoveda(${c.id})">🔓 Sacar de bóveda</button>
-          </div>
+          <p class="muted" style="margin:-4px 0 8px">Fuera de la gestión activa. El acuerdo/nota se edita arriba 👆.</p>
+          <button class="editbtn" style="width:100%;margin:0;background:#FBE4E3;border-color:#F3B5B2;color:#8A2E2B" onclick="sacarBoveda(${c.id})">🔓 Sacar de bóveda · volver a la gestión</button>
         `:`
-          <p class="muted" style="margin:-4px 0 8px">Sacar de la gestión activa (incobrable o con acuerdo de pago) y anotar el acuerdo.</p>
+          <p class="muted" style="margin:-4px 0 8px">Sacar de la gestión activa: incobrable, o con acuerdo ya cerrado (el acuerdo lo anotás arriba 👆).</p>
           <select id="bovtipo" style="width:100%;margin-bottom:8px"><option value="acuerdo">Con acuerdo de pago</option><option value="incobrable">Incobrable</option></select>
-          <textarea class="msgbox" id="bovnota" style="min-height:74px" placeholder="Anotá el acuerdo al que llegaste (ej: paga en 3 cuotas desde 08/26) o el motivo del incobrable."></textarea>
-          <button class="editbtn" style="margin-top:8px" onclick="moverBoveda(${c.id})">🔒 Mover a bóveda</button>
+          <button class="editbtn" style="margin-top:0" onclick="moverBoveda(${c.id})">🔒 Mover a bóveda</button>
         `}
       </div>
 
