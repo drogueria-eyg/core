@@ -18,7 +18,7 @@ window.EYGOpo = (function(){
      opts: {ignora:[ids], enOferta:[ids]} */
   function rank(rows, opts){
     opts = opts||{}; const ig=new Set(opts.ignora||[]), of=new Set(opts.enOferta||[]);
-    return rows.filter(r=> r.qty>0 && !r.xop && !r.xarch && !ig.has(r.id) && !of.has(r.id)).map(r=>{
+    return rows.filter(r=> r.qty>0 && r.activo!==false && !r.xop && !r.xarch && !ig.has(r.id) && !of.has(r.id)).map(r=>{
       const cu = r.qty>0 ? r.val/r.qty : 0;
       const nearExp = (r.val6>0 && r.min!=null && r.meses>r.min) ? r.val6*4 : 0; // vence antes de venderse
       const over    = r.meses>12 ? r.val*Math.min(r.meses,48)/24 : 0;            // sobrestock (capital congelado)
@@ -79,7 +79,7 @@ window.EYGOpo = (function(){
     const V={}; for(const v of ventas){ if(v.product_id) V[v.product_id[0]]=v.product_uom_qty||0; }
     const ids=stock.filter(s=>s.product_id).map(s=>s.product_id[0]);
     const [meta,quantsLote]=await Promise.all([
-      rpc("product.product","read",[ids,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","x_oportunidad","x_oportunidad_archivada"]]),
+      rpc("product.product","read",[ids,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","active","x_oportunidad","x_oportunidad_archivada"]]),
       rpc("stock.quant","search_read",[[["location_id.usage","=","internal"],["quantity",">",0],["lot_id","!=",false]],["product_id","lot_id","quantity","value"]],{limit:5000}),
     ]);
     const M={}; for(const m of meta) M[m.id]=m;
@@ -92,7 +92,7 @@ window.EYGOpo = (function(){
       const vp=vencP[pid]||(vencP[pid]={v6:0,min:9999}); if(mh!=null){ if(mh<vp.min)vp.min=mh; if(mh>=0&&mh<6)vp.v6+=q.value; } }
     const rows=stock.filter(s=>s.product_id).map(s=>{ const id=s.product_id[0], m=M[id]||{}, vp=vencP[id]||{};
       const val=s.value||0, qty=s.quantity||0, ventaU=Math.round(V[id]||0), meses=ventaU>0?qty/(ventaU/12):999;
-      return {id, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, xop:!!m.x_oportunidad, xarch:!!m.x_oportunidad_archivada,
+      return {id, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, activo:m.active!==false, xop:!!m.x_oportunidad, xarch:!!m.x_oportunidad_archivada,
         code:m.default_code||"", name:s.product_id[1], fam:familia(m.categ_id),
         val, qty, ventaU, meses:meses>900?999:Math.round(meses*10)/10, pvp:m.list_price||0, sp:m.standard_price||0,
         min:(vp.min!==undefined&&vp.min<9999)?Math.round(vp.min*10)/10:null, val6:Math.round(vp.v6||0)}; });
