@@ -34,6 +34,13 @@
   .drop .pc{background:#e7f6ec;color:#1E7D46;font-weight:800;font-size:12px;border-radius:20px;padding:2px 8px}
   .kv{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12.5px;color:var(--gris);margin:8px 0}
   .kv b{color:var(--ink)}
+  .margen{font-size:12.5px;font-weight:600;margin:6px 0;padding:5px 9px;border-radius:8px}
+  .margen b{font-size:14px}
+  .margen.ok{background:#e7f6ec;color:#1E7D46} .margen.bajo{background:#fdf1df;color:#b45309} .margen.neg{background:#fbe4e3;color:#b0322f}
+  .margen-box{border:1px solid var(--line);border-radius:9px;padding:11px 13px;font-size:14px;color:var(--gris)}
+  .margen-box b{font-size:19px}
+  .margen-box .cst{color:var(--gris2);font-weight:500;font-size:12.5px}
+  .margen-box.ok{background:#e7f6ec;border-color:#bfe6cc;color:#1E7D46} .margen-box.bajo{background:#fdf1df;border-color:#f4d29a;color:#b45309} .margen-box.neg{background:#fbe4e3;border-color:#f2b8b5;color:#b0322f}
   .acts{display:flex;gap:7px;margin-top:12px;flex-wrap:wrap}
   .empty{padding:30px;text-align:center;color:var(--gris);background:var(--surface);border:1px dashed var(--line);border-radius:14px}
   /* modal */
@@ -202,7 +209,8 @@ function cardOpoStock(o){
     <div class="meta">${esc(o.sku)}${o.cat?' · '+esc(o.cat):''}</div>
     <div class="meta" style="margin-top:5px">${esc(o.motivoTxt)}</div>
     <div class="drop"><span class="a">${money(o.precio)}</span> → <span class="b">${money(o.sugPrecio)}</span> <span class="pc">−${Math.round(o.desc*100)}%</span></div>
-    <div class="kv"><span>Stock: <b>${(o.stock||0).toLocaleString('es-AR')}</b></span><span>Valor: <b>${money(o.valor)}</b></span></div>
+    ${o.margenPct!=null?`<div class="margen ${o.margenPct<0?'neg':o.margenPct<15?'bajo':'ok'}">Margen con la oferta: <b>${o.margenPct<0?'':'+'}${o.margenPct}%</b> · ${money(o.margenAbs)}/u${o.margenPct<0?' ⚠️ perdés':''}</div>`:''}
+    <div class="kv"><span>Stock: <b>${(o.stock||0).toLocaleString('es-AR')}</b></span><span>Costo: <b>${money(o.costoU)}</b></span></div>
     <div class="acts">
       <button class="btn sm" onclick="ofertarDesdeStock(${o.id})">✅ Mandar al panel</button>
       <button class="btn ghost sm" onclick="archivarStock(${o.id})">📥 Archivar</button>
@@ -215,6 +223,7 @@ function cardOpoStockArch(o){
     <div class="meta">${esc(o.sku)}${o.cat?' · '+esc(o.cat):''}</div>
     <div class="meta" style="margin-top:5px">${esc(o.motivoTxt||'')}</div>
     <div class="drop"><span class="a">${money(o.precio)}</span> → <span class="b">${money(o.sugPrecio)}</span></div>
+    ${o.margenPct!=null?`<div class="margen ${o.margenPct<0?'neg':o.margenPct<15?'bajo':'ok'}">Margen: <b>${o.margenPct<0?'':'+'}${o.margenPct}%</b> · ${money(o.margenAbs)}/u</div>`:''}
     <div class="acts">
       <button class="btn sm" onclick="ofertarDesdeStock(${o.id})">✅ Mandar al panel</button>
       <button class="btn ghost sm" onclick="restaurarStock(${o.id})">↩ Restaurar</button>
@@ -281,9 +290,11 @@ function modalOferta(){
         ${f.items.length?`<div class="chosen">${chosen}</div>`:`<input id="f-buscar" placeholder="Buscar por nombre o SKU…" oninput="buscarProd(this.value)"><div class="prodpick" id="f-pick" style="display:none"></div>`}
       </div>`}
       <div class="fld"><div class="row2">
-        <div><label>Precio de oferta</label><input id="f-precio" type="number" step="0.01" value="${f.precio||''}"></div>
+        <div><label>Precio de oferta</label><input id="f-precio" type="number" step="0.01" value="${f.precio||''}" oninput="actualizarMargen()"></div>
         <div><label>Precio de lista (antes)</label><input id="f-antes" type="number" step="0.01" value="${f.precioAntes||''}"></div>
       </div><div class="hint">El “antes” se muestra tachado para resaltar el ahorro.</div></div>
+      <div class="fld"><label>Margen con esta oferta</label><div id="f-margen" class="margen-box">calculando…</div>
+        <div class="hint">Sobre el costo actual del producto en Odoo (neto, sin IVA). En rojo = perdés plata.</div></div>
       <div class="fld"><div class="row2">
         <div><label>Stock a ofertar</label><input id="f-stock" type="number" value="${f.stock||''}" placeholder="parte del stock"></div>
         <div><label>Vigencia hasta</label><input id="f-hasta" type="date" value="${f.hasta||''}"></div>
@@ -292,6 +303,26 @@ function modalOferta(){
     </div>
     <div class="mf"><button class="btn ghost" onclick="cerrarModal()">Cancelar</button><button class="btn" onclick="guardarOferta()">Guardar oferta</button></div>
   </div></div>`;
+  cargarCostoForm();   // trae el costo actual de Odoo y pinta el margen (se actualiza al editar el precio)
+}
+/* Costo actual (más reciente, lo sincroniza Odoo) de los productos de la oferta → margen en vivo */
+async function cargarCostoForm(){
+  const box=document.getElementById("f-margen"); if(!box) return;
+  const ids=(FORM.items||[]).map(i=>i.id);
+  if(!ids.length){ FORM._costoTotal=null; actualizarMargen(); return; }
+  try{ const rows=await EYG.rpc("product.product","read",[ids,["standard_price"]],LANG); FORM._costoTotal=rows.reduce((a,r)=>a+(r.standard_price||0),0); }
+  catch(e){ FORM._costoTotal=null; }
+  actualizarMargen();
+}
+function actualizarMargen(){
+  const box=document.getElementById("f-margen"); if(!box) return;
+  const precio=parseFloat((document.getElementById("f-precio")||{}).value)||0;
+  const costo=FORM._costoTotal;
+  if(costo==null){ box.textContent="No hay costo cargado en Odoo para calcular el margen."; box.className="margen-box"; return; }
+  if(!(precio>0)){ box.textContent="Poné el precio de oferta para ver el margen."; box.className="margen-box"; return; }
+  const abs=Math.round(precio-costo), pct=Math.round((precio-costo)/precio*100);
+  box.className="margen-box "+(pct<0?"neg":pct<15?"bajo":"ok");
+  box.innerHTML=`<b>${pct<0?'':'+'}${pct}%</b> &nbsp; ${money(abs)} por unidad &nbsp; <span class="cst">(costo ${money(costo)})</span>${pct<0?' &nbsp;⚠️ perdés plata':(pct<15?' &nbsp;margen ajustado':'')}`;
 }
 window.cerrarModal=()=>{ document.getElementById("modal").innerHTML=""; };
 window.quitarItem=id=>{ FORM.items=FORM.items.filter(i=>i.id!==id); modalOferta(); };

@@ -34,15 +34,18 @@ window.EYGOpo = (function(){
     baseByTmpl = baseByTmpl||{};
     return cands.map(r=>{
       const base = baseByTmpl[r.tmpl]!=null ? baseByTmpl[r.tmpl] : r.pvp;
-      const piso = r.cu*1.05, desc = DESC[r.motivo];
+      const costo = r.sp>0 ? r.sp : r.cu;   // costo más reciente (standard_price sincronizado), fallback valuación
+      const piso = costo*1.05, desc = DESC[r.motivo];
       let sug = Math.round(base*(1-desc)); if(sug<piso) sug=Math.round(piso);
+      const margenAbs = Math.round(sug - costo);                                   // $ por unidad con la oferta
+      const margenPct = (sug>0 && costo>0) ? Math.round((sug-costo)/sug*100) : null; // % sobre venta neta (sin IVA)
       const motTxt = r.motivo==="vence" ? `Vence en ${r.min}m y al ritmo actual no llega a venderse`
         : r.motivo==="sobre" ? `Sobrestock: ${r.meses} meses de stock`
         : `Sin ventas en los últimos 12 meses`;
       return { id:r.id, tmpl:r.tmpl, sku:r.code, nombre:cleanName(r.name), cat:r.fam,
         stock:r.qty, meses:r.meses>900?null:r.meses, min:r.min, valor:Math.round(r.val),
-        motivo:r.motivo, motivoTxt:motTxt, precio:Math.round(base), costoU:Math.round(r.cu),
-        desc, sugPrecio:sug };
+        motivo:r.motivo, motivoTxt:motTxt, precio:Math.round(base), costoU:Math.round(costo),
+        desc, sugPrecio:sug, margenAbs, margenPct };
     }).filter(r=> r.precio>r.costoU*1.05 && r.precio<r.costoU*4).slice(0,5); // margen real, sin precios mal cargados
   }
 
@@ -91,7 +94,7 @@ window.EYGOpo = (function(){
       const val=s.value||0, qty=s.quantity||0, ventaU=Math.round(V[id]||0), meses=ventaU>0?qty/(ventaU/12):999;
       return {id, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, xop:!!m.x_oportunidad, xarch:!!m.x_oportunidad_archivada,
         code:m.default_code||"", name:s.product_id[1], fam:familia(m.categ_id),
-        val, qty, ventaU, meses:meses>900?999:Math.round(meses*10)/10, pvp:m.list_price||0,
+        val, qty, ventaU, meses:meses>900?999:Math.round(meses*10)/10, pvp:m.list_price||0, sp:m.standard_price||0,
         min:(vp.min!==undefined&&vp.min<9999)?Math.round(vp.min*10)/10:null, val6:Math.round(vp.v6||0)}; });
     return await desdeData(rpc, rows, opts);
   }
