@@ -198,5 +198,37 @@ window.EYG = (function(){
       }).join("")}</div></div>`).join("")}`;
   }
 
-  return { supa, rpc, BASE, abs, money, esc, hace, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, sidebar, layout, homeMain };
+  /* ---- Tarjeta "Combos y ofertas de la semana" (compartida: panel comercial + lider) ----
+     Lee las ofertas activas del parametro eyg.ofertas (las carga el modulo Oportunidades). */
+  async function cardOfertasSemana(elId){
+    const el = document.getElementById(elId); if(!el) return;
+    let ofertas=[];
+    try{ const raw = await rpc("ir.config_parameter","get_param",["eyg.ofertas"]); ofertas = JSON.parse(raw||"[]"); }catch(e){ return; }
+    const hoy = new Date().toISOString().slice(0,10);
+    const act = ofertas.filter(o=>!o.hasta || o.hasta>=hoy);
+    if(!act.length){ el.innerHTML=""; return; }
+    const fD=s=>s?(s.slice(8,10)+"/"+s.slice(5,7)):"";
+    const card=o=>{
+      const items=(o.items||[]).map(i=>i.nombre).join(" + ");
+      const ah = (o.precioAntes>o.precio) ? Math.round((1-o.precio/o.precioAntes)*100) : 0;
+      return `<div style="background:#fff;border-radius:12px;padding:12px 13px;min-width:210px;flex:1 1 210px;box-shadow:0 2px 10px rgba(0,0,0,.08)">
+        <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#048782">${o.tipo==='combo'?'🎁 Combo':'🏷️ Oferta'}${o.hasta?' · hasta '+fD(o.hasta):''}</div>
+        <div style="font-weight:800;font-size:14px;color:#0E1F1D;margin:3px 0;line-height:1.25">${esc(o.titulo||items)}</div>
+        ${(o.titulo&&items&&items!==o.titulo)?`<div style="font-size:11px;color:#8A9A97">${esc(items)}</div>`:""}
+        <div style="display:flex;align-items:baseline;gap:7px;margin-top:6px">
+          ${o.precioAntes>o.precio?`<span style="color:#8A9A97;text-decoration:line-through;font-size:12px">${money(o.precioAntes)}</span>`:""}
+          <span style="color:#1E7D46;font-weight:900;font-size:18px">${money(o.precio)}</span>
+          ${ah?`<span style="background:#e7f6ec;color:#1E7D46;font-weight:800;font-size:11px;border-radius:20px;padding:1px 7px">−${ah}%</span>`:""}
+        </div>
+        ${o.stock?`<div style="font-size:11px;color:#5F716E;margin-top:4px">📦 ${o.stock} disponibles</div>`:""}
+        ${o.nota?`<div style="font-size:11px;color:#5F716E;margin-top:2px">📝 ${esc(o.nota)}</div>`:""}
+      </div>`;
+    };
+    el.innerHTML = `<div style="background:linear-gradient(135deg,#04635F,#048782);border-radius:16px;padding:15px 16px;margin:14px 0">
+      <div style="color:#fff;font-weight:800;font-size:16px;margin-bottom:11px">🏷️ Combos y ofertas de la semana <span style="opacity:.8;font-weight:600;font-size:12px">· ${act.length}</span></div>
+      <div style="display:flex;gap:11px;flex-wrap:wrap">${act.map(card).join("")}</div>
+    </div>`;
+  }
+
+  return { supa, rpc, BASE, abs, money, esc, hace, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, sidebar, layout, homeMain, cardOfertasSemana };
 })();
