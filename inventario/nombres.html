@@ -96,6 +96,19 @@
 const ROOT_CATEG = 24;               // ALL / HOSPITALARIOS
 const LANG = {context:{lang:"es_AR"}};
 
+// Unidad de venta por subcategoria: unifica las columnas Bulto/caja y Embalaje.
+// Ampollas: "jeringas" si el nombre dice jer/prell/jga. (Debe coincidir con la config del cron.)
+const UNIDAD_SUB = {
+  "HOSP. COMPRIMIDOS":"tiras", "HOSP. AMPOLLAS":"amp", "HOSP. FRASCO AMPOLLA":"unidades",
+  "HOSP. JARABES":"unidades", "HOSP. GOTAS":"unidades", "HOSP.CREMAS":"unidades",
+  "HOSP. SPRAYS":"unidades", "HOSP. TIRAS REACTIVAS":"cajas"
+};
+function unidadDe(p){
+  let u = UNIDAD_SUB[p.sub] || "unidades";
+  if(p.sub==="HOSP. AMPOLLAS" && /jer|prell|jga/i.test(p.nombre||"")) u="jeringas";
+  return u;
+}
+
 /* ---------- diccionario de formas farmacéuticas (detección: multipalabra primero) ---------- */
 const FORMAS_DET = [
   {c:"frasco ampolla", re:/\bfrasco\s*ampollas?\b/i, u:""},
@@ -341,10 +354,11 @@ function fila(p){
   const pres = p.desg.presentacion
       ? `<span class="cell-mono">${EYG.esc(p.desg.presentacion)}</span>${p.desg.forma?`<div class="cell-sub">${EYG.esc(p.desg.forma)}</div>`:""}`
       : (p.desg.forma?`<span class="cell-mono">${EYG.esc(p.desg.forma)}</span>`:'<span class="miss">—</span>');
+  const uni = unidadDe(p);
   const bulto = p.desg.bultoNum
-      ? `<span class="cell-mono">${p.desg.bultoNum}${p.desg.bultoTipo?(" "+EYG.esc(p.desg.bultoTipo)):""}</span>${p.desg.cajaCerrada?'<div class="cell-sub">caja cerrada</div>':""}`
+      ? `<span class="cell-mono">${p.desg.bultoNum} ${EYG.esc(uni)}</span>${p.desg.cajaCerrada?'<div class="cell-sub">caja cerrada</div>':""}`
       : (p.aplicado ? '<span class="miss">— falta</span>'
-         : `<div class="addb"><input type="number" min="1" id="bn-${p.id}" placeholder="N°"><select id="bt-${p.id}">${["tiras","unidades","comp","caps","amp","ml","gr"].map(t=>`<option>${t}</option>`).join("")}</select><button onclick="agregarBulto(${p.id})">+ bulto</button></div>`);
+         : `<div class="addb"><input type="number" min="1" id="bn-${p.id}" placeholder="N°"><span class="cell-sub" style="align-self:center">${EYG.esc(uni)}</span><button onclick="agregarBulto(${p.id})">+ bulto</button></div>`);
   const nota = p.desg.ubicacion ? `<div class="nota">Ubicación: ${EYG.esc(p.desg.ubicacion)}</div>` : "";
   const stk = `<div class="stk ${(p.stock||0)<=0?'zero':''}">${(p.stock||0)<=0?'sin stock':(p.stock+' u')}</div>`;
   const emb = embCell(p);
@@ -363,12 +377,13 @@ function fila(p){
 /* ---------- celda de EMBALAJE (caja real = mínimo de compra) ---------- */
 function embCell(p){
   if(!p.varId) return '<span class="miss">—</span>';
+  const uni = unidadDe(p);
   const btnTxt = p.embId ? "Guardar" : "+ caja";
   const mism = (p.embalaje!=null && p.desg.bultoNum && p.embalaje!==p.desg.bultoNum)
       ? `<div class="nota">nombre dice x${p.desg.bultoNum}</div>` : "";
-  const actual = p.embalaje!=null ? `<div class="cell-sub">caja real: <b>${p.embalaje}</b> tiras</div>` : "";
+  const actual = p.embalaje!=null ? `<div class="cell-sub">caja real: <b>${p.embalaje}</b> ${EYG.esc(uni)}</div>` : "";
   return `<div class="addb">
-      <input type="number" min="1" id="em-${p.id}" value="${p.embalaje!=null?p.embalaje:""}" placeholder="tiras">
+      <input type="number" min="1" id="em-${p.id}" value="${p.embalaje!=null?p.embalaje:""}" placeholder="${EYG.esc(uni)}">
       <button onclick="guardarEmbalaje(${p.id})">${btnTxt}</button>
     </div>${actual}${mism}`;
 }
@@ -385,9 +400,9 @@ window.toggleFiltro = k => {
 window.limpiarFiltros = () => { filtros={conCambios:false,sinBulto:false,sinConc:false,sinStock:false,conStock:false,sinEmbalaje:false}; render(); };
 window.agregarBulto = async id => {
   const p = TODOS.find(x=>x.id===id); if(!p) return;
-  const nEl=document.getElementById("bn-"+id), tEl=document.getElementById("bt-"+id);
-  const n=parseInt(nEl&&nEl.value,10); if(!n||n<1){ toast("Poné cuántas unidades trae la caja"); if(nEl) nEl.focus(); return; }
-  const tipo=(tEl&&tEl.value)||"";
+  const nEl=document.getElementById("bn-"+id);
+  const n=parseInt(nEl&&nEl.value,10); if(!n||n<1){ toast("Poné cuántas "+unidadDe(p)+" trae la caja"); if(nEl) nEl.focus(); return; }
+  const tipo=unidadDe(p);
   const antes = p.nombre;
   const a = analizar(antes + " (Caja x "+n+" "+tipo+")");
   const btn=document.querySelector("#row-"+id+" .addb button"); if(btn){ btn.disabled=true; btn.textContent="…"; }
@@ -405,9 +420,10 @@ window.guardarEmbalaje = async id => {
   if(!p.varId){ toast("Este producto no tiene variante para el embalaje"); return; }
   const el = document.getElementById("em-"+id);
   const n = parseInt(el&&el.value,10);
-  if(!n||n<1){ toast("Poné cuántas tiras trae la caja real"); if(el) el.focus(); return; }
+  const uni = unidadDe(p);
+  if(!n||n<1){ toast("Poné cuántas "+uni+" trae la caja real"); if(el) el.focus(); return; }
   const btn = document.querySelector("#row-"+id+" .embcell button"); if(btn){ btn.disabled=true; btn.textContent="…"; }
-  const nombre = "CAJA "+n+" TIRAS";
+  const nombre = "CAJA "+n+" "+uni.toUpperCase();
   try{
     if(p.embId){ await EYG.rpc("product.packaging","write",[[p.embId],{qty:n, name:nombre}], LANG); }
     else{ const nid = await EYG.rpc("product.packaging","create",[{product_id:p.varId, qty:n, name:nombre, sales:true, purchase:true}], LANG); p.embId=nid; }
