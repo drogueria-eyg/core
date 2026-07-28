@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -550,7 +551,7 @@ function render(){
         <option value="nombre" ${filtro.orden==="nombre"?"selected":""}>Nombre (A-Z)</option>
       </select>
       <button class="mini-btn" onclick="verResumen()" style="background:var(--teal);color:#fff;border-color:var(--teal)">📋 Resumen del día</button>
-      <button class="mini-btn" onclick="exportarCSV()">Exportar CSV</button>
+      <button class="mini-btn" onclick="exportarExcel()">📊 Exportar a Excel</button>
     </div>
     <div id="listwrap"></div>`;
   renderLista();
@@ -829,18 +830,19 @@ async function guardarContacto(id){
 // ---- Resumen diario (texto listo para pegar en el grupo de WhatsApp del equipo) ----
 function textoResumen(){
   const hoyStrL=hoy.toLocaleDateString("es-AR",{day:"2-digit",month:"long",year:"numeric"});
-  const real=CLI.reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
-  const vencido=CLI.reduce((s,c)=>s+c.vencidoReal,0);
+  const base = filtro.comercial ? CLI.filter(c=>c.comercial===filtro.comercial) : CLI;
+  const real=base.reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
+  const vencido=base.reduce((s,c)=>s+c.vencidoReal,0);
   // prioridad de cobro: mayor plata vencida real, excluyendo los que son puro gris
-  const cobrar=CLI.filter(c=>c.vencidoReal>1).sort((a,b)=>b.vencidoReal-a.vencidoReal);
-  const incob=CLI.filter(c=>c.situacion==="incobrable").sort((a,b)=>b.deudaReal-a.deudaReal);
+  const cobrar=base.filter(c=>c.vencidoReal>1).sort((a,b)=>b.vencidoReal-a.vencidoReal);
+  const incob=base.filter(c=>c.situacion==="incobrable").sort((a,b)=>b.deudaReal-a.deudaReal);
   const incobM=incob.reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
-  const gris=CLI.filter(c=>c.tieneGris).sort((a,b)=>b.gris-a.gris);
+  const gris=base.filter(c=>c.tieneGris).sort((a,b)=>b.gris-a.gris);
   const grisM=gris.reduce((s,c)=>s+c.gris,0);
   const umbrales=[21,31,61,91,121];
-  const porCruzar=CLI.filter(c=>c.vencidoReal>1&&umbrales.some(u=>c.mora>=u-3&&c.mora<u)).sort((a,b)=>b.deudaReal-a.deudaReal);
-  let t=`🏥 *Droguería EyG · Cobranzas ${hoyStrL}*\n\n`;
-  t+=`💰 Deuda real a cobrar: ${money(real)}\n⏰ Vencida (con mora): ${money(vencido)}\n👥 Clientes con saldo: ${CLI.length}\n\n`;
+  const porCruzar=base.filter(c=>c.vencidoReal>1&&umbrales.some(u=>c.mora>=u-3&&c.mora<u)).sort((a,b)=>b.deudaReal-a.deudaReal);
+  let t=`🏥 *Droguería EyG · Cobranzas ${hoyStrL}*${filtro.comercial?`\n👤 Comercial: ${filtro.comercial}`:``}\n\n`;
+  t+=`💰 Deuda real a cobrar: ${money(real)}\n⏰ Vencida (con mora): ${money(vencido)}\n👥 Clientes con saldo: ${base.length}\n\n`;
   t+=`🎯 *Prioridad de cobro (vencido): top ${Math.min(8,cobrar.length)}*\n`;
   cobrar.slice(0,8).forEach(c=>t+=`• ${c.nombre} — ${money(c.vencidoReal)} vencido (${c.mora}d)${c.tieneGris?` [📄 ${money(c.gris)} en gris]`:''}\n`);
   t+=`\n📄 *Falta certificado/OP: ${gris.length} · ${money(grisM)} en gris*\n`;
@@ -874,13 +876,20 @@ function copiarResumen(btn){
     .catch(()=>{ta.select();document.execCommand("copy");btn.textContent="✓ Copiado";});
 }
 
-function exportarCSV(){
-  const list=ordenar(visibles());
-  const head=["Cliente","DeudaReal","VencidaReal","CobradoSinImputar","EnBorrador","EnGris","SaldoAnterior","Facturas","DiasMora","VencimientoMasViejo","Situacion","Comercial","Ciudad","Telefono","Email"];
+function exportarExcel(){
+  if(typeof XLSX==="undefined"){ toast("⚠ No cargó la librería de Excel — reintentá en unos segundos"); return; }
+  const list=ordenar(visibles());   // respeta el comercial seleccionado (y "Todos")
+  const com = filtro.comercial ? filtro.comercial : "Todos";
   const sitLbl={vencido:"A cobrar (vencido)",porvencer:"Por vencer / al día",incobrable:"+120 incobrable?",cubierto:"Cubierto · falta papel",afavor:"Saldo a favor"};
-  const rows=list.map(c=>[c.nombre,Math.round(Math.max(0,c.deudaReal)),Math.round(c.vencidoReal),Math.round(c.cobradoSinImp),Math.round(c.borrador),Math.round(c.gris),Math.round(c.saldoIni),c.nfac,c.mora,c.venc||"",sitLbl[c.situacion]||c.situacion,c.comercial,c.ciudad,c.telv,c.email].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
-  const csv="﻿"+[head.join(","),...rows].join("\r\n");
-  const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="cobranzas-eyg.csv";a.click();
+  const head=["Cliente","Rubro","Comercial","Deuda real","Vencida","En gris","Cobrado sin imputar","En borrador","Saldo anterior","N° facturas","Días mora","Vencimiento más viejo","Situación","Plazo de pago","Contactado","Nota / acuerdo","Ciudad","Teléfono","Email"];
+  const rows=list.map(c=>{ const ct=fmtContacto(c.contactado); return [
+    c.nombre, c.rubro||"", c.comercial, Math.round(Math.max(0,c.deudaReal)), Math.round(c.vencidoReal), Math.round(c.gris), Math.round(c.cobradoSinImp), Math.round(c.borrador), Math.round(c.saldoIni),
+    c.nfac, c.mora, c.venc||"", sitLbl[c.situacion]||c.situacion, c.plazoFull||"", ct?ct.texto:"", c.nota?c.nota.texto:"", c.ciudad||"", c.telv||"", c.email||"" ]; });
+  const ws=XLSX.utils.aoa_to_sheet([head,...rows]);
+  ws["!cols"]=[{wch:34},{wch:16},{wch:18},{wch:13},{wch:13},{wch:12},{wch:16},{wch:12},{wch:13},{wch:9},{wch:9},{wch:14},{wch:20},{wch:16},{wch:14},{wch:34},{wch:16},{wch:16},{wch:24}];
+  ws["!autofilter"]={ref:XLSX.utils.encode_range({s:{c:0,r:0},e:{c:head.length-1,r:rows.length}})};
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Cobranzas");
+  XLSX.writeFile(wb, `cobranzas-eyg-${com.replace(/[^a-zA-Z0-9]+/g,"_")}-${hoyStr}.xlsx`);
 }
 EYG.guard(["finanzas","lider","admin","direccion","cobranzas"]).then(()=>cargar());
 </script>
