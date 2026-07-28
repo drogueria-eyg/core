@@ -64,6 +64,10 @@
   td.costo .cv{font-weight:800;font-size:14.5px}
   td.costo .cd{font-size:10.5px;color:var(--gris2);margin-top:1px}
   td.costo .old{color:var(--m-warn);font-weight:700}
+  .costedit{display:flex;gap:3px;margin-top:5px;justify-content:flex-end}
+  .costedit input{width:76px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;font-size:12px;font-family:inherit;text-align:right}
+  .costedit button{background:var(--teal);color:#fff;border:none;border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer}
+  .costedit button:hover{background:var(--teal-deep)} .costedit button:disabled{opacity:.6}
   .tier{text-align:center;min-width:96px}
   .tier .pr{font-weight:800;font-size:14px;font-variant-numeric:tabular-nums}
   .bmg{display:inline-block;margin-top:4px;font-size:11px;font-weight:800;border-radius:20px;padding:2px 9px}
@@ -120,6 +124,20 @@ function badge(m){
   return [m.toFixed(0)+'%', t];
 }
 function bucket(m){ return m==null?null: m>=40?'ok2': m>=33?'ok': m>=27?'warn':'bad'; }
+// costo efectivo: gana el más reciente entre el costo manual y la última compra
+function costoEfectivo(it){
+  const m=it.manualC||0, md=it.manualD||null, uf=it.ucF||null, uc=it.ucC||0;
+  if(m>0 && (!uf || (md && md>=uf))) return {costo:m, fuente:'manual', fecha:md};
+  if(uc>0) return {costo:uc, fuente:'compra', fecha:uf};
+  return {costo:(it.std||0), fuente:'odoo', fecha:null};
+}
+function aplicarCosto(it){
+  const e=costoEfectivo(it); it.costo=e.costo; it.fuente=e.fuente; it.fecha=e.fecha;
+  it.tramos = it.tramosRaw.map((t,i)=>({ rango: rango(t.q,it.tramosRaw,i), precio:t.p, margen: t.p>0 && it.costo>0 ? (t.p-it.costo)/t.p*100 : null }));
+  const ms=it.tramos.map(t=>t.margen).filter(m=>m!=null);
+  it.peor = ms.length? Math.min(...ms): null;
+}
+function fuenteLbl(x,dias){ return x.fuente==='manual'?('✎ manual'+(dias!=null?' '+dias+'d':'')) : x.fuente==='compra'?(dias===0?'compra hoy':dias!=null?'compra '+dias+'d':'compra') : 'costo Odoo'; }
 let ST={items:[], q:"", cat:"todos", salud:"todos", sinStock:false, conStock:false, sinEsc:false};
 
 async function cargar(){
@@ -127,7 +145,7 @@ async function cargar(){
     // 1) TODOS los hospitalarios (con o sin escalera)
     const prods=await rpc("product.product","search_read",
       [[["categ_id","child_of",24]]],
-      {fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","qty_available"], context:{...ES,active_test:false}, limit:5000});
+      {fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","qty_available","x_costo_manual","x_costo_manual_date"], context:{...ES,active_test:false}, limit:5000});
     if(!prods.length){ document.getElementById("app").innerHTML='<div class="empty">No hay productos en Hospitalarios.</div>'; return; }
     const allTmpl=[...new Set(prods.map(p=>p.product_tmpl_id&&p.product_tmpl_id[0]).filter(Boolean))];
     // 2) escaleras (tramos) en LISTA 1 EyG de esos templates
@@ -137,33 +155,29 @@ async function cargar(){
     const porT={};
     for(const it of raw){ if(!it.product_tmpl_id) continue; const t=it.product_tmpl_id[0];
       (porT[t]=porT[t]||[]).push({q:it.min_quantity||0, p:it.fixed_price, tipo:it.compute_price}); }
-    // 3) última compra SOLO de los que tienen escalera (para calcular el margen)
-    const pidLadder=prods.filter(p=>porT[p.product_tmpl_id&&p.product_tmpl_id[0]]).map(p=>p.id);
+    // 3) última compra de TODOS (para el margen y para comparar contra el costo manual)
+    const pid2=prods.map(p=>p.id);
     const ult={};
-    if(pidLadder.length){
-      const pol=await rpc("purchase.order.line","search_read",
-        [[["product_id","in",pidLadder],["state","in",["purchase","done"]]]],
-        {fields:["product_id","date_order","price_subtotal","product_qty"], limit:100000});
-      for(const l of pol){ if(!l.product_id) continue; const id=l.product_id[0];
-        if(!ult[id] || (l.date_order||"")>ult[id].f){ ult[id]={f:l.date_order, c:l.product_qty>0? l.price_subtotal/l.product_qty : 0}; } }
-    }
-    // 4) armar filas (todas; las sin escalera van marcadas)
+    const pol=await rpc("purchase.order.line","search_read",
+      [[["product_id","in",pid2],["state","in",["purchase","done"]]]],
+      {fields:["product_id","date_order","price_subtotal","product_qty"], limit:100000});
+    for(const l of pol){ if(!l.product_id) continue; const id=l.product_id[0];
+      if(!ult[id] || (l.date_order||"")>ult[id].f){ ult[id]={f:l.date_order, c:l.product_qty>0? l.price_subtotal/l.product_qty : 0}; } }
+    // 4) armar filas (costo = manual vs última compra; gana el más reciente por fecha)
     ST.items = prods.map(p=>{
       const tmpl=p.product_tmpl_id&&p.product_tmpl_id[0];
-      const tramos=(porT[tmpl]||[]).slice().sort((a,b)=>a.q-b.q);
-      const sinEscalera=!tramos.length;
-      const uc=ult[p.id];
-      const costo = uc && uc.c>0 ? uc.c : (p.standard_price||0);
-      const fuente = uc && uc.c>0 ? 'compra' : 'odoo';
-      const tr = tramos.map((t,i)=>({ rango: rango(t.q,tramos,i), precio:t.p, margen: t.p>0 && costo>0 ? (t.p-costo)/t.p*100 : null }));
-      const ms = tr.map(t=>t.margen).filter(m=>m!=null);
-      return {
-        id:p.id, sku:p.default_code, name:p.name,
+      const tramosRaw=(porT[tmpl]||[]).slice().sort((a,b)=>a.q-b.q);
+      const uc=ult[p.id]||{};
+      const it={
+        id:p.id, tmpl, sku:p.default_code, name:p.name,
         cat:(p.categ_id?p.categ_id[1]:'').replace("ALL / ",""),
-        costo, fecha: uc?uc.f:null, fuente, sinEscalera,
-        stock: (p.qty_available!=null? p.qty_available : 0),
-        tramos: tr, peor: ms.length? Math.min(...ms): null
+        stock:(p.qty_available!=null?p.qty_available:0),
+        sinEscalera:!tramosRaw.length, tramosRaw, std:(p.standard_price||0),
+        manualC:(p.x_costo_manual||0), manualD:(p.x_costo_manual_date||null),
+        ucF:(uc.f||null), ucC:(uc.c||0)
       };
+      aplicarCosto(it);
+      return it;
     }).sort((a,b)=>(a.cat+a.name).localeCompare(b.cat+b.name));
     render();
   }catch(e){ document.getElementById("app").innerHTML='<div class="errbox"><b>No pude leer los datos.</b><br>'+esc(e.message)+'</div>'; }
@@ -206,13 +220,13 @@ function render(){
         }).join("");
     return `<tr class="${alerta?'rowalert':''}">
       <td><div class="pn">${esc(x.name)}</div><div class="pmeta">${esc(x.sku||"")} · ${(x.stock||0)<=0?'<b style="color:var(--m-bad)">sin stock</b>':('stock '+x.stock+' u')}</div><span class="cat">${esc(x.cat||"—")}</span></td>
-      <td class="costo"><div class="cv">${money(x.costo)}</div><div class="cd ${dias>180?'old':''}">${x.fuente==='compra'? (dias===0?'compra hoy':dias!=null?'compra '+dias+'d':'') : 'costo Odoo'}${dias>180?' ⚠':''}</div></td>
+      <td class="costo"><div class="cv">${money(x.costo)}</div><div class="cd ${dias>180?'old':''}">${fuenteLbl(x,dias)}${dias>180?' ⚠':''}</div><div class="costedit"><input type="number" step="0.01" id="cm-${x.id}" placeholder="manual" value="${x.manualC>0?(Math.round(x.manualC*100)/100):''}"><button onclick="guardarCosto(${x.id})" title="Guardar costo manual (pisa la última compra)">💾</button></div></td>
       ${celdas}
     </tr>`;
   }).join("");
   app.innerHTML=`
     <div class="hero"><div><h1>Rentabilidad y precios</h1>
-      <div class="msg">Todos los Hospitalarios. Los que tienen escalera muestran su margen por tramo; los que no, quedan marcados <b>“sin escalera”</b>. Margen = (precio − costo de última compra) / precio.</div></div>
+      <div class="msg">Todos los Hospitalarios. Los que tienen escalera muestran su margen por tramo; los que no, quedan marcados <b>“sin escalera”</b>. Podés fijar un <b>costo manual</b> en cada fila (💾): <b>gana el más reciente</b> entre ese costo y la última compra — si después entra una compra posterior, la compra vuelve a pisar.</div></div>
       <div class="syncwrap"><button id="btnSync" class="btnsync" onclick="sincronizar()">🔄 Sincronizar</button><div id="syncStatus" class="syncst">Busca productos nuevos en las categorías definidas</div></div></div>
     <div class="kpis">
       <div class="kpi"><div class="l">Hospitalarios</div><div class="v">${nProd}</div></div>
@@ -266,6 +280,18 @@ let toastT;
 function toast(msg,win){ const t=document.getElementById("toast"); t.textContent=msg; t.className="toast on"+(win?" win":""); clearTimeout(toastT); toastT=setTimeout(()=>t.className="toast",4200); }
 function sst(m){ const el=document.getElementById("syncStatus"); if(el) el.textContent=m; }
 
+window.guardarCosto = async id => {
+  const p=ST.items.find(x=>x.id===id); if(!p) return;
+  const el=document.getElementById("cm-"+id); const val=parseFloat(el&&el.value);
+  if(!(val>0)){ toast("Poné un costo válido (mayor a 0)"); if(el) el.focus(); return; }
+  const nowStr=new Date().toISOString().slice(0,19).replace("T"," ");
+  const btn=el&&el.nextElementSibling; if(btn){ btn.disabled=true; btn.textContent="…"; }
+  try{
+    await rpc("product.product","write",[[id],{x_costo_manual:val, x_costo_manual_date:nowStr}],{context:ES});
+    p.manualC=val; p.manualD=nowStr; aplicarCosto(p);
+    toast("Costo manual guardado ✓ (pisa la última compra)"); render();
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent="💾"; } toast("Error: "+e.message); }
+};
 async function sincronizar(){
   const btn=document.getElementById("btnSync"); if(!btn||btn.disabled) return;
   btn.disabled=true; btn.textContent="Sincronizando…";
