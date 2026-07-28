@@ -22,13 +22,32 @@
   .kpi .l{font-size:11.5px;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
   .kpi.warn .n{color:#c2410c} .kpi.good .n{color:var(--teal)}
 
-  .tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
-  .tab{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 13px;font-size:13px;font-weight:600;color:var(--gris);cursor:pointer;transition:all .12s;white-space:nowrap}
-  .tab:hover{border-color:var(--teal-med)}
-  .tab.active{background:var(--teal);color:#fff;border-color:var(--teal)}
-  .tab .c{opacity:.7;font-weight:800;margin-left:5px}
-  .tab .chg{display:inline-block;background:#f97316;color:#fff;font-size:10px;font-weight:800;border-radius:10px;padding:1px 6px;margin-left:6px}
-  .tab.active .chg{background:#fff;color:#c2410c}
+  /* ---- selector de categoría raíz (Hospitalarios / Farmacopea / …) ---- */
+  .catsel{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;align-items:center}
+  .catsel .lbl{font-size:12px;font-weight:800;color:var(--gris2);text-transform:uppercase;letter-spacing:.5px;margin-right:2px}
+  .catpill{background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:8px 16px;font-size:13.5px;font-weight:700;color:var(--gris);cursor:pointer;transition:all .12s}
+  .catpill:hover{border-color:var(--teal-med)}
+  .catpill.active{background:var(--teal);color:#fff;border-color:var(--teal)}
+
+  /* ---- acordeón de subcategorías (reemplaza a los tabs; escala a cientos) ---- */
+  .accordion{display:flex;flex-direction:column;gap:10px}
+  .sec{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+  .sechead{display:flex;align-items:center;gap:10px;padding:13px 16px;cursor:pointer;user-select:none;background:var(--surface);position:sticky;top:51px;z-index:6;border-bottom:1px solid transparent;transition:background .12s}
+  .sechead:hover{background:#f7fbfa}
+  .sec.open>.sechead{border-bottom-color:var(--line)}
+  .chev{color:var(--gris2);font-size:12px;transition:transform .15s;display:inline-block;width:12px}
+  .sec.open>.sechead .chev{transform:rotate(90deg)}
+  .secname{font-weight:800;color:var(--ink);font-size:14px;letter-spacing:.2px}
+  .seccount{background:#eef6f5;color:var(--teal-deep);font-weight:800;font-size:12px;border-radius:20px;padding:2px 9px}
+  .secmatch{color:var(--gris);font-size:12px;font-weight:600}
+  .secchg{background:#f97316;color:#fff;font-size:11px;font-weight:800;border-radius:10px;padding:2px 8px}
+  .secright{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .btn-secap{background:var(--teal);color:#fff;border:none;border-radius:9px;padding:7px 13px;font-weight:700;font-size:12.5px;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .btn-secap:hover{background:var(--teal-deep)}
+  .secbody .thead{position:static;border-radius:0;top:auto}
+  .secbody .row:last-child{border-radius:0}
+  .btn-expand{background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:13px;font-weight:600;color:var(--gris);cursor:pointer;font-family:inherit}
+  .btn-expand:hover{border-color:var(--teal-med)}
 
   .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px}
   .toolbar input[type=search]{flex:1;min-width:200px;padding:9px 13px;border:1px solid var(--line);border-radius:10px;font-size:14px;font-family:inherit}
@@ -104,8 +123,20 @@
 <script src="../assets/core.js"></script>
 <script>
 /* ================= EyG Core · Depósito · Maestro de productos ================= */
-const ROOT_CATEG = 24;               // ALL / HOSPITALARIOS
+// Categorías raíz que administra el módulo. `excluir` = subcategorías vacías/ajenas al desplegable de asignación.
+// formas:true -> abrevia/minúscula la forma farmacéutica (comp, susp, sol, gel…) porque es redundante con la subcategoría.
+// En Farmacopea (formas:false) esas palabras SON parte del nombre (SOLUCION, GEL, CREMA) y no se tocan.
+const CATEGS = [
+  {id:24, label:"Hospitalarios", prefix:"ALL / HOSPITALARIOS", excluir:["-*-*-","JERINGAS","MEDICACION PSICO"], formas:true},
+  {id:10, label:"Farmacopea",    prefix:"ALL / FARMACOPEA",    excluir:["-*-*-"], formas:false},
+];
+let ROOT = CATEGS[0];                 // categoría activa
 const LANG = {context:{lang:"es_AR"}};
+// saca el prefijo "ALL / CATEGORÍA / " del complete_name para quedarnos con la subcategoría
+function stripPrefix(full){
+  const rx = new RegExp("^"+ROOT.prefix.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"( / )?");
+  return (full||"").replace(rx,"");
+}
 
 // Unidad de venta por subcategoria: unifica las columnas Bulto/caja y Embalaje.
 // Ampollas: "jeringas" si el nombre dice jer/prell/jga. (Debe coincidir con la config del cron.)
@@ -200,8 +231,8 @@ function analizar(raw, sub){
   const antesEsp=core; core=core.replace(/\s+/g," ").replace(/\s+([.,])/g,"$1").trim();
   if(/\s{2,}/.test(antesEsp)||/\s$/.test(raw)||/^\s/.test(raw)) add("espacios");
 
-  if(/(\d)(mg|mcg|ml|gr|kg|cc|g|ui|vol)\b/i.test(core)) add("unidad pegada al número");
-  core=core.replace(/(\d)\s*(mg|mcg|ml|gr|kg|cc|g|ui|vol)\b/gi,(m,n,u)=>n+" "+u.toLowerCase());
+  if(/(\d)(mg|mcg|ml|gr|kg|cc|g|ui|vol|lt)\b/i.test(core)) add("unidad pegada al número");
+  core=core.replace(/(\d)\s*(mg|mcg|ml|gr|kg|cc|g|ui|vol|lt)\b/gi,(m,n,u)=>n+" "+u.toLowerCase());
 
   const antesDec=core;
   core=core.replace(/(\d)[.,](\d+)\s*%/g,(m,a,b)=>a+","+b+"%").replace(/(\d)\s+%/g,"$1%");
@@ -228,15 +259,18 @@ function analizar(raw, sub){
 
   const preCase=core;
   let out=core.toUpperCase();
-  out=out.replace(/\b(MG|MCG|ML|GR|KG|CC|VOL|G)\b/g,m=>m.toLowerCase());
+  out=out.replace(/\b(MG|MCG|ML|GR|KG|CC|VOL|G|LT|LITROS?)\b/g,m=>m.toLowerCase());
   out=out.replace(/\bX\b/g,"x");
-  FORMAS_SIMPLE.forEach(f=>{ out=out.replace(new RegExp(f.re.source,"gi"), f.c); });
-  out=out.replace(/\bFRASCO\s+amp\b/gi,"frasco ampolla");
-  out=out.replace(/\b(JGA|JER|JERINGA)\.?\s*PRELL\.?/gi,"jga prell");
+  // abreviatura/minúscula de formas farmacéuticas: solo donde la forma es redundante con la subcategoría (Hospitalarios)
+  if(!ROOT || ROOT.formas!==false){
+    FORMAS_SIMPLE.forEach(f=>{ out=out.replace(new RegExp(f.re.source,"gi"), f.c); });
+    out=out.replace(/\bFRASCO\s+amp\b/gi,"frasco ampolla");
+    out=out.replace(/\b(JGA|JER|JERINGA)\.?\s*PRELL\.?/gi,"jga prell");
+  }
   // saca la palabra de forma que ya está implícita en la subcategoría (ej. "ampolla"/"amp" en Ampollas)
   if(up.forma){ const antesF=out; out=out.replace(up.forma," "); if(antesF!==out) add("saca forma redundante"); }
   out=out.replace(/\s+-\s*|\s*-\s+/g," - ").replace(/(?: - ){2,}/g," - ").replace(/^\s*-\s+|\s+-\s*$/g,"").replace(/\s+/g," ").trim();
-  out=out.replace(/\b(mg|mcg|ml|gr|kg|cc|g|ui|vol)\.(?=\s|$)/gi,"$1");  // "ml." -> "ml"
+  out=out.replace(/\b(mg|mcg|ml|gr|kg|cc|g|ui|vol|lt)\.(?=\s|$)/gi,"$1");  // "ml." / "lt." -> "ml" / "lt"
   // limpia colgantes: guion + número suelto al final (ej. "ROSPAW - 4"), guiones/puntos/comas sueltos al final
   const antesCol=out;
   out=out.replace(/\s+-\s+\d+\s*$/,"").replace(/[\s\-–·.,]+$/,"").replace(/^[\s\-–·.,]+/,"").trim();
@@ -288,24 +322,23 @@ function desglosar(core, parens, add){
 }
 
 /* =========================== estado + carga =========================== */
-let TODOS = [], SUBCATS = [], actual = null, filtro = "", HISTORIAL = [], filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false, sinEmbalaje:false};
+let TODOS = [], SUBCATS = [], abiertos = new Set(), filtro = "", HISTORIAL = [], filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false, sinEmbalaje:false};
 
 async function cargar(preservar){
-  const prevSub = preservar ? actual : null;
   const cont = document.getElementById("cont");
   cont.innerHTML = '<div class="empty"><div class="spinner"></div>Leyendo productos de Odoo…</div>';
   let recs;
   try{
     recs = await EYG.rpc("product.template","search_read",
-      [[["categ_id","child_of",ROOT_CATEG]],["id","default_code","name","categ_id","qty_available","product_variant_id"]],
+      [[["categ_id","child_of",ROOT.id]],["id","default_code","name","categ_id","qty_available","product_variant_id"]],
       Object.assign({limit:2000, order:"name"}, LANG));
   }catch(e){ cont.innerHTML='<div class="empty">No se pudieron leer los productos: '+EYG.esc(e.message)+'</div>'; return; }
 
-  // subcategorías reales de HOSPITALARIOS (para el desplegable de asignación)
+  // subcategorías reales de la categoría activa (para el desplegable de asignación)
   try{
     const cats = await EYG.rpc("product.category","search_read",
-      [[["parent_id","=",ROOT_CATEG]],["id","name"]], LANG);
-    const EXCLUIR = ["-*-*-", "JERINGAS", "MEDICACION PSICO"];   // vacias / no van dentro de hospitalarios
+      [[["parent_id","=",ROOT.id]],["id","name"]], LANG);
+    const EXCLUIR = ROOT.excluir||[];   // vacías / ajenas a la categoría
     SUBCATS_ODOO = cats.filter(c=>c.name && EXCLUIR.indexOf(c.name)===-1).sort((a,b)=>a.name.localeCompare(b.name));
   }catch(e){ SUBCATS_ODOO=[]; }
 
@@ -321,7 +354,7 @@ async function cargar(preservar){
   }
 
   TODOS = recs.map(r=>{
-    const sub=(r.categ_id&&r.categ_id[1]||"").replace(/^ALL \/ HOSPITALARIOS( \/ )?/,"")||"(sin subcategoría)";
+    const sub=stripPrefix(r.categ_id&&r.categ_id[1]||"")||"(sin subcategoría)";
     const a = analizar(r.name||"", sub);
     const varId = (r.product_variant_id&&r.product_variant_id[0])||null;
     const pk = varId ? packByVar[varId] : null;
@@ -334,12 +367,14 @@ async function cargar(preservar){
   const bycat = {};
   TODOS.forEach(p=>{ bycat[p.sub]=(bycat[p.sub]||0)+1; });
   SUBCATS = Object.keys(bycat).sort((x,y)=>bycat[y]-bycat[x]);
-  actual = (prevSub && SUBCATS.includes(prevSub)) ? prevSub : SUBCATS[0];
+  // conserva las secciones abiertas al sincronizar; en la 1ª carga abre la primera
+  abiertos = new Set([...abiertos].filter(s=>SUBCATS.includes(s)));
+  if(!preservar && !abiertos.size && SUBCATS.length) abiertos.add(SUBCATS[0]);
   render();
 }
 
-function subFiltrados(){
-  let arr = TODOS.filter(p=>p.sub===actual);
+function filtrarSub(sc){
+  let arr = TODOS.filter(p=>p.sub===sc);
   if(filtro){ const q=filtro.toLowerCase(); arr = arr.filter(p=>(p.nombre+" "+p.sku).toLowerCase().includes(q)); }
   if(filtros.conCambios) arr = arr.filter(p=>p.cambia && !p.aplicado);
   if(filtros.sinBulto)   arr = arr.filter(p=>!p.desg.bultoNum);
@@ -349,20 +384,21 @@ function subFiltrados(){
   if(filtros.sinEmbalaje)arr = arr.filter(p=>p.embalaje==null);
   return arr;
 }
+function hayFiltroActivo(){ return !!filtro || Object.values(filtros).some(Boolean); }
 
 function render(){
   const cont = document.getElementById("cont");
-  const enTab = TODOS.filter(p=>p.sub===actual);
-  const total = enTab.length;
-  const conCambio = enTab.filter(p=>p.cambia && !p.aplicado).length;
-  const sinConc = enTab.filter(p=>!p.desg.conc).length;
-  const sinBulto = enTab.filter(p=>!p.desg.bultoNum).length;
-  const sinEmb = enTab.filter(p=>p.embalaje==null).length;
-  const sinStock = enTab.filter(p=>(p.stock||0)<=0).length;
+  // KPIs y filtros GLOBALES (sobre todo el catálogo cargado)
+  const total = TODOS.length;
+  const conCambio = TODOS.filter(p=>p.cambia && !p.aplicado).length;
+  const sinConc = TODOS.filter(p=>!p.desg.conc).length;
+  const sinBulto = TODOS.filter(p=>!p.desg.bultoNum).length;
+  const sinEmb = TODOS.filter(p=>p.embalaje==null).length;
+  const sinStock = TODOS.filter(p=>(p.stock||0)<=0).length;
 
   const kpi = (key,n,label,cls)=>`<div class="kpi ${cls||""} ${key?"clk":""} ${key&&filtros[key]?"on":""}" ${key?`onclick="toggleFiltro('${key}')"`:""}><div class="n">${n}</div><div class="l">${label}</div></div>`;
   const kpis = `<div class="kpis">
-    ${kpi(null,total,"En esta pestaña","")}
+    ${kpi(null,total,"Productos","")}
     ${kpi("conCambios",conCambio,"Con corrección","warn")}
     ${kpi("sinConc",sinConc,"Sin concentración","warn")}
     ${kpi("sinBulto",sinBulto,"Sin bulto/caja","warn")}
@@ -370,31 +406,46 @@ function render(){
     ${kpi("sinStock",sinStock,"Sin stock","")}
   </div>`;
 
-  const tabs = `<div class="tabs">${SUBCATS.map(sc=>{
-    const n = TODOS.filter(p=>p.sub===sc).length;
-    const chg = TODOS.filter(p=>p.sub===sc && p.cambia && !p.aplicado).length;
-    return `<div class="tab ${sc===actual?"active":""}" onclick="setSub('${EYG.esc(sc).replace(/'/g,"\\'")}')">${EYG.esc(sc)}<span class="c">${n}</span>${chg?`<span class="chg">${chg}</span>`:""}</div>`;
-  }).join("")}</div>`;
+  const catsel = `<div class="catsel"><span class="lbl">Categoría</span>${CATEGS.map((c,i)=>`<div class="catpill ${c.id===ROOT.id?"active":""}" onclick="setCateg(${i})">${EYG.esc(c.label)}</div>`).join("")}</div>`;
 
-  const arr = subFiltrados();
-  const pendientes = arr.filter(p=>p.cambia && !p.aplicado).length;
-  const algunFiltro = filtros.conCambios||filtros.sinBulto||filtros.sinConc||filtros.sinStock||filtros.conStock;
+  const filtrando = hayFiltroActivo();
+  const enVista = SUBCATS.reduce((a,sc)=>a+filtrarSub(sc).length,0);
+  const algunFiltro = filtros.conCambios||filtros.sinBulto||filtros.sinConc||filtros.sinStock||filtros.conStock||filtros.sinEmbalaje;
   const toolbar = `<div class="toolbar">
     <button class="btn-sync" onclick="sincronizar()">🔄 Actualizar</button>
     <button class="btn-toggle ${filtros.conStock?"on":""}" onclick="toggleFiltro('conStock')">📦 Solo con stock</button>
-    <input type="search" id="buscar" placeholder="Buscar por nombre o SKU…" value="${EYG.esc(filtro)}" oninput="onBuscar(this.value)">
+    <input type="search" id="buscar" placeholder="Buscar por nombre o SKU (en todas las subcategorías)…" value="${EYG.esc(filtro)}" oninput="onBuscar(this.value)">
+    <button class="btn-expand" onclick="toggleTodas()">${abiertos.size>=SUBCATS.length?"Contraer todo":"Expandir todo"}</button>
     ${algunFiltro?`<button class="btn-clear" onclick="limpiarFiltros()">✕ Quitar filtros</button>`:""}
     ${HISTORIAL.length?`<button class="btn-undo" onclick="deshacer()">↩ Deshacer (${HISTORIAL.length})</button>`:""}
-    <span class="cnt">${arr.length} en vista</span>
-    <button class="btn-bulk" ${pendientes?"":"disabled"} onclick="aplicarTodos()">Aplicar los ${pendientes} sugeridos</button>
+    <span class="cnt">${enVista} en vista</span>
   </div>`;
 
   const head = `<div class="thead"><div>SKU</div><div>Nombre actual (Odoo)</div><div>Nombre sugerido</div><div>Aplicar</div><div>Concentración</div><div>Presentación</div><div>Bulto / caja</div><div>Embalaje (caja real)</div></div>`;
 
-  const rows = arr.length ? arr.map(p=>fila(p)).join("") : '<div class="empty">Sin resultados en esta pestaña.</div>';
+  // acordeón: una sección por subcategoría. Con búsqueda de texto, auto-abre las que tienen match.
+  const secciones = SUBCATS.map((sc,i)=>{
+    const totalSc = TODOS.filter(p=>p.sub===sc).length;
+    const arr = filtrarSub(sc);
+    if(filtrando && arr.length===0) return "";           // oculta subcategorías sin coincidencias
+    const abierta = abiertos.has(sc) || (!!filtro && arr.length>0);
+    const pend = arr.filter(p=>p.cambia && !p.aplicado).length;
+    const cuerpo = abierta
+      ? `<div class="secbody">${head}${arr.length?arr.map(p=>fila(p)).join(""):'<div class="empty">Sin coincidencias con el filtro.</div>'}</div>`
+      : "";
+    return `<div class="sec ${abierta?"open":""}">
+      <div class="sechead" onclick="toggleSec(${i})">
+        <span class="chev">▶</span>
+        <span class="secname">${EYG.esc(sc)}</span>
+        <span class="seccount">${filtrando?arr.length+" / "+totalSc:totalSc}</span>
+        ${pend?`<span class="secchg">${pend} a corregir</span>`:""}
+        <span class="secright">${pend?`<button class="btn-secap" onclick="event.stopPropagation();aplicarTodos(${i})">Aplicar los ${pend} sugeridos</button>`:""}</span>
+      </div>${cuerpo}</div>`;
+  }).join("");
+  const accordion = `<div class="accordion">${secciones||'<div class="empty">Sin resultados. Probá quitar filtros.</div>'}</div>`;
 
-  cont.innerHTML = `<div class="intro">
-      <b>Maestro de productos — Depósito.</b> El dato ordenado de cada producto: <b>nombre</b> (detecta mayúsculas, acentos, espacios, unidades pegadas, abreviaturas, códigos sueltos y propone el correcto), <b>bulto/caja</b>, <b>embalaje (caja real)</b> y <b>subcategoría</b>. <b>Tocá una tarjeta</b> de arriba para filtrar (sin bulto, sin concentración, sin stock, sin embalaje). Donde falte el <b>bulto/caja</b>, cargalo desde la fila. En <b>Embalaje (caja real)</b>: cuántas unidades trae la caja cerrada — es el mínimo de compra, se guarda en Odoo. A los productos <b>sin subcategoría</b> asignásela con el desplegable. Revisá y aplicá con un clic; el resto lo sincroniza el sistema solo.
+  cont.innerHTML = `${catsel}<div class="intro">
+      <b>Maestro de productos — Depósito.</b> El dato ordenado de cada producto: <b>nombre</b> (detecta mayúsculas, acentos, espacios, unidades pegadas, abreviaturas, códigos sueltos y propone el correcto), <b>bulto/caja</b>, <b>embalaje (caja real)</b> y <b>subcategoría</b>. Cada subcategoría es una <b>sección desplegable</b>: tocá el título para abrirla o cerrarla. <b>Tocá una tarjeta</b> de arriba para filtrar en todas a la vez (con corrección, sin concentración, sin bulto, sin embalaje, sin stock); el buscador también recorre todas las subcategorías. Donde falte el <b>bulto/caja</b>, cargalo desde la fila. En <b>Embalaje (caja real)</b>: cuántas unidades trae la caja cerrada — es el mínimo de compra, se guarda en Odoo. A los productos <b>sin subcategoría</b> asignásela con el desplegable. Revisá y aplicá con un clic; el resto lo sincroniza el sistema solo.
       <details><summary>Ver la regla de nombres que se aplica</summary>
         <div class="std">
           Formato objetivo: <code>MONODROGA CONCENTRACIÓN forma x contenido - LABORATORIO (Caja x N tipo)</code><br>
@@ -405,7 +456,7 @@ function render(){
           • El bulto se normaliza a <code>(Caja x N tipo)</code>; “SE VENDE POR CAJA CERRADA” se conserva.
         </div>
       </details>
-    </div>${kpis}${tabs}${toolbar}<div class="tablecard">${head}${rows}</div>`;
+    </div>${kpis}${toolbar}${accordion}`;
 }
 
 function fila(p){
@@ -455,7 +506,14 @@ function embCell(p){
 }
 
 /* =========================== acciones =========================== */
-window.setSub = sc => { actual=sc; filtro=""; render(); };
+window.setCateg = i => {
+  const c = CATEGS[i]; if(!c || c.id===ROOT.id) return;
+  ROOT = c; filtro=""; abiertos=new Set(); HISTORIAL=[];
+  filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false, sinEmbalaje:false};
+  cargar();
+};
+window.toggleSec = i => { const sc=SUBCATS[i]; if(sc==null) return; if(abiertos.has(sc)) abiertos.delete(sc); else abiertos.add(sc); render(); };
+window.toggleTodas = () => { if(abiertos.size>=SUBCATS.length) abiertos.clear(); else abiertos=new Set(SUBCATS); render(); };
 function recomputarSubs(){
   const bycat={}; TODOS.forEach(p=>{ bycat[p.sub]=(bycat[p.sub]||0)+1; });
   SUBCATS = Object.keys(bycat).sort((x,y)=>bycat[y]-bycat[x]);
@@ -472,7 +530,7 @@ window.asignarSub = async id => {
     await EYG.rpc("product.template","write",[[p.id],{categ_id:catId}], LANG);
     p.sub = c.name;
     recomputarSubs();
-    if(!SUBCATS.includes(actual)) actual = SUBCATS[0];
+    abiertos.add(c.name);   // deja visible la subcategoría a la que se movió
     toast("Movido a "+c.name+" ✓ — el cron le arma la escalera");
     render();
   }catch(e){ if(btn){ btn.disabled=false; btn.textContent="Asignar"; } toast("Error: "+EYG.esc(e.message)); }
@@ -548,10 +606,11 @@ window.aplicar = async id => {
        HISTORIAL.push({cambios:[{id,antes,despues}], desc:(p.sku||("#"+id))}); toast("Nombre actualizado ✓"); render(); }
   catch(e){ if(btn){ btn.disabled=false; btn.textContent="Aplicar"; } toast("Error: "+e.message); }
 };
-window.aplicarTodos = async () => {
-  const arr = subFiltrados().filter(p=>p.cambia && !p.aplicado);
+window.aplicarTodos = async i => {
+  const sc = SUBCATS[i]; if(sc==null) return;
+  const arr = filtrarSub(sc).filter(p=>p.cambia && !p.aplicado);
   if(!arr.length) return;
-  if(!confirm(`Vas a aplicar ${arr.length} nombres corregidos en esta pestaña. ¿Continuar?`)) return;
+  if(!confirm(`Vas a aplicar ${arr.length} nombres corregidos en "${sc}". ¿Continuar?`)) return;
   let ok=0, err=0; const cambios=[];
   for(const p of arr){
     const antes = p.nombre;
@@ -559,7 +618,7 @@ window.aplicarTodos = async () => {
     catch(e){ err++; }
     if((ok+err)%5===0) toast(`Aplicando… ${ok+err}/${arr.length}`);
   }
-  if(cambios.length) HISTORIAL.push({cambios, desc:`${cambios.length} nombres · ${actual}`});
+  if(cambios.length) HISTORIAL.push({cambios, desc:`${cambios.length} nombres · ${sc}`});
   toast(`Listo: ${ok} aplicados${err?`, ${err} con error`:""}`); render();
 };
 window.deshacer = async () => {
