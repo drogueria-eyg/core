@@ -217,10 +217,11 @@ const TRAMO_GRIS ={k:"gris",   l:"Falta certificado/OP", t:"treg"}; // ya pagó,
 const TRAMO_FAVOR={k:"afavor", l:"Saldo a favor",        t:"t1"};
 
 // Rubro del cliente (vive en category_id / etiquetas de Odoo). Mismo criterio que el panel del comercial.
-const RUBROS=[{v:30,l:"Farmacia"},{v:32,l:"Sanatorio / Clínica"},{v:37,l:"Empresa de salud"},{v:33,l:"Institución / Mutual"},{v:34,l:"Distribuidora"},{v:35,l:"Veterinaria"},{v:62,l:"SAMCO"}];
-const RUBRO_LBL={30:"Farmacia",32:"Sanatorio / Clínica",37:"Empresa de salud",33:"Institución / Mutual",34:"Distribuidora",35:"Veterinaria",62:"SAMCO"};
-const RUBRO_MAP={28:30,29:30,30:30, 8:35,35:35, 7:34,34:34, 31:33,33:33,36:33, 20:32,32:32, 37:37, 62:62};
-const rubroActual=cats=>{ for(const t of (cats||[])) if(RUBRO_MAP[t]) return RUBRO_MAP[t]; return 0; };
+// Categorías REALES de Odoo (id→nombre), cargadas en vivo. NO hardcodear rubros.
+let CATNAME={};
+const rubrosDe=cats=>(cats||[]).map(id=>({id,name:CATNAME[id]||("#"+id)}));
+// Lista curada SOLO para el desplegable de edición (ids reales de res.partner.category)
+const RUBRO_EDIT=[{v:30,l:"Farmacia"},{v:32,l:"Centros de salud"},{v:37,l:"Empresas de salud"},{v:33,l:"Instituciones"},{v:36,l:"Asociaciones"},{v:34,l:"Distribuidoras"},{v:35,l:"Veterinarias"},{v:62,l:"SAMCO"},{v:2,l:"Laboratorio"}];
 
 // ===== Edición de ficha (mismo sistema que el panel de vendedores) =====
 const IDT={cuit:4,dni:5,cuil:6};
@@ -346,6 +347,11 @@ async function cargar(){
       nm.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
       for(const msg of nm){ if(!(msg.res_id in NOTAS)){ const body=(msg.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," "); const texto=(body.split("]").slice(1).join("]")||"").trim(); NOTAS[msg.res_id]={texto,fecha:msg.date}; } }
     }
+    // Nombres reales de las categorías de contacto (para mostrar el rubro real de Odoo)
+    if(!Object.keys(CATNAME).length){ try{
+      const cats=await rpc("res.partner.category","search_read",[[]],{fields:["id","name"],limit:0,context:{lang:"es_AR"}});
+      CATNAME={}; cats.forEach(c=>CATNAME[c.id]=c.name);
+    }catch(e){ console.warn("No se pudieron cargar categorías",e); } }
     // Catálogos para el formulario de edición (dropdowns), 1 sola vez
     if(!CAT.prov.length){ try{
       const [fiscal,idt,prov]=await Promise.all([
@@ -391,7 +397,7 @@ async function cargar(){
         wa:waNumber(c.mobile,c.phone), tellink:telLink(c.mobile,c.phone),
         telv:(c.mobile||c.phone||""), email:c.email||"", ciudad:c.city||"",
         comercial:c.user_id?c.user_id[1]:"Sin asignar",
-        rubro:rubroActual(c.category_id), part:c,
+        rubros:rubrosDe(c.category_id), rubroIds:(c.category_id||[]), part:c,
         plazo:plazoCorto(c.property_payment_term_id), plazoFull:c.property_payment_term_id?c.property_payment_term_id[1]:"",
         boveda:BOVEDA[p.id]||null,
         contactado:CONTACTOS[p.id]||null,
@@ -412,7 +418,7 @@ function visibles(){
     else if(filtro.tramo==='cubierto'){ if(c.situacion!=='cubierto') return false; }
     else if(filtro.tramo && c.tramo.k!==filtro.tramo) return false;
     if(filtro.comercial && c.comercial!==filtro.comercial) return false;
-    if(filtro.rubro!==""){ if(filtro.rubro==="sin"){ if(c.rubro) return false; } else if(c.rubro!==filtro.rubro) return false; }
+    if(filtro.rubro!==""){ if(filtro.rubro==="sin"){ if(c.rubros.length) return false; } else if(!c.rubroIds.includes(filtro.rubro)) return false; }
     if(filtro.q){const q=filtro.q.toLowerCase(); if(!c.nombre.toLowerCase().includes(q)) return false;}
     return true;
   });
@@ -488,10 +494,13 @@ function render(){
   const comMap={}; activos.forEach(c=>comMap[c.comercial]=(comMap[c.comercial]||0)+1);
   const comercialOpts=`<option value="">Todos los comerciales</option>`+Object.entries(comMap).sort((a,b)=>b[1]-a[1]).map(([n,c])=>`<option value="${esc(n)}" ${filtro.comercial===n?"selected":""}>${esc(n)} (${c})</option>`).join("");
   // Deuda por RUBRO (tarjetas filtro)
-  const rubMap={}; activos.forEach(c=>{const k=c.rubro||"sin"; (rubMap[k]=rubMap[k]||{n:0,m:0}); rubMap[k].n++; rubMap[k].m+=Math.max(0,c.deudaReal);});
-  const rubCards=RUBROS.filter(r=>rubMap[r.v]).sort((a,b)=>rubMap[b.v].m-rubMap[a.v].m).map(r=>
-      `<div class="kpi rub ${filtro.rubro===r.v?'on':''}" onclick="setRubro(${r.v})"><div class="n">${rubMap[r.v].n}</div><div class="money">${money(rubMap[r.v].m)}</div><div class="l">🏷️ ${esc(r.l)}</div></div>`).join("")
-    + (rubMap["sin"]?`<div class="kpi rub ${filtro.rubro==='sin'?'on':''}" onclick="setRubro('sin')"><div class="n">${rubMap["sin"].n}</div><div class="money">${money(rubMap["sin"].m)}</div><div class="l">🏷️ Sin rubro</div></div>`:"");
+  const rubMap={}; let sinCat={n:0,m:0};
+  activos.forEach(c=>{ const d=Math.max(0,c.deudaReal);
+    if(!c.rubros.length){ sinCat.n++; sinCat.m+=d; return; }
+    c.rubros.forEach(r=>{ const b=(rubMap[r.id]=rubMap[r.id]||{n:0,m:0,name:r.name}); b.n++; b.m+=d; }); });
+  const rubCards=Object.entries(rubMap).sort((a,b)=>b[1].m-a[1].m).map(([id,v])=>
+      `<div class="kpi rub ${String(filtro.rubro)===id?'on':''}" onclick="setRubro(${id})"><div class="n">${v.n}</div><div class="money">${money(v.m)}</div><div class="l">🏷️ ${esc(v.name)}</div></div>`).join("")
+    + (sinCat.n?`<div class="kpi rub ${filtro.rubro==='sin'?'on':''}" onclick="setRubro('sin')"><div class="n">${sinCat.n}</div><div class="money">${money(sinCat.m)}</div><div class="l">🏷️ Sin categoría</div></div>`:"");
 
   const evoCap=(EVO.length>=2)?(()=>{const a=EVO[0],b=EVO[EVO.length-1],[ay,am]=a.ym.split("-");const dif=b.val-a.val;
     return `Pasó de <b>${money(a.val)}</b> (${MESAB[+am]} '${ay.slice(2)}) a <b>${money(b.val)}</b> hoy <span class="up">▲ ${money(dif)}</span>`;})():"";
@@ -569,7 +578,7 @@ function renderLista(){
     const cont=fmtContacto(c.contactado);
     return `<div class="row ${cont&&cont.esHoy?'contactado':''}" onclick="abrir(${c.id})">
       <div><div class="cname">${esc(c.nombre)} ${c.tieneGris?`<span class="gflag">📄 ${money(c.gris)} en gris</span>`:''}${c.boveda?`<span class="bovtag ${c.boveda.tipo==='incobrable'?'inc':'acu'}">🔒 ${c.boveda.tipo==='incobrable'?'Incobrable':'Acuerdo'}</span>`:''}</div>
-        <div class="cmeta">${c.plazo?`<span class="plz">⏱ ${esc(c.plazo)}</span> `:''}${esc(c.ciudad||"—")}${cont?` · <span class="ctag">📞 contactado ${cont.texto}</span>`:''}${c.nota?` · <span class="plz" style="background:#EDE7F6;color:#5B3FA6" title="${esc(c.nota.texto)}">📝 nota</span>`:''}</div></div>
+        <div class="cmeta">${c.plazo?`<span class="plz">⏱ ${esc(c.plazo)}</span> `:''}${esc(c.ciudad||"—")}${cont?` · <span class="ctag">📞 contactado ${cont.texto}</span>`:''}${c.nota?` · <span class="plz" style="background:#EDE7F6;color:#5B3FA6" title="${esc(c.nota.texto)}">📝 nota</span>`:''}${c.rubros.length?` · <span class="plz" style="background:#E8F3F1;color:var(--teal-deep)" title="${esc(c.rubros.map(r=>r.name).join(', '))}">🏷️ ${esc(c.rubros[0].name)}${c.rubros.length>1?' +'+(c.rubros.length-1):''}</span>`:''}</div></div>
       <div class="num">${money(aCobrar)}
         <div class="pbar" title="Pagó ${Math.round((1-c.pctDebe)*100)}% de lo facturado${(1-c.pctDebe)>0.01&&aCobrar>1?' · pago parcial':''}"><i style="width:${((1-c.pctDebe)*100).toFixed(1)}%"></i></div>
         <div class="muted">${(1-c.pctDebe)>0.01&&aCobrar>1?'pagó '+Math.round((1-c.pctDebe)*100)+'%':c.nfac+' fac.'}${c.saldoIni>1?' · +saldo ant.':''}</div></div>
@@ -702,6 +711,7 @@ function abrir(id){
         <h4>Datos de contacto</h4>
         <div class="kv"><span class="k">Comercial</span><span class="v" style="color:${c.comercial==="Sin asignar"?"var(--coral)":"var(--teal-deep)"}">${esc(c.comercial)}</span></div>
         <div class="kv"><span class="k">Plazo de pago</span><span class="v">${esc(c.plazoFull||"—")}</span></div>
+        <div class="kv"><span class="k">Rubro / categoría</span><span class="v">${c.rubros.length?c.rubros.map(r=>esc(r.name)).join(", "):"—"}</span></div>
         <div class="kv"><span class="k">Ubicación</span><span class="v">${esc(c.ciudad||"—")}</span></div>
         <div class="kv"><span class="k">Teléfono</span><span class="v">${esc(c.telv||"—")}</span></div>
         <div class="kv"><span class="k">Email</span><span class="v">${esc(c.email||"—")}</span></div>
@@ -757,8 +767,8 @@ function editarContacto(id){
   const p=c.part||{};
   const tipo=p.is_company?'company':(p.company_type||'person');
   const optSel=(cat,sel,ph)=>`<option value="">${ph||'— elegir —'}</option>`+(cat||[]).map(o=>`<option value="${o.id}" ${sel&&(Array.isArray(sel)?sel[0]===o.id:sel===o.id)?'selected':''}>${esc(o.name)}</option>`).join("");
-  const rubroSel=c.rubro||"";
-  const rubroOpts=`<option value="">— elegir rubro —</option>`+RUBROS.map(r=>`<option value="${r.v}" ${rubroSel===r.v?'selected':''}>${esc(r.l)}</option>`).join("");
+  const rubroSel=(c.rubroIds||[]).find(id=>RUBRO_EDIT.some(r=>r.v===id))||"";
+  const rubroOpts=`<option value="">— elegir rubro —</option>`+RUBRO_EDIT.map(r=>`<option value="${r.v}" ${rubroSel===r.v?'selected':''}>${esc(r.l)}</option>`).join("");
   const d=document.getElementById("drawer");
   d.innerHTML=`
     <div class="dhead"><span class="x" onclick="abrir(${id})">←</span>
@@ -817,7 +827,7 @@ async function guardarContacto(id){
       c.part=fresh; c.nombre=fresh.name||c.nombre;
       c.telv=fresh.mobile||fresh.phone||""; c.email=fresh.email||""; c.ciudad=fresh.city||"";
       c.wa=waNumber(fresh.mobile,fresh.phone); c.tellink=telLink(fresh.mobile,fresh.phone);
-      c.comercial=fresh.user_id?fresh.user_id[1]:"Sin asignar"; c.rubro=rubroActual(fresh.category_id);
+      c.comercial=fresh.user_id?fresh.user_id[1]:"Sin asignar"; c.rubros=rubrosDe(fresh.category_id); c.rubroIds=fresh.category_id||[];
     }
     toast("✅ Datos guardados y sincronizados con Odoo");
     render(); abrir(id);
