@@ -125,21 +125,24 @@ function badge(m){
 }
 function bucket(m){ return m==null?null: m>=40?'ok2': m>=33?'ok': m>=27?'warn':'bad'; }
 // costo efectivo: gana el más reciente entre el costo manual y la última compra
+// PARENTERALES: el IVA de la compra no se descarga -> al costo de COMPRA se le suma 21% y se toma como neto.
+// El costo MANUAL queda como se carga (el usuario ya lo ingresa con el 21% incluido).
 function costoEfectivo(it){
   const m=it.manualC||0, md=it.manualD||null, uf=it.ucF||null, uc=it.ucC||0;
+  const iva = it.esParenteral ? 1.21 : 1;
   if(m>0 && (!uf || (md && md>=uf))) return {costo:m, fuente:'manual', fecha:md};
-  if(uc>0) return {costo:uc, fuente:'compra', fecha:uf};
+  if(uc>0) return {costo:uc*iva, fuente:'compra', fecha:uf, iva:it.esParenteral};
   return {costo:(it.std||0), fuente:'odoo', fecha:null};
 }
 function aplicarCosto(it){
-  const e=costoEfectivo(it); it.costo=e.costo; it.fuente=e.fuente; it.fecha=e.fecha;
+  const e=costoEfectivo(it); it.costo=e.costo; it.fuente=e.fuente; it.fecha=e.fecha; it.ivaAplicado=!!e.iva;
   it.tramos = it.tramosRaw.map((t,i)=>({ rango: rango(t.q,it.tramosRaw,i), precio:t.p, margen: t.p>0 && it.costo>0 ? (t.p-it.costo)/t.p*100 : null }));
   const ms=it.tramos.map(t=>t.margen).filter(m=>m!=null);
   it.peor = ms.length? Math.min(...ms): null;
 }
 function fmtDT(s){ if(!s) return ""; try{ return new Date(String(s).replace(" ","T")+"Z").toLocaleString("es-AR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch(e){ return s; } }
-function fuenteLbl(x,dias){ return x.fuente==='manual'?('✎ manual '+fmtDT(x.manualD)) : x.fuente==='compra'?(dias===0?'compra hoy':dias!=null?'compra '+dias+'d':'compra') : 'costo Odoo'; }
-function costoTip(x){ const p=[]; if(x.manualC>0) p.push('Manual: '+money(x.manualC)+' ('+fmtDT(x.manualD)+')'); if(x.ucC>0) p.push('Última compra: '+money(x.ucC)+' ('+fmtDT(x.ucF)+')'); p.push('En uso: '+(x.fuente==='manual'?'costo manual':x.fuente==='compra'?'última compra':'costo Odoo')+' — gana el más reciente'); return p.join(' · '); }
+function fuenteLbl(x,dias){ if(x.fuente==='manual') return '✎ manual '+fmtDT(x.manualD); if(x.fuente==='compra'){ const b=dias===0?'compra hoy':dias!=null?'compra '+dias+'d':'compra'; return b+(x.ivaAplicado?' +21% IVA':''); } return 'costo Odoo'; }
+function costoTip(x){ const p=[]; if(x.manualC>0) p.push('Manual: '+money(x.manualC)+' ('+fmtDT(x.manualD)+')'); if(x.ucC>0) p.push('Última compra: '+money(x.ucC)+(x.esParenteral?(' +21% = '+money(x.ucC*1.21)):'')+' ('+fmtDT(x.ucF)+')'); if(x.esParenteral) p.push('Parenteral: al costo de compra se le suma 21% (IVA no descontable)'); p.push('En uso: '+(x.fuente==='manual'?'costo manual':x.fuente==='compra'?'última compra':'costo Odoo')+' — gana el más reciente'); return p.join(' · '); }
 let ST={items:[], q:"", cat:"todos", salud:"todos", sinStock:false, conStock:false, sinEsc:false};
 
 async function cargar(){
@@ -181,6 +184,7 @@ async function cargar(){
         cat:(p.categ_id?p.categ_id[1]:'').replace("ALL / ",""),
         stock:(p.qty_available!=null?p.qty_available:0),
         sinEscalera:!tramosRaw.length, tramoBase, tramosRaw, std:(p.standard_price||0),
+        esParenteral:/parenteral/i.test((p.categ_id&&p.categ_id[1])||""),
         manualC:(p.x_costo_manual||0), manualD:(p.x_costo_manual_date||null),
         ucF:(uc.f||null), ucC:(uc.c||0)
       };
