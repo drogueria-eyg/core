@@ -20,7 +20,9 @@
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
   .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:15px 16px;position:relative}
   .card.opo{border-left:4px solid var(--gold)}
+  .card.opostock{border-left:4px solid var(--org,#c4602a)}
   .card.oferta{border-left:4px solid var(--teal)}
+  .tag.os{color:#fff} .tag.os.venc{background:#b0322f} .tag.os.sob{background:#c4602a} .tag.os.mue{background:#8A9A97}
   .card.vencida{opacity:.6}
   .card .tag{position:absolute;top:12px;right:12px;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;padding:3px 8px;border-radius:20px}
   .tag.g{background:#fbf0d6;color:#9a6a0b} .tag.t{background:var(--agua);color:var(--teal-deep)} .tag.v{background:#eee;color:#888}
@@ -70,7 +72,7 @@ const esc=s=>EYG.esc(s);
 const hoy=()=>new Date().toISOString().slice(0,10);
 function masDias(n){ const d=new Date(); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
 function fmtF(s){ if(!s) return ""; const [y,m,d]=String(s).slice(0,10).split("-"); return d+"/"+m; }
-let OPOS=[], OFERTAS=[], UMBRAL=0.10;
+let OPOS=[], ARCH=[], OFERTAS=[], OPORT_STOCK=[], OPORT_STOCK_FECHA="", UMBRAL=0.10;
 
 async function getParam(k,def){ const r=await EYG.rpc("ir.config_parameter","get_param",[k]); return (r===false||r==null)?def:r; }
 async function setParam(k,v){ return EYG.rpc("ir.config_parameter","set_param",[k,String(v)]); }
@@ -81,10 +83,12 @@ async function cargar(){
     UMBRAL=parseFloat(await getParam("eyg.oferta.umbral","0.10"))||0.10;
     const ofRaw=await getParam("eyg.ofertas","[]");
     try{ OFERTAS=JSON.parse(ofRaw||"[]"); }catch(e){ OFERTAS=[]; }
+    // oportunidades que manda el panel de Stock (por vencimiento / sobrestock / sin venta)
+    try{ const os=JSON.parse(await getParam("eyg.oportunidades_stock","{}")||"{}"); OPORT_STOCK=os.items||[]; OPORT_STOCK_FECHA=os.fecha||""; }catch(e){ OPORT_STOCK=[]; }
     // oportunidades detectadas
     const prods=await EYG.rpc("product.product","search_read",
-      [[["x_oportunidad","=",true],["active","=",true]]],
-      Object.assign({fields:["id","default_code","name","categ_id","qty_available","x_oportunidad_costo_ant","x_oportunidad_fecha","product_tmpl_id"], limit:500}, LANG));
+      [["&",["active","=",true],"|",["x_oportunidad","=",true],["x_oportunidad_archivada","=",true]]],
+      Object.assign({fields:["id","default_code","name","categ_id","qty_available","x_oportunidad","x_oportunidad_archivada","x_oportunidad_costo_ant","x_oportunidad_fecha","product_tmpl_id"], limit:500}, LANG));
     // precio de venta actual (escalera base = min_quantity 1) de cada uno
     const tmpls=prods.map(p=>p.product_tmpl_id&&p.product_tmpl_id[0]).filter(Boolean);
     const pit = tmpls.length? await EYG.rpc("product.pricelist.item","search_read",
@@ -92,13 +96,15 @@ async function cargar(){
       {fields:["product_tmpl_id","min_quantity","fixed_price"], limit:20000}) : [];
     const baseT={};
     for(const it of pit){ const t=it.product_tmpl_id[0]; if(!baseT[t]||it.min_quantity<baseT[t].q) baseT[t]={q:it.min_quantity,p:it.fixed_price}; }
-    OPOS=prods.map(p=>{
+    const todos=prods.map(p=>{
       const t=p.product_tmpl_id[0]; const base=baseT[t]?baseT[t].p:0;
       const costoAnt=p.x_oportunidad_costo_ant||0; const costoAhora=base>0?base/1.8:0;
       return { id:p.id, tmpl:t, sku:p.default_code||"", nombre:p.name||"",
         cat:(p.categ_id?p.categ_id[1]:"").replace("ALL / HOSPITALARIOS / ","").replace("ALL / ",""),
-        stock:p.qty_available||0, precio:base, costoAnt, costoAhora, fecha:p.x_oportunidad_fecha };
+        stock:p.qty_available||0, precio:base, costoAnt, costoAhora, fecha:p.x_oportunidad_fecha, _arch:!!p.x_oportunidad_archivada };
     });
+    OPOS=todos.filter(x=>!x._arch);
+    ARCH=todos.filter(x=>x._arch);
     render();
   }catch(e){ cont.innerHTML='<div class="empty">No pude leer los datos: '+esc(e.message)+'</div>'; }
 }
@@ -110,15 +116,19 @@ function render(){
   OFERTAS.forEach(o=>o._venc=!vigente(o));
   const activas=OFERTAS.filter(o=>!o._venc), vencidas=OFERTAS.filter(o=>o._venc);
   const opoCards = OPOS.length ? OPOS.map(cardOpo).join("") : '<div class="empty">No hay oportunidades nuevas. Cuando un costo baje '+Math.round(UMBRAL*100)+'% o más, aparece acá.</div>';
+  const osCards = OPORT_STOCK.length ? OPORT_STOCK.map(cardOpoStock).join("") : '<div class="empty">Sin oportunidades de stock ahora. El panel de Stock y Sobrestock recalcula hasta 5 cada vez que se abre.</div>';
   const ofCards = (activas.length||vencidas.length) ? activas.concat(vencidas).map(cardOferta).join("") : '<div class="empty">Todavía no hay ofertas. Confirmá una oportunidad o agregá una manual.</div>';
   cont.innerHTML=`
     <div class="intro">
-      <div class="grow"><b>Oportunidades y ofertas.</b> Cuando un costo baja, el sistema lo detecta como oportunidad. Confirmala (elegí precio, stock y vigencia) y va a la tarjeta <b>“Combos y ofertas de la semana”</b> de los comerciales. También podés agregar ofertas o combos a mano.</div>
+      <div class="grow"><b>Oportunidades y ofertas.</b> El sistema detecta oportunidades cuando <b>baja un costo</b> o cuando el panel de <b>Stock y Sobrestock</b> encuentra productos por vencer, con sobrestock o sin venta. Confirmala (elegí precio, stock y vigencia) y va a la tarjeta <b>“Combos y ofertas de la semana”</b> de los comerciales. También podés agregar ofertas o combos a mano.</div>
       <button class="btn ghost" onclick="abrirConfig()">⚙️ Configuración</button>
       <button class="btn" onclick="abrirOferta(null)">+ Oferta / combo manual</button>
     </div>
-    <h2 class="sec">💡 Oportunidades detectadas <span class="n">${OPOS.length}</span></h2>
+    <h2 class="sec">💡 Oportunidades por costo <span class="n">${OPOS.length}</span></h2>
     <div class="grid">${opoCards}</div>
+    ${ARCH.length?`<h2 class="sec">📥 Archivadas <span class="n">${ARCH.length}</span></h2><div class="grid">${ARCH.map(cardArch).join("")}</div>`:''}
+    <h2 class="sec">📦 Oportunidades por stock <span class="n">${OPORT_STOCK.length}</span></h2>
+    <div class="grid">${osCards}</div>
     <h2 class="sec">🏷️ Ofertas y combos activos <span class="n">${activas.length}</span></h2>
     <div class="grid">${ofCards}</div>`;
 }
@@ -131,8 +141,21 @@ function cardOpo(o){
     <div class="drop"><span>Costo</span> <span class="a">${money(o.costoAnt)}</span> → <span class="b">${money(o.costoAhora)}</span> <span class="pc">−${pc}%</span></div>
     <div class="kv"><span>Precio venta: <b>${money(o.precio)}</b></span><span>Stock: <b>${o.stock}</b></span></div>
     <div class="acts">
-      <button class="btn sm" onclick="ofertarDesde(${o.id})">Crear oferta →</button>
-      <button class="btn ghost sm" onclick="descartar(${o.id})">Descartar</button>
+      <button class="btn sm" onclick="ofertarDesde(${o.id})">✅ Mandar al panel</button>
+      <button class="btn ghost sm" onclick="archivar(${o.id})">📥 Archivar</button>
+      <button class="btn warn sm" onclick="eliminar(${o.id})">🗑 Eliminar</button>
+    </div></div>`;
+}
+function cardArch(o){
+  const pc=o.costoAnt>0?Math.round((1-o.costoAhora/o.costoAnt)*100):0;
+  return `<div class="card opo" style="opacity:.78"><span class="tag v">Archivada</span>
+    <h3>${esc(o.nombre)}</h3>
+    <div class="meta">${esc(o.sku)} · ${esc(o.cat)}</div>
+    <div class="drop"><span>Costo</span> <span class="a">${money(o.costoAnt)}</span> → <span class="b">${money(o.costoAhora)}</span> <span class="pc">−${pc}%</span></div>
+    <div class="acts">
+      <button class="btn sm" onclick="ofertarDesde(${o.id})">✅ Mandar al panel</button>
+      <button class="btn ghost sm" onclick="desarchivar(${o.id})">↩ Restaurar</button>
+      <button class="btn warn sm" onclick="eliminar(${o.id})">🗑 Eliminar</button>
     </div></div>`;
 }
 function cardOferta(o){
@@ -152,10 +175,35 @@ function cardOferta(o){
     </div></div>`;
 }
 
+function cardOpoStock(o){
+  const motCls=o.motivo==="vence"?"venc":o.motivo==="sobre"?"sob":"mue";
+  const motTxt=o.motivo==="vence"?"Por vencer":o.motivo==="sobre"?"Sobrestock":"Sin venta";
+  return `<div class="card opostock"><span class="tag os ${motCls}">${motTxt}</span>
+    <h3>${esc(o.nombre)}</h3>
+    <div class="meta">${esc(o.sku)}${o.cat?' · '+esc(o.cat):''}</div>
+    <div class="meta" style="margin-top:5px">${esc(o.motivoTxt)}</div>
+    <div class="drop"><span class="a">${money(o.precio)}</span> → <span class="b">${money(o.sugPrecio)}</span> <span class="pc">−${Math.round(o.desc*100)}%</span></div>
+    <div class="kv"><span>Stock: <b>${(o.stock||0).toLocaleString('es-AR')}</b></span><span>Valor: <b>${money(o.valor)}</b></span></div>
+    <div class="acts">
+      <button class="btn sm" onclick="ofertarDesdeStock(${o.id})">✅ Mandar al panel</button>
+      <button class="btn warn sm" onclick="descartarStock(${o.id})">🗑 Eliminar</button>
+    </div></div>`;
+}
+function ofertarDesdeStock(pid){
+  const o=OPORT_STOCK.find(x=>x.id===pid); if(!o) return;
+  FORM={ id:null, tipo:"oferta", titulo:o.nombre, items:[{id:o.id,sku:o.sku,nombre:o.nombre}],
+    precio:o.sugPrecio, precioAntes:o.precio, stock:o.stock, hasta:masDias(7), nota:o.motivoTxt, _desdeStock:pid };
+  modalOferta();
+}
+window.descartarStock=async pid=>{
+  OPORT_STOCK=OPORT_STOCK.filter(x=>x.id!==pid);
+  try{ await setParam("eyg.oportunidades_stock", JSON.stringify({fecha:OPORT_STOCK_FECHA,items:OPORT_STOCK})); toast("Quitada de la lista"); render(); }catch(e){ toast("Error: "+e.message); }
+};
+
 /* ============ crear/editar oferta (modal) ============ */
 let FORM=null;
 function ofertarDesde(pid){
-  const o=OPOS.find(x=>x.id===pid); if(!o) return;
+  const o=OPOS.find(x=>x.id===pid)||ARCH.find(x=>x.id===pid); if(!o) return;
   FORM={ id:null, tipo:"oferta", titulo:o.nombre, items:[{id:o.id,sku:o.sku,nombre:o.nombre}],
     precio:o.precio, precioAntes:o.precio, stock:o.stock, hasta:masDias(7), nota:"", _desdeOpo:pid };
   modalOferta();
@@ -222,10 +270,11 @@ async function guardarOferta(){
   if(!FORM.titulo) FORM.titulo=FORM.items.map(i=>i.nombre).join(" + ");
   if(!FORM.id){ FORM.id="of"+Date.now(); FORM.creada=new Date().toISOString().slice(0,19).replace("T"," "); OFERTAS.push(FORM); }
   else { const i=OFERTAS.findIndex(o=>o.id===FORM.id); if(i>=0) OFERTAS[i]=FORM; }
-  const desdeOpo=FORM._desdeOpo; delete FORM._venc;
+  const desdeOpo=FORM._desdeOpo, desdeStock=FORM._desdeStock; delete FORM._venc;
   try{
-    await setParam("eyg.ofertas", JSON.stringify(OFERTAS.map(o=>{const c={...o};delete c._venc;delete c._desdeOpo;return c;})));
-    if(desdeOpo){ await EYG.rpc("product.product","write",[[desdeOpo],{x_oportunidad:false}],LANG); OPOS=OPOS.filter(x=>x.id!==desdeOpo); }
+    await setParam("eyg.ofertas", JSON.stringify(OFERTAS.map(o=>{const c={...o};delete c._venc;delete c._desdeOpo;delete c._desdeStock;return c;})));
+    if(desdeOpo){ await EYG.rpc("product.product","write",[[desdeOpo],{x_oportunidad:false,x_oportunidad_archivada:false}],LANG); OPOS=OPOS.filter(x=>x.id!==desdeOpo); ARCH=ARCH.filter(x=>x.id!==desdeOpo); }
+    if(desdeStock){ OPORT_STOCK=OPORT_STOCK.filter(x=>x.id!==desdeStock); await setParam("eyg.oportunidades_stock", JSON.stringify({fecha:OPORT_STOCK_FECHA,items:OPORT_STOCK})); }
     cerrarModal(); toast("Oferta guardada ✓ — ya aparece en el panel de comerciales", true); render();
   }catch(e){ toast("Error: "+e.message); }
 }
@@ -234,8 +283,20 @@ window.eliminarOferta=async id=>{
   OFERTAS=OFERTAS.filter(o=>o.id!==id);
   try{ await setParam("eyg.ofertas", JSON.stringify(OFERTAS)); toast("Eliminada ✓"); render(); }catch(e){ toast("Error: "+e.message); }
 };
-window.descartar=async pid=>{
-  try{ await EYG.rpc("product.product","write",[[pid],{x_oportunidad:false}],LANG); OPOS=OPOS.filter(x=>x.id!==pid); toast("Descartada"); render(); }catch(e){ toast("Error: "+e.message); }
+window.archivar=async pid=>{
+  try{ await EYG.rpc("product.product","write",[[pid],{x_oportunidad:false,x_oportunidad_archivada:true}],LANG);
+    const o=OPOS.find(x=>x.id===pid); if(o){ o._arch=true; OPOS=OPOS.filter(x=>x.id!==pid); ARCH.push(o); }
+    toast("Archivada 📥"); render(); }catch(e){ toast("Error: "+e.message); }
+};
+window.desarchivar=async pid=>{
+  try{ await EYG.rpc("product.product","write",[[pid],{x_oportunidad:true,x_oportunidad_archivada:false}],LANG);
+    const o=ARCH.find(x=>x.id===pid); if(o){ o._arch=false; ARCH=ARCH.filter(x=>x.id!==pid); OPOS.push(o); }
+    toast("Restaurada ↩"); render(); }catch(e){ toast("Error: "+e.message); }
+};
+window.eliminar=async pid=>{
+  if(!confirm("¿Eliminar esta oportunidad? Desaparece de la lista (si el costo vuelve a bajar, se detecta de nuevo).")) return;
+  try{ await EYG.rpc("product.product","write",[[pid],{x_oportunidad:false,x_oportunidad_archivada:false}],LANG);
+    OPOS=OPOS.filter(x=>x.id!==pid); ARCH=ARCH.filter(x=>x.id!==pid); toast("Eliminada 🗑"); render(); }catch(e){ toast("Error: "+e.message); }
 };
 /* ============ config ============ */
 function abrirConfig(){

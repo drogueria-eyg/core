@@ -104,6 +104,17 @@
   .fac .fv{color:var(--gris)} .fac .fr{font-variant-numeric:tabular-nums;font-weight:700;text-align:right}
   .msgbox{width:100%;font-family:inherit;font-size:13.5px;border:1px solid var(--line);border-radius:10px;padding:12px;min-height:110px;resize:vertical;color:var(--ink);line-height:1.5}
   .wa-send{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;background:var(--teal);color:#fff;border:0;border-radius:10px;padding:13px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer;margin-top:10px;text-decoration:none}
+  .opogrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+  .opocard{border:1px solid var(--line);border-left:4px solid var(--gold);border-radius:10px;padding:11px 12px;background:#fff}
+  .opocard .on{font-weight:800;font-size:13px;line-height:1.25;margin:6px 0 3px}
+  .opocard .om{font-size:11.5px;color:var(--gris)}
+  .opocard .op{margin:7px 0 3px;font-size:13px}
+  .opocard .op .a{color:var(--gris2);text-decoration:line-through;font-size:12px}
+  .opocard .op .b{font-weight:800;color:var(--green)}
+  .opocard .op .pc{background:var(--greenbg);color:var(--green);font-weight:800;font-size:11px;border-radius:20px;padding:1px 7px}
+  .opocard .ok2{font-size:11px;color:var(--gris2)}
+  .omot{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;padding:2px 7px;border-radius:20px}
+  .omot.venc{background:var(--redbg);color:var(--red)} .omot.sob{background:var(--orgbg);color:var(--org)} .omot.mue{background:#EEF2F1;color:var(--gris)}
   @media(max-width:860px){ .grid2{grid-template-columns:1fr} .rotleg{grid-template-columns:1fr}
     .thead,.row{grid-template-columns:2fr 1fr 0.9fr} .hide-sm{display:none} .fbar{width:8px} }
 </style>
@@ -126,8 +137,10 @@ const MESES_ES=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov
 function familia(categ){ if(!categ) return "Sin categoría"; const p=categ[1].split("/").map(s=>s.trim()).filter(s=>s&&s.toUpperCase()!=="ALL"); return p[0]||"Sin categoría"; }
 function mesesHasta(f){ if(!f) return null; const d=new Date(f.slice(0,10)); return (d-HOY)/(1000*3600*24*30.44); }
 
-let DATA=[], LOTES={}, FLUJO={meses:[],ventas:[],compras:[]}, TOT=0, KPI={}, BUCKETS=[], FAMS=[];
+let DATA=[], LOTES={}, FLUJO={meses:[],ventas:[],compras:[]}, TOT=0, KPI={}, BUCKETS=[], FAMS=[], OPORT=[];
 let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
+const LISTA_PRECIOS=3; // pricelist "LISTA 1 EyG" (misma que usa Oportunidades)
+const DESC_OPORT={vence:0.25,sobre:0.15,muerto:0.20}; // descuento sugerido por motivo
 
 const B_DEF=[["Sano","menos de 3 meses",0,3,"green"],["Elevado","3 a 6 meses",3,6,"lime"],["Alto","6 a 12 meses",6,12,"yel"],["Sobrestock","1 a 3 años",12,36,"org"],["Muerto / crítico","más de 3 años o sin venta",36,1e12,"red"]];
 
@@ -150,7 +163,7 @@ async function cargar(){
 
     prog("categorías y vencimientos…");
     const [meta, quantsLote] = await Promise.all([
-      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price"]]),
+      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","x_oportunidad"]]),
       rpc("stock.quant","search_read",[[["location_id.usage","=","internal"],["quantity",">",0],["lot_id","!=",false]],["product_id","lot_id","quantity","value"]],{limit:5000}),
     ]);
     const M={}; for(const m of meta) M[m.id]=m;
@@ -175,7 +188,8 @@ async function cargar(){
       const id=s.product_id[0], m=M[id]||{}, vp=vencP[id]||{};
       const val=s.value||0, qty=s.quantity||0, ventaU=Math.round(V[id]||0);
       const meses = ventaU>0 ? qty/(ventaU/12) : 999;
-      return {id, code:m.default_code||"", name:s.product_id[1], fam:familia(m.categ_id),
+      return {id, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, xop:!!m.x_oportunidad,
+        code:m.default_code||"", name:s.product_id[1], fam:familia(m.categ_id),
         categ:m.categ_id?m.categ_id[1]:"", val, qty, ventaU,
         meses: meses>900?999:Math.round(meses*10)/10,
         costoU:m.standard_price||0, pvp:m.list_price||0,
@@ -191,10 +205,60 @@ async function cargar(){
     const keys=[...new Set([...Object.keys(soM),...Object.keys(poM)])].sort();
     FLUJO={meses:keys.map(label), ventas:keys.map(k=>(soM[k]||0)/1e6), compras:keys.map(k=>(poM[k]||0)/1e6)};
 
-    computar(); render();
+    computar();
+    await detectarOportunidades();
+    render();
   }catch(e){
     document.getElementById("app").innerHTML='<div class="errbox"><b>No pude leer el stock desde Odoo.</b><br>'+esc(e.message)+'</div>';
   }
+}
+
+/* Detecta hasta 5 oportunidades para OFERTAR a clientes (por vencimiento, sobrestock o sin venta)
+   y las guarda en el parámetro eyg.oportunidades_stock, que consume el módulo Oportunidades.
+   Se recalcula en cada carga del panel → se mantiene al día con precios, vencimientos y stock. */
+async function detectarOportunidades(){
+  OPORT=[];
+  try{
+    // productos que YA están en una oferta activa → no re-sugerir
+    let ofertas=[]; try{ ofertas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas"])||"[]"); }catch(e){}
+    const hoyS=iso(HOY), enOferta=new Set();
+    (ofertas||[]).filter(o=>!o.hasta||o.hasta>=hoyS).forEach(o=>(o.items||[]).forEach(i=>enOferta.add(i.id)));
+
+    // candidatos: con stock, no marcados ya como oportunidad de costo, no en oferta activa
+    const cands=DATA.filter(r=>r.qty>0 && !r.xop && !enOferta.has(r.id)).map(r=>{
+      const cu = r.qty>0 ? r.val/r.qty : 0;
+      const nearExp = (r.val6>0 && r.min!=null && r.meses>r.min) ? r.val6*4 : 0;   // vence antes de venderse
+      const over    = r.meses>12 ? r.val*Math.min(r.meses,48)/24 : 0;               // sobrestock (capital congelado)
+      const dead    = r.ventaU===0 ? r.val*0.6 : 0;                                 // sin ventas
+      const score   = nearExp+over+dead;
+      const motivo  = r.ventaU===0 ? "muerto" : (nearExp>0?"vence":(over>0?"sobre":null));
+      return {...r, cu, score, motivo};
+    }).filter(r=>r.motivo && r.score>0).sort((a,b)=>b.score-a.score).slice(0,20);
+
+    // precio de venta real (escalera base de la lista) para los candidatos
+    const tmpls=[...new Set(cands.map(r=>r.tmpl).filter(Boolean))];
+    let baseT={};
+    if(tmpls.length){
+      const pit=await rpc("product.pricelist.item","search_read",
+        [[["pricelist_id","=",LISTA_PRECIOS],["applied_on","=","1_product"],["product_tmpl_id","in",tmpls]]],
+        {fields:["product_tmpl_id","min_quantity","fixed_price"],limit:20000});
+      for(const it of pit){ const t=it.product_tmpl_id[0]; if(!baseT[t]||it.min_quantity<baseT[t].q) baseT[t]={q:it.min_quantity,p:it.fixed_price}; }
+    }
+    OPORT=cands.map(r=>{
+      const base=baseT[r.tmpl]?baseT[r.tmpl].p:r.pvp, piso=r.cu*1.05, desc=DESC_OPORT[r.motivo];
+      let sug=Math.round(base*(1-desc)); if(sug<piso) sug=Math.round(piso);
+      const motTxt = r.motivo==="vence" ? `Vence en ${r.min}m y al ritmo actual no llega a venderse`
+        : r.motivo==="sobre" ? `Sobrestock: ${r.meses} meses de stock`
+        : `Sin ventas en los últimos 12 meses`;
+      return { id:r.id, tmpl:r.tmpl, sku:r.code, nombre:cleanName(r.name), cat:r.fam,
+        stock:r.qty, meses:r.meses>900?null:r.meses, min:r.min, valor:Math.round(r.val),
+        motivo:r.motivo, motivoTxt:motTxt, precio:Math.round(base), costoU:Math.round(r.cu),
+        desc, sugPrecio:sug };
+    }).filter(r=>r.precio>r.costoU*1.05 && r.precio<r.costoU*4).slice(0,5);   // margen real, pero descarta precios mal cargados (markup implausible)
+
+    // persistir para el módulo Oportunidades
+    await rpc("ir.config_parameter","set_param",["eyg.oportunidades_stock",JSON.stringify({fecha:hoyS, items:OPORT})]);
+  }catch(e){ console.warn("detectarOportunidades:", e.message); }
 }
 
 function computar(){
@@ -229,6 +293,23 @@ function render(){
       <div class="kpi warn"><div class="l">Plata liberable</div><div class="n">${fmtM(KPI.inmov)}</div><div class="d">sobre 3 meses de demanda</div></div>
       <div class="kpi alert"><div class="l">En riesgo de tirar</div><div class="n">${fmtM(KPI.riesgo)}</div><div class="d">vence antes de venderse · ${money(KPI.vencido)} ya vencido</div></div>
     </div>
+
+    ${OPORT.length?`
+    <h2 class="sec">Oportunidades para ofertar a clientes</h2>
+    <div class="pcard" style="padding:16px 18px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        <div style="font-size:13px;color:var(--gris);flex:1;min-width:200px">Detectamos <b>${OPORT.length}</b> productos que conviene ofertar (por vencimiento, sobrestock o sin venta). Ya están en <b>Oportunidades</b> para que el equipo las convierta en ofertas para los clientes.</div>
+        <a class="mini-btn" style="background:var(--gold);color:#fff;border-color:var(--gold)" href="${EYG.abs('inventario/oportunidades.html')}">Ir a Oportunidades →</a>
+      </div>
+      <div class="opogrid">${OPORT.map(o=>{
+        const badge=o.motivo==="vence"?'<span class="omot venc">Por vencer</span>':o.motivo==="sobre"?'<span class="omot sob">Sobrestock</span>':'<span class="omot mue">Sin venta</span>';
+        return `<div class="opocard">${badge}
+          <div class="on">${esc(o.nombre)}</div>
+          <div class="om">${esc(o.motivoTxt)}</div>
+          <div class="op"><span class="a">${money(o.precio)}</span> → <span class="b">${money(o.sugPrecio)}</span> <span class="pc">−${Math.round(o.desc*100)}%</span></div>
+          <div class="ok2">Stock ${o.stock.toLocaleString("es-AR")} u · ${money(o.valor)}</div>
+        </div>`}).join("")}</div>
+    </div>`:""}
 
     <h2 class="sec">Flujo de compra y venta · 12 meses</h2>
     <div class="pcard">
