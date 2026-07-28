@@ -46,6 +46,12 @@
   .nactual{color:var(--ink);word-break:break-word;line-height:1.4}
   .nsug{color:var(--teal-deep);font-weight:600;word-break:break-word;line-height:1.4}
   .nsug.same{color:var(--gris2);font-weight:400}
+  .edsug{background:none;border:none;cursor:pointer;color:var(--gris2);font-size:12px;padding:0 2px;opacity:.6}
+  .edsug:hover{opacity:1;color:var(--teal)}
+  .sugedit{width:100%;display:flex;gap:5px;align-items:center;margin-top:2px}
+  .sugedit input{flex:1;min-width:0;padding:6px 8px;border:1px solid var(--teal-med);border-radius:7px;font-size:13px;font-family:inherit}
+  .sugedit button{background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 9px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
+  .sugedit button.can{background:#fff;border:1px solid var(--line);color:var(--gris)}
   .motivos{margin-top:5px;display:flex;flex-wrap:wrap;gap:4px}
   .mchip{background:#fff4ed;color:#c2410c;border:1px solid #fed7aa;font-size:10.5px;font-weight:700;border-radius:6px;padding:1px 6px}
   .mchip.info{background:#eef6f5;color:var(--teal-deep);border-color:#cfe8e4}
@@ -113,6 +119,23 @@ function unidadDe(p){
   if(p.sub==="HOSP. AMPOLLAS" && /jer|prell|jga/i.test(p.nombre||"")) u="jeringas";
   return u;
 }
+// Unidad que se muestra en el paréntesis del nombre, por subcategoría: {sing, plur, forma}
+// forma = palabra de forma farmacéutica que hay que SACAR del cuerpo (redundante con la subcategoría).
+const UNI_PAREN = {
+  "HOSP. COMPRIMIDOS":  {sing:"tira", plur:"tiras", forma:null},
+  "HOSP. AMPOLLAS":     {sing:"amp",  plur:"amp",   forma:/\bampollas?\b|\bamp\b/gi},
+  "HOSP. FRASCO AMPOLLA":{sing:"unidad", plur:"unidades", forma:/\bfrasco\s*ampollas?\b/gi},
+  "HOSP. JARABES":      {sing:"unidad", plur:"unidades", forma:null},
+  "HOSP. GOTAS":        {sing:"unidad", plur:"unidades", forma:null},
+  "HOSP.CREMAS":        {sing:"unidad", plur:"unidades", forma:null},
+  "HOSP. SPRAYS":       {sing:"unidad", plur:"unidades", forma:null},
+  "HOSP. TIRAS REACTIVAS":{sing:"caja", plur:"cajas", forma:null}
+};
+function uniParen(sub, nombre){
+  let up = UNI_PAREN[sub] || {sing:"unidad", plur:"unidades", forma:null};
+  if(sub==="HOSP. AMPOLLAS" && /jer|prell|jga/i.test(nombre||"")) up={sing:"jeringa", plur:"jeringas", forma:/\b(jga|jer|jeringa)\.?\s*prell\.?/gi};
+  return up;
+}
 const SIN_SUB = "(sin subcategoría)";
 let SUBCATS_ODOO = [];   // subcategorias reales de HOSPITALARIOS (para el desplegable): [{id,name}]
 // sugiere la subcategoria segun el nombre del producto
@@ -164,8 +187,9 @@ function uDisp(u){ return u==="ui"?"UI":u; }
 function normTipo(t){ if(!t) return ""; t=t.toLowerCase().replace(/\.$/,""); if(/tira/.test(t))return"tiras"; if(/^unidad|^u$/.test(t))return"unidades"; if(/^(comp|caps|amp)/.test(t))return t; return t; }
 
 /* ---------- normaliza el NOMBRE y devuelve {sugerido, motivos, desglose} ---------- */
-function analizar(raw){
+function analizar(raw, sub){
   const motivos=[]; const add=m=>{ if(!motivos.includes(m)) motivos.push(m); };
+  const up = uniParen(sub, raw);
   let s=(raw==null?"":String(raw));
   const parens=[]; let core=s.replace(/\(([^)]*)\)/g,(m,inner)=>{ parens.push(inner.trim()); return " "; });
 
@@ -209,20 +233,27 @@ function analizar(raw){
   FORMAS_SIMPLE.forEach(f=>{ out=out.replace(new RegExp(f.re.source,"gi"), f.c); });
   out=out.replace(/\bFRASCO\s+amp\b/gi,"frasco ampolla");
   out=out.replace(/\b(JGA|JER|JERINGA)\.?\s*PRELL\.?/gi,"jga prell");
+  // saca la palabra de forma que ya está implícita en la subcategoría (ej. "ampolla"/"amp" en Ampollas)
+  if(up.forma){ const antesF=out; out=out.replace(up.forma," "); if(antesF!==out) add("saca forma redundante"); }
   out=out.replace(/\s+-\s*|\s*-\s+/g," - ").replace(/(?: - ){2,}/g," - ").replace(/^\s*-\s+|\s+-\s*$/g,"").replace(/\s+/g," ").trim();
+  out=out.replace(/\b(mg|mcg|ml|gr|kg|cc|g|ui|vol)\.(?=\s|$)/gi,"$1");  // "ml." -> "ml"
+  // limpia colgantes: guion + número suelto al final (ej. "ROSPAW - 4"), guiones/puntos/comas sueltos al final
+  const antesCol=out;
+  out=out.replace(/\s+-\s+\d+\s*$/,"").replace(/[\s\-–·.,]+$/,"").replace(/^[\s\-–·.,]+/,"").trim();
+  if(antesCol!==out) add("limpia colgantes");
   if(preCase!==out && preCase.toLowerCase()===out.toLowerCase()) add("mayúsculas/minúsculas");
 
   const desg=desglosar(out,parens,add);
   desg.cajaCerrada = desg.cajaCerrada || ventaCerrada;
   if(!desg.bultoNum && bultoCore){ desg.bultoNum=bultoCore.num; desg.bultoTipo=bultoCore.tipo; }
 
+  // paréntesis ESTÁNDAR por subcategoría: (Precio x <unidad> · Caja x N <unidad> [· caja cerrada])
   const pp=[];
-  if(desg.precioX) pp.push("Precio x "+desg.precioX);
-  if(desg.bultoNum) pp.push("Caja x "+desg.bultoNum+(desg.bultoTipo?(" "+desg.bultoTipo):""));
-  if(desg.precioModo) pp.push(desg.precioModo);
-  if(desg.cajaCerrada) pp.push("SE VENDE POR CAJA CERRADA");
+  pp.push("Precio x "+up.sing);
+  if(desg.bultoNum) pp.push("Caja x "+desg.bultoNum+" "+up.plur);
+  if(desg.cajaCerrada) pp.push("caja cerrada");
   desg.extra.forEach(x=>pp.push(x));
-  const parenOut = pp.length ? " ("+pp.join(" · ")+")" : "";
+  const parenOut = " ("+pp.join(" · ")+")";
 
   let sugerido=(out+parenOut).replace(/\s+/g," ").trim();
   return { sugerido, motivos, desg, cambia: sugerido!==raw };
@@ -290,13 +321,13 @@ async function cargar(preservar){
   }
 
   TODOS = recs.map(r=>{
-    const a = analizar(r.name||"");
+    const sub=(r.categ_id&&r.categ_id[1]||"").replace(/^ALL \/ HOSPITALARIOS( \/ )?/,"")||"(sin subcategoría)";
+    const a = analizar(r.name||"", sub);
     const varId = (r.product_variant_id&&r.product_variant_id[0])||null;
     const pk = varId ? packByVar[varId] : null;
     return { id:r.id, sku:r.default_code||"", nombre:r.name||"",
              stock:(r.qty_available!=null?r.qty_available:0),
-             varId, embalaje: pk?pk.qty:null, embId: pk?pk.id:null, embNombre: pk?pk.name:"",
-             sub:(r.categ_id&&r.categ_id[1]||"").replace(/^ALL \/ HOSPITALARIOS( \/ )?/,"")||"(sin subcategoría)",
+             varId, embalaje: pk?pk.qty:null, embId: pk?pk.id:null, embNombre: pk?pk.name:"", sub,
              ...a, aplicado:false };
   });
   // subcategorías presentes (ordenadas por cantidad)
@@ -400,7 +431,7 @@ function fila(p){
   return `<div class="row" id="row-${p.id}">
     <div class="sku">${EYG.esc(p.sku)}${stk}</div>
     <div class="nactual">${EYG.esc(p.aplicado?p.sugerido:p.nombre)}</div>
-    <div class="nsug ${same?"same":""}">${EYG.esc(p.sugerido)}${chips?`<div class="motivos">${chips}</div>`:""}${subSel}</div>
+    <div class="nsug ${same?"same":""}" id="nsug-${p.id}"><span class="sugtxt">${EYG.esc(p.sugerido)}</span> <button class="edsug" title="Editar el nombre a mano" onclick="editarSug(${p.id})">✎</button>${chips?`<div class="motivos">${chips}</div>`:""}${subSel}</div>
     <div class="apcell">${ap}</div>
     <div>${conc}</div>
     <div>${pres}</div>
@@ -460,7 +491,7 @@ window.agregarBulto = async id => {
   const n=parseInt(nEl&&nEl.value,10); if(!n||n<1){ toast("Poné cuántas "+unidadDe(p)+" trae la caja"); if(nEl) nEl.focus(); return; }
   const tipo=unidadDe(p);
   const antes = p.nombre;
-  const a = analizar(antes + " (Caja x "+n+" "+tipo+")");
+  const a = analizar(antes + " (Caja x "+n+" "+tipo+")", p.sub);
   const btn=document.querySelector("#row-"+id+" .addb button"); if(btn){ btn.disabled=true; btn.textContent="…"; }
   try{ await escribir(id, a.sugerido); Object.assign(p,a); p.nombre=a.sugerido; p.aplicado=true; p.cambia=false;
        HISTORIAL.push({cambios:[{id,antes,despues:a.sugerido}], desc:(p.sku||("#"+id))+" · bulto"}); toast("Bulto agregado ✓"); render(); }
@@ -470,6 +501,24 @@ window.agregarBulto = async id => {
 async function escribir(id, nombre){
   return EYG.rpc("product.template","write",[[id],{name:nombre}], LANG);
 }
+/* editar el nombre sugerido A MANO (por si el automático dejó algo raro) */
+window.editarSug = id => {
+  const p = TODOS.find(x=>x.id===id); if(!p) return;
+  const box = document.getElementById("nsug-"+id); if(!box) return;
+  box.innerHTML = `<div class="sugedit"><input id="sug-${id}" value="${EYG.esc(p.sugerido)}">`
+    + `<button onclick="guardarSug(${id})">Guardar</button><button class="can" onclick="render()">✕</button></div>`;
+  const inp = document.getElementById("sug-"+id); inp.focus(); inp.setSelectionRange(inp.value.length,inp.value.length);
+  inp.addEventListener("keydown",e=>{ if(e.key==="Enter") guardarSug(id); if(e.key==="Escape") render(); });
+};
+window.guardarSug = async id => {
+  const p = TODOS.find(x=>x.id===id); if(!p) return;
+  const inp = document.getElementById("sug-"+id); const val=(inp&&inp.value||"").trim();
+  if(!val){ toast("El nombre no puede quedar vacío"); return; }
+  const antes = p.nombre;
+  try{ await escribir(id, val); p.nombre=val; p.sugerido=val; p.cambia=false; p.aplicado=true;
+       HISTORIAL.push({cambios:[{id,antes,despues:val}], desc:(p.sku||("#"+id))+" · manual"}); toast("Nombre guardado ✓"); render(); }
+  catch(e){ toast("Error: "+e.message); }
+};
 /* crea o actualiza el product.packaging (Embalaje) del producto — se sincroniza con Odoo */
 window.guardarEmbalaje = async id => {
   const p = TODOS.find(x=>x.id===id); if(!p) return;
@@ -518,7 +567,7 @@ window.deshacer = async () => {
   if(!confirm(`¿Deshacer el último cambio (${entry.desc})? Se restauran ${entry.cambios.length} nombre(s) en Odoo.`)) return;
   let ok=0, err=0;
   for(const c of entry.cambios){
-    try{ await escribir(c.id, c.antes); const p=TODOS.find(x=>x.id===c.id); if(p){ Object.assign(p, analizar(c.antes)); p.nombre=c.antes; p.aplicado=false; } ok++; }
+    try{ await escribir(c.id, c.antes); const p=TODOS.find(x=>x.id===c.id); if(p){ Object.assign(p, analizar(c.antes, p.sub)); p.nombre=c.antes; p.aplicado=false; } ok++; }
     catch(e){ err++; }
   }
   HISTORIAL.pop();
