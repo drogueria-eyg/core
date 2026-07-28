@@ -288,6 +288,17 @@ let toastT;
 function toast(msg,win){ const t=document.getElementById("toast"); t.textContent=msg; t.className="toast on"+(win?" win":""); clearTimeout(toastT); toastT=setTimeout(()=>t.className="toast",4200); }
 function sst(m){ const el=document.getElementById("syncStatus"); if(el) el.textContent=m; }
 
+// relee la escalera (pricelist items list 3) de UN producto y recalcula margenes
+async function releerEscalera(p){
+  const raw=await rpc("product.pricelist.item","search_read",
+    [[["pricelist_id","=",LISTA],["applied_on","=","1_product"],["min_quantity",">",0],["product_tmpl_id","=",p.tmpl]]],
+    {fields:["min_quantity","fixed_price"], limit:50});
+  let tr=raw.map(x=>({q:x.min_quantity||0, p:x.fixed_price})).sort((a,b)=>a.q-b.q);
+  let base=false;
+  if(tr.length>=2 && tr[0].q<=1 && Math.round(tr[0].p)===Math.round(tr[1].p)){ tr=tr.slice(1); tr[0]={...tr[0], q:1}; base=true; }
+  p.tramosRaw=tr; p.tramoBase=base; p.sinEscalera=!tr.length;
+  aplicarCosto(p);
+}
 window.guardarCosto = async id => {
   const p=ST.items.find(x=>x.id===id); if(!p) return;
   const el=document.getElementById("cm-"+id); const val=parseFloat(el&&el.value);
@@ -296,8 +307,11 @@ window.guardarCosto = async id => {
   const btn=el&&el.nextElementSibling; if(btn){ btn.disabled=true; btn.textContent="…"; }
   try{
     await rpc("product.product","write",[[id],{x_costo_manual:val, x_costo_manual_date:nowStr}],{context:ES});
-    p.manualC=val; p.manualD=nowStr; aplicarCosto(p);
-    toast("Costo manual guardado ✓ (pisa la última compra)"); render();
+    p.manualC=val; p.manualD=nowStr;
+    // re-sincroniza la escalera de ESTE producto (misma lógica del cron, id 1213) y la relee -> impacto al instante
+    await rpc("ir.actions.server","run",[[1213]],{context:{...ES, eyg_solo_producto:id}});
+    await releerEscalera(p);
+    toast("Costo guardado y escalera sincronizada ✓", true); render();
   }catch(e){ if(btn){ btn.disabled=false; btn.textContent="💾"; } toast("Error: "+e.message); }
 };
 async function sincronizar(){
