@@ -101,6 +101,11 @@
   .com{color:var(--teal-deep);font-weight:600}.com-off{color:var(--coral)}
   .badge{display:inline-block;font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;white-space:nowrap}
   .gflag{display:inline-block;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:var(--tregbg);color:var(--treg);white-space:nowrap}
+  .plz{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 8px;border-radius:20px;background:var(--agua);color:var(--teal-deep);white-space:nowrap}
+  .bovtag{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;white-space:nowrap}
+  .bovtag.inc{background:var(--t6bg);color:var(--t6)} .bovtag.acu{background:var(--t1bg);color:var(--t1)}
+  .bovbanner{background:var(--tregbg);border:1px solid #D6C9EE;color:#4A3488;border-radius:10px;padding:10px 14px;font-size:13px;font-weight:600;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .bovbanner a{color:var(--teal);cursor:pointer;font-weight:700}
   .num{font-variant-numeric:tabular-nums;font-weight:700;font-size:14px}
   .pbar{position:relative;height:7px;background:#E7ECEB;border-radius:4px;overflow:hidden;margin:5px 0 3px}
   .pbar>i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--t0);transition:width .3s}
@@ -220,7 +225,9 @@ const digits=soloDig;
 function fmtDoc(raw,idtypeId){const d=digits(raw);if(!d)return"";if(idtypeId===IDT.dni){if(d.length<7||d.length>8)return raw.trim();return d.replace(/\B(?=(\d{3})+(?!\d))/g,".");}if(idtypeId===IDT.cuit||idtypeId===IDT.cuil){if(d.length!==11)return raw.trim();return d.slice(0,2)+"-"+d.slice(2,10)+"-"+d.slice(10);}return raw.trim();}
 function fmtTel(raw){let d=digits(raw);if(!d)return"";if(d.startsWith("0054"))d=d.slice(4);if(d.startsWith("54"))d=d.slice(2);d=d.replace(/^0/,"");if(d.length>10)d=d.replace(/^(\d{2,4})15(\d{6,8})$/,"$1$2");if(d.length<8)return raw.trim();let area,local;if(d.length===10){if(d.startsWith("11")){area="11";local=d.slice(2);}else{area=d.slice(0,3);local=d.slice(3);}}else if(d.length===11){area=d.slice(0,4);local=d.slice(4);}else return"+54 "+d;const ls=local.length>=8?local.slice(0,4)+"-"+local.slice(4):local.slice(0,3)+"-"+local.slice(3);return"+54 "+area+" "+ls;}
 function oracion(s){s=(s||"").trim().replace(/\s+/g," ");if(!s)return"";return s.charAt(0).toUpperCase()+s.slice(1).toLowerCase();}
-const PFIELDS_COB=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id"];
+const PFIELDS_COB=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","property_payment_term_id"];
+// Plazo de pago → badge corto: "30 días"→"30 d", "CONTADO"→"contado", etc.
+function plazoCorto(term){ if(!term) return ""; const n=Array.isArray(term)?term[1]:term; if(/contado|inmediat/i.test(n)) return "contado"; const m=n.match(/(\d+)\s*d/i); if(m) return m[1]+" d"; return n.length>12?n.slice(0,11)+"…":n; }
 let CAT={fiscal:[],idt:[],prov:[]};
 function toast(msg){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";t.className="toast";document.body.appendChild(t);}t.textContent=msg;t.classList.add("on");clearTimeout(toast._t);toast._t=setTimeout(()=>t.classList.remove("on"),2600);}
 
@@ -229,7 +236,8 @@ const hoyStr=hoy.toISOString().slice(0,10);
 const diasMora=f=> f? Math.floor((hoy-new Date(f+"T00:00:00"))/86400000) : 0;
 const fmtFecha=f=> f? f.split("-").reverse().join("/") : "—";
 
-let CLI=[], EVO=[], filtro={tramo:"", comercial:"", rubro:"", q:"", orden:"prioridad"};
+let CLI=[], EVO=[], BOVEDA={}, filtro={tramo:"", comercial:"", rubro:"", q:"", orden:"prioridad", boveda:false};
+const BOV_TAG="[BOVEDA]"; // marcador en el chatter del contacto (fuente de verdad, con historial)
 
 async function cargar(){
   try{
@@ -298,6 +306,21 @@ async function cargar(){
     const ids=raw.map(p=>p.id);
     const parts=ids.length?await rpc("res.partner","read",[ids],{fields:PFIELDS_COB,context:{lang:"es_AR"}}):[];
     const byId={}; parts.forEach(p=>byId[p.id]=p);
+    // Bóveda: marcador [BOVEDA] en el chatter del contacto (último por cliente manda)
+    BOVEDA={};
+    if(ids.length){
+      const bov=await rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["body","like","[BOVEDA]"]]],{fields:["res_id","body","date"],limit:0});
+      bov.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+      const vistos=new Set();
+      for(const msg of bov){
+        if(vistos.has(msg.res_id)) continue; vistos.add(msg.res_id);
+        const body=(msg.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," ");
+        if(/salir/i.test(body)) continue;                       // salió de la bóveda
+        const tipo=/incobrable/i.test(body)?"incobrable":"acuerdo";
+        const nota=(body.split("|").slice(1).join("|")||"").trim();
+        BOVEDA[msg.res_id]={tipo,nota};
+      }
+    }
     // Catálogos para el formulario de edición (dropdowns), 1 sola vez
     if(!CAT.prov.length){ try{
       const [fiscal,idt,prov]=await Promise.all([
@@ -343,7 +366,9 @@ async function cargar(){
         wa:waNumber(c.mobile,c.phone), tellink:telLink(c.mobile,c.phone),
         telv:(c.mobile||c.phone||""), email:c.email||"", ciudad:c.city||"",
         comercial:c.user_id?c.user_id[1]:"Sin asignar",
-        rubro:rubroActual(c.category_id), part:c
+        rubro:rubroActual(c.category_id), part:c,
+        plazo:plazoCorto(c.property_payment_term_id), plazoFull:c.property_payment_term_id?c.property_payment_term_id[1]:"",
+        boveda:BOVEDA[p.id]||null
       };
     });
     render();
@@ -354,6 +379,8 @@ async function cargar(){
 
 function visibles(){
   return CLI.filter(c=>{
+    if(filtro.boveda){ if(!c.boveda) return false; return !filtro.q || c.nombre.toLowerCase().includes(filtro.q.toLowerCase()); }
+    if(c.boveda) return false;   // los de bóveda no aparecen en la vista principal
     if(filtro.tramo==='gris'){ if(!c.tieneGris) return false; }
     else if(filtro.tramo==='cubierto'){ if(c.situacion!=='cubierto') return false; }
     else if(filtro.tramo && c.tramo.k!==filtro.tramo) return false;
@@ -416,22 +443,25 @@ function compoHTML(porTramo,totalReal){
 
 function render(){
   const app=document.getElementById("app");
-  const totalReal=CLI.reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
-  const totalVenc=CLI.reduce((s,c)=>s+c.vencidoReal,0);
-  const totalCobradoSinImp=CLI.reduce((s,c)=>s+c.cobradoSinImp,0);
-  const totalBorrador=CLI.reduce((s,c)=>s+c.borrador,0);
+  const activos=CLI.filter(c=>!c.boveda);      // en gestión (fuera de bóveda)
+  const enBoveda=CLI.filter(c=>c.boveda);       // incobrables / con acuerdo
+  const bovN=enBoveda.length, bovM=enBoveda.reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
+  const totalReal=activos.reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
+  const totalVenc=activos.reduce((s,c)=>s+c.vencidoReal,0);
+  const totalCobradoSinImp=activos.reduce((s,c)=>s+c.cobradoSinImp,0);
+  const totalBorrador=activos.reduce((s,c)=>s+c.borrador,0);
   const totalGris=totalCobradoSinImp+totalBorrador;
   const porTramo={}; TRAMOS.forEach(t=>porTramo[t.k]={n:0,m:0}); porTramo["cubierto"]={n:0,m:0};
-  CLI.forEach(c=>{ const k=(c.situacion==="cubierto")?"cubierto":c.tramo.k; const b=porTramo[k]||(porTramo[k]={n:0,m:0}); b.n++; b.m+=Math.max(0,c.deudaReal); });
+  activos.forEach(c=>{ const k=(c.situacion==="cubierto")?"cubierto":c.tramo.k; const b=porTramo[k]||(porTramo[k]={n:0,m:0}); b.n++; b.m+=Math.max(0,c.deudaReal); });
   const incob=porTramo["d120"];
-  const grisN=CLI.filter(c=>c.tieneGris).length;
+  const grisN=activos.filter(c=>c.tieneGris).length;
   const cub=porTramo["cubierto"];
-  const favN=CLI.filter(c=>c.situacion==="afavor").length;
-  const favM=CLI.filter(c=>c.situacion==="afavor").reduce((s,c)=>s+(-c.saldoReal),0);
-  const comMap={}; CLI.forEach(c=>comMap[c.comercial]=(comMap[c.comercial]||0)+1);
+  const favN=activos.filter(c=>c.situacion==="afavor").length;
+  const favM=activos.filter(c=>c.situacion==="afavor").reduce((s,c)=>s+(-c.saldoReal),0);
+  const comMap={}; activos.forEach(c=>comMap[c.comercial]=(comMap[c.comercial]||0)+1);
   const comercialOpts=`<option value="">Todos los comerciales</option>`+Object.entries(comMap).sort((a,b)=>b[1]-a[1]).map(([n,c])=>`<option value="${esc(n)}" ${filtro.comercial===n?"selected":""}>${esc(n)} (${c})</option>`).join("");
   // Deuda por RUBRO (tarjetas filtro)
-  const rubMap={}; CLI.forEach(c=>{const k=c.rubro||"sin"; (rubMap[k]=rubMap[k]||{n:0,m:0}); rubMap[k].n++; rubMap[k].m+=Math.max(0,c.deudaReal);});
+  const rubMap={}; activos.forEach(c=>{const k=c.rubro||"sin"; (rubMap[k]=rubMap[k]||{n:0,m:0}); rubMap[k].n++; rubMap[k].m+=Math.max(0,c.deudaReal);});
   const rubCards=RUBROS.filter(r=>rubMap[r.v]).sort((a,b)=>rubMap[b.v].m-rubMap[a.v].m).map(r=>
       `<div class="kpi rub ${filtro.rubro===r.v?'on':''}" onclick="setRubro(${r.v})"><div class="n">${rubMap[r.v].n}</div><div class="money">${money(rubMap[r.v].m)}</div><div class="l">🏷️ ${esc(r.l)}</div></div>`).join("")
     + (rubMap["sin"]?`<div class="kpi rub ${filtro.rubro==='sin'?'on':''}" onclick="setRubro('sin')"><div class="n">${rubMap["sin"].n}</div><div class="money">${money(rubMap["sin"].m)}</div><div class="l">🏷️ Sin rubro</div></div>`:"");
@@ -456,7 +486,7 @@ function render(){
     <div class="cardsec sec-mora">
       <div class="sectitle"><span>⏱️ Deuda por antigüedad de mora</span>${filtro.tramo?`<a class="secclr" onclick="setTramo(filtro.tramo)">✕ quitar filtro</a>`:''}</div>
       <div class="kpis">
-        <div class="kpi ${!filtro.tramo?'on':''}" onclick="setTramo('')"><div class="n">${CLI.length}</div><div class="money">${money(totalReal)}</div><div class="l">Todos</div></div>
+        <div class="kpi ${!filtro.tramo&&!filtro.boveda?'on':''}" onclick="setTramo('')"><div class="n">${activos.length}</div><div class="money">${money(totalReal)}</div><div class="l">Todos</div></div>
         ${TRAMOS.map(t=>`<div class="kpi ${filtro.tramo===t.k?'on':''}" onclick="setTramo('${t.k}')">
           <div class="n">${porTramo[t.k].n}</div><div class="money">${money(porTramo[t.k].m)}</div>
           <div class="l"><span class="dot" style="background:var(--${t.t})"></span>${t.l}</div></div>`).join("")}
@@ -469,6 +499,9 @@ function render(){
         <div class="kpi ${filtro.tramo==='afavor'?'on':''}" onclick="setTramo('afavor')" style="${favN?'':'opacity:.5'}">
           <div class="n">${favN}</div><div class="money">${money(favM)}</div>
           <div class="l"><span class="dot" style="background:var(--t1)"></span>💚 Saldo a favor</div></div>
+        <div class="kpi ${filtro.boveda?'on':''}" onclick="toggleBoveda()" style="${bovN?'':'opacity:.5'}">
+          <div class="n">${bovN}</div><div class="money">${money(bovM)}</div>
+          <div class="l"><span class="dot" style="background:var(--treg)"></span>🔒 Bóveda</div></div>
       </div>
     </div>
 
@@ -501,13 +534,14 @@ function renderLista(){
   const list=ordenar(visibles());
   const w=document.getElementById("listwrap");
   if(!list.length){w.innerHTML='<div class="tablecard"><div class="empty">No hay clientes con ese filtro.</div></div>';return;}
-  const head=`<div class="count-line">Mostrando <b>${list.length}</b> cliente${list.length===1?"":"s"} · saldo al ${fmtFecha(hoyStr)}</div>`;
+  const banner=filtro.boveda?`<div class="bovbanner"><span>🔒 <b>Bóveda</b> — incobrables y clientes con acuerdo (fuera de la gestión activa)</span><a onclick="toggleBoveda()">← Volver a cobranzas</a></div>`:'';
+  const head=banner+`<div class="count-line">Mostrando <b>${list.length}</b> cliente${list.length===1?"":"s"} · saldo al ${fmtFecha(hoyStr)}</div>`;
   const rows=list.map(c=>{
     const t=c.tramo;
     const aCobrar=Math.max(0,c.deudaReal);
     return `<div class="row" onclick="abrir(${c.id})">
-      <div><div class="cname">${esc(c.nombre)} ${c.tieneGris?`<span class="gflag">📄 ${money(c.gris)} en gris</span>`:''}</div>
-        <div class="cmeta">${esc(c.ciudad||"—")} · <span class="com ${c.comercial==="Sin asignar"?"com-off":""}">👤 ${esc(c.comercial)}</span></div></div>
+      <div><div class="cname">${esc(c.nombre)} ${c.tieneGris?`<span class="gflag">📄 ${money(c.gris)} en gris</span>`:''}${c.boveda?`<span class="bovtag ${c.boveda.tipo==='incobrable'?'inc':'acu'}">🔒 ${c.boveda.tipo==='incobrable'?'Incobrable':'Acuerdo'}</span>`:''}</div>
+        <div class="cmeta">${c.plazo?`<span class="plz">⏱ ${esc(c.plazo)}</span> `:''}${esc(c.ciudad||"—")}</div></div>
       <div class="num">${money(aCobrar)}
         <div class="pbar" title="Pagó ${Math.round((1-c.pctDebe)*100)}% de lo facturado${(1-c.pctDebe)>0.01&&aCobrar>1?' · pago parcial':''}"><i style="width:${((1-c.pctDebe)*100).toFixed(1)}%"></i></div>
         <div class="muted">${(1-c.pctDebe)>0.01&&aCobrar>1?'pagó '+Math.round((1-c.pctDebe)*100)+'%':c.nfac+' fac.'}${c.saldoIni>1?' · +saldo ant.':''}</div></div>
@@ -540,8 +574,27 @@ function mensajeCobro(c){
 }
 
 let sT; function onSearch(v){filtro.q=v;clearTimeout(sT);sT=setTimeout(renderLista,180);}
-function setTramo(k){filtro.tramo=filtro.tramo===k?"":k;render();}
+function setTramo(k){filtro.boveda=false;filtro.tramo=filtro.tramo===k?"":k;render();}
 function setRubro(v){filtro.rubro=filtro.rubro===v?"":v;render();}
+function toggleBoveda(){filtro.boveda=!filtro.boveda;filtro.tramo="";render();}
+async function moverBoveda(id){
+  const c=CLI.find(x=>x.id===id); if(!c) return;
+  const tipo=document.getElementById("bovtipo")?document.getElementById("bovtipo").value:(c.boveda?c.boveda.tipo:"acuerdo");
+  const nota=(document.getElementById("bovnota")?document.getElementById("bovnota").value:"").trim();
+  try{
+    await rpc("res.partner","message_post",[[id]],{body:`🔒 ${BOV_TAG} tipo=${tipo} | ${nota}`,message_type:"comment"});
+    c.boveda={tipo,nota}; BOVEDA[id]={tipo,nota};
+    toast("🔒 En bóveda"); render(); abrir(id);
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
+}
+async function sacarBoveda(id){
+  const c=CLI.find(x=>x.id===id); if(!c) return;
+  try{
+    await rpc("res.partner","message_post",[[id]],{body:`🔓 ${BOV_TAG} salir`,message_type:"comment"});
+    c.boveda=null; delete BOVEDA[id];
+    toast("🔓 Sacado de bóveda · vuelve a la gestión"); render(); abrir(id);
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
+}
 
 const TIPO_LBL={factura:"Factura",nc:"Nota de crédito",recibo:"Cobro sin imputar",inicial:"Saldo anterior"};
 function abrir(id){
@@ -577,8 +630,26 @@ function abrir(id){
       </div>
 
       <div class="dsec">
+        <h4>🔒 Bóveda ${c.boveda?`· <span style="color:${c.boveda.tipo==='incobrable'?'var(--t6)':'var(--t1)'}">${c.boveda.tipo==='incobrable'?'Incobrable':'Con acuerdo'}</span>`:''}</h4>
+        ${c.boveda?`
+          <p class="muted" style="margin:-4px 0 8px">Fuera de la gestión activa. Editá la nota/acuerdo o volvé a activarlo.</p>
+          <textarea class="msgbox" id="bovnota" style="min-height:74px" placeholder="Acuerdo / motivo…">${esc(c.boveda.nota||'')}</textarea>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button class="editbtn" style="flex:1;margin:0" onclick="moverBoveda(${c.id})">💾 Guardar nota</button>
+            <button class="editbtn" style="flex:1;margin:0;background:#FBE4E3;border-color:#F3B5B2;color:#8A2E2B" onclick="sacarBoveda(${c.id})">🔓 Sacar de bóveda</button>
+          </div>
+        `:`
+          <p class="muted" style="margin:-4px 0 8px">Sacar de la gestión activa (incobrable o con acuerdo de pago) y anotar el acuerdo.</p>
+          <select id="bovtipo" style="width:100%;margin-bottom:8px"><option value="acuerdo">Con acuerdo de pago</option><option value="incobrable">Incobrable</option></select>
+          <textarea class="msgbox" id="bovnota" style="min-height:74px" placeholder="Anotá el acuerdo al que llegaste (ej: paga en 3 cuotas desde 08/26) o el motivo del incobrable."></textarea>
+          <button class="editbtn" style="margin-top:8px" onclick="moverBoveda(${c.id})">🔒 Mover a bóveda</button>
+        `}
+      </div>
+
+      <div class="dsec">
         <h4>Datos de contacto</h4>
         <div class="kv"><span class="k">Comercial</span><span class="v" style="color:${c.comercial==="Sin asignar"?"var(--coral)":"var(--teal-deep)"}">${esc(c.comercial)}</span></div>
+        <div class="kv"><span class="k">Plazo de pago</span><span class="v">${esc(c.plazoFull||"—")}</span></div>
         <div class="kv"><span class="k">Ubicación</span><span class="v">${esc(c.ciudad||"—")}</span></div>
         <div class="kv"><span class="k">Teléfono</span><span class="v">${esc(c.telv||"—")}</span></div>
         <div class="kv"><span class="k">Email</span><span class="v">${esc(c.email||"—")}</span></div>
