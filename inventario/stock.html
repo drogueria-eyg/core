@@ -122,6 +122,7 @@
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js"></script>
+<script src="../assets/inventario-oportunidades.js"></script>
 <script>
 /* ================= EyG Core · Inventario · Stock y Sobrestock ================= */
 const PROVEEDOR_T=2634; // OC gigante de carga inicial, excluida del flujo de compras
@@ -139,8 +140,6 @@ function mesesHasta(f){ if(!f) return null; const d=new Date(f.slice(0,10)); ret
 
 let DATA=[], LOTES={}, FLUJO={meses:[],ventas:[],compras:[]}, TOT=0, KPI={}, BUCKETS=[], FAMS=[], OPORT=[];
 let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
-const LISTA_PRECIOS=3; // pricelist "LISTA 1 EyG" (misma que usa Oportunidades)
-const DESC_OPORT={vence:0.25,sobre:0.15,muerto:0.20}; // descuento sugerido por motivo
 
 const B_DEF=[["Sano","menos de 3 meses",0,3,"green"],["Elevado","3 a 6 meses",3,6,"lime"],["Alto","6 a 12 meses",6,12,"yel"],["Sobrestock","1 a 3 años",12,36,"org"],["Muerto / crítico","más de 3 años o sin venta",36,1e12,"red"]];
 
@@ -163,7 +162,7 @@ async function cargar(){
 
     prog("categorías y vencimientos…");
     const [meta, quantsLote] = await Promise.all([
-      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","x_oportunidad"]]),
+      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","x_oportunidad","x_oportunidad_archivada"]]),
       rpc("stock.quant","search_read",[[["location_id.usage","=","internal"],["quantity",">",0],["lot_id","!=",false]],["product_id","lot_id","quantity","value"]],{limit:5000}),
     ]);
     const M={}; for(const m of meta) M[m.id]=m;
@@ -188,7 +187,7 @@ async function cargar(){
       const id=s.product_id[0], m=M[id]||{}, vp=vencP[id]||{};
       const val=s.value||0, qty=s.quantity||0, ventaU=Math.round(V[id]||0);
       const meses = ventaU>0 ? qty/(ventaU/12) : 999;
-      return {id, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, xop:!!m.x_oportunidad,
+      return {id, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, xop:!!m.x_oportunidad, xarch:!!m.x_oportunidad_archivada,
         code:m.default_code||"", name:s.product_id[1], fam:familia(m.categ_id),
         categ:m.categ_id?m.categ_id[1]:"", val, qty, ventaU,
         meses: meses>900?999:Math.round(meses*10)/10,
@@ -213,51 +212,19 @@ async function cargar(){
   }
 }
 
-/* Detecta hasta 5 oportunidades para OFERTAR a clientes (por vencimiento, sobrestock o sin venta)
-   y las guarda en el parámetro eyg.oportunidades_stock, que consume el módulo Oportunidades.
-   Se recalcula en cada carga del panel → se mantiene al día con precios, vencimientos y stock. */
+/* Detecta hasta 5 oportunidades para OFERTAR a clientes (por vencimiento, sobrestock o sin venta).
+   Usa la lógica compartida EYGOpo (misma que el módulo Oportunidades) sobre los datos ya cargados.
+   Respeta la lista de ignorados (archivadas/eliminadas) y las que ya están en oferta activa. */
 async function detectarOportunidades(){
   OPORT=[];
   try{
-    // productos que YA están en una oferta activa → no re-sugerir
-    let ofertas=[]; try{ ofertas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas"])||"[]"); }catch(e){}
-    const hoyS=iso(HOY), enOferta=new Set();
-    (ofertas||[]).filter(o=>!o.hasta||o.hasta>=hoyS).forEach(o=>(o.items||[]).forEach(i=>enOferta.add(i.id)));
-
-    // candidatos: con stock, no marcados ya como oportunidad de costo, no en oferta activa
-    const cands=DATA.filter(r=>r.qty>0 && !r.xop && !enOferta.has(r.id)).map(r=>{
-      const cu = r.qty>0 ? r.val/r.qty : 0;
-      const nearExp = (r.val6>0 && r.min!=null && r.meses>r.min) ? r.val6*4 : 0;   // vence antes de venderse
-      const over    = r.meses>12 ? r.val*Math.min(r.meses,48)/24 : 0;               // sobrestock (capital congelado)
-      const dead    = r.ventaU===0 ? r.val*0.6 : 0;                                 // sin ventas
-      const score   = nearExp+over+dead;
-      const motivo  = r.ventaU===0 ? "muerto" : (nearExp>0?"vence":(over>0?"sobre":null));
-      return {...r, cu, score, motivo};
-    }).filter(r=>r.motivo && r.score>0).sort((a,b)=>b.score-a.score).slice(0,20);
-
-    // precio de venta real (escalera base de la lista) para los candidatos
-    const tmpls=[...new Set(cands.map(r=>r.tmpl).filter(Boolean))];
-    let baseT={};
-    if(tmpls.length){
-      const pit=await rpc("product.pricelist.item","search_read",
-        [[["pricelist_id","=",LISTA_PRECIOS],["applied_on","=","1_product"],["product_tmpl_id","in",tmpls]]],
-        {fields:["product_tmpl_id","min_quantity","fixed_price"],limit:20000});
-      for(const it of pit){ const t=it.product_tmpl_id[0]; if(!baseT[t]||it.min_quantity<baseT[t].q) baseT[t]={q:it.min_quantity,p:it.fixed_price}; }
-    }
-    OPORT=cands.map(r=>{
-      const base=baseT[r.tmpl]?baseT[r.tmpl].p:r.pvp, piso=r.cu*1.05, desc=DESC_OPORT[r.motivo];
-      let sug=Math.round(base*(1-desc)); if(sug<piso) sug=Math.round(piso);
-      const motTxt = r.motivo==="vence" ? `Vence en ${r.min}m y al ritmo actual no llega a venderse`
-        : r.motivo==="sobre" ? `Sobrestock: ${r.meses} meses de stock`
-        : `Sin ventas en los últimos 12 meses`;
-      return { id:r.id, tmpl:r.tmpl, sku:r.code, nombre:cleanName(r.name), cat:r.fam,
-        stock:r.qty, meses:r.meses>900?null:r.meses, min:r.min, valor:Math.round(r.val),
-        motivo:r.motivo, motivoTxt:motTxt, precio:Math.round(base), costoU:Math.round(r.cu),
-        desc, sugPrecio:sug };
-    }).filter(r=>r.precio>r.costoU*1.05 && r.precio<r.costoU*4).slice(0,5);   // margen real, pero descarta precios mal cargados (markup implausible)
-
-    // persistir para el módulo Oportunidades
-    await rpc("ir.config_parameter","set_param",["eyg.oportunidades_stock",JSON.stringify({fecha:hoyS, items:OPORT})]);
+    // productos ya en oferta activa + ignorados (archivados/eliminados en Oportunidades)
+    let ofertas=[], ignora=[];
+    try{ ofertas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas"])||"[]"); }catch(e){}
+    try{ const est=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.oportunidades_stock_estado"])||"{}"); ignora=est.ignora||[]; }catch(e){}
+    const hoyS=iso(HOY), enOferta=[];
+    (ofertas||[]).filter(o=>!o.hasta||o.hasta>=hoyS).forEach(o=>(o.items||[]).forEach(i=>enOferta.push(i.id)));
+    OPORT = await EYGOpo.desdeData(rpc, DATA, {ignora, enOferta});
   }catch(e){ console.warn("detectarOportunidades:", e.message); }
 }
 

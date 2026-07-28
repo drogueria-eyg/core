@@ -63,6 +63,7 @@
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js"></script>
+<script src="../assets/inventario-oportunidades.js"></script>
 <script>
 /* ============ EyG Core · Inventario · Oportunidades y Ofertas ============ */
 const LANG={context:{lang:"es_AR"}};
@@ -72,7 +73,7 @@ const esc=s=>EYG.esc(s);
 const hoy=()=>new Date().toISOString().slice(0,10);
 function masDias(n){ const d=new Date(); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
 function fmtF(s){ if(!s) return ""; const [y,m,d]=String(s).slice(0,10).split("-"); return d+"/"+m; }
-let OPOS=[], ARCH=[], OFERTAS=[], OPORT_STOCK=[], OPORT_STOCK_FECHA="", UMBRAL=0.10;
+let OPOS=[], ARCH=[], OFERTAS=[], OPORT_STOCK=[], ESTADO={ignora:[],arch:[]}, stockLoading=true, UMBRAL=0.10;
 
 async function getParam(k,def){ const r=await EYG.rpc("ir.config_parameter","get_param",[k]); return (r===false||r==null)?def:r; }
 async function setParam(k,v){ return EYG.rpc("ir.config_parameter","set_param",[k,String(v)]); }
@@ -83,8 +84,9 @@ async function cargar(){
     UMBRAL=parseFloat(await getParam("eyg.oferta.umbral","0.10"))||0.10;
     const ofRaw=await getParam("eyg.ofertas","[]");
     try{ OFERTAS=JSON.parse(ofRaw||"[]"); }catch(e){ OFERTAS=[]; }
-    // oportunidades que manda el panel de Stock (por vencimiento / sobrestock / sin venta)
-    try{ const os=JSON.parse(await getParam("eyg.oportunidades_stock","{}")||"{}"); OPORT_STOCK=os.items||[]; OPORT_STOCK_FECHA=os.fecha||""; }catch(e){ OPORT_STOCK=[]; }
+    // estado de oportunidades por stock (ignorados / archivadas). Las oportunidades se calculan en vivo (refrescarStockOpo).
+    try{ const est=JSON.parse(await getParam("eyg.oportunidades_stock_estado","{}")||"{}"); ESTADO={ignora:est.ignora||[], arch:est.arch||[]}; }catch(e){ ESTADO={ignora:[],arch:[]}; }
+    OPORT_STOCK=[]; stockLoading=true;
     // oportunidades detectadas
     const prods=await EYG.rpc("product.product","search_read",
       [["&",["active","=",true],"|",["x_oportunidad","=",true],["x_oportunidad_archivada","=",true]]],
@@ -106,7 +108,20 @@ async function cargar(){
     OPOS=todos.filter(x=>!x._arch);
     ARCH=todos.filter(x=>x._arch);
     render();
+    refrescarStockOpo();   // calcula en vivo las oportunidades por stock (sin bloquear el render)
   }catch(e){ cont.innerHTML='<div class="empty">No pude leer los datos: '+esc(e.message)+'</div>'; }
+}
+
+/* ids de productos en oferta ACTIVA (para no re-sugerirlos) */
+function idsEnOferta(){ const hoyS=hoy(), s=[]; OFERTAS.filter(o=>!o.hasta||o.hasta>=hoyS).forEach(o=>(o.items||[]).forEach(i=>s.push(i.id))); return s; }
+async function guardarEstado(){ return setParam("eyg.oportunidades_stock_estado", JSON.stringify({ignora:ESTADO.ignora, arch:ESTADO.arch})); }
+
+/* Recalcula en vivo las oportunidades por stock (respeta ignorados + ofertas activas) y refresca la sección. */
+async function refrescarStockOpo(){
+  stockLoading=true; render();
+  try{ OPORT_STOCK = await EYGOpo.detectar(EYG.rpc, {ignora:ESTADO.ignora, enOferta:idsEnOferta()}); }
+  catch(e){ OPORT_STOCK=[]; console.warn("refrescarStockOpo:", e.message); }
+  stockLoading=false; render();
 }
 
 function vigente(o){ return (!o.hasta || o.hasta>=hoy()); }
@@ -116,7 +131,10 @@ function render(){
   OFERTAS.forEach(o=>o._venc=!vigente(o));
   const activas=OFERTAS.filter(o=>!o._venc), vencidas=OFERTAS.filter(o=>o._venc);
   const opoCards = OPOS.length ? OPOS.map(cardOpo).join("") : '<div class="empty">No hay oportunidades nuevas. Cuando un costo baje '+Math.round(UMBRAL*100)+'% o más, aparece acá.</div>';
-  const osCards = OPORT_STOCK.length ? OPORT_STOCK.map(cardOpoStock).join("") : '<div class="empty">Sin oportunidades de stock ahora. El panel de Stock y Sobrestock recalcula hasta 5 cada vez que se abre.</div>';
+  const osCards = stockLoading
+    ? '<div class="empty"><div class="spin" style="margin:6px auto 12px"></div>Buscando oportunidades en el stock…</div>'
+    : (OPORT_STOCK.length ? OPORT_STOCK.map(cardOpoStock).join("") : '<div class="empty">No hay oportunidades de stock ahora. Se recalculan solas con los datos de stock, precios y vencimientos.</div>');
+  const osArchCards = (ESTADO.arch&&ESTADO.arch.length) ? ESTADO.arch.map(cardOpoStockArch).join("") : "";
   const ofCards = (activas.length||vencidas.length) ? activas.concat(vencidas).map(cardOferta).join("") : '<div class="empty">Todavía no hay ofertas. Confirmá una oportunidad o agregá una manual.</div>';
   cont.innerHTML=`
     <div class="intro">
@@ -127,8 +145,9 @@ function render(){
     <h2 class="sec">💡 Oportunidades por costo <span class="n">${OPOS.length}</span></h2>
     <div class="grid">${opoCards}</div>
     ${ARCH.length?`<h2 class="sec">📥 Archivadas <span class="n">${ARCH.length}</span></h2><div class="grid">${ARCH.map(cardArch).join("")}</div>`:''}
-    <h2 class="sec">📦 Oportunidades por stock <span class="n">${OPORT_STOCK.length}</span></h2>
+    <h2 class="sec">📦 Oportunidades por stock <span class="n">${stockLoading?'…':OPORT_STOCK.length}</span><button class="btn ghost sm" style="margin-left:auto" onclick="refrescarStockOpo()" ${stockLoading?'disabled':''}>🔄 Actualizar</button></h2>
     <div class="grid">${osCards}</div>
+    ${osArchCards?`<h2 class="sec">📥 Stock archivadas <span class="n">${ESTADO.arch.length}</span></h2><div class="grid">${osArchCards}</div>`:''}
     <h2 class="sec">🏷️ Ofertas y combos activos <span class="n">${activas.length}</span></h2>
     <div class="grid">${ofCards}</div>`;
 }
@@ -186,18 +205,46 @@ function cardOpoStock(o){
     <div class="kv"><span>Stock: <b>${(o.stock||0).toLocaleString('es-AR')}</b></span><span>Valor: <b>${money(o.valor)}</b></span></div>
     <div class="acts">
       <button class="btn sm" onclick="ofertarDesdeStock(${o.id})">✅ Mandar al panel</button>
-      <button class="btn warn sm" onclick="descartarStock(${o.id})">🗑 Eliminar</button>
+      <button class="btn ghost sm" onclick="archivarStock(${o.id})">📥 Archivar</button>
+      <button class="btn warn sm" onclick="eliminarStock(${o.id})">🗑 Eliminar</button>
+    </div></div>`;
+}
+function cardOpoStockArch(o){
+  return `<div class="card opostock" style="opacity:.78"><span class="tag v">Archivada</span>
+    <h3>${esc(o.nombre)}</h3>
+    <div class="meta">${esc(o.sku)}${o.cat?' · '+esc(o.cat):''}</div>
+    <div class="meta" style="margin-top:5px">${esc(o.motivoTxt||'')}</div>
+    <div class="drop"><span class="a">${money(o.precio)}</span> → <span class="b">${money(o.sugPrecio)}</span></div>
+    <div class="acts">
+      <button class="btn sm" onclick="ofertarDesdeStock(${o.id})">✅ Mandar al panel</button>
+      <button class="btn ghost sm" onclick="restaurarStock(${o.id})">↩ Restaurar</button>
+      <button class="btn warn sm" onclick="eliminarStock(${o.id})">🗑 Eliminar</button>
     </div></div>`;
 }
 function ofertarDesdeStock(pid){
-  const o=OPORT_STOCK.find(x=>x.id===pid); if(!o) return;
+  const o=OPORT_STOCK.find(x=>x.id===pid)||(ESTADO.arch||[]).find(x=>x.id===pid); if(!o) return;
   FORM={ id:null, tipo:"oferta", titulo:o.nombre, items:[{id:o.id,sku:o.sku,nombre:o.nombre}],
     precio:o.sugPrecio, precioAntes:o.precio, stock:o.stock, hasta:masDias(7), nota:o.motivoTxt, _desdeStock:pid };
   modalOferta();
 }
-window.descartarStock=async pid=>{
+window.archivarStock=async pid=>{
+  const o=OPORT_STOCK.find(x=>x.id===pid); if(!o) return;
+  if(!ESTADO.ignora.includes(pid)) ESTADO.ignora.push(pid);
+  if(!ESTADO.arch.some(x=>x.id===pid)) ESTADO.arch.push(o);
   OPORT_STOCK=OPORT_STOCK.filter(x=>x.id!==pid);
-  try{ await setParam("eyg.oportunidades_stock", JSON.stringify({fecha:OPORT_STOCK_FECHA,items:OPORT_STOCK})); toast("Quitada de la lista"); render(); }catch(e){ toast("Error: "+e.message); }
+  try{ await guardarEstado(); toast("Archivada 📥"); refrescarStockOpo(); }catch(e){ toast("Error: "+e.message); render(); }
+};
+window.eliminarStock=async pid=>{
+  if(!confirm("¿Eliminar esta oportunidad de stock? No se va a volver a sugerir. Si querés poder recuperarla, usá Archivar.")) return;
+  if(!ESTADO.ignora.includes(pid)) ESTADO.ignora.push(pid);
+  ESTADO.arch=ESTADO.arch.filter(x=>x.id!==pid);
+  OPORT_STOCK=OPORT_STOCK.filter(x=>x.id!==pid);
+  try{ await guardarEstado(); toast("Eliminada 🗑"); refrescarStockOpo(); }catch(e){ toast("Error: "+e.message); render(); }
+};
+window.restaurarStock=async pid=>{
+  ESTADO.ignora=ESTADO.ignora.filter(x=>x!==pid);
+  ESTADO.arch=ESTADO.arch.filter(x=>x.id!==pid);
+  try{ await guardarEstado(); toast("Restaurada ↩"); refrescarStockOpo(); }catch(e){ toast("Error: "+e.message); render(); }
 };
 
 /* ============ crear/editar oferta (modal) ============ */
@@ -274,7 +321,11 @@ async function guardarOferta(){
   try{
     await setParam("eyg.ofertas", JSON.stringify(OFERTAS.map(o=>{const c={...o};delete c._venc;delete c._desdeOpo;delete c._desdeStock;return c;})));
     if(desdeOpo){ await EYG.rpc("product.product","write",[[desdeOpo],{x_oportunidad:false,x_oportunidad_archivada:false}],LANG); OPOS=OPOS.filter(x=>x.id!==desdeOpo); ARCH=ARCH.filter(x=>x.id!==desdeOpo); }
-    if(desdeStock){ OPORT_STOCK=OPORT_STOCK.filter(x=>x.id!==desdeStock); await setParam("eyg.oportunidades_stock", JSON.stringify({fecha:OPORT_STOCK_FECHA,items:OPORT_STOCK})); }
+    if(desdeStock){
+      OPORT_STOCK=OPORT_STOCK.filter(x=>x.id!==desdeStock);
+      ESTADO.arch=ESTADO.arch.filter(x=>x.id!==desdeStock); ESTADO.ignora=ESTADO.ignora.filter(x=>x!==desdeStock);
+      await guardarEstado(); refrescarStockOpo();   // ya está en oferta activa → se excluye sola y entra una nueva
+    }
     cerrarModal(); toast("Oferta guardada ✓ — ya aparece en el panel de comerciales", true); render();
   }catch(e){ toast("Error: "+e.message); }
 }
