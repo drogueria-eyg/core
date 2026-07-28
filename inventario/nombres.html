@@ -84,6 +84,11 @@
   .addb select{padding:4px 3px;border:1px solid var(--line);border-radius:6px;font-size:11px;font-family:inherit;max-width:76px}
   .addb button{background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
   .addb button:hover{background:var(--teal-deep)} .addb button:disabled{opacity:.6}
+  .subassign{margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:7px 9px}
+  .subassign .lbl{font-size:11px;color:#c2410c;font-weight:800;width:100%}
+  .subassign select{padding:5px 6px;border:1px solid var(--line);border-radius:6px;font-size:12px;font-family:inherit;max-width:180px;flex:1;min-width:120px}
+  .subassign button{background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .subassign button:hover{background:var(--teal-deep)} .subassign button:disabled{opacity:.6}
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:10px;font-size:14px;font-weight:600;box-shadow:0 8px 26px rgba(0,0,0,.25);z-index:9999;opacity:0;transition:opacity .2s}
   .toast.show{opacity:1}
 </style>
@@ -107,6 +112,27 @@ function unidadDe(p){
   let u = UNIDAD_SUB[p.sub] || "unidades";
   if(p.sub==="HOSP. AMPOLLAS" && /jer|prell|jga/i.test(p.nombre||"")) u="jeringas";
   return u;
+}
+const SIN_SUB = "(sin subcategoría)";
+let SUBCATS_ODOO = [];   // subcategorias reales de HOSPITALARIOS (para el desplegable): [{id,name}]
+// sugiere la subcategoria segun el nombre del producto
+function sugerirSubId(p){
+  const n=(p.nombre||"").toLowerCase(); let nom=null;
+  if(/frasco\s*ampolla/.test(n)) nom="HOSP. FRASCO AMPOLLA";
+  else if(/ampolla/.test(n)) nom="HOSP. AMPOLLAS";
+  else if(/spray|aerosol/.test(n)) nom="HOSP. SPRAYS";
+  else if(/crema|pomada|\bgel\b|\bpote\b/.test(n)) nom="HOSP.CREMAS";
+  else if(/jarabe|\bjbe\b|susp/.test(n)) nom="HOSP. JARABES";
+  else if(/gotas/.test(n)) nom="HOSP. GOTAS";
+  else if(/\bcomp\b|comprimido|\bcaps\b|capsula/.test(n)) nom="HOSP. COMPRIMIDOS";
+  const c=SUBCATS_ODOO.find(x=>x.name===nom); return c?c.id:null;
+}
+function selectorSub(p){
+  const sug=sugerirSubId(p);
+  const opts=SUBCATS_ODOO.map(c=>`<option value="${c.id}" ${c.id===sug?"selected":""}>${EYG.esc(c.name)}</option>`).join("");
+  return `<div class="subassign"><span class="lbl">📁 Sin subcategoría — asigná una:</span>
+    <select id="sub-${p.id}"><option value="" ${sug?"":"selected"}>— elegí —</option>${opts}</select>
+    <button onclick="asignarSub(${p.id})">Asignar</button></div>`;
 }
 
 /* ---------- diccionario de formas farmacéuticas (detección: multipalabra primero) ---------- */
@@ -244,6 +270,13 @@ async function cargar(preservar){
       Object.assign({limit:2000, order:"name"}, LANG));
   }catch(e){ cont.innerHTML='<div class="empty">No se pudieron leer los productos: '+EYG.esc(e.message)+'</div>'; return; }
 
+  // subcategorías reales de HOSPITALARIOS (para el desplegable de asignación)
+  try{
+    const cats = await EYG.rpc("product.category","search_read",
+      [[["parent_id","=",ROOT_CATEG]],["id","name"]], LANG);
+    SUBCATS_ODOO = cats.filter(c=>c.name && c.name!=="-*-*-").sort((a,b)=>a.name.localeCompare(b.name));
+  }catch(e){ SUBCATS_ODOO=[]; }
+
   // Embalaje (product.packaging) por variante — la caja real = mínimo de compra
   const varIds = recs.map(r=>r.product_variant_id&&r.product_variant_id[0]).filter(Boolean);
   const packByVar = {};
@@ -362,10 +395,11 @@ function fila(p){
   const nota = p.desg.ubicacion ? `<div class="nota">Ubicación: ${EYG.esc(p.desg.ubicacion)}</div>` : "";
   const stk = `<div class="stk ${(p.stock||0)<=0?'zero':''}">${(p.stock||0)<=0?'sin stock':(p.stock+' u')}</div>`;
   const emb = embCell(p);
+  const subSel = (p.sub===SIN_SUB) ? selectorSub(p) : "";
   return `<div class="row" id="row-${p.id}">
     <div class="sku">${EYG.esc(p.sku)}${stk}</div>
     <div class="nactual">${EYG.esc(p.aplicado?p.sugerido:p.nombre)}</div>
-    <div class="nsug ${same?"same":""}">${EYG.esc(p.sugerido)}${chips?`<div class="motivos">${chips}</div>`:""}</div>
+    <div class="nsug ${same?"same":""}">${EYG.esc(p.sugerido)}${chips?`<div class="motivos">${chips}</div>`:""}${subSel}</div>
     <div class="apcell">${ap}</div>
     <div>${conc}</div>
     <div>${pres}</div>
@@ -390,6 +424,27 @@ function embCell(p){
 
 /* =========================== acciones =========================== */
 window.setSub = sc => { actual=sc; filtro=""; render(); };
+function recomputarSubs(){
+  const bycat={}; TODOS.forEach(p=>{ bycat[p.sub]=(bycat[p.sub]||0)+1; });
+  SUBCATS = Object.keys(bycat).sort((x,y)=>bycat[y]-bycat[x]);
+}
+// asigna la subcategoria elegida al producto (escribe categ_id en Odoo -> el cron le arma la escalera)
+window.asignarSub = async id => {
+  const p = TODOS.find(x=>x.id===id); if(!p) return;
+  const sel = document.getElementById("sub-"+id);
+  const catId = parseInt(sel&&sel.value,10);
+  if(!catId){ toast("Elegí una subcategoría"); if(sel) sel.focus(); return; }
+  const c = SUBCATS_ODOO.find(x=>x.id===catId); if(!c) return;
+  const btn = document.querySelector("#row-"+id+" .subassign button"); if(btn){ btn.disabled=true; btn.textContent="…"; }
+  try{
+    await EYG.rpc("product.template","write",[[p.id],{categ_id:catId}], LANG);
+    p.sub = c.name;
+    recomputarSubs();
+    if(!SUBCATS.includes(actual)) actual = SUBCATS[0];
+    toast("Movido a "+c.name+" ✓ — el cron le arma la escalera");
+    render();
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent="Asignar"; } toast("Error: "+EYG.esc(e.message)); }
+};
 let tBuscar=null;
 window.onBuscar = v => { filtro=v; clearTimeout(tBuscar); tBuscar=setTimeout(render,180); };
 window.toggleFiltro = k => {
