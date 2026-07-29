@@ -102,10 +102,8 @@ function resumen(r){
   const n=(r.desc&&r.desc.length)||(r.cortes&&r.cortes.length)||0;
   const dmax=(r.desc&&r.desc.length)?Math.max.apply(null,r.desc.map(x=>+x||0)):0;
   p.push("recargo "+pct(r.recargo)+"%");
+  p.push("piso "+pct(r.piso)+"%");
   p.push(n+" tramos · desc máx "+pct(dmax)+"%");
-  if((r.modo||"fijo")==="fijo" && r.cortes&&r.cortes.length) p.push("hasta "+r.cortes[r.cortes.length-1]+" "+esc(r.unidad||""));
-  else p.push("cantidades por embalaje ("+esc(r.unidad||"")+")");
-  if(r.piso)p.push("piso "+pct(r.piso)+"%");
   if(r.ivaCosto) p.push("IVA al costo +"+pct(r.ivaCosto)+"%");
   return p.join(" · ");
 }
@@ -182,31 +180,23 @@ function fila(c){
 }
 
 function formHTML(c){
-  // base: regla propia si existe, si no una copia de la heredada, si no el default
+  // La categoría solo define la POLÍTICA: recargo, piso, cantidad de tramos, IVA al costo.
+  // El resto (modo, unidad, cantidades, descuento máx) lo saca el motor del producto/Maestro.
   const res=resolver(c.id);
   const r = (res&&res.own)? res.rule : (res? res.rule : DEF);
-  const modo=r.modo||DEF.modo;
-  const nT = (r.desc&&r.desc.length) || (r.cortes&&r.cortes.length) || 4;               // cantidad de tramos
-  const descMax = (r.desc&&r.desc.length) ? Math.max.apply(null, r.desc.map(x=>+x||0)) : 0.20;
-  const maxQty = (r.cortes&&r.cortes.length) ? r.cortes[r.cortes.length-1] : 10;
-  const opts=MODOS.map(([v,t])=>`<option value="${v}" ${v===modo?"selected":""}>${esc(t)}</option>`).join("");
-  const fijoOff = modo==="fijo" ? "" : " off";
+  const nT = (r.desc&&r.desc.length) || (r.cortes&&r.cortes.length) || 4;
   return `<div class="form" onclick="event.stopPropagation()">
     <label class="chk"><input type="checkbox" id="f-genera" ${r.genera?"checked":""}> <span>Genera escalera de precios para esta categoría</span></label>
     <div class="grid">
       <div class="fld2"><label>Recargo sobre costo</label><div class="inpu"><input type="number" id="f-recargo" step="1" value="${pct(r.recargo)}"><span class="suf">%</span></div><div class="hint">markup neto · 80 = ×1,80</div></div>
-      <div class="fld2"><label>Piso de margen</label><div class="inpu"><input type="number" id="f-piso" step="1" value="${pct(r.piso)}"><span class="suf">%</span></div><div class="hint">margen mínimo · 30 = no baja de 30%</div></div>
-      <div class="fld2"><label>Modo de cortes</label><select id="f-modo">${opts}</select><div class="hint">embalaje = medicamentos (auto por producto) · fijo = por unidad/caja</div></div>
-      <div class="fld2"><label>Unidad</label><input type="text" id="f-unidad" value="${esc(r.unidad||DEF.unidad)}"><div class="hint">tiras · amp · unidades · cajas</div></div>
-      <div class="fld2"><label>Cantidad de tramos</label><input type="number" id="f-ncortes" min="1" max="8" value="${nT}"><div class="hint">cuántos escalones de precio (el sistema calcula las cantidades)</div></div>
-      <div class="fld2"><label>Descuento máximo</label><div class="inpu"><input type="number" id="f-descmax" step="1" value="${pct(descMax)}"><span class="suf">%</span></div><div class="hint">el del último tramo; el resto se reparte parejo desde 0</div></div>
-      <div class="fld2${fijoOff}"><label>Cantidad máx. (modo fijo)</label><input type="number" id="f-maxqty" min="1" value="${maxQty}"><div class="hint">a partir de esta cantidad, el máximo descuento</div></div>
+      <div class="fld2"><label>Piso de margen</label><div class="inpu"><input type="number" id="f-piso" step="1" value="${pct(r.piso)}"><span class="suf">%</span></div><div class="hint">margen mínimo · el último tramo llega justo acá</div></div>
+      <div class="fld2"><label>Cantidad de tramos</label><input type="number" id="f-ncortes" min="1" max="8" value="${nT}"><div class="hint">escalones de precio · las cantidades y la unidad salen del Maestro</div></div>
       <div class="fld2"><label>IVA al costo</label><div class="inpu"><input type="number" id="f-iva" step="0.5" value="${pct(r.ivaCosto)}"><span class="suf">%</span></div><div class="hint">0 = no aplica · 21 = parenterales</div></div>
     </div>
     <div class="acts"><button class="cancel" onclick="editId=null;render()">Cancelar</button><button class="ok" onclick="guardarRegla(${c.id})">Aplicar regla</button></div>
   </div>`;
 }
-// cortes enteros parejos de a a b, estrictamente crecientes
+// cortes enteros parejos de a a b, estrictamente crecientes (placeholder; el motor recalcula por producto)
 function cortesEven(a,b,n){ a=Math.max(1,Math.round(a)); if(n<=1) return [a]; if(b<=a) b=a+n-1; const out=[]; for(let i=0;i<n;i++){ let v=Math.round(a+(b-a)*i/(n-1)); if(i>0&&v<=out[i-1]) v=out[i-1]+1; out.push(v); } return out; }
 
 window.toggleGrp = t => { abiertos[t]=!abiertos[t]; render(); };
@@ -216,14 +206,12 @@ window.guardarRegla = id => {
   const gv=x=>document.getElementById(x).value;
   const genera=document.getElementById("f-genera").checked;
   const n=Math.max(1,Math.min(8, parseInt(gv("f-ncortes"))||4));
-  const descMax=frac(gv("f-descmax"));
-  const modo=gv("f-modo");
-  const maxQty=Math.max(1, parseInt(gv("f-maxqty"))||10);
-  // descuentos: repartidos PAREJO de 0% al máximo, en n tramos
+  const recargo=frac(gv("f-recargo")), piso=frac(gv("f-piso")), ivaCosto=frac(gv("f-iva"));
+  // descuento máximo = el que lleva el último tramo JUSTO al piso de margen (se calcula, no se carga)
+  const descMax = (1+recargo)>0 ? Math.max(0, 1 - (1/(1-piso))/(1+recargo)) : 0;
   const desc=[]; for(let i=0;i<n;i++){ desc.push(n===1?0:Math.round((i/(n-1))*descMax*1000)/1000); }
-  // cantidades: modo fijo = parejas 1→máx; modo embalaje = las calcula el motor por producto (placeholder)
-  const cortes = modo==="fijo" ? cortesEven(1,maxQty,n) : cortesEven(1,Math.max(n,2),n);
-  CFG.reglas[id]={ genera, recargo:frac(gv("f-recargo")), piso:frac(gv("f-piso")), modo, cortes, desc, unidad:(gv("f-unidad")||"unidades").trim(), ivaCosto:frac(gv("f-iva")) };
+  // modo/unidad/cantidades los deriva el MOTOR por producto (Maestro). Guardamos placeholders para el flat.
+  CFG.reglas[id]={ genera, recargo, piso, ivaCosto, modo:"auto", unidad:"", cortes:cortesEven(1,Math.max(n,2),n), desc };
   dirty=true; editId=null; render();
 };
 // arma el texto plano que lee el cron: una linea por categoria que RESUELVE a una regla que genera
