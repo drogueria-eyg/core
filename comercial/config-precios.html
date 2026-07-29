@@ -43,10 +43,12 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js"></script>
 <script>
-const KEY="eyg.sync_precios_config";
-const ROOTS=[24,10,51,11,369];
+const KEY="eyg.sync_precios_config";      // JSON (para este editor)
+const KEY_FLAT="eyg.sync_precios_flat";    // texto plano que lee el cron (una regla por linea)
+const ROOTS=[24,10,51,11,369,370];         // Hospitalarios, Farmacopea, Descartables, Perfumeria, Equipos, Ortopedia
 const esc=EYG.esc, rpc=EYG.rpc;
-const DEF={genera:false, recargo:0.70, cortes:[1,10,20,40], desc:[0,0.07,0.14,0.20], anclarCaja:false, piso:0.26, ivaCosto:0};
+const MODOS=[["embalaje","Por embalaje (fracciona de la caja real a la caja del nombre)"],["fijo","Fijo (venta por unidad/caja, sin fraccionar)"]];
+const DEF={genera:false, recargo:0.80, piso:0.30, modo:"fijo", cortes:[1,10,20,40], desc:[0,0.07,0.14,0.20], unidad:"unidades", ivaCosto:0};
 let CATS=[], byId={}, CFG={v:1,reglas:{}}, editId=null, abiertos={}, dirty=false;
 
 const pct=x=>Math.round((x||0)*1000)/10;           // 0.07 -> 7
@@ -57,7 +59,7 @@ async function cargar(){
   const cont=document.getElementById("cont");
   cont.innerHTML='<div class="empty">Cargando categorías y configuración…</div>';
   try{
-    const dom=["|","|","|","|",["id","child_of",24],["id","child_of",10],["id","child_of",51],["id","child_of",11],["id","child_of",369]];
+    const dom=[].concat(Array(ROOTS.length-1).fill("|"), ROOTS.map(r=>["id","child_of",r]));
     CATS=await rpc("product.category","search_read",[dom],{fields:["id","name","parent_id","complete_name"],limit:400,context:{lang:"es_AR"}});
     byId={}; CATS.forEach(c=>{ c.full=(c.complete_name||"").replace(/^ALL \/ /,""); c.top=c.full.split(" / ")[0]; c.pid=c.parent_id?c.parent_id[0]:null; byId[c.id]=c; });
     const raw=await rpc("ir.config_parameter","get_param",[KEY]);
@@ -77,16 +79,16 @@ function resumen(r){
   if(!r) return "";
   const p=[];
   p.push(r.genera?("genera escalera · recargo "+pct(r.recargo)+"%"):"NO genera escalera");
-  if(r.genera){ p.push("cortes "+(r.cortes||[]).join("/")); p.push("desc "+(r.desc||[]).map(pct).join("/")+"%"); if(r.anclarCaja)p.push("ancla a caja"); if(r.piso)p.push("piso "+pct(r.piso)+"%"); }
+  if(r.genera){ p.push("modo "+(r.modo||"fijo")); p.push("cortes "+(r.cortes||[]).join("/")+" "+esc(r.unidad||"")); p.push("desc "+(r.desc||[]).map(pct).join("/")+"%"); if(r.piso)p.push("piso "+pct(r.piso)+"%"); }
   if(r.ivaCosto) p.push("IVA al costo +"+pct(r.ivaCosto)+"%");
   return p.join(" · ");
 }
 
 function render(){
   const cont=document.getElementById("cont");
-  const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
+  const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
   const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardarTodo()">💾 Guardar cambios</button>${dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>'}</div>`;
-  const intro=`<div class="intro"><b>Reglas del sincronizador de precios.</b> Definí por categoría (y subcategoría) cómo se arma la escalera: recargo, cortes, descuentos por tramo, IVA al costo, piso de margen y anclaje a la caja cerrada. <b>La subcategoría pisa a la categoría</b>; si no tiene regla propia, hereda del padre. Estas reglas van a alimentar el botón <b>Sincronizar</b> y el tablero de Rentabilidad.</div>`;
+  const intro=`<div class="intro"><b>Reglas del motor de precios.</b> Definí por categoría (y subcategoría) cómo se arma la escalera: <b>recargo</b> sobre el costo, <b>piso</b> de margen, <b>modo</b> de cortes (embalaje / fijo), <b>cortes</b> y <b>descuento por tramo</b>, <b>unidad</b> e <b>IVA al costo</b>. <b>La subcategoría pisa a la categoría</b>; si no tiene regla propia, hereda del padre. <b>Al guardar, el motor recalcula todos los precios al instante.</b> El costo lo toma solo (más reciente entre manual, compra y estándar); la caja cerrada se maneja por producto en el Maestro.</div>`;
   const grupos=tops.map(top=>{
     const cats=CATS.filter(c=>c.top===top).sort((a,b)=>a.full.localeCompare(b.full));
     const open=abiertos[top]!==false;
@@ -116,13 +118,16 @@ function formHTML(c){
   const r = (res&&res.own)? res.rule : (res? res.rule : DEF);
   const cortes=(r.cortes||DEF.cortes).join(", ");
   const descs=(r.desc||DEF.desc).map(pct).join(", ");
+  const modo=r.modo||DEF.modo;
+  const opts=MODOS.map(([v,t])=>`<option value="${v}" ${v===modo?"selected":""}>${esc(t)}</option>`).join("");
   return `<div class="form" onclick="event.stopPropagation()">
     <div style="flex-basis:100%"><label class="chk"><input type="checkbox" id="f-genera" ${r.genera?"checked":""}> Genera escalera de precios para esta categoría</label></div>
-    <div><label>Recargo sobre costo (%)</label><input type="number" id="f-recargo" step="1" value="${pct(r.recargo)}"><div class="hint">markup neto (70 = ×1,70)</div></div>
-    <div><label>Cortes (cantidades)</label><input type="text" id="f-cortes" value="${esc(cortes)}"><div class="hint">ej: 1, 10, 20, 40</div></div>
+    <div><label>Recargo sobre costo (%)</label><input type="number" id="f-recargo" step="1" value="${pct(r.recargo)}"><div class="hint">markup neto (80 = ×1,80)</div></div>
+    <div><label>Piso de margen (%)</label><input type="number" id="f-piso" step="1" value="${pct(r.piso)}"><div class="hint">margen mínimo. 30 = no baja de 30%</div></div>
+    <div style="flex-basis:100%"><label>Modo de cortes</label><select id="f-modo" style="width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:8px;font-size:13px;font-family:inherit">${opts}</select><div class="hint">embalaje = medicamentos (del embalaje a la caja) · fijo = por unidad/caja</div></div>
+    <div><label>Cortes (cantidades)</label><input type="text" id="f-cortes" value="${esc(cortes)}"><div class="hint">en modo fijo. ej: 1, 10, 20, 40</div></div>
     <div><label>Descuento por tramo (%)</label><input type="text" id="f-desc" value="${esc(descs)}"><div class="hint">mismo nº que cortes. ej: 0, 7, 14, 20</div></div>
-    <div><label>Piso de margen (%)</label><input type="number" id="f-piso" step="1" value="${pct(r.piso)}"><div class="hint">0 = sin piso</div></div>
-    <div><label class="chk" style="margin-top:16px"><input type="checkbox" id="f-caja" ${r.anclarCaja?"checked":""}> Anclar último tramo a la caja cerrada</label></div>
+    <div><label>Unidad (etiqueta)</label><input type="text" id="f-unidad" value="${esc(r.unidad||DEF.unidad)}"><div class="hint">tiras · amp · unidades · cajas</div></div>
     <div><label>IVA al costo (%)</label><input type="number" id="f-iva" step="0.5" value="${pct(r.ivaCosto)}"><div class="hint">0 = no aplica · 21 = parenterales</div></div>
     <div class="acts"><button class="cancel" onclick="editId=null;render()">Cancelar</button><button class="ok" onclick="guardarRegla(${c.id})">Aplicar regla</button></div>
   </div>`;
@@ -141,16 +146,37 @@ window.guardarRegla = id => {
   CFG.reglas[id]={
     genera: document.getElementById("f-genera").checked,
     recargo: frac(document.getElementById("f-recargo").value),
-    cortes, desc,
     piso: frac(document.getElementById("f-piso").value),
-    anclarCaja: document.getElementById("f-caja").checked,
+    modo: document.getElementById("f-modo").value,
+    cortes, desc,
+    unidad: (document.getElementById("f-unidad").value||"unidades").trim(),
     ivaCosto: frac(document.getElementById("f-iva").value)
   };
   dirty=true; editId=null; render();
 };
+// arma el texto plano que lee el cron: una linea por categoria que RESUELVE a una regla que genera
+// (con herencia ya aplicada). Formato: catId~recargo~piso~modo~cortes~desc~unidad~ivaCosto
+function construirFlat(){
+  const out=[];
+  CATS.forEach(c=>{
+    const res=resolver(c.id);
+    if(res && res.rule && res.rule.genera){
+      const r=res.rule;
+      out.push([c.id, r.recargo, r.piso, (r.modo||"fijo"), (r.cortes||[]).join(","), (r.desc||[]).join(","), (r.unidad||"unidades"), (r.ivaCosto||0)].join("~"));
+    }
+  });
+  return out.join("\n");
+}
 window.guardarTodo = async () => {
   const btn=document.querySelector(".btn-save"); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
-  try{ await rpc("ir.config_parameter","set_param",[KEY, JSON.stringify(CFG)]); dirty=false; render(); toast("Configuración guardada ✓"); }
+  try{
+    await rpc("ir.config_parameter","set_param",[KEY, JSON.stringify(CFG)]);
+    await rpc("ir.config_parameter","set_param",[KEY_FLAT, construirFlat()]);
+    if(btn) btn.textContent="Recalculando precios…";
+    await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
+    dirty=false; render();
+    toast("Guardado y precios recalculados ✓");
+  }
   catch(e){ if(btn){ btn.disabled=false; btn.textContent="💾 Guardar cambios"; } toast("Error: "+e.message); }
 };
 let tT; function toast(m){ let t=document.getElementById("cptoast"); if(!t){ t=document.createElement("div"); t.id="cptoast"; t.style.cssText="position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0E1F1D;color:#fff;padding:11px 20px;border-radius:10px;font-weight:600;z-index:9999;box-shadow:0 8px 26px rgba(0,0,0,.25)"; document.body.appendChild(t);} t.textContent=m; t.style.opacity="1"; clearTimeout(tT); tT=setTimeout(()=>t.style.opacity="0",2600); }
