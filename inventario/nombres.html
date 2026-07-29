@@ -202,6 +202,7 @@ const UNIDADES = [
   {k:"unidad", sing:"unidad",  plur:"unidades", lbl:"unidad"},
   {k:"caja",   sing:"caja",    plur:"cajas",    lbl:"caja (cerrada)"},
   {k:"tira",   sing:"tira",    plur:"tiras",    lbl:"tira"},
+  {k:"blister",sing:"blister", plur:"blisters", lbl:"blister"},
   {k:"amp",    sing:"amp",     plur:"amp",      lbl:"ampolla"},
   {k:"comp",   sing:"comp",    plur:"comp",     lbl:"comprimido"},
   {k:"caps",   sing:"caps",    plur:"caps",     lbl:"cápsula"},
@@ -241,10 +242,14 @@ function decompose(a){                       // a = resultado de analizar(nombre
   const conc = a.desg.conc || "";
   let droga = izq;
   if(conc){ const di = izq.search(/\d/); if(di>0) droga = izq.slice(0,di).trim(); }
+  // unidad del CONTENIDO del bulto (tiras/blisters/amp/…), tomada del nombre si está
+  let bultoUnidad = "";
+  if(a.desg.bultoTipo){ const f=UNIDADES.find(u=>u.plur===a.desg.bultoTipo||u.sing===a.desg.bultoTipo); if(f) bultoUnidad=f.k; }
   return {
     droga, conc, present, lab,
     contenedor: a.desg.contenedor || "Caja",
     bultoNum: a.desg.bultoNum || null,
+    bultoUnidad,
     cajaCerrada: !!a.desg.cajaCerrada,
     extra: a.desg.extra || []
   };
@@ -253,7 +258,9 @@ function compose(p){
   const e = p.ed || {};
   const u = unidadVenta(p);                          // unidad de VENTA (puede ser "caja")
   const up = uniParen(p.sub, p.nombre);              // unidad NATURAL del contenido (tira/amp/unidad)
-  const contPlur = (u.k==='caja') ? up.plur : u.plur; // el bulto se cuenta en la unidad de contenido
+  let contPlur;
+  if(e.bultoUnidad){ const cu=UNIDADES.find(x=>x.k===e.bultoUnidad); contPlur = cu?cu.plur:up.plur; }
+  else contPlur = (u.k==='caja') ? up.plur : u.plur; // el bulto se cuenta en la unidad de contenido
   const pp = ["Precio x "+u.sing];
   if(e.bultoNum) pp.push((e.contenedor||"Caja")+" x "+e.bultoNum+" "+contPlur);
   if(e.cajaCerrada) pp.push("caja cerrada");
@@ -586,9 +593,13 @@ function fila(p){
   const inCon = `<input class="f-in" id="con-${p.id}" value="${EYG.esc(e.conc||"")}" placeholder="—" onchange="guardarCampo(${p.id},'conc')">`;
   const inPre = `<input class="f-in" id="pre-${p.id}" value="${EYG.esc(e.present||"")}" placeholder="—" onchange="guardarCampo(${p.id},'present')">`;
   const selUni = `<select class="f-sel" id="uni-${p.id}" onchange="guardarCampo(${p.id},'unidad')">${UNIDADES.map(o=>`<option value="${o.k}" ${o.k===u.k?"selected":""}>${o.lbl}</option>`).join("")}</select>`;
+  const up = uniParen(p.sub, p.nombre);
+  const contKeyDef = (function(){ const pl=(u.k==='caja')?up.plur:u.plur; const f=UNIDADES.find(x=>x.plur===pl); return f?f.k:'unidad'; })();
+  const curCont = e.bultoUnidad || contKeyDef;
   const selCont = `<select class="f-sel" id="cont-${p.id}" onchange="guardarCampo(${p.id},'bulto')">${CONTENEDORES.map(c=>`<option ${c===(e.contenedor||"Caja")?"selected":""}>${c}</option>`).join("")}</select>`;
   const inBn = `<input class="f-num" id="bn-${p.id}" type="number" min="1" value="${e.bultoNum||""}" placeholder="N°" onchange="guardarCampo(${p.id},'bulto')">`;
-  const bultoInner = `<div class="bultobox">${selCont}<span class="xx">×</span>${inBn}<span class="uplur">${EYG.esc(u.plur)}</span></div>`
+  const selBu = `<select class="f-sel" id="bu-${p.id}" onchange="guardarCampo(${p.id},'bulto')">${UNIDADES.map(o=>`<option value="${o.k}" ${o.k===curCont?"selected":""}>${o.plur}</option>`).join("")}</select>`;
+  const bultoInner = `<div class="bultobox">${selCont}<span class="xx">×</span>${inBn}${selBu}</div>`
     + `<label class="cerr"><input type="checkbox" id="cc-${p.id}" ${e.cajaCerrada?"checked":""} onchange="guardarCampo(${p.id},'bulto')"> caja cerrada</label>`;
   const embInner = embCell(p);
   const cajaHint = (e.unidadKey==='caja')
@@ -698,6 +709,7 @@ window.guardarCampo = async (id, campo) => {
   else if(campo==='bulto'){
     e.contenedor = gv("cont-"+id)||"Caja";
     const n = parseInt(gv("bn-"+id),10); e.bultoNum = (n>0?n:null);
+    e.bultoUnidad = gv("bu-"+id)||"";
     const cc = document.getElementById("cc-"+id); e.cajaCerrada = !!(cc&&cc.checked);
   }
   const nuevo = compose(p);
