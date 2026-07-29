@@ -19,6 +19,8 @@
   .grphead{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#f3f8f7;border-bottom:1px solid var(--line);font-weight:800;font-size:14px;cursor:pointer}
   .grphead .cnt{margin-left:auto;font-size:12px;color:var(--gris2);font-weight:700}
   .row{display:flex;align-items:center;gap:10px;padding:9px 16px;border-top:1px solid var(--line);flex-wrap:wrap}
+  .row.catrule{background:#f3f8f7;border-top:2px solid var(--teal-med)}
+  .row.catrule .nm{font-weight:800;color:var(--teal-deep)}
   .row .nm{font-weight:600;font-size:13.5px;min-width:220px;flex:1}
   .row .nm small{color:var(--gris2);font-weight:400}
   .badge{font-size:11px;font-weight:800;border-radius:20px;padding:2px 9px;white-space:nowrap}
@@ -90,14 +92,31 @@ function render(){
   const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardarTodo()">💾 Guardar cambios</button>${dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>'}</div>`;
   const intro=`<div class="intro"><b>Reglas del motor de precios.</b> Definí por categoría (y subcategoría) cómo se arma la escalera: <b>recargo</b> sobre el costo, <b>piso</b> de margen, <b>modo</b> de cortes (embalaje / fijo), <b>cortes</b> y <b>descuento por tramo</b>, <b>unidad</b> e <b>IVA al costo</b>. <b>La subcategoría pisa a la categoría</b>; si no tiene regla propia, hereda del padre. <b>Al guardar, el motor recalcula todos los precios al instante.</b> El costo lo toma solo (más reciente entre manual, compra y estándar); la caja cerrada se maneja por producto en el Maestro.</div>`;
   const grupos=tops.map(top=>{
-    const cats=CATS.filter(c=>c.top===top).sort((a,b)=>a.full.localeCompare(b.full));
+    const cats=CATS.filter(c=>c.top===top);
+    const root=cats.find(c=>ROOTS.includes(c.id));
+    const subs=cats.filter(c=>!ROOTS.includes(c.id)).sort((a,b)=>a.full.localeCompare(b.full));
     const open=abiertos[top]!==false;
-    const rows=open? cats.map(c=>fila(c)).join("") : "";
-    return `<div class="grp"><div class="grphead" onclick="toggleGrp('${esc(top)}')"><span>${open?"▾":"▸"}</span> ${esc(top)} <span class="cnt">${cats.length} cat.</span></div>${rows}</div>`;
+    const body=open ? ((root?filaRoot(root):"")+subs.map(c=>fila(c)).join("")) : "";
+    const rr=root?resolver(root.id):null;
+    const hb=(rr&&rr.own)?`<span class="badge gen" style="margin-left:8px">regla general</span>`:`<span class="badge no" style="margin-left:8px">sin regla general</span>`;
+    return `<div class="grp"><div class="grphead" onclick="toggleGrp('${esc(top)}')"><span>${open?"▾":"▸"}</span> ${esc(top)} ${hb} <span class="cnt">${subs.length} subcat.</span></div>${body}</div>`;
   }).join("");
   cont.innerHTML=savebar+intro+grupos;
 }
 
+// Regla de TODA la categoría (el nodo raíz). La toman todas las subcategorías que no tengan la suya.
+function filaRoot(c){
+  const res=resolver(c.id);
+  const has=res&&res.own;
+  const badge=has?`<span class="badge gen">regla de toda la categoría</span>`:`<span class="badge no">sin regla general</span>`;
+  const sum=has?`<div class="sum">${esc(resumen(res.rule))}</div>`
+                :`<div class="sum">Poné una regla acá y la toman <b>todas las subcategorías</b> que no tengan la suya propia.</div>`;
+  const btns=has
+    ? `<button class="btn-mini" onclick="editar(${c.id})">Editar</button><button class="btn-mini del" onclick="quitar(${c.id})">Quitar</button>`
+    : `<button class="btn-mini" onclick="editar(${c.id})">+ Regla para toda la categoría</button>`;
+  const form=editId===c.id?formHTML(c):"";
+  return `<div class="row catrule"><div class="nm">📂 Toda la categoría <small>aplica a las subcategorías sin regla propia</small></div>${badge}${btns}${sum}${form}</div>`;
+}
 function fila(c){
   const res=resolver(c.id);
   const sub=c.full.includes(" / ")? c.full.split(" / ").slice(1).join(" / ") : "(categoría)";
