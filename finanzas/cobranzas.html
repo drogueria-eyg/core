@@ -250,7 +250,7 @@ function fmtContacto(utc){ if(!utc) return null; const d=new Date(utc.replace(" 
   const p=n=>String(n).padStart(2,"0"); const hora=p(d.getHours())+":"+p(d.getMinutes());
   return {esHoy:d>=h0, texto:(d>=h0?"hoy":p(d.getDate())+"/"+p(d.getMonth()+1))+" "+hora}; }
 
-async function cargar(){
+async function cargar(silent){
   try{
     // 1) TODA la cuenta corriente real: líneas del receivable sin conciliar, con saldo.
     //    Netea facturas (+), NC (−), recibos/pagos posteados sin imputar (−) y saldo inicial migración (+).
@@ -398,8 +398,11 @@ async function cargar(){
         nota:NOTAS[p.id]||null
       };
     });
+    const _sy = silent ? window.scrollY : 0;
     render();
+    if(silent) window.scrollTo(0, _sy);
   }catch(e){
+    if(silent){ console.warn("Refresco falló, mantengo la vista actual", e); return; }
     document.getElementById("app").innerHTML='<div class="errbox"><b>No pude calcular la deuda.</b><br>'+esc(e.message||e)+'</div>';
   }
 }
@@ -562,7 +565,7 @@ function renderLista(){
   const w=document.getElementById("listwrap");
   if(!list.length){w.innerHTML='<div class="tablecard"><div class="empty">No hay clientes con ese filtro.</div></div>';return;}
   const banner=filtro.boveda?`<div class="bovbanner"><span>🔒 <b>Bóveda</b> — incobrables y clientes con acuerdo (fuera de la gestión activa)</span><a onclick="toggleBoveda()">← Volver a cobranzas</a></div>`:'';
-  const head=banner+`<div class="count-line">Mostrando <b>${list.length}</b> cliente${list.length===1?"":"s"} · saldo al ${fmtFecha(hoyStr)}</div>`;
+  const head=banner+`<div class="count-line">Mostrando <b>${list.length}</b> cliente${list.length===1?"":"s"} · saldo al ${fmtFecha(hoyStr)} · <span style="color:var(--teal)">🔄 se actualiza solo</span></div>`;
   const rows=list.map(c=>{
     const t=c.tramo;
     const aCobrar=Math.max(0,c.deudaReal);
@@ -891,7 +894,15 @@ function exportarExcel(){
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Cobranzas");
   XLSX.writeFile(wb, `cobranzas-eyg-${com.replace(/[^a-zA-Z0-9]+/g,"_")}-${hoyStr}.xlsx`);
 }
-EYG.guard(["finanzas","lider","admin","direccion","cobranzas"]).then(()=>cargar());
+// ===== Auto-refresco (trabajo simultáneo, sin F5) =====
+function drawerAbierto(){ const d=document.getElementById("drawer"); return !!(d && d.classList.contains("on")); }
+function autoRefrescar(){
+  // recarga silenciosa cada 30s; NO refresca si la pestaña está oculta o si hay una ficha abierta (para no interrumpir)
+  setInterval(()=>{ if(document.hidden || drawerAbierto()) return; cargar(true); }, 30000);
+}
+// al volver a la pestaña, refresca al toque (si no hay ficha abierta)
+document.addEventListener("visibilitychange",()=>{ if(!document.hidden && !drawerAbierto()) cargar(true); });
+EYG.guard(["finanzas","lider","admin","direccion","cobranzas"]).then(()=>{ cargar().then(autoRefrescar); });
 </script>
 </body>
 </html>
