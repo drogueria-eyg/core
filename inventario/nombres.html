@@ -125,6 +125,8 @@
   .btn-toggle.on{background:var(--teal);border-color:var(--teal);color:#fff}
   .btn-sync{background:var(--teal);color:#fff;border:none;border-radius:10px;padding:9px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
   .btn-sync:hover{background:var(--teal-deep)}
+  .btn-recalc{background:#f59e0b;color:#fff;border:none;border-radius:10px;padding:9px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .btn-recalc:hover{background:#d97706} .btn-recalc:disabled{opacity:.6;cursor:default}
   .btn-undo{background:#fff;border:1px solid #f59e0b;border-radius:10px;padding:8px 12px;font-size:13px;font-weight:700;color:#b45309;cursor:pointer;font-family:inherit;white-space:nowrap}
   .btn-undo:hover{background:#fff7ed}
   .btn-clear{background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:13px;font-weight:600;color:var(--gris);cursor:pointer;font-family:inherit}
@@ -532,6 +534,7 @@ function render(){
   const algunFiltro = filtros.conCambios||filtros.sinBulto||filtros.sinConc||filtros.sinStock||filtros.conStock||filtros.sinEmbalaje;
   const toolbar = `<div class="toolbar">
     <button class="btn-sync" onclick="sincronizar()">🔄 Actualizar</button>
+    <button class="btn-recalc" onclick="recalcularPrecios()">⚡ Recalcular precios ahora</button>
     <button class="btn-toggle ${filtros.conStock?"on":""}" onclick="toggleFiltro('conStock')">📦 Solo con stock</button>
     <input type="search" id="buscar" placeholder="Buscar por nombre o SKU (en todas las subcategorías)…" value="${EYG.esc(filtro)}" oninput="onBuscar(this.value)">
     <button class="btn-expand" onclick="toggleTodas()">${abiertos.size>=SUBCATS.length?"Contraer todo":"Expandir todo"}</button>
@@ -727,6 +730,8 @@ window.guardarCampo = async (id, campo) => {
     const a = analizar(nuevo, p.sub);
     p.sugerido=a.sugerido; p.motivos=a.motivos; p.desg=a.desg; p.cuerpo=a.cuerpo; p.cambia=a.cambia;
     HISTORIAL.push({cambios:[{id,antes,despues:nuevo}], desc:(p.sku||("#"+id))+" · "+campo});
+    // unidad/bulto/caja cerrada cambian la escalera -> recalculá ese producto ya
+    if(campo==='unidad' || campo==='bulto') resyncProducto(p);
     toast("Guardado ✓"); render();
   }catch(err){ toast("Error: "+EYG.esc(err.message)); }
 };
@@ -763,6 +768,22 @@ window.sincronizar = async () => {
   HISTORIAL = [];
   toast("Datos actualizados desde Odoo ✓");
 };
+// Recalcula TODAS las escaleras de precios YA (corre el mismo motor que el cron, action 1213).
+window.recalcularPrecios = async () => {
+  if(!confirm("¿Recalcular ahora todas las escaleras de precios? Corre el motor completo (puede tardar unos segundos).")) return;
+  const btn = document.querySelector(".btn-recalc"); if(btn){ btn.disabled=true; btn.textContent="⏳ Recalculando…"; }
+  toast("Recalculando precios…");
+  try{
+    await EYG.rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
+    toast("Precios recalculados ✓");
+  }catch(e){ toast("Error: "+EYG.esc(e.message)); }
+  if(btn){ btn.disabled=false; btn.textContent="⚡ Recalcular precios ahora"; }
+};
+// dispara el resync de UN producto (unit/bulto/caja cerrada afectan la escalera) — impacto inmediato
+function resyncProducto(p){
+  if(!p || !p.varId) return;
+  EYG.rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR",eyg_solo_producto:p.varId}}).catch(()=>{});
+}
 window.aplicar = async id => {
   const p = TODOS.find(x=>x.id===id); if(!p) return;
   const antes = p.nombre;
