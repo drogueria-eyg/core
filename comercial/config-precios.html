@@ -14,6 +14,8 @@
   .savebar{position:sticky;top:0;z-index:20;display:flex;gap:10px;align-items:center;background:var(--bg);padding:8px 0;margin-bottom:10px}
   .btn-save{background:var(--teal);color:#fff;border:none;border-radius:10px;padding:10px 18px;font-weight:800;font-size:14px;cursor:pointer;font-family:inherit}
   .btn-save:hover{background:var(--teal-deep)} .btn-save:disabled{opacity:.5;cursor:default}
+  .btn-recalc{background:#f59e0b;color:#fff;border:none;border-radius:10px;padding:10px 16px;font-weight:800;font-size:13.5px;cursor:pointer;font-family:inherit}
+  .btn-recalc:hover{background:#d97706} .btn-recalc:disabled{opacity:.6;cursor:default}
   .dirty{font-size:12.5px;color:#c2410c;font-weight:700}
   .grp{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);margin-bottom:14px;overflow:hidden}
   .grphead{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#f3f8f7;border-bottom:1px solid var(--line);font-weight:800;font-size:14px;cursor:pointer}
@@ -61,9 +63,13 @@ async function cargar(){
   const cont=document.getElementById("cont");
   cont.innerHTML='<div class="empty">Cargando categorías y configuración…</div>';
   try{
-    const dom=[].concat(Array(ROOTS.length-1).fill("|"), ROOTS.map(r=>["id","child_of",r]));
-    CATS=await rpc("product.category","search_read",[dom],{fields:["id","name","parent_id","complete_name"],limit:400,context:{lang:"es_AR"}});
+    // TODAS las categorías: todo lo que cuelga de ALL (incluye Éticos y cualquier categoría nueva a futuro)
+    CATS=await rpc("product.category","search_read",[[["id","child_of",1]]],{fields:["id","name","parent_id","complete_name"],limit:5000,context:{lang:"es_AR"}});
+    const JUNK=["Envíos","Envios","Redondeo","Varios","VARIOS"];   // categorías de sistema, no de productos
+    CATS=CATS.filter(c=>c.id!==1 && !JUNK.includes(c.top));
     byId={}; CATS.forEach(c=>{ c.full=(c.complete_name||"").replace(/^ALL \/ /,""); c.top=c.full.split(" / ")[0]; c.pid=c.parent_id?c.parent_id[0]:null; byId[c.id]=c; });
+    // por defecto: categorías chicas abiertas; las grandes (Éticos) colapsadas para que no pese
+    [...new Set(CATS.map(c=>c.top))].forEach(t=>{ if(!(t in abiertos)){ abiertos[t]=CATS.filter(c=>c.top===t&&c.pid!==1).length<=25; } });
     const raw=await rpc("ir.config_parameter","get_param",[KEY]);
     CFG = raw ? JSON.parse(raw) : {v:1,reglas:{}};
     if(!CFG.reglas) CFG.reglas={};
@@ -88,17 +94,19 @@ function resumen(r){
 
 function render(){
   const cont=document.getElementById("cont");
-  const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
-  const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardarTodo()">💾 Guardar cambios</button>${dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>'}</div>`;
+  const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA","ETICOS"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
+  const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardarTodo()">💾 Guardar cambios</button><button class="btn-recalc" onclick="recalcularAhora()">⚡ Recalcular precios ahora</button>${dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>'}</div>`;
   const intro=`<div class="intro"><b>Reglas del motor de precios.</b> Definí por categoría (y subcategoría) cómo se arma la escalera: <b>recargo</b> sobre el costo, <b>piso</b> de margen, <b>modo</b> de cortes (embalaje / fijo), <b>cortes</b> y <b>descuento por tramo</b>, <b>unidad</b> e <b>IVA al costo</b>. <b>La subcategoría pisa a la categoría</b>; si no tiene regla propia, hereda del padre. <b>Al guardar, el motor recalcula todos los precios al instante.</b> El costo lo toma solo (más reciente entre manual, compra y estándar); la caja cerrada se maneja por producto en el Maestro.</div>`;
   const grupos=tops.map(top=>{
     const cats=CATS.filter(c=>c.top===top);
-    const root=cats.find(c=>ROOTS.includes(c.id));
-    const subs=cats.filter(c=>!ROOTS.includes(c.id)).sort((a,b)=>a.full.localeCompare(b.full));
-    const open=abiertos[top]!==false;
+    const root=cats.find(c=>c.pid===1);              // la categoría raíz = la que cuelga directo de ALL
+    const subs=cats.filter(c=>c.pid!==1).sort((a,b)=>a.full.localeCompare(b.full));
+    const open=!!abiertos[top];
     const body=open ? ((root?filaRoot(root):"")+subs.map(c=>fila(c)).join("")) : "";
     const rr=root?resolver(root.id):null;
-    const hb=(rr&&rr.own)?`<span class="badge gen" style="margin-left:8px">regla general</span>`:`<span class="badge no" style="margin-left:8px">sin regla general</span>`;
+    const eticos = top==="ETICOS";
+    const hb = eticos ? `<span class="badge no" style="margin-left:8px">⚠ Precios por Alfabeta — no cablear acá</span>`
+      : ((rr&&rr.own)?`<span class="badge gen" style="margin-left:8px">regla general</span>`:`<span class="badge no" style="margin-left:8px">sin regla general</span>`);
     return `<div class="grp"><div class="grphead" onclick="toggleGrp('${esc(top)}')"><span>${open?"▾":"▸"}</span> ${esc(top)} ${hb} <span class="cnt">${subs.length} subcat.</span></div>${body}</div>`;
   }).join("");
   cont.innerHTML=savebar+intro+grupos;
@@ -152,7 +160,7 @@ function formHTML(c){
   </div>`;
 }
 
-window.toggleGrp = t => { abiertos[t]=abiertos[t]===false; render(); };
+window.toggleGrp = t => { abiertos[t]=!abiertos[t]; render(); };
 window.editar = id => { editId=id; const c=byId[id]; if(c) abiertos[c.top]=true; render(); };
 window.quitar = id => { if(!confirm("¿Quitar la regla propia de esta categoría? Va a pasar a heredar del padre.")) return; delete CFG.reglas[id]; dirty=true; editId=null; render(); };
 window.guardarRegla = id => {
@@ -197,6 +205,14 @@ window.guardarTodo = async () => {
     toast("Guardado y precios recalculados ✓");
   }
   catch(e){ if(btn){ btn.disabled=false; btn.textContent="💾 Guardar cambios"; } toast("Error: "+e.message); }
+};
+// Recalcula TODOS los precios ya, con las reglas actuales (sin cambiar config). Único lugar de disparo manual.
+window.recalcularAhora = async () => {
+  if(!confirm("¿Recalcular todos los precios ahora con las reglas actuales? Puede tardar unos segundos.")) return;
+  const b=document.querySelector(".btn-recalc"); if(b){ b.disabled=true; b.textContent="⏳ Recalculando…"; }
+  try{ await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}}); toast("Precios recalculados ✓"); }
+  catch(e){ toast("Error: "+esc(e.message)); }
+  if(b){ b.disabled=false; b.textContent="⚡ Recalcular precios ahora"; }
 };
 let tT; function toast(m){ let t=document.getElementById("cptoast"); if(!t){ t=document.createElement("div"); t.id="cptoast"; t.style.cssText="position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0E1F1D;color:#fff;padding:11px 20px;border-radius:10px;font-weight:600;z-index:9999;box-shadow:0 8px 26px rgba(0,0,0,.25)"; document.body.appendChild(t);} t.textContent=m; t.style.opacity="1"; clearTimeout(tT); tT=setTimeout(()=>t.style.opacity="0",2600); }
 
