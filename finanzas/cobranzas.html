@@ -894,15 +894,33 @@ function exportarExcel(){
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Cobranzas");
   XLSX.writeFile(wb, `cobranzas-eyg-${com.replace(/[^a-zA-Z0-9]+/g,"_")}-${hoyStr}.xlsx`);
 }
-// ===== Auto-refresco (trabajo simultáneo, sin F5) =====
+// ===== Auto-refresco para trabajo simultáneo (sin F5) =====
+// Chequeo LIVIANO cada 3s: solo pregunta "¿hubo un cambio?" (último id de una marca de cobranzas).
+// El recálculo PESADO (cargar) corre SOLO si hubo un cambio real — o cada ~55s de red de seguridad
+// (para pagos/facturas nuevas en Odoo que no dejan marca). Candado _busy = nunca se solapan.
 function drawerAbierto(){ const d=document.getElementById("drawer"); return !!(d && d.classList.contains("on")); }
-function autoRefrescar(){
-  // recarga silenciosa cada 30s; NO refresca si la pestaña está oculta o si hay una ficha abierta (para no interrumpir)
-  setInterval(()=>{ if(document.hidden || drawerAbierto()) return; cargar(true); }, 30000);
+let _sig=null, _busy=false, _ticking=false, _ultimoFull=0;
+async function refrescoFull(){
+  if(_busy) return; _busy=true;
+  try{ await cargar(true); _ultimoFull=Date.now(); } finally{ _busy=false; }
 }
-// al volver a la pestaña, refresca al toque (si no hay ficha abierta)
-document.addEventListener("visibilitychange",()=>{ if(!document.hidden && !drawerAbierto()) cargar(true); });
-EYG.guard(["finanzas","lider","admin","direccion","cobranzas"]).then(()=>{ cargar().then(autoRefrescar); });
+async function tick(){
+  if(document.hidden || drawerAbierto() || _busy || _ticking) return;   // no molestar / no solapar
+  _ticking=true;
+  try{
+    let sig=null;
+    try{
+      const r=await rpc("mail.message","search_read",[[["model","=","res.partner"],"|",["body","like","[COBRO-"],["body","like","[BOVEDA]"]],["id"]],{limit:1,order:"id desc"});
+      sig = r.length ? r[0].id : 0;
+    }catch(e){ return; }                     // si el probe falla, no pasa nada (reintenta)
+    if(_sig===null){ _sig=sig; return; }     // baseline en el 1er chequeo
+    if(sig!==_sig){ _sig=sig; await refrescoFull(); }              // alguien marcó/cambió algo
+    else if(Date.now()-_ultimoFull > 55000){ await refrescoFull(); } // red de seguridad
+  } finally{ _ticking=false; }
+}
+function autoRefrescar(){ setInterval(tick, 3000); }
+document.addEventListener("visibilitychange",()=>{ if(!document.hidden && !drawerAbierto()) refrescoFull(); });
+EYG.guard(["finanzas","lider","admin","direccion","cobranzas"]).then(()=>{ cargar().then(()=>{ _ultimoFull=Date.now(); autoRefrescar(); }); });
 </script>
 </body>
 </html>
