@@ -48,7 +48,7 @@
   .iconbtn:hover{color:#fff;border-color:var(--teal-med)}
 
   /* ---- KPI strip (solo métricas públicas: cantidades y cobertura) ---- */
-  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+  .kpis{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px}
   .kpi{background:linear-gradient(160deg,var(--tb-panel),var(--tb-panel2));border:1px solid var(--tb-line);border-radius:13px;padding:12px 14px;position:relative;overflow:hidden}
   .kpi:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--teal-med)}
   .kpi.g:before{background:var(--activo)} .kpi.gold:before{background:var(--gold)} .kpi.coral:before{background:var(--coral)} .kpi.aqua:before{background:var(--aqua)}
@@ -59,7 +59,9 @@
 
   /* ---- main grid ---- */
   .main{display:grid;grid-template-columns:1fr 372px;gap:10px;min-height:0}
-  .mapwrap{position:relative;border-radius:14px;overflow:hidden;border:1px solid var(--tb-line);min-height:0}
+  /* min-height: si la pantalla es baja, el mapa NO puede colapsar a altura 0
+     (pasó: la franja de KPIs lo aplastaba y no se veía ningún punto). */
+  .mapwrap{position:relative;border-radius:14px;overflow:hidden;border:1px solid var(--tb-line);min-height:340px}
   #map{position:absolute;inset:0;background:var(--tb-bg)}
   .leaflet-container{background:#0a1f1d;font-family:Archivo,sans-serif}
   .maptitle{position:absolute;left:14px;top:12px;z-index:500;background:rgba(6,32,30,.82);backdrop-filter:blur(6px);border:1px solid var(--tb-line);border-radius:11px;padding:9px 13px;pointer-events:none;max-width:330px;transition:.35s}
@@ -76,11 +78,11 @@
   .ms .l{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--tb-mut);margin-top:2px}
   .ms.a .n{color:var(--activo)} .ms.nv .n{color:var(--nuevo)}
 
-  /* etiquetas de nombre (aparecen al acercarse) */
-  .lbl{background:rgba(6,32,30,.86);border:1px solid var(--tb-line);color:#fff;font-size:10.5px;font-weight:700;
-       padding:2px 7px;border-radius:6px;white-space:nowrap;box-shadow:0 3px 10px rgba(0,0,0,.4)}
+  /* etiquetas de nombre (aparecen al acercarse) — chiquitas, para no tapar el mapa */
+  .lbl{background:rgba(6,32,30,.72);border:0;color:#DCEFEC;font-size:7.5px;font-weight:600;letter-spacing:.1px;
+       padding:0 3px;border-radius:3px;white-space:nowrap;box-shadow:none;line-height:1.45;text-shadow:0 1px 2px rgba(0,0,0,.8)}
   .lbl:before{display:none!important}
-  .lbl.farmacia{border-color:rgba(10,168,159,.7)} .lbl.institucion{border-color:rgba(229,169,59,.7)}
+  .lbl.farmacia{color:#9FE4DE} .lbl.institucion{color:#F2CE8A}
 
   /* ---- anuncio de nuevo cliente ---- */
   .anuncio{position:absolute;inset:0;z-index:900;display:flex;align-items:center;justify-content:center;pointer-events:none;opacity:0;transition:opacity .5s}
@@ -159,6 +161,14 @@
   @keyframes scroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.5)}70%{box-shadow:0 0 0 8px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
 
+  /* formas por tipo de cliente (al acercarse) */
+  .fgw{display:block;line-height:0}
+  .fgw.ap{opacity:.45}
+  .fg{display:block}
+  .fg-far{border-radius:50%}                                  /* farmacia = círculo */
+  .fg-ins{transform:rotate(45deg);border-radius:1px}          /* institución = rombo */
+  .fg-otr{border-radius:1px;opacity:.75}                      /* otros = cuadradito */
+
   .pulse-new{border-radius:50%;background:var(--nuevo);box-shadow:0 0 0 rgba(255,214,90,.7);animation:pulseNew 1.8s infinite}
   @keyframes pulseNew{0%{box-shadow:0 0 0 0 rgba(255,214,90,.6)}70%{box-shadow:0 0 0 14px rgba(255,214,90,0)}100%{box-shadow:0 0 0 0 rgba(255,214,90,0)}}
 
@@ -178,8 +188,9 @@
   @keyframes sp{to{transform:rotate(360deg)}}
   .loadscr .txt{color:var(--tb-mut);font-size:13px}
 
+  @media(max-width:1500px){ .kpis{grid-template-columns:repeat(4,minmax(0,1fr))} .kpi .n{font-size:26px} }
   @media(max-width:1200px){
-    .kpis{grid-template-columns:repeat(3,1fr)}
+    .kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
     .main{grid-template-columns:1fr}
     body{overflow:auto}#board{height:auto;min-height:100vh}
     .mapwrap{height:60vh}.rail{overflow:visible}
@@ -207,7 +218,45 @@ const CAT_INST = new Set([31,36,32,33,37,20,62]);  // ASOCIACIONES, CENTROS DE S
 
 const esc = EYG.esc;
 const norm = s => (s||"").toString().trim().toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\s+/g," ");
-const titulo = s => (s||"").toLowerCase().replace(/\b\w/g,m=>m.toUpperCase());
+
+/* ---- Nombres prolijos ----------------------------------------------------
+   Los datos vienen de cualquier manera (TODO EN MAYÚSCULAS, s.a., srl…).
+   Normalizamos todo a tipo oración: mayúscula inicial en cada palabra, los
+   enlaces (de, del, la, y) en minúscula y las siglas respetadas. */
+const SIGLAS=new Set(["SA","SRL","SAS","SH","SCS","SAMCO","OSPE","PAMI","IAPOS","IPS","ART","OSDE","CIC","CAPS","SIES","ACA","EPE","CEMAR","AMR","APROSS","IOMA","SAU","SACIF","SAIC","II","III","IV","VI","VII","VIII","IX"]);
+const ENLACES=new Set(["DE","DEL","LA","LAS","LOS","EL","Y","E","EN","A","AL","POR","PARA","CON"]);
+const TILDES={ANALISIS:"Análisis",CLINICO:"Clínico",CLINICA:"Clínica",CLINICOS:"Clínicos",CLINICAS:"Clínicas",MEDICO:"Médico",MEDICA:"Médica",MEDICOS:"Médicos",MEDICAS:"Médicas",ATENCION:"Atención",DIAGNOSTICO:"Diagnóstico",IMAGENES:"Imágenes",FARMACEUTICO:"Farmacéutico",FARMACEUTICA:"Farmacéutica",ASOCIACION:"Asociación",FUNDACION:"Fundación",FEDERACION:"Federación",PROTECCION:"Protección",ADMINISTRACION:"Administración",REHABILITACION:"Rehabilitación",INTERNACION:"Internación",NUTRICION:"Nutrición",CIRUGIA:"Cirugía",DIALISIS:"Diálisis",ONCOLOGIA:"Oncología",CARDIOLOGIA:"Cardiología",TRAUMATOLOGIA:"Traumatología",OFTALMOLOGIA:"Oftalmología",RADIOLOGIA:"Radiología",ODONTOLOGIA:"Odontología",PSICOLOGIA:"Psicología",GINECOLOGIA:"Ginecología",NEUROLOGIA:"Neurología",NEFROLOGIA:"Nefrología",UROLOGIA:"Urología",KINESIOLOGIA:"Kinesiología",PUBLICO:"Público",PUBLICA:"Pública",JOSE:"José",MARIA:"María",NICOLAS:"Nicolás",ANDRES:"Andrés",TOMAS:"Tomás",MARTIN:"Martín",RAMON:"Ramón",JULIAN:"Julián",ADRIAN:"Adrián",HECTOR:"Héctor",VICTOR:"Víctor",ANGEL:"Ángel",INES:"Inés",JESUS:"Jesús",BELEN:"Belén",GERMAN:"Germán",JOAQUIN:"Joaquín",SIMON:"Simón",CONCEPCION:"Concepción"};
+function titulo(s){
+  let t=(s||"").toString().replace(/\s+/g," ").trim();
+  if(!t) return "";
+  return t.split(" ").map((w,i)=>{
+    const u=w.toUpperCase().replace(/[^A-ZÁÉÍÓÚÑ0-9]/g,"");
+    if(SIGLAS.has(u)) return w.toUpperCase();
+    if(TILDES[u]) return TILDES[u];
+    if(/^\d/.test(w)) return w;
+    if(w.length<=1) return w.toUpperCase();
+    const low=w.toLowerCase();
+    if(i>0 && ENLACES.has(u)) return low;
+    return low.charAt(0).toUpperCase()+low.slice(1);
+  }).join(" ");
+}
+/* Nombre corto para el mapa: si es farmacia, "Farm. Apellido"; si no, se recorta.
+   Sirve para que las etiquetas sean chiquitas y no tapen el mapa. */
+function nombreCorto(nombre, seg){
+  const base=titulo(nombre);
+  let t=base.replace(/\s*\([^)]*\)\s*/g," ").replace(/\s+/g," ").trim();
+  if(!t) t=base.replace(/[()]/g,"").trim();          // el nombre era sólo un paréntesis
+  // saca la forma societaria del final: SA, S.A., S. R. L., SRL, SAS, Ltda…
+  t=t.replace(/[,.]?\s+(S\s*\.?\s*A\s*\.?\s*S?|S\s*\.?\s*R\s*\.?\s*L|SACIF|SAIC|SAU|Sociedad Anónima|Ltda)\s*\.?\s*$/i,"").trim();
+  if(!t) t=base;
+  if(seg==="farmacia"){
+    t=t.replace(/^Farmacias?\s+(Mutual|Social|Municipal|Sindical)\b/i,"Farm. $1");
+    t=t.replace(/^Farmacias?\s+/i,"Farm. ");
+    if(!/^Farm\./i.test(t)) t="Farm. "+t;
+  }
+  if(t.length>26) t=t.slice(0,25).replace(/[\s,.-]+$/,"")+"…";
+  return t;
+}
 const MESES=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
 const HOY = new Date();
 const diasDesde = s => s ? Math.floor((HOY - new Date(s.replace(" ","T")))/(864e5)) : 1e9;
@@ -290,7 +339,8 @@ async function cargar(){
       const nped = NPED[p.id]||0;
       const prov = p.state_id ? p.state_id[1].replace(/\s*\((AR|IT)\)$/,"") : "";
       return {
-        id:p.id, name:p.name||"(sin nombre)", city:p.city||"—", cityN, prov, seg, ll, aprox, nped,
+        // el nombre de Odoo viene de cualquier manera → siempre normalizado a tipo oración
+        id:p.id, name:titulo(p.name||"(sin nombre)"), city:titulo(p.city||"—"), cityN, prov, seg, ll, aprox, nped,
         compro:nped>0||(p.sale_order_count||0)>0,
         ultima:ULT[p.id]||null, primera:PRI[p.id]||null,
         nuevo:diasDesde(p.create_date)<=90,
@@ -468,16 +518,44 @@ function initMapa(){
   if(map) return;
   map = L.map("map",{zoomControl:true,attributionControl:true,preferCanvas:true}).setView([-32.98,-60.9],8);
   L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{
-    attribution:'© OpenStreetMap · © CARTO', subdomains:"abcd", maxZoom:19
+    attribution:'© OpenStreetMap · © CARTO', subdomains:"abcd", maxZoom:20, maxNativeZoom:19
   }).addTo(map);
   capaUni = L.layerGroup().addTo(map);   // el universo va DEBAJO de nuestros clientes
   capa = L.layerGroup().addTo(map);
   capaLbl = L.layerGroup().addTo(map);
   map.on("zoomend moveend", refrescarEtiquetas);
+  // el tamaño y la forma de los puntos dependen del zoom → redibujar al cambiar de tramo
+  map.on("zoomend", ()=>{
+    const b=tramoZoom(map.getZoom());
+    if(b!==_tramo){ _tramo=b; dibujarMarcadores(false); }
+  });
   // si el usuario toca el mapa, pausamos el recorrido un rato
   map.on("dragstart", ()=>pausarCiclo(60000));
 }
-const radio = n => Math.max(4, Math.min(15, 4+Math.sqrt(n||0)*1.15));   // tamaño = cantidad de pedidos
+const tramoZoom = z => z<7?0 : z<9?1 : z<11?2 : z<13?3 : 4;
+let _tramo=-1;
+/* Tamaño = cantidad de pedidos, pero MUCHO más chico y además según el zoom:
+   de lejos tienen que verse puntos separados, no una mancha. */
+function radio(n, z){
+  const base = 1.6 + Math.min(3.2, Math.sqrt(n||0)*0.42);
+  const f = z==null ? 1 : (z<7 ? 0.55 : z<9 ? 0.75 : z<11 ? 0.95 : z<13 ? 1.2 : 1.5);
+  return Math.max(1.3, base*f);
+}
+/* Farmacias = círculo con cruz · instituciones = rombo · otros = cuadradito.
+   Se distinguen de un vistazo sin depender sólo del color. */
+function formaIcono(c, col, r){
+  const d=Math.round(r*2.6), h=Math.round(d/2);
+  let cuerpo;
+  if(c.seg==="farmacia"){
+    cuerpo=`<span class="fg fg-far" style="width:${d}px;height:${d}px;background:${col}"></span>`;
+  }else if(c.seg==="institucion"){
+    cuerpo=`<span class="fg fg-ins" style="width:${d-1}px;height:${d-1}px;background:${col}"></span>`;
+  }else{
+    cuerpo=`<span class="fg fg-otr" style="width:${d-1}px;height:${d-1}px;background:${col}"></span>`;
+  }
+  return L.divIcon({className:"", html:`<span class="fgw${c.aprox?" ap":""}">${cuerpo}</span>`,
+    iconSize:[d,d], iconAnchor:[h,h]});
+}
 function visibles(){
   return CLIENTES.filter(c=>c.ll
     && (!STATE.seg    || c.seg===STATE.seg)
@@ -487,14 +565,16 @@ function visibles(){
 }
 function dibujarMarcadores(encuadrar){
   capa.clearLayers(); capaLbl.clearLayers(); MARCAS=[];
-  const vis=visibles(), pts=[];
+  const vis=visibles(), pts=[], z=map?map.getZoom():10;
   vis.forEach(c=>{
     const col=COLOR[c.estado];
-    const m=L.circleMarker(c.ll,{
-      radius:radio(c.nped), color:col, weight:c.aprox?1.4:1.6,
-      fillColor:col, fillOpacity:c.aprox?0.18:0.72, opacity:c.aprox?0.6:0.95,
-      dashArray:c.aprox?"3 3":null
-    });
+    const r=radio(c.nped,z);
+    const m = (z>=11)
+      ? L.marker(c.ll,{icon:formaIcono(c,col,r), keyboard:false})   // de cerca: forma según el tipo
+      : L.circleMarker(c.ll,{                                      // de lejos: punto simple (rápido)
+          radius:r, color:col, weight:c.aprox?1:1.1,
+          fillColor:col, fillOpacity:c.aprox?0.15:0.8, opacity:c.aprox?0.5:0.95,
+          dashArray:c.aprox?"2 2":null });
     m.bindPopup(popup(c));
     m.on("mouseover",function(){this.openPopup();});
     capa.addLayer(m);
@@ -573,13 +653,13 @@ function cruzarConUniverso(){
     mios.get(i).push({c, k:clave(c.name)});
   }
   // qué establecimiento oficial es cliente nuestro (criterio conservador)
-  UNI.est.forEach(e=>{ e[4]=0; });
+  UNI.est.forEach(e=>{ e[6]=0; });   // e[6] = id del cliente nuestro, si cruza
   for(const e of UNI.est){
     const cands=mios.get(e[1]); if(!cands) continue;
     const ke=clave(e[0]); if(!ke) continue;
     for(const cd of cands){
       if(_coincide(cd.k, ke)){
-        e[4]=cd.c.id;
+        e[6]=cd.c.id;
         // el padrón escribe mejor el nombre que Odoo → lo usamos para mostrar
         if(!cd.c.oficial){ cd.c.nombreOdoo=cd.c.name; cd.c.name=e[0]; cd.c.oficial=true; }
         break;
@@ -628,17 +708,24 @@ function pintarUniverso(){
       if(n>=700) break;
       if(!dentro.has(e[1])) continue;
       const L0=UNI.locs[e[1]];
-      const ll=disperso(e[0]+e[3], [L0[2],L0[3]]);
-      const esCli=!!e[4];
+      // e[4]/e[5] = ubicación EXACTA (calle y altura). Si no la tenemos, va
+      // dispersa alrededor del centro de la localidad y se marca como aproximada.
+      const exacta = !!e[4];
+      const ll = exacta ? [e[4],e[5]] : disperso(e[0]+e[3], [L0[2],L0[3]]);
+      if(!exacta && !STATE.aprox) continue;
+      const esCli=!!e[6];
+      const rr = z>=15 ? 2.8 : z>=13 ? 2.2 : 1.8;
       capaUni.addLayer(L.circleMarker(ll,{
-        radius:esCli?5:4.5, color:esCli?"#37D07A":"#7C8B88", weight:esCli?1.6:1,
-        fillColor:esCli?"#37D07A":"#46615c", fillOpacity:esCli?.5:.32, opacity:esCli?.9:.5
+        radius:esCli?rr+0.6:rr, color:esCli?"#37D07A":"#7C8B88", weight:esCli?1.1:0.8,
+        fillColor:esCli?"#37D07A":"#46615c",
+        fillOpacity:exacta?(esCli?.55:.3):0.06, opacity:exacta?(esCli?.9:.45):0.28,
+        dashArray:exacta?null:"2 2"
       }).bindPopup(`<div class="pop"><b class="pnm">${esc(e[0])}</b>
-        <div class="prow"><span>Tipo</span><span>${e[2]===0?"Farmacia":"Institución de salud"}</span></div>
-        ${e[3]?`<div class="prow"><span>Domicilio</span><span>${esc(e[3])}</span></div>`:""}
+        <div class="prow"><span>Tipo</span><span>${e[2]===0?"💊 Farmacia":"🏥 Institución de salud"}</span></div>
+        ${e[3]?`<div class="prow"><span>Domicilio</span><span>${esc(e[3])}${exacta?"":" (sin ubicar)"}</span></div>`:""}
         <div class="prow"><span>Localidad</span><span>${esc(L0[0])}</span></div>
         <div class="prow"><span>¿Es cliente?</span><span style="color:${esCli?"var(--activo)":"var(--coral)"}">${esCli?"Sí, ya nos compra":"Todavía no"}</span></div>
-        <div class="prow" style="opacity:.7"><span>Fuente</span><span>Registro oficial</span></div></div>`));
+        <div class="prow" style="opacity:.7"><span>Fuente</span><span>Registro oficial${exacta?"":" · ubicación aproximada"}</span></div></div>`));
       n++;
     }
     return;
@@ -648,8 +735,8 @@ function pintarUniverso(){
     const tot=l.f+l.ins; if(!tot) continue;
     const pct=Math.min(100, l.n/tot*100);
     capaUni.addLayer(L.circleMarker(l.ll,{
-      radius: Math.max(6, Math.min(42, 5+Math.sqrt(tot)*2.1)),
-      color: COB_COL(pct), weight:1.4, fillColor:COB_COL(pct), fillOpacity:.13, opacity:.55
+      radius: Math.max(3, Math.min(26, 2.5+Math.sqrt(tot)*(z<7?0.7:z<9?1.0:1.35))),
+      color: COB_COL(pct), weight:1.1, fillColor:COB_COL(pct), fillOpacity:.11, opacity:.5
     }).bindPopup(`<div class="pop"><b class="pnm">${esc(l.loc)}</b>
       <div class="prow"><span>Farmacias habilitadas</span><span>${l.f}</span></div>
       <div class="prow"><span>Instituciones de salud</span><span>${l.ins}</span></div>
@@ -678,8 +765,8 @@ function pintarEtiquetas(){
   for(const {c,m} of MARCAS){
     if(n>=45) break;
     if(!b.contains(m.getLatLng())) continue;
-    const t=L.tooltip({permanent:true,direction:"top",offset:[0,-6],className:"lbl "+c.seg,opacity:1})
-      .setContent(esc(c.name)).setLatLng(m.getLatLng());
+    const t=L.tooltip({permanent:true,direction:"top",offset:[0,-5],className:"lbl "+c.seg,opacity:1})
+      .setContent(esc(nombreCorto(c.name, c.seg))).setLatLng(m.getLatLng());
     capaLbl.addLayer(t); n++;
   }
 }
@@ -843,7 +930,11 @@ function tickReloj(){
             <div class="lg"><i style="background:var(--tibio)"></i>Compra tibia (≤180)</div>
             <div class="lg"><i style="background:var(--dormido)"></i>Dormido (+180)</div>
             <div class="lg"><i style="background:var(--prospecto)"></i>Sin compras</div>
-            <div class="lg"><span class="approx"></span>Ubicación por ciudad</div>
+            <div class="lg" style="margin-top:4px;padding-top:6px;border-top:1px solid var(--tb-line)">
+              <span style="width:11px;height:11px;border-radius:50%;background:var(--tb-mut);flex:none"></span>Farmacia</div>
+            <div class="lg"><span style="width:9px;height:9px;background:var(--tb-mut);transform:rotate(45deg);flex:none;margin:1px"></span>Institución de salud</div>
+            <div class="lg"><span style="width:9px;height:9px;background:var(--tb-mut);border-radius:1px;flex:none;margin:1px"></span>Otros</div>
+            <div class="lg"><span class="approx"></span>Ubicación aproximada</div>
             <div class="lg" style="margin-top:4px;padding-top:6px;border-top:1px solid var(--tb-line)">
               <span style="width:11px;height:11px;border-radius:50%;border:1.5px solid #B0413E;background:rgba(176,65,62,.15);flex:none"></span>
               Universo oficial · sin conquistar</div>
