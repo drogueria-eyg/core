@@ -32,6 +32,8 @@
   .btn-mini{background:#fff;border:1px solid var(--line);border-radius:8px;padding:5px 11px;font-size:12px;font-weight:700;color:var(--teal-deep);cursor:pointer;font-family:inherit}
   .btn-mini:hover{border-color:var(--teal-med)}
   .btn-mini.del{color:#b0322f}
+  .btn-mini.cons{color:#fff;background:var(--teal);border-color:var(--teal);font-weight:800}
+  .btn-mini.cons:hover{background:var(--teal-deep)}
   .form{flex-basis:100%;background:#f8fbfa;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:6px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px 14px;align-items:end}
   .form label{font-size:11px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.4px;display:block;margin-bottom:3px}
   .form input[type=text],.form input[type=number]{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:8px;font-size:13px;font-family:inherit}
@@ -92,6 +94,28 @@ function resumen(r){
   return p.join(" · ");
 }
 
+// firma canónica de una regla, para comparar si dos son idénticas
+function firmaRegla(r){ if(!r) return ""; return JSON.stringify([!!r.genera, +r.recargo||0, +r.piso||0, r.modo||"fijo", (r.cortes||[]).join(","), (r.desc||[]).map(Number).join(","), r.unidad||"", +r.ivaCosto||0]); }
+// ¿las subcategorías comparten una misma regla que conviene subir a la categoría?
+function candidatoConsolidar(rootId){
+  const hijos=CATS.filter(x=>x.pid===rootId && CFG.reglas[x.id]);   // subcats con regla PROPIA
+  if(hijos.length<2) return null;
+  const grupos={};
+  hijos.forEach(x=>{ const f=firmaRegla(CFG.reglas[x.id]); (grupos[f]=grupos[f]||[]).push(x.id); });
+  let bestF=null,bestN=0;
+  Object.entries(grupos).forEach(([f,ids])=>{ if(ids.length>bestN){ bestN=ids.length; bestF=f; } });
+  if(bestN<2) return null;                                          // al menos 2 subcats iguales
+  const genActual=CFG.reglas[rootId]?firmaRegla(CFG.reglas[rootId]):null;
+  if(genActual===bestF) return null;                               // la categoría ya tiene esa misma regla
+  return { ids:grupos[bestF], regla:CFG.reglas[grupos[bestF][0]], n:bestN };
+}
+window.consolidar = rootId => {
+  const cand=candidatoConsolidar(rootId); if(!cand) return;
+  if(!confirm(`${cand.n} subcategorías tienen la misma regla. La paso a la categoría como general y saco esas ${cand.n} (van a heredarla). Las subcategorías con otra regla quedan igual.`)) return;
+  CFG.reglas[rootId]=JSON.parse(JSON.stringify(cand.regla));       // regla general = la común
+  cand.ids.forEach(id=>{ delete CFG.reglas[id]; });                // saca las repetidas -> heredan
+  dirty=true; editId=null; render();
+};
 function render(){
   const cont=document.getElementById("cont");
   const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA","ETICOS"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
@@ -122,8 +146,10 @@ function filaRoot(c){
   const btns=has
     ? `<button class="btn-mini" onclick="editar(${c.id})">Editar</button><button class="btn-mini del" onclick="quitar(${c.id})">Quitar</button>`
     : `<button class="btn-mini" onclick="editar(${c.id})">+ Regla para toda la categoría</button>`;
+  const cand=candidatoConsolidar(c.id);
+  const consBtn = cand ? `<button class="btn-mini cons" onclick="consolidar(${c.id})">↑ Consolidar ${cand.n} subcategorías iguales</button>` : "";
   const form=editId===c.id?formHTML(c):"";
-  return `<div class="row catrule"><div class="nm">📂 Toda la categoría <small>aplica a las subcategorías sin regla propia</small></div>${badge}${btns}${sum}${form}</div>`;
+  return `<div class="row catrule"><div class="nm">📂 Toda la categoría <small>aplica a las subcategorías sin regla propia</small></div>${badge}${btns}${consBtn}${sum}${form}</div>`;
 }
 function fila(c){
   const res=resolver(c.id);
