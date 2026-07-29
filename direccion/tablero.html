@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tablero en vivo · EyG Core</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="../assets/core.css">
+<style>
+  /* ===== Tablero (control-room, oscuro, para pantalla grande) =====
+     REGLA: este tablero es PÚBLICO (va en una pantalla que ve todo el mundo).
+     No se muestra NINGÚN dato de dinero: ni facturación, ni deuda, ni importes. */
+  :root{
+    --tb-bg:#06201E; --tb-panel:#0B2C29; --tb-panel2:#0E332F; --tb-line:#164A44;
+    --tb-ink:#EAF6F4; --tb-mut:#8FB4AE; --tb-mut2:#5E827D;
+    --teal:#048782; --teal-med:#0AA89F; --aqua:#5FC8BF; --gold:#E5A93B; --coral:#EC8B5E;
+    --activo:#37D07A; --tibio:#0AA89F; --dormido:#E5A93B; --prospecto:#7C8B88; --nuevo:#FFD65A;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--tb-bg);color:var(--tb-ink);font-family:Archivo,system-ui,sans-serif;overflow:hidden}
+  .gate,.login-scrim{color:#0E1F1D}
+
+  #board{height:100vh;width:100vw;display:grid;grid-template-rows:auto auto 1fr auto;gap:10px;padding:10px 12px}
+
+  /* ---- top bar ---- */
+  .tbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:10px}
+  .mono{font-weight:900;font-size:22px;letter-spacing:-1px;color:#fff;line-height:1}
+  .mono .y{color:var(--aqua)}
+  .btag{font-size:10px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:var(--tb-bg);background:var(--aqua);padding:3px 8px;border-radius:6px}
+  .ttitle{font-size:16px;font-weight:800}.ttitle b{color:var(--aqua)}
+  .ttitle small{display:block;font-size:11px;font-weight:600;color:var(--tb-mut);letter-spacing:.3px}
+  .tspacer{flex:1}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{font-size:12px;font-weight:700;padding:7px 12px;border-radius:99px;border:1px solid var(--tb-line);background:var(--tb-panel);color:var(--tb-mut);cursor:pointer;transition:.15s;user-select:none}
+  .chip:hover{border-color:var(--teal-med);color:var(--tb-ink)}
+  .chip.on{background:var(--teal);border-color:var(--teal);color:#fff}
+  .chip.tour.on{background:var(--gold);border-color:var(--gold);color:#06201E}
+  .sel{font-family:inherit;font-size:12px;font-weight:700;padding:7px 10px;border-radius:99px;border:1px solid var(--tb-line);background:var(--tb-panel);color:var(--tb-ink);cursor:pointer}
+  .clock{font-variant-numeric:tabular-nums;font-weight:800;font-size:15px;color:#fff}
+  .upd{font-size:11px;color:var(--tb-mut);text-align:right}
+  .upd b{color:var(--activo)}
+  .iconbtn{width:36px;height:36px;border-radius:9px;border:1px solid var(--tb-line);background:var(--tb-panel);color:var(--tb-mut);cursor:pointer;font-size:15px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;transition:.15s}
+  .iconbtn:hover{color:#fff;border-color:var(--teal-med)}
+
+  /* ---- KPI strip (solo métricas públicas: cantidades y cobertura) ---- */
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+  .kpi{background:linear-gradient(160deg,var(--tb-panel),var(--tb-panel2));border:1px solid var(--tb-line);border-radius:13px;padding:12px 14px;position:relative;overflow:hidden}
+  .kpi:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--teal-med)}
+  .kpi.g:before{background:var(--activo)} .kpi.gold:before{background:var(--gold)} .kpi.coral:before{background:var(--coral)} .kpi.aqua:before{background:var(--aqua)}
+  .kpi .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tb-mut);font-weight:700;margin-bottom:6px}
+  .kpi .n{font-size:30px;font-weight:900;line-height:1;letter-spacing:-.5px;color:#fff}
+  .kpi .d{font-size:11px;color:var(--tb-mut);margin-top:4px}
+  .kpi .d .up{color:var(--activo);font-weight:800}.kpi .d .dn{color:var(--coral);font-weight:800}
+
+  /* ---- main grid ---- */
+  .main{display:grid;grid-template-columns:1fr 372px;gap:10px;min-height:0}
+  .mapwrap{position:relative;border-radius:14px;overflow:hidden;border:1px solid var(--tb-line);min-height:0}
+  #map{position:absolute;inset:0;background:var(--tb-bg)}
+  .leaflet-container{background:#0a1f1d;font-family:Archivo,sans-serif}
+  .maptitle{position:absolute;left:14px;top:12px;z-index:500;background:rgba(6,32,30,.82);backdrop-filter:blur(6px);border:1px solid var(--tb-line);border-radius:11px;padding:9px 13px;pointer-events:none;max-width:330px;transition:.35s}
+  .maptitle h3{font-size:15px;font-weight:800;color:#fff;margin:0;display:flex;align-items:center;gap:7px}
+  .maptitle p{font-size:11px;color:var(--tb-mut);margin:2px 0 0}
+  .maptitle .live{width:7px;height:7px;border-radius:50%;background:var(--gold);animation:pulse 1.6s infinite;flex:none}
+  .legend{position:absolute;left:14px;bottom:14px;z-index:500;background:rgba(6,32,30,.82);backdrop-filter:blur(6px);border:1px solid var(--tb-line);border-radius:11px;padding:10px 13px;display:flex;flex-direction:column;gap:6px}
+  .lg{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--tb-ink)}
+  .lg i{width:11px;height:11px;border-radius:50%;flex:none;box-shadow:0 0 0 3px rgba(255,255,255,.06)}
+  .lg .approx{border-radius:50%;border:1.5px dashed var(--tb-mut);background:transparent;width:11px;height:11px}
+  .mapstat{position:absolute;right:14px;top:12px;z-index:500;display:flex;gap:8px}
+  .ms{background:rgba(6,32,30,.82);backdrop-filter:blur(6px);border:1px solid var(--tb-line);border-radius:10px;padding:7px 11px;text-align:center;min-width:64px}
+  .ms .n{font-size:18px;font-weight:900;color:#fff;line-height:1}
+  .ms .l{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--tb-mut);margin-top:2px}
+  .ms.a .n{color:var(--activo)} .ms.nv .n{color:var(--nuevo)}
+
+  /* etiquetas de nombre (aparecen al acercarse) */
+  .lbl{background:rgba(6,32,30,.86);border:1px solid var(--tb-line);color:#fff;font-size:10.5px;font-weight:700;
+       padding:2px 7px;border-radius:6px;white-space:nowrap;box-shadow:0 3px 10px rgba(0,0,0,.4)}
+  .lbl:before{display:none!important}
+  .lbl.farmacia{border-color:rgba(10,168,159,.7)} .lbl.institucion{border-color:rgba(229,169,59,.7)}
+
+  /* ---- anuncio de nuevo cliente ---- */
+  .anuncio{position:absolute;inset:0;z-index:900;display:flex;align-items:center;justify-content:center;pointer-events:none;opacity:0;transition:opacity .5s}
+  .anuncio.on{opacity:1}
+  .acard{background:linear-gradient(150deg,rgba(11,44,41,.97),rgba(4,99,95,.97));border:2px solid var(--nuevo);border-radius:20px;
+         padding:22px 34px;text-align:center;box-shadow:0 20px 70px rgba(0,0,0,.6),0 0 0 6px rgba(255,214,90,.13);
+         transform:scale(.86) translateY(14px);transition:transform .55s cubic-bezier(.2,1.2,.3,1);max-width:620px}
+  .anuncio.on .acard{transform:none}
+  .acard .em{font-size:38px;line-height:1;margin-bottom:6px;animation:pop 1.6s ease-in-out infinite}
+  .acard .k{font-size:11.5px;font-weight:800;text-transform:uppercase;letter-spacing:2px;color:var(--nuevo)}
+  .acard .nm{font-size:29px;font-weight:900;color:#fff;line-height:1.15;margin:7px 0 4px}
+  .acard .mt{font-size:14px;color:var(--tb-ink);opacity:.9}
+  .acard .mt b{color:var(--aqua)}
+  @keyframes pop{0%,100%{transform:scale(1)}50%{transform:scale(1.16)}}
+
+  /* ---- right rail ---- */
+  .rail{display:flex;flex-direction:column;gap:10px;min-height:0;overflow-y:auto;padding-right:2px}
+  .rail::-webkit-scrollbar{width:6px}.rail::-webkit-scrollbar-thumb{background:var(--tb-line);border-radius:6px}
+  .card{background:var(--tb-panel);border:1px solid var(--tb-line);border-radius:13px;padding:13px 14px;flex:none}
+  .card h4{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--aqua);font-weight:800;margin:0 0 10px;display:flex;align-items:center;gap:7px}
+  .card h4 .cnt{margin-left:auto;color:var(--tb-mut);font-weight:700;letter-spacing:0}
+
+  .bars{display:flex;align-items:flex-end;gap:4px;height:88px}
+  .bcol{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end}
+  .bcol .bar{width:100%;max-width:16px;border-radius:3px 3px 0 0;background:linear-gradient(180deg,var(--teal-med),var(--teal));transition:height .6s cubic-bezier(.2,.8,.2,1)}
+  .bcol .m{font-size:8.5px;color:var(--tb-mut2);font-weight:600}
+
+  .donut-row{display:flex;align-items:center;gap:14px}
+  .donut{width:96px;height:96px;border-radius:50%;flex:none;position:relative;transition:.6s}
+  .donut:after{content:"";position:absolute;inset:16px;border-radius:50%;background:var(--tb-panel)}
+  .donut .mid{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1}
+  .donut .mid b{font-size:20px;font-weight:900;color:#fff;line-height:1}
+  .donut .mid span{font-size:9px;color:var(--tb-mut);text-transform:uppercase;letter-spacing:.5px}
+  .dleg{flex:1;display:flex;flex-direction:column;gap:7px}
+  .dl{display:flex;align-items:center;gap:8px;font-size:12px}
+  .dl i{width:10px;height:10px;border-radius:3px;flex:none}
+  .dl .nm{flex:1;color:var(--tb-ink)}.dl .vv{font-weight:800;color:#fff}.dl .pc{color:var(--tb-mut);font-size:10.5px;width:34px;text-align:right}
+
+  .loc{display:flex;flex-direction:column;gap:8px}
+  .lrow{display:grid;grid-template-columns:96px 1fr auto;gap:8px;align-items:center;font-size:11.5px;cursor:pointer;border-radius:6px}
+  .lrow:hover{background:var(--tb-panel2)}
+  .lrow .lnm{color:var(--tb-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+  .ltrack{height:14px;background:var(--tb-panel2);border-radius:7px;overflow:hidden;position:relative}
+  .lfill{height:100%;background:linear-gradient(90deg,var(--teal),var(--teal-med));border-radius:7px;transition:width .7s cubic-bezier(.2,.8,.2,1)}
+  .lfill.act{position:absolute;left:0;top:0;background:linear-gradient(90deg,var(--activo),#5FE39B)}
+  .lrow .lvv{font-weight:800;color:#fff;font-variant-numeric:tabular-nums}
+
+  .rk{display:flex;flex-direction:column;gap:2px}
+  .rkrow{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--tb-line);cursor:pointer}
+  .rkrow:last-child{border:0}.rkrow:hover{background:var(--tb-panel2)}
+  .rkn{width:22px;font-size:15px;text-align:center;flex:none}
+  .rkinfo{flex:1;min-width:0}
+  .rkinfo b{display:block;font-size:12.5px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700}
+  .rkinfo span{font-size:10.5px;color:var(--tb-mut)}
+  .rkamt{font-weight:800;font-size:11px;color:var(--nuevo);white-space:nowrap;text-transform:uppercase;letter-spacing:.4px}
+  .segb{display:inline-block;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;padding:1px 6px;border-radius:20px;vertical-align:1px}
+  .segb.farmacia{background:rgba(10,168,159,.18);color:var(--aqua)}
+  .segb.institucion{background:rgba(229,169,59,.18);color:var(--gold)}
+  .segb.otro{background:rgba(124,139,136,.18);color:var(--tb-mut)}
+
+  .soon{border-style:dashed;opacity:.9}
+  .soon .badge{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;background:rgba(95,200,191,.15);color:var(--aqua);padding:2px 7px;border-radius:20px}
+  .soon p{font-size:11.5px;color:var(--tb-mut);line-height:1.5;margin:8px 0 0}
+
+  /* ---- ticker ---- */
+  .ticker{background:var(--tb-panel);border:1px solid var(--tb-line);border-radius:12px;height:44px;display:flex;align-items:center;overflow:hidden;position:relative}
+  .tklabel{flex:none;background:var(--teal);color:#fff;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;height:100%;display:flex;align-items:center;padding:0 14px;gap:7px;z-index:2}
+  .tkdot{width:8px;height:8px;border-radius:50%;background:#fff;animation:pulse 1.4s infinite}
+  .tktrack{flex:1;overflow:hidden;position:relative;height:100%}
+  .tkmove{position:absolute;top:0;left:0;height:100%;display:flex;align-items:center;gap:34px;white-space:nowrap;will-change:transform;animation:scroll 65s linear infinite}
+  .tkitem{font-size:13px;color:var(--tb-ink);display:inline-flex;align-items:center;gap:8px}
+  .tkitem b{color:#fff}
+  .tkitem .nv{color:var(--nuevo);font-weight:800}
+  .tkitem .dot{width:5px;height:5px;border-radius:50%;background:var(--tb-mut2)}
+
+  @keyframes scroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.5)}70%{box-shadow:0 0 0 8px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
+
+  .pulse-new{border-radius:50%;background:var(--nuevo);box-shadow:0 0 0 rgba(255,214,90,.7);animation:pulseNew 1.8s infinite}
+  @keyframes pulseNew{0%{box-shadow:0 0 0 0 rgba(255,214,90,.6)}70%{box-shadow:0 0 0 14px rgba(255,214,90,0)}100%{box-shadow:0 0 0 0 rgba(255,214,90,0)}}
+
+  .leaflet-popup-content-wrapper{background:var(--tb-panel);color:var(--tb-ink);border:1px solid var(--tb-line);border-radius:11px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+  .leaflet-popup-tip{background:var(--tb-panel);border:1px solid var(--tb-line)}
+  .leaflet-popup-content{margin:11px 13px;font-family:Archivo,sans-serif}
+  .pop b.pnm{font-size:14px;color:#fff;display:block;margin-bottom:5px}
+  .pop .prow{font-size:12px;color:var(--tb-mut);display:flex;justify-content:space-between;gap:14px;padding:2px 0}
+  .pop .prow span:last-child{color:var(--tb-ink);font-weight:700}
+  .leaflet-control-attribution{background:rgba(6,32,30,.7)!important;color:var(--tb-mut2)!important}
+  .leaflet-control-attribution a{color:var(--tb-mut)!important}
+  .leaflet-bar a{background:var(--tb-panel)!important;color:var(--tb-ink)!important;border-color:var(--tb-line)!important}
+
+  .loadscr{position:fixed;inset:0;background:var(--tb-bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:9999}
+  .loadscr .mono{font-size:40px}
+  .spin{width:34px;height:34px;border:3px solid var(--tb-line);border-top-color:var(--aqua);border-radius:50%;animation:sp 1s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .loadscr .txt{color:var(--tb-mut);font-size:13px}
+
+  @media(max-width:1200px){
+    .kpis{grid-template-columns:repeat(3,1fr)}
+    .main{grid-template-columns:1fr}
+    body{overflow:auto}#board{height:auto;min-height:100vh}
+    .mapwrap{height:60vh}.rail{overflow:visible}
+  }
+</style>
+</head>
+<body>
+<div class="loadscr" id="load"><div class="mono">E<span class="y" style="color:var(--aqua)">y</span>G</div><div class="spin"></div><div class="txt" id="loadtxt">Conectando con Odoo…</div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="../assets/core.js"></script>
+<script>
+/* ================= EyG Core · Dirección · Tablero en vivo =================
+   Tablero público para pantalla grande. NO muestra dinero (ni facturación, ni
+   deuda, ni importes): sólo cantidades, cobertura y actividad. */
+
+/* Centroides de localidad (geocodificados 1 vez con OpenStreetMap/Nominatim).
+   Ubican a los clientes que todavía no tienen coordenada exacta en Odoo. */
+const CENTROIDES = {"ROSARIO":[-32.95936,-60.6617],"ROSARIO SUD":[-32.95936,-60.6617],"ROSARIO NORTE":[-32.95936,-60.6617],"ROLDAN":[-32.90008,-60.90661],"CASILDA":[-33.04434,-61.16418],"SAN LORENZO":[-32.74549,-60.74309],"FUNES":[-32.91687,-60.81056],"RAFAELA":[-31.25269,-61.49168],"VILLA CONSTITUCION":[-33.22721,-60.32982],"CANADA DE GOMEZ":[-32.82344,-61.39051],"ARROYO SECO":[-33.15461,-60.50822],"CAPITAN BERMUDEZ":[-32.81667,-60.71667],"VILLA GOBERNADOR GALVEZ":[-33.02508,-60.63374],"GRANADERO BAIGORRIA":[-32.85478,-60.70741],"SANTA FE":[-31.6187,-60.70196],"AREQUITO":[-33.14487,-61.46983],"ALVAREZ":[-33.13055,-60.80212],"TOTORAS":[-32.58427,-61.16679],"PUEBLO ESTHER":[-33.07886,-60.56408],"ACEBAL":[-33.24172,-60.83651],"FRAY LUIS BELTRAN":[-32.78743,-60.72951],"SAN JERONIMO SUD":[-32.87889,-61.02303],"IBARLUCEA":[-32.85236,-60.78936],"VENADO TUERTO":[-33.74559,-61.96861],"PEREZ":[-32.99822,-60.77085],"PEYRANO":[-33.53835,-60.79974],"PUJATO":[-33.0176,-61.0431],"FIGHIERA":[-33.19375,-60.46948],"SAN JERONIMO":[-32.87889,-61.02303],"EMPALME VILLA CONSTITUCION":[-33.26055,-60.38033],"FIRMAT":[-33.45811,-61.48603],"GENERAL LAGOS":[-33.11043,-60.56372],"CHABAS":[-33.24569,-61.35888],"LAS ROSAS":[-32.47564,-61.57617],"RICARDONE":[-32.77067,-60.78419],"SOLDINI":[-33.02422,-60.7553],"SAN JOSE DE LA ESQUINA":[-33.11222,-61.70266],"TIMBUES":[-32.66745,-60.79574],"ALDAO":[-32.70464,-60.81596],"EL TREBOL":[-32.19729,-61.70993],"PINERO":[-33.10921,-60.79664],"NUEVO TORINO":[-31.346,-61.2344],"CALCHAQUI":[-29.88787,-60.28321],"SAUCE VIEJO":[-31.77103,-60.83723],"FUENTES":[-33.17295,-61.07736],"ANDINO":[-32.66969,-60.87539],"HUMBOLDT":[-31.40086,-61.08201],"ALVEAR":[-33.05752,-60.61961],"CORREA":[-32.84599,-61.25171],"V.GOBERNADOR GALVEZ":[-33.02508,-60.63374],"ROSARIO, SANTA FE":[-32.95936,-60.6617],"VILLA CANAS":[-34.00428,-61.6055],"PUERTO GENERAL SAN MARTIN":[-32.71162,-60.73412],"BARRIO PARQUE":[-32.95936,-60.6617],"RSOARIO":[-32.95936,-60.6617],"VILLADA":[-33.34878,-61.44669],"ROSARIOS":[-32.95936,-60.6617],"LUIS PALACIOS":[-32.77977,-60.90722],"MACIEL":[-32.45684,-60.89243],"MONTES DE OCA":[-32.56626,-61.76834],"URANGA":[-33.26379,-60.706],"ARMSTRONG":[-32.78628,-61.60359],"SANFORD":[-33.14605,-61.27721],"ESPERANZA":[-31.44899,-60.9304],"BOUQUET":[-32.42361,-61.88971],"TORTUGAS":[-32.74648,-61.81829],"MARIA TERESA":[-34.00464,-61.90751],"BARRIO FISHERTON":[-32.95936,-60.6617],"ALBERDI JUAN BAUTISTA AVDA.":[-34.61612,-58.43562],"CABA":[-34.61612,-58.43562],"SAN NICOLAS":[-33.32771,-60.21659],"ENTRE RIOS":[-31.73301,-60.52985],"VILLA BONICH":[-34.55091,-58.55597],"EMPALME":[-33.26055,-60.38033],"CORRAL DE BUSTOS":[-33.28321,-62.1864],"LOS SURGENTES":[-32.98512,-62.02186],"PARANA":[-31.73301,-60.52985],"BARRIO NUEVA CORDOBA":[-31.41669,-64.18342],"ARRECIFES":[-34.0675,-60.10874],"CIUDAD DE BUENOS AIRES":[-34.61612,-58.43562],"PERGAMINO":[-33.89749,-60.57505],"CORDOBA":[-25.22699,-64.5912],"PEARSON":[-33.65258,-60.89029],"MARTINEZ":[-34.49397,-58.51035]};
+
+/* Categorías de Odoo → segmento comercial */
+const CAT_FARM = new Set([28,29,30]);              // FARMACIA / FARMACIAS
+const CAT_INST = new Set([31,36,32,33,37,20,62]);  // ASOCIACIONES, CENTROS DE SALUD, INSTITUCIONES, EMPRESAS DE SALUD, Healthcare, SAMCO
+
+const esc = EYG.esc;
+const norm = s => (s||"").toString().trim().toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\s+/g," ");
+const titulo = s => (s||"").toLowerCase().replace(/\b\w/g,m=>m.toUpperCase());
+const MESES=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+const HOY = new Date();
+const diasDesde = s => s ? Math.floor((HOY - new Date(s.replace(" ","T")))/(864e5)) : 1e9;
+
+const COLOR = {activo:"#37D07A",tibio:"#0AA89F",dormido:"#E5A93B",prospecto:"#7C8B88"};
+const ESTADO_LBL = {activo:"Activo",tibio:"Compra tibia",dormido:"Dormido",prospecto:"Sin compras"};
+const SEG_LBL = {farmacia:"Farmacia",institucion:"Institución",otro:"Otro"};
+
+let CLIENTES=[], PEDIDOS_MES=[], PEDIDOS=[], ESTRENOS=[], PROVINCIAS=[];
+let STATE={seg:"",estado:"",aprox:true,prov:"",universo:true};
+let map, capa, capaLbl, capaUni, MARCAS=[];
+
+/* Universo oficial: farmacias (REFAR) y establecimientos de salud (REFES) del
+   Ministerio de Salud, ubicados por centroide de localidad (georef). Sirve para
+   ver cuánto mercado falta conquistar. */
+/* OJO: universo-salud.json es un archivo estático de un sitio público, así que
+   sólo lleva el padrón OFICIAL (dato público). El cruce con nuestros clientes
+   —qué establecimiento ya nos compra, cuántos tenemos por localidad— se calcula
+   acá en el navegador, después del login. Nunca meter datos de EyG en ese JSON. */
+let UNI=null;                 // {locs:[[loc,prov,lat,lon,nFar,nInst]], est:[[nombre,locIdx,tipo,domicilio]]}
+let UNI_MIOS=[];              // clientes nuestros por localidad (índice paralelo a UNI.locs)
+const PROV_CASA = "Santa Fe"; // mercado de referencia para la cobertura
+async function cargarUniverso(){
+  try{
+    // sin force-cache: si actualizamos el padrón, la pantalla lo toma sola
+    // (el navegador revalida y recibe 304 si no cambió, así que no pesa).
+    const r = await fetch("universo-salud.json");
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    UNI = await r.json();
+  }catch(e){ console.warn("universo:", e.message); UNI=null; }
+}
+
+function jitter(id, base){
+  const h1=Math.abs(Math.sin(id*12.9898)*43758.5453)%1;
+  const h2=Math.abs(Math.sin(id*78.233 )*43758.5453)%1;
+  const r=0.004+0.026*h1, a=2*Math.PI*h2;
+  return [base[0]+r*Math.cos(a), base[1]+r*Math.sin(a)*0.8];
+}
+function segmento(cats){
+  if(!cats||!cats.length) return "otro";
+  for(const c of cats) if(CAT_FARM.has(c)) return "farmacia";
+  for(const c of cats) if(CAT_INST.has(c)) return "institucion";
+  return "otro";
+}
+function estado(c){
+  if(!c.compro) return "prospecto";
+  const d=diasDesde(c.ultima);
+  if(d<=90) return "activo";
+  if(d<=180) return "tibio";
+  return "dormido";
+}
+
+async function cargar(){
+  const lt=document.getElementById("loadtxt");
+  try{
+    lt.textContent="Leyendo clientes…";
+    const i12=new Date(HOY.getFullYear(),HOY.getMonth()-12,1);
+    const pUni = cargarUniverso();   // en paralelo: si tarda o falla, el tablero anda igual
+    const [parts, ultimas, primeras, pedMes, pedidos] = await Promise.all([
+      EYG.rpc("res.partner","search_read",[[["customer_rank",">",0]],
+        ["name","city","state_id","partner_latitude","partner_longitude","category_id","create_date","sale_order_count"]],{limit:1200}),
+      EYG.rpc("sale.order","read_group",[[["state","in",["sale","done"]]],["date_order:max"],["partner_id"]],{lazy:false,limit:2000}),
+      EYG.rpc("sale.order","read_group",[[["state","in",["sale","done"]]],["date_order:min"],["partner_id"]],{lazy:false,limit:2000}),
+      EYG.rpc("sale.order","read_group",[[["state","in",["sale","done"]],["date_order",">=",i12.toISOString().slice(0,10)]],["id"],["date_order:month"]],{lazy:false}),
+      EYG.rpc("sale.order","search_read",[[["state","in",["sale","done"]]],["name","partner_id","date_order"]],{limit:16,order:"date_order desc"}),
+    ]);
+
+    const ULT={}, PRI={}, NPED={};
+    for(const g of ultimas){ if(g.partner_id){ ULT[g.partner_id[0]]=g.date_order; NPED[g.partner_id[0]]=g.__count||0; } }
+    for(const g of primeras){ if(g.partner_id) PRI[g.partner_id[0]]=g.date_order; }
+
+    lt.textContent="Ubicando en el mapa…";
+    CLIENTES = parts.map(p=>{
+      const seg = segmento(p.category_id||[]);
+      const exacto = p.partner_latitude && Math.abs(p.partner_latitude)>0.05 && Math.abs(p.partner_longitude)>0.05;
+      const cityN = norm(p.city);
+      let ll=null, aprox=false;
+      if(exacto){ ll=[p.partner_latitude, p.partner_longitude]; }
+      else if(CENTROIDES[cityN]){ ll=jitter(p.id, CENTROIDES[cityN]); aprox=true; }
+      const nped = NPED[p.id]||0;
+      const prov = p.state_id ? p.state_id[1].replace(/\s*\((AR|IT)\)$/,"") : "";
+      return {
+        id:p.id, name:p.name||"(sin nombre)", city:p.city||"—", cityN, prov, seg, ll, aprox, nped,
+        compro:nped>0||(p.sale_order_count||0)>0,
+        ultima:ULT[p.id]||null, primera:PRI[p.id]||null,
+        nuevo:diasDesde(p.create_date)<=90,
+        estreno: PRI[p.id] ? diasDesde(PRI[p.id])<=45 : false   // hizo su PRIMERA compra hace poco
+      };
+    });
+    CLIENTES.forEach(c=>c.estado=estado(c));
+
+    await pUni;
+    cruzarConUniverso();
+
+    // los que estrenaron (primera compra reciente) → para anunciar
+    ESTRENOS = CLIENTES.filter(c=>c.estreno && c.ll).sort((a,b)=>(a.primera<b.primera?1:-1));
+
+    PROVINCIAS = [...new Set(CLIENTES.filter(c=>c.ll&&c.prov).map(c=>c.prov))].sort();
+
+    // pedidos por mes (CANTIDAD, no importes)
+    const curYM = HOY.getFullYear()+"-"+String(HOY.getMonth()+1).padStart(2,"0");
+    PEDIDOS_MES = pedMes.map(g=>{
+      const f = g.__range["date_order:month"].from;
+      const d = new Date(f.slice(0,10));
+      return {ym:f.slice(0,7), lbl:MESES[d.getMonth()], val:g.__count||0};
+    }).filter(v=>v.ym!==curYM).sort((a,b)=>a.ym<b.ym?-1:1).slice(-12);
+
+    PEDIDOS = pedidos.map(o=>({cli:o.partner_id?o.partner_id[1]:"—", fecha:o.date_order}));
+
+    document.getElementById("load").style.display="none";
+    render();
+    initMapa();
+    dibujarMarcadores();
+    marcarActualizado();
+    setTimeout(iniciarCiclo, 2500);
+  }catch(e){
+    document.getElementById("loadtxt").innerHTML="No pude leer Odoo.<br><small style='color:#EC8B5E'>"+esc(e.message)+"</small>";
+    console.error(e);
+  }
+}
+
+/* =================== render (todo público, sin dinero) =================== */
+function render(){
+  const conUbic = CLIENTES.filter(c=>c.ll);
+  const activos = CLIENTES.filter(c=>c.estado==="activo").length;
+  const nuevos  = CLIENTES.filter(c=>c.nuevo).length;
+  const locs    = new Set(CLIENTES.filter(c=>c.ll).map(c=>c.cityN)).size;
+  const provs   = PROVINCIAS.length;
+  const pedMesAct = PEDIDOS_MES.length?PEDIDOS_MES[PEDIDOS_MES.length-1]:{val:0,lbl:""};
+  const pedAnt    = PEDIDOS_MES.length>1?PEDIDOS_MES[PEDIDOS_MES.length-2]:{val:0};
+  const dPed = pedAnt.val? (pedMesAct.val-pedAnt.val)/pedAnt.val*100 : 0;
+  const pctAct = CLIENTES.length? activos/CLIENTES.length*100 : 0;
+
+  const segCount = {farmacia:0,institucion:0,otro:0};
+  CLIENTES.forEach(c=>segCount[c.seg]++);
+  const totSeg = CLIENTES.length||1;
+
+  const byLoc={};
+  CLIENTES.filter(c=>c.ll).forEach(c=>{
+    const k=c.cityN||"—";
+    if(!byLoc[k]) byLoc[k]={n:0,act:0,nm:c.city,ll:c.ll};
+    byLoc[k].n++; if(c.estado==="activo") byLoc[k].act++;
+  });
+  const topLoc=Object.entries(byLoc).map(([k,v])=>({k,...v})).sort((a,b)=>b.n-a.n).slice(0,8);
+  const locMax=topLoc.length?topLoc[0].n:1;
+
+  // --- cobertura del mercado (universo oficial) ---
+  const provCob = STATE.prov || PROV_CASA;
+  let cob=null;
+  if(UNI){
+    const ls=UNI.locs.map((l,i)=>({l,i})).filter(x=>x.l[1]===provCob);
+    const totU=ls.reduce((a,x)=>a+x.l[4]+x.l[5],0);
+    const mios=ls.reduce((a,x)=>a+(UNI_MIOS[x.i]||0),0);
+    const sinNada=ls.filter(x=>!(UNI_MIOS[x.i]||0) && (x.l[4]+x.l[5])>0).length;
+    if(totU) cob={totU, mios, falta:Math.max(0,totU-mios), pct:mios/totU*100, sinNada, prov:provCob};
+  }
+
+  const board=document.getElementById("board");
+  board.querySelector(".kpis").innerHTML = `
+    <div class="kpi g"><div class="l">Clientes activos</div><div class="n">${activos}</div><div class="d">compraron en 90 días · ${pctAct.toFixed(0)}% de la cartera</div></div>
+    <div class="kpi gold"><div class="l">Nuevos (90 días)</div><div class="n">${nuevos}</div><div class="d">${ESTRENOS.length} estrenaron su 1ª compra</div></div>
+    <div class="kpi"><div class="l">Pedidos de ${pedMesAct.lbl||"—"}</div><div class="n">${pedMesAct.val.toLocaleString("es-AR")}</div><div class="d">${dPed>=0?'<span class="up">▲ '+dPed.toFixed(0)+'%</span>':'<span class="dn">▼ '+Math.abs(dPed).toFixed(0)+'%</span>'} vs mes anterior</div></div>
+    ${cob?`
+    <div class="kpi aqua"><div class="l">Mercado conquistado · ${esc(cob.prov)}</div><div class="n">${cob.pct.toFixed(0)}%</div><div class="d">${cob.mios} de ${cob.totU.toLocaleString("es-AR")} habilitados</div></div>
+    <div class="kpi coral"><div class="l">Falta conquistar</div><div class="n">${cob.falta.toLocaleString("es-AR")}</div><div class="d">${cob.sinNada} localidades sin un solo cliente</div></div>`
+    :`<div class="kpi aqua"><div class="l">Clientes en el mapa</div><div class="n">${conUbic.length}</div><div class="d">de ${CLIENTES.length} en total</div></div>
+      <div class="kpi"><div class="l">Universo oficial</div><div class="n">…</div><div class="d">cargando el padrón</div></div>`}
+    <div class="kpi coral"><div class="l">Localidades</div><div class="n">${locs}</div><div class="d">donde ya llegamos</div></div>
+    <div class="kpi aqua"><div class="l">Provincias</div><div class="n">${provs}</div><div class="d">alcance de la red</div></div>`;
+
+  const p1=segCount.farmacia/totSeg*100, p2=segCount.institucion/totSeg*100;
+  const donutBg=`conic-gradient(var(--teal-med) 0 ${p1}%, var(--gold) ${p1}% ${p1+p2}%, #46615c ${p1+p2}% 100%)`;
+  const pmax=Math.max(1,...PEDIDOS_MES.map(v=>v.val));
+
+  board.querySelector(".rail").innerHTML = `
+    <div class="card">
+      <h4>📦 Pedidos por mes <span class="cnt">últimos 12 meses</span></h4>
+      <div class="bars">${PEDIDOS_MES.map(v=>`<div class="bcol" title="${v.lbl}: ${v.val} pedidos">
+        <div class="bar" style="height:${Math.max(4,v.val/pmax*100)}%"></div><div class="m">${v.lbl}</div></div>`).join("")}</div>
+    </div>
+
+    <div class="card">
+      <h4>🧬 Mezcla de clientes</h4>
+      <div class="donut-row">
+        <div class="donut" style="background:${donutBg}"><div class="mid"><b>${CLIENTES.length}</b><span>clientes</span></div></div>
+        <div class="dleg">
+          <div class="dl"><i style="background:var(--teal-med)"></i><span class="nm">Farmacias</span><span class="vv">${segCount.farmacia}</span><span class="pc">${p1.toFixed(0)}%</span></div>
+          <div class="dl"><i style="background:var(--gold)"></i><span class="nm">Instituciones</span><span class="vv">${segCount.institucion}</span><span class="pc">${p2.toFixed(0)}%</span></div>
+          <div class="dl"><i style="background:#46615c"></i><span class="nm">Otros</span><span class="vv">${segCount.otro}</span><span class="pc">${(100-p1-p2).toFixed(0)}%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4>📍 Cobertura por localidad <span class="cnt">top 8</span></h4>
+      <div class="loc">${topLoc.map(l=>`<div class="lrow" onclick="volarA(${l.ll[0]},${l.ll[1]},13,'${esc(titulo(l.nm)).replace(/'/g,"")}')">
+        <span class="lnm">${esc(titulo(l.nm))}</span>
+        <div class="ltrack"><div class="lfill" style="width:${l.n/locMax*100}%"></div><div class="lfill act" style="width:${l.act/locMax*100}%"></div></div>
+        <span class="lvv">${l.n}<span style="color:var(--activo);font-weight:700"> ·${l.act}</span></span>
+      </div>`).join("")}</div>
+      <div style="font-size:10px;color:var(--tb-mut2);margin-top:8px"><span style="color:var(--activo)">verde</span> = activos · barra = total de clientes · tocá para volar</div>
+    </div>
+
+    <div class="card">
+      <h4>🎉 Estrenaron con nosotros <span class="cnt">1ª compra · 45 días</span></h4>
+      ${ESTRENOS.length?`<div class="rk">${ESTRENOS.slice(0,6).map(c=>`<div class="rkrow" onclick="anunciar(${c.id})">
+        <div class="rkn">✨</div>
+        <div class="rkinfo"><b>${esc(c.name)}</b><span>${esc(titulo(c.city))} · <span class="segb ${c.seg}">${SEG_LBL[c.seg]}</span></span></div>
+        <div class="rkamt">${(d=>d===0?"hoy":d===1?"ayer":"hace "+d+" días")(diasDesde(c.primera))}</div>
+      </div>`).join("")}</div>`:'<div style="font-size:12px;color:var(--tb-mut)">Todavía no hay primeras compras en los últimos 45 días.</div>'}
+    </div>
+
+    ${cob?`
+    <div class="card">
+      <h4>🎯 Dónde falta conquistar <span class="cnt">${esc(cob.prov)}</span></h4>
+      <div class="loc">${oportunidades(cob.prov).map(l=>{
+        const tot=l.f+l.ins, p=Math.min(100,l.n/tot*100);
+        return `<div class="lrow" onclick="volarA(${l.ll[0]},${l.ll[1]},13,'${esc(l.loc).replace(/'/g,"")}')">
+          <span class="lnm">${esc(l.loc)}</span>
+          <div class="ltrack" title="${l.n} de ${tot} ya son clientes">
+            <div class="lfill" style="width:100%;background:#3A4F4C"></div>
+            <div class="lfill act" style="width:${p}%"></div></div>
+          <span class="lvv" style="color:${COB_COL(p)}">${Math.max(0,tot-l.n)}</span>
+        </div>`}).join("")}</div>
+      <div style="font-size:10px;color:var(--tb-mut2);margin-top:8px">el número es <b>cuántos faltan</b> · <span style="color:var(--activo)">verde</span> = ya son clientes · tocá para volar</div>
+    </div>`:""}
+
+    <div class="card soon">
+      <h4>🏥 Universo oficial <span class="badge">${UNI?"Fuente oficial":"Cargando…"}</span></h4>
+      <p>${UNI?`<b>${UNI.locs.reduce((a,l)=>a+l[4]+l[5],0).toLocaleString("es-AR")}</b> farmacias e instituciones de salud habilitadas en todo el país.
+        Fuente: <b>REFAR y REFES</b>, Ministerio de Salud de la Nación (27/12/2024), ubicadas por localidad con el
+        servicio oficial de georreferenciación. Detalle uno por uno en ${UNI.detalle.map(p=>esc(titulo(p))).join(", ")}.`
+        :`Trayendo el padrón oficial de farmacias e instituciones de salud…`}</p>
+    </div>`;
+
+  // ticker (sin importes)
+  const tk=[];
+  PEDIDOS.forEach(o=>tk.push(`<span class="tkitem"><span class="dot"></span>🛒 Pedido de <b>${esc(o.cli)}</b></span>`));
+  ESTRENOS.slice(0,10).forEach(c=>tk.push(`<span class="tkitem"><span class="dot"></span>🎉 <span class="nv">¡Primera compra!</span> <b>${esc(c.name)}</b> · ${esc(titulo(c.city))}</span>`));
+  const tkHTML=tk.join("")||'<span class="tkitem">Sin novedades</span>';
+  board.querySelector(".tkmove").innerHTML = tkHTML+tkHTML;
+
+  board.querySelector(".mapstat").innerHTML=`
+    <div class="ms a"><div class="n">${activos}</div><div class="l">activos</div></div>
+    <div class="ms nv"><div class="n">${ESTRENOS.length}</div><div class="l">estrenos</div></div>
+    <div class="ms"><div class="n">${conUbic.length}</div><div class="l">en mapa</div></div>`;
+
+  // selector de provincia (el mapa ya no es sólo Santa Fe)
+  const sel=document.getElementById("provSel");
+  if(sel && !sel.dataset.listo){
+    sel.innerHTML='<option value="">🇦🇷 Todo el país</option>'+PROVINCIAS.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join("");
+    sel.dataset.listo="1";
+  }
+}
+
+/* =================== mapa =================== */
+function initMapa(){
+  if(map) return;
+  map = L.map("map",{zoomControl:true,attributionControl:true,preferCanvas:true}).setView([-32.98,-60.9],8);
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{
+    attribution:'© OpenStreetMap · © CARTO', subdomains:"abcd", maxZoom:19
+  }).addTo(map);
+  capaUni = L.layerGroup().addTo(map);   // el universo va DEBAJO de nuestros clientes
+  capa = L.layerGroup().addTo(map);
+  capaLbl = L.layerGroup().addTo(map);
+  map.on("zoomend moveend", refrescarEtiquetas);
+  // si el usuario toca el mapa, pausamos el recorrido un rato
+  map.on("dragstart", ()=>pausarCiclo(60000));
+}
+const radio = n => Math.max(4, Math.min(15, 4+Math.sqrt(n||0)*1.15));   // tamaño = cantidad de pedidos
+function visibles(){
+  return CLIENTES.filter(c=>c.ll
+    && (!STATE.seg    || c.seg===STATE.seg)
+    && (!STATE.estado || c.estado===STATE.estado)
+    && (!STATE.prov   || c.prov===STATE.prov)
+    && (STATE.aprox   || !c.aprox));
+}
+function dibujarMarcadores(encuadrar){
+  capa.clearLayers(); capaLbl.clearLayers(); MARCAS=[];
+  const vis=visibles(), pts=[];
+  vis.forEach(c=>{
+    const col=COLOR[c.estado];
+    const m=L.circleMarker(c.ll,{
+      radius:radio(c.nped), color:col, weight:c.aprox?1.4:1.6,
+      fillColor:col, fillOpacity:c.aprox?0.18:0.72, opacity:c.aprox?0.6:0.95,
+      dashArray:c.aprox?"3 3":null
+    });
+    m.bindPopup(popup(c));
+    m.on("mouseover",function(){this.openPopup();});
+    capa.addLayer(m);
+    MARCAS.push({c,m});
+    pts.push(c.ll);
+    if(c.estreno||c.nuevo){
+      const halo=L.divIcon({className:"",html:'<div class="pulse-new" style="width:14px;height:14px"></div>',iconSize:[14,14]});
+      capa.addLayer(L.marker(c.ll,{icon:halo,interactive:false,zIndexOffset:-100}));
+    }
+  });
+  if(encuadrar!==false && pts.length) encuadrarRobusto(pts);
+  refrescarEtiquetas();
+}
+/* Encuadre robusto: recorta el 3% de cada extremo para que UN punto suelto
+   (una coordenada mal cargada en Odoo) no obligue a alejar el mapa a todo el país.
+   El cliente sigue estando en el mapa; sólo no manda sobre el encuadre inicial. */
+function encuadrarRobusto(pts){
+  if(pts.length<12){ try{ map.fitBounds(pts,{padding:[40,40],maxZoom:12}); }catch(e){} return; }
+  const q=(arr,p)=>{ const a=[...arr].sort((x,y)=>x-y); return a[Math.min(a.length-1,Math.max(0,Math.floor(a.length*p)))]; };
+  const lats=pts.map(p=>p[0]), lngs=pts.map(p=>p[1]);
+  const b=[[q(lats,.03),q(lngs,.03)],[q(lats,.97),q(lngs,.97)]];
+  try{ map.fitBounds(b,{padding:[40,40],maxZoom:11}); }catch(e){ try{ map.fitBounds(pts,{padding:[40,40],maxZoom:11}); }catch(e2){} }
+}
+/* Vuelo con red de seguridad: si el navegador frena la animación (pestaña en
+   segundo plano, pantalla en reposo), aterrizamos igual en el destino.
+   Sin esto, el tablero se queda congelado a mitad de viaje. */
+function volar(ll, zoom, dur){
+  try{ map.flyTo(ll, zoom, {duration:dur}); }catch(e){}
+  clearTimeout(volar._t);
+  volar._t = setTimeout(()=>{
+    try{
+      const c=map.getCenter();
+      if(Math.abs(c.lat-ll[0])>0.02 || Math.abs(c.lng-ll[1])>0.02 || Math.abs(map.getZoom()-zoom)>0.3){
+        map.setView(ll, zoom, {animate:false});
+      }
+    }catch(e){}
+  }, dur*1000 + 500);
+}
+/* ===== Cruce padrón oficial ↔ nuestros clientes (se hace acá, no en el archivo) =====
+   1) cuántos clientes tenemos en cada localidad  2) qué establecimiento puntual ya
+   nos compra  3) el nombre oficial, mejor escrito, para mostrarlo en pantalla. */
+const LOC_ALIAS={"ROSARIO SUD":"ROSARIO","ROSARIO NORTE":"ROSARIO","ROSARIOS":"ROSARIO","RSOARIO":"ROSARIO",
+ "BARRIO FISHERTON":"ROSARIO","BARRIO PARQUE":"ROSARIO","ROSARIO SANTA FE":"ROSARIO",
+ "V GOBERNADOR GALVEZ":"VILLA GOBERNADOR GALVEZ","CABA":"CIUDAD AUTONOMA DE BUENOS AIRES",
+ "CIUDAD DE BUENOS AIRES":"CIUDAD AUTONOMA DE BUENOS AIRES","BARRIO NUEVA CORDOBA":"CORDOBA",
+ "EMPALME":"EMPALME VILLA CONSTITUCION","SAN JERONIMO":"SAN JERONIMO SUD"};
+const RUIDO=/\b(FARMACIA|FARMACIAS|FCIA|SRL|S R L|SA|S A|SAS|S A S|SH|S H|DE|DEL|LA|EL|LOS|LAS|Y|E|HIJOS|HNOS|HERMANOS|SOCIEDAD|ANONIMA|LTDA|LIMITADA|CIA)\b/g;
+const GENERICO=new Set(["PARQUE","CENTRO","NORTE","SUR","ESTE","OESTE","NUEVA","NUEVO","SAN","SANTA","CENTRAL","MODELO","ESPANOL","ESPANOLA","ITALIANO","ITALIANA","MUNICIPAL","PROVINCIAL","REGIONAL","GENERAL","MEDICA","MEDICO","SALUD","VIDA","CRUZ","PLAZA","MITRE","BELGRANO","SARMIENTO","MORENO","URQUIZA","ALBERDI","RIVADAVIA"]);
+const clave = s => norm(s).replace(/[^A-Z0-9 ]/g," ").replace(RUIDO," ").replace(/\s+/g," ").trim();
+const _tk = s => s.split(" ").filter(x=>x.length>2);
+function _coincide(a,b){
+  if(!a||!b) return false;
+  const ta=_tk(a), tb=_tk(b); if(!ta.length||!tb.length) return false;
+  if(a===b){ if(ta.length===1) return ta[0].length>=6 && !GENERICO.has(ta[0]); return true; }
+  if(ta.length>=2 && tb.length>=2){
+    const A=new Set(ta),B=new Set(tb); let i=0; for(const x of A) if(B.has(x)) i++;
+    if(i/(A.size+B.size-i) >= 0.67) return true;
+  }
+  const corto=a.length<=b.length?a:b, largo=a.length<=b.length?b:a;
+  if(corto.length>=8 && _tk(corto).length>=2 && largo.includes(corto)) return true;
+  return false;
+}
+function cruzarConUniverso(){
+  if(!UNI) return;
+  UNI_MIOS = new Array(UNI.locs.length).fill(0);
+  // índice: "PROVINCIA|LOCALIDAD" -> posición en UNI.locs
+  const pos=new Map();
+  UNI.locs.forEach((l,i)=>pos.set(norm(l[1])+"|"+norm(l[0]), i));
+  // nuestros clientes por localidad
+  const mios=new Map();
+  for(const c of CLIENTES){
+    let loc=norm(c.city); loc=LOC_ALIAS[loc]||loc; if(!loc) continue;
+    const i=pos.get(norm(c.prov)+"|"+loc); if(i===undefined) continue;
+    UNI_MIOS[i]++;
+    if(!mios.has(i)) mios.set(i,[]);
+    mios.get(i).push({c, k:clave(c.name)});
+  }
+  // qué establecimiento oficial es cliente nuestro (criterio conservador)
+  UNI.est.forEach(e=>{ e[4]=0; });
+  for(const e of UNI.est){
+    const cands=mios.get(e[1]); if(!cands) continue;
+    const ke=clave(e[0]); if(!ke) continue;
+    for(const cd of cands){
+      if(_coincide(cd.k, ke)){
+        e[4]=cd.c.id;
+        // el padrón escribe mejor el nombre que Odoo → lo usamos para mostrar
+        if(!cd.c.oficial){ cd.c.nombreOdoo=cd.c.name; cd.c.name=e[0]; cd.c.oficial=true; }
+        break;
+      }
+    }
+  }
+}
+
+/* Las 8 localidades con más mercado sin conquistar: primero las que tienen
+   muchos establecimientos habilitados y pocos (o ningún) cliente nuestro. */
+function oportunidades(prov){
+  if(!UNI) return [];
+  return UNI.locs.map((l,i)=>({loc:l[0],prov:l[1],ll:[l[2],l[3]],f:l[4],ins:l[5],n:UNI_MIOS[i]||0}))
+    .filter(l=>l.prov===prov && (l.f+l.ins)>=8)
+    .map(l=>{ const tot=l.f+l.ins; return {...l, falta:Math.max(0,tot-l.n), pct:l.n/tot*100}; })
+    .sort((a,b)=> (b.falta*(1-Math.min(b.pct,90)/100)) - (a.falta*(1-Math.min(a.pct,90)/100)) )
+    .slice(0,8);
+}
+
+/* ---- Universo oficial: cuánto mercado hay y cuánto es nuestro ----
+   Lejos: una burbuja por localidad (tamaño = establecimientos habilitados,
+   color = qué parte ya es cliente). Cerca: cada farmacia/institución, una por una. */
+const COB_COL = p => p<=0 ? "#B0413E" : p<10 ? "#EC8B5E" : p<25 ? "#E5A93B" : p<50 ? "#0AA89F" : "#37D07A";
+function locsVisibles(){
+  if(!UNI) return [];
+  return UNI.locs.map((l,i)=>({i,loc:l[0],prov:l[1],ll:[l[2],l[3]],f:l[4],ins:l[5],n:UNI_MIOS[i]||0}))
+    .filter(l=>!STATE.prov || l.prov===STATE.prov);
+}
+function pintarUniverso(){
+  if(!capaUni) return;
+  capaUni.clearLayers();
+  if(!STATE.universo || !UNI) return;
+  const z=map.getZoom(), b=map.getBounds();
+  const vis=locsVisibles();
+
+  if(z>=12){
+    // De cerca: los establecimientos uno por uno. Buscamos con margen porque se
+    // dispersan ~2 km alrededor del centro de la localidad: si mirásemos sólo la
+    // vista exacta, el centro quedaría afuera y no se dibujaría ninguno.
+    const M=0.05;
+    const s=b.getSouth()-M, n2=b.getNorth()+M, w=b.getWest()-M, e2=b.getEast()+M;
+    const dentro=new Set(vis.filter(l=>l.ll[0]>=s&&l.ll[0]<=n2&&l.ll[1]>=w&&l.ll[1]<=e2).map(l=>l.i));
+    if(!dentro.size) return;
+    let n=0;
+    for(const e of UNI.est){
+      if(n>=700) break;
+      if(!dentro.has(e[1])) continue;
+      const L0=UNI.locs[e[1]];
+      const ll=disperso(e[0]+e[3], [L0[2],L0[3]]);
+      const esCli=!!e[4];
+      capaUni.addLayer(L.circleMarker(ll,{
+        radius:esCli?5:4.5, color:esCli?"#37D07A":"#7C8B88", weight:esCli?1.6:1,
+        fillColor:esCli?"#37D07A":"#46615c", fillOpacity:esCli?.5:.32, opacity:esCli?.9:.5
+      }).bindPopup(`<div class="pop"><b class="pnm">${esc(e[0])}</b>
+        <div class="prow"><span>Tipo</span><span>${e[2]===0?"Farmacia":"Institución de salud"}</span></div>
+        ${e[3]?`<div class="prow"><span>Domicilio</span><span>${esc(e[3])}</span></div>`:""}
+        <div class="prow"><span>Localidad</span><span>${esc(L0[0])}</span></div>
+        <div class="prow"><span>¿Es cliente?</span><span style="color:${esCli?"var(--activo)":"var(--coral)"}">${esCli?"Sí, ya nos compra":"Todavía no"}</span></div>
+        <div class="prow" style="opacity:.7"><span>Fuente</span><span>Registro oficial</span></div></div>`));
+      n++;
+    }
+    return;
+  }
+  // de lejos: una burbuja por localidad
+  for(const l of vis){
+    const tot=l.f+l.ins; if(!tot) continue;
+    const pct=Math.min(100, l.n/tot*100);
+    capaUni.addLayer(L.circleMarker(l.ll,{
+      radius: Math.max(6, Math.min(42, 5+Math.sqrt(tot)*2.1)),
+      color: COB_COL(pct), weight:1.4, fillColor:COB_COL(pct), fillOpacity:.13, opacity:.55
+    }).bindPopup(`<div class="pop"><b class="pnm">${esc(l.loc)}</b>
+      <div class="prow"><span>Farmacias habilitadas</span><span>${l.f}</span></div>
+      <div class="prow"><span>Instituciones de salud</span><span>${l.ins}</span></div>
+      <div class="prow"><span>Total del mercado</span><span>${tot}</span></div>
+      <div class="prow"><span>Clientes nuestros</span><span style="color:var(--activo)">${l.n}</span></div>
+      <div class="prow"><span>Falta conquistar</span><span style="color:var(--coral)">${Math.max(0,tot-l.n)}</span></div>
+      <div class="prow"><span>Cobertura</span><span style="color:${COB_COL(pct)}">${pct.toFixed(0)}%</span></div></div>`));
+  }
+}
+/* dispersión determinística por texto (mismo establecimiento → siempre el mismo lugar) */
+function disperso(txt, base){
+  let h=0; for(let i=0;i<txt.length;i++){ h=(h*31+txt.charCodeAt(i))>>>0; }
+  const a=(h%3600)/3600*2*Math.PI, r=0.002+((h>>>12)%1000)/1000*0.020;
+  return [base[0]+r*Math.cos(a), base[1]+r*Math.sin(a)*0.8];
+}
+
+/* Al acercarse, mostramos el NOMBRE de cada farmacia / institución.
+   Con debounce: zoomend y moveend llegan casi juntos y si no, se duplican. */
+let _lblT;
+function refrescarEtiquetas(){ clearTimeout(_lblT); _lblT=setTimeout(()=>{ pintarEtiquetas(); pintarUniverso(); },140); }
+function pintarEtiquetas(){
+  if(!map) return;
+  capaLbl.clearLayers();
+  if(map.getZoom() < 12) return;
+  const b=map.getBounds(); let n=0;
+  for(const {c,m} of MARCAS){
+    if(n>=45) break;
+    if(!b.contains(m.getLatLng())) continue;
+    const t=L.tooltip({permanent:true,direction:"top",offset:[0,-6],className:"lbl "+c.seg,opacity:1})
+      .setContent(esc(c.name)).setLatLng(m.getLatLng());
+    capaLbl.addLayer(t); n++;
+  }
+}
+function popup(c){
+  const d=c.ultima?diasDesde(c.ultima):null;
+  const ult=c.ultima? (d===0?"hoy":d===1?"ayer":"hace "+d+" días") : "sin compras";
+  return `<div class="pop"><b class="pnm">${esc(c.name)}</b>
+    <div class="prow"><span>Tipo</span><span>${SEG_LBL[c.seg]}${c.estreno?' · 🎉 estrenó':''}</span></div>
+    <div class="prow"><span>Localidad</span><span>${esc(titulo(c.city))}${c.aprox?' (aprox.)':''}</span></div>
+    ${c.prov?`<div class="prow"><span>Provincia</span><span>${esc(c.prov)}</span></div>`:''}
+    <div class="prow"><span>Estado</span><span style="color:${COLOR[c.estado]}">${ESTADO_LBL[c.estado]}</span></div>
+    <div class="prow"><span>Última compra</span><span>${ult}</span></div>
+    <div class="prow"><span>Pedidos</span><span>${c.nped.toLocaleString("es-AR")}</span></div></div>`;
+}
+
+/* =================== recorrido automático + anuncios =================== */
+let ciclo={timer:null, i:0, paso:0, pausadoHasta:0};
+
+function paradas(){
+  const byLoc={};
+  visibles().forEach(c=>{
+    const k=c.cityN||"—";
+    if(!byLoc[k]) byLoc[k]={n:0,nm:c.city,ll:c.ll,prov:c.prov};
+    byLoc[k].n++;
+  });
+  return Object.values(byLoc).sort((a,b)=>b.n-a.n).slice(0,12);
+}
+function setCartel(titulo_,sub,live){
+  const t=document.querySelector(".maptitle");
+  if(!t) return;
+  t.innerHTML=`<h3>${live?'<span class="live"></span>':'🗺️ '}${esc(titulo_)}</h3><p>${esc(sub)}</p>`;
+}
+function volarA(lat,lng,zoom,nombre){
+  pausarCiclo(45000);
+  if(nombre) setCartel(nombre,"volando hacia la zona…",true);
+  volar([lat,lng], zoom||13, 2.6);
+}
+/* Alterna: recorrido por localidades → cada 3 paradas, anuncia un estreno */
+function iniciarCiclo(){
+  clearTimeout(ciclo.timer);
+  ciclo.timer=setTimeout(pasoCiclo, 1200);
+}
+function pausarCiclo(ms){
+  ciclo.pausadoHasta = Date.now()+ms;
+  const chip=document.getElementById("chipTour");
+  if(chip && chip.classList.contains("on")){ chip.textContent="▶ Recorrido (en pausa)"; }
+}
+function pasoCiclo(){
+  const chip=document.getElementById("chipTour");
+  const activo = chip ? chip.classList.contains("on") : true;
+  if(!activo){ ciclo.timer=setTimeout(pasoCiclo, 4000); return; }
+  if(Date.now() < ciclo.pausadoHasta){ ciclo.timer=setTimeout(pasoCiclo, 3000); return; }
+  if(chip) chip.textContent="🎬 Recorrido";
+
+  ciclo.paso++;
+  // cada 3 paradas, si hay estrenos, anunciamos uno
+  if(ciclo.paso%3===0 && ESTRENOS.length){
+    const c=ESTRENOS[(ciclo.i++)%ESTRENOS.length];
+    anunciar(c.id,true);
+    ciclo.timer=setTimeout(pasoCiclo, 11000);
+    return;
+  }
+  const ps=paradas();
+  if(!ps.length){ ciclo.timer=setTimeout(pasoCiclo, 6000); return; }
+  const p=ps[ciclo.paso%ps.length];
+  setCartel(titulo(p.nm), p.n+(p.n===1?" cliente":" clientes")+(p.prov?" · "+p.prov:""), true);
+  // Leaflet hace solo el arco: aleja, viaja y acerca
+  volar(p.ll, 13.4, 4.2);
+  ciclo.timer=setTimeout(pasoCiclo, 9500);
+}
+/* Anuncio grande de "primera compra" */
+function anunciar(id, auto){
+  const c=CLIENTES.find(x=>x.id===id); if(!c||!c.ll) return;
+  if(!auto) pausarCiclo(30000);
+  const d=diasDesde(c.primera);
+  const cuando = d===0?"hoy":d===1?"ayer":"hace "+d+" días";
+  const an=document.getElementById("anuncio");
+  an.innerHTML=`<div class="acard">
+      <div class="em">🎉</div>
+      <div class="k">Nuevo cliente · primera compra</div>
+      <div class="nm">${esc(c.name)}</div>
+      <div class="mt">${esc(titulo(c.city))}${c.prov?" · "+esc(c.prov):""} — <b>${SEG_LBL[c.seg]}</b> · ${cuando}</div>
+    </div>`;
+  volar(c.ll, 14.5, 3);
+  setCartel(titulo(c.city),"¡bienvenida "+c.name+"!",true);
+  // setTimeout y no requestAnimationFrame: si la pantalla está en reposo el rAF
+  // no corre y el anuncio nunca aparecería.
+  an.style.opacity=""; an.style.transition="";
+  setTimeout(()=>an.classList.add("on"), 40);
+  // respaldo: si el navegador tiene frenadas las transiciones (pantalla en reposo),
+  // apagamos la transición y lo mostramos de una, para que nunca quede invisible.
+  setTimeout(()=>{
+    if(an.classList.contains("on") && +getComputedStyle(an).opacity < .9){
+      an.style.transition="none"; an.style.opacity="1";
+      const c=an.querySelector(".acard"); if(c){ c.style.transition="none"; c.style.transform="none"; }
+    }
+  }, 700);
+  setTimeout(()=>{
+    an.classList.remove("on"); an.style.opacity=""; an.style.transition="";
+    // mismo respaldo al ocultar: si la transición está frenada, el cartel
+    // se quedaría pegado en pantalla para siempre.
+    setTimeout(()=>{ if(+getComputedStyle(an).opacity > .1){ an.style.transition="none"; an.style.opacity="0"; } }, 650);
+  }, auto?8000:6000);
+}
+
+/* =================== filtros / chrome =================== */
+function setSeg(v,el){ STATE.seg=(STATE.seg===v?"":v); syncChips(".fseg",el,STATE.seg,v); dibujarMarcadores(); }
+function setEst(v,el){ STATE.estado=(STATE.estado===v?"":v); syncChips(".fest",el,STATE.estado,v); dibujarMarcadores(); }
+function syncChips(sel,el,cur,v){ document.querySelectorAll(sel).forEach(x=>x.classList.remove("on")); if(cur===v&&el) el.classList.add("on"); }
+function toggleAprox(el){ STATE.aprox=!STATE.aprox; el.classList.toggle("on",STATE.aprox); dibujarMarcadores(false); }
+function setProv(v){ STATE.prov=v; dibujarMarcadores(); render(); }
+function toggleUniverso(el){ STATE.universo=!STATE.universo; el.classList.toggle("on",STATE.universo); pintarUniverso(); }
+function toggleTour(el){ el.classList.toggle("on"); ciclo.pausadoHasta=0; el.textContent=el.classList.contains("on")?"🎬 Recorrido":"⏸ Recorrido"; }
+function fs(){ if(!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); }
+
+let ultRefresh=new Date();
+function marcarActualizado(){ ultRefresh=new Date(); }
+function tickReloj(){
+  const now=new Date();
+  document.getElementById("clock").textContent=now.toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"});
+  const secs=Math.floor((now-ultRefresh)/1000);
+  const t= secs<60?"recién":secs<3600?("hace "+Math.floor(secs/60)+" min"):("hace "+Math.floor(secs/3600)+" h");
+  const u=document.getElementById("updtxt"); if(u) u.innerHTML="Actualizado <b>"+t+"</b>";
+}
+
+/* =================== arranque =================== */
+(async function(){
+  const perfil = await EYG.guard(["comercial","lider","finanzas","inventario"]);
+  document.body.insertAdjacentHTML("beforeend", `
+    <div id="board">
+      <div class="tbar">
+        <div class="brand"><span class="mono">E<span class="y">y</span>G</span><span class="btag">Core</span></div>
+        <div class="ttitle">Tablero en vivo<small>Farmacias e instituciones · nuestra red, en tiempo real</small></div>
+        <div class="tspacer"></div>
+        <div class="chips">
+          <select class="sel" id="provSel" onchange="setProv(this.value)"></select>
+          <span class="chip fseg" onclick="setSeg('farmacia',this)">💊 Farmacias</span>
+          <span class="chip fseg" onclick="setSeg('institucion',this)">🏥 Instituciones</span>
+          <span class="chip fest" onclick="setEst('activo',this)">🟢 Activos</span>
+          <span class="chip fest" onclick="setEst('dormido',this)">🟡 Dormidos</span>
+          <span class="chip on" onclick="toggleUniverso(this)" title="Mostrar el padrón oficial de farmacias e instituciones">🏥 Universo</span>
+          <span class="chip on" onclick="toggleAprox(this)" title="Mostrar/ocultar los ubicados por ciudad">◌ Aprox.</span>
+          <span class="chip tour on" id="chipTour" onclick="toggleTour(this)" title="Recorrido automático por el mapa">🎬 Recorrido</span>
+        </div>
+        <div style="text-align:right"><div class="clock" id="clock">--:--</div><div class="upd" id="updtxt">Actualizando…</div></div>
+        <button class="iconbtn" onclick="location.reload()" title="Refrescar">⟳</button>
+        <button class="iconbtn" onclick="fs()" title="Pantalla completa">⛶</button>
+        <a class="iconbtn" href="${EYG.BASE}" title="Volver a Core">✕</a>
+      </div>
+      <div class="kpis"></div>
+      <div class="main">
+        <div class="mapwrap">
+          <div id="map"></div>
+          <div class="maptitle"><h3>🗺️ Mapa de clientes</h3><p>tamaño = cantidad de pedidos · color = actividad</p></div>
+          <div class="mapstat"></div>
+          <div class="anuncio" id="anuncio"></div>
+          <div class="legend">
+            <div class="lg"><i style="background:var(--activo)"></i>Activo (≤90 días)</div>
+            <div class="lg"><i style="background:var(--tibio)"></i>Compra tibia (≤180)</div>
+            <div class="lg"><i style="background:var(--dormido)"></i>Dormido (+180)</div>
+            <div class="lg"><i style="background:var(--prospecto)"></i>Sin compras</div>
+            <div class="lg"><span class="approx"></span>Ubicación por ciudad</div>
+            <div class="lg" style="margin-top:4px;padding-top:6px;border-top:1px solid var(--tb-line)">
+              <span style="width:11px;height:11px;border-radius:50%;border:1.5px solid #B0413E;background:rgba(176,65,62,.15);flex:none"></span>
+              Universo oficial · sin conquistar</div>
+            <div class="lg"><span style="width:11px;height:11px;border-radius:50%;border:1.5px solid #37D07A;background:rgba(55,208,122,.15);flex:none"></span>Universo · ya es nuestro</div>
+          </div>
+        </div>
+        <div class="rail"></div>
+      </div>
+      <div class="ticker">
+        <div class="tklabel"><span class="tkdot"></span>En vivo</div>
+        <div class="tktrack"><div class="tkmove"></div></div>
+      </div>
+    </div>`);
+  tickReloj(); setInterval(tickReloj,1000);
+  setInterval(()=>location.reload(), 5*60*1000); // auto-refresh cada 5 min
+  cargar();
+})();
+</script>
+</body>
+</html>
