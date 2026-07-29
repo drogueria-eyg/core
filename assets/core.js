@@ -30,10 +30,22 @@ window.EYG = (function(){
 
   /* ---- auth ---- */
   async function session(){ const {data} = await supa().auth.getSession(); return data.session; }
+
+  /* Huella del email. Sirve para dejar un módulo EN PRUEBAS visible sólo para
+     algunas personas sin escribir sus direcciones en el repo (que es público). */
+  async function huella(txt){
+    try{
+      const b = new TextEncoder().encode((txt||"").trim().toLowerCase());
+      const h = await crypto.subtle.digest("SHA-256", b);
+      return [...new Uint8Array(h)].map(x=>x.toString(16).padStart(2,"0")).join("");
+    }catch(e){ return ""; }
+  }
+
   async function perfil(){
     const s = await session(); if(!s) return null;
     const email = (s.user.email||"").toLowerCase();
     const {data} = await supa().from("core_users").select("email,nombre,rol,comercial_ref,activo,debe_cambiar_pwd").eq("email",email).maybeSingle();
+    if(data) data._h = await huella(data.email || email);
     return data;
   }
   async function login(email,pwd){ return await supa().auth.signInWithPassword({email:(email||"").trim().toLowerCase(),password:pwd}); }
@@ -54,11 +66,17 @@ window.EYG = (function(){
   }
 
   /* Guard para módulos con HTML propio (NO borra el body en caso OK). Devuelve el perfil o nunca resuelve (mostrando login/no-autorizado). */
-  async function guard(roles){
+  async function guard(roles, opts){
     let s; try{ s = await session(); }catch(e){ showLogin(); return new Promise(()=>{}); }
     if(!s){ showLogin(); return new Promise(()=>{}); }
     const p = await perfil();
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso","Tu cuenta todavía no tiene un perfil activo en el Core. Avisá al administrador.",false); return new Promise(()=>{}); }
+    // Módulo EN PRUEBAS: sólo para las huellas de email listadas (ver puedeVer)
+    const pr = opts && opts.pruebas;
+    if(pr && pr.length && !pr.includes(p._h)){
+      gateMsg("🚧","En preparación","Este módulo todavía se está construyendo. Va a estar disponible para todo el equipo cuando esté listo.",true);
+      return new Promise(()=>{});
+    }
     const ok = p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return new Promise(()=>{}); }
     if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return new Promise(()=>{}); }
@@ -159,15 +177,28 @@ window.EYG = (function(){
     {key:"nombres",   dept:"inventario", cat:"Inventario", ico:"🏷️", titulo:"Maestro de productos", desc:"Ordená el dato maestro de cada producto: nombre, unidades, embalaje y subcategoría. Detecta errores y completa lo que falta, con un clic.", roles:["inventario"], ready:true, path:()=>"inventario/nombres.html"},
     {key:"oportunidades", dept:"inventario", cat:"Inventario", ico:"💡", titulo:"Oportunidades y Ofertas", desc:"Cuando un costo baja, el sistema detecta una oportunidad de oferta. Confirmala (precio, stock, vigencia) o armá combos, y van a la tarjeta de los comerciales.", roles:["inventario"], ready:true, path:()=>"inventario/oportunidades.html"},
     {key:"contactos", dept:"datos", cat:"Datos", ico:"🗂️", titulo:"Contactos", desc:"Calidad de datos (teléfono, email, condición fiscal), duplicados y ventas por comercial.", roles:["comercial","lider","admin"], ready:false, path:()=>"datos/contactos.html"},
-    {key:"tablero", dept:"direccion", cat:"Dirección", ico:"🗺️", titulo:"Tablero en vivo", desc:"Mapa de Santa Fe con tus farmacias e instituciones, clientes activos y nuevos en tiempo real, más ventas, cobranza y cobertura por zona. Pensado para pantalla grande.", roles:["comercial","lider","finanzas","inventario"], ready:true, path:()=>"direccion/tablero.html"},
+    /* EN PRUEBAS: oculto para todo el equipo hasta terminarlo. `pruebas` son
+       huellas (SHA-256) de email — así no publicamos direcciones en el repo.
+       Para liberarlo a todos: borrar la línea `pruebas` de acá y el {pruebas:…}
+       del EYG.guard() de direccion/tablero.html. */
+    {key:"tablero", dept:"direccion", cat:"Dirección", ico:"🗺️", titulo:"Tablero en vivo", desc:"Mapa con nuestras farmacias e instituciones, clientes activos y nuevos en tiempo real, cobertura por zona y cuánto mercado falta conquistar. Pensado para pantalla grande.", roles:["comercial","lider","finanzas","inventario"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"direccion/tablero.html"},
     {key:"radiografia",dept:"direccion", cat:"Dirección", ico:"📊", titulo:"Radiografía", desc:"Ventas, facturación, márgenes, cobranza y stock de toda la droguería en un tablero.", roles:["direccion"], ready:false, path:()=>"direccion/radiografia.html"},
     {key:"usuarios",  dept:"admin", cat:"Sistema", ico:"👤", titulo:"Usuarios y accesos", desc:"Altas de personal, roles y qué módulo puede ver cada uno.", roles:["admin"], ready:false, path:()=>"admin/usuarios.html"},
   ];
-  function puedeVer(m, rol){ return rol==="admin"||rol==="direccion" ? true : m.roles.includes(rol); }
+  /* Acepta el perfil entero (o sólo el rol, por compatibilidad).
+     `pruebas` = lista de huellas de email: mientras esté puesta, el módulo NO
+     aparece para nadie más, ni siquiera para admin/dirección. */
+  function puedeVer(m, perfilORol){
+    const p = (typeof perfilORol === "string") ? {rol:perfilORol} : (perfilORol||{});
+    if(m.pruebas && m.pruebas.length && !m.pruebas.includes(p._h)) return false;
+    return p.rol==="admin"||p.rol==="direccion" ? true : m.roles.includes(p.rol);
+  }
   function T(v,p){ return typeof v==="function" ? v(p) : v; }  // título/desc pueden depender del rol
 
   function sidebar(perfil, activeKey){
-    const vis = MODULOS.filter(m=>puedeVer(m,perfil.rol));
+    const vis = MODULOS.filter(m=>puedeVer(m,perfil));
     const grupos = DEPTS.map(d=>({d, mods:vis.filter(m=>m.dept===d.key)})).filter(x=>x.mods.length);
     return `<aside class="side" id="eygSide">
       <div class="sbrand"><a href="${BASE}"><span class="mono">E<span class="y">y</span>G</span><span class="ctag">Core</span></a></div>
@@ -187,7 +218,7 @@ window.EYG = (function(){
     return `<div class="app">${sidebar(perfil,activeKey)}<main class="main"><div class="mbar"><button class="ham" onclick="document.getElementById('eygSide').classList.toggle('open')">☰</button><h1>${esc(title)}</h1></div><div class="mbody">${main}</div></main><div class="side-scrim" onclick="document.getElementById('eygSide').classList.remove('open')"></div></div>`;
   }
   function homeMain(perfil){
-    const vis = MODULOS.filter(m=>puedeVer(m,perfil.rol));
+    const vis = MODULOS.filter(m=>puedeVer(m,perfil));
     const grupos = DEPTS.map(d=>({d, mods:vis.filter(m=>m.dept===d.key)})).filter(x=>x.mods.length);
     const nombre = (perfil.nombre||perfil.email||"").split(" ")[0];
     return `<div class="hero"><h1>Hola, ${esc(nombre)} 👋</h1><p>Tus herramientas de Droguería EyG, conectadas en vivo a Odoo. Elegí un módulo del menú o de las tarjetas.</p></div>
@@ -231,5 +262,5 @@ window.EYG = (function(){
     </div>`;
   }
 
-  return { supa, rpc, BASE, abs, money, esc, hace, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, sidebar, layout, homeMain, cardOfertasSemana };
+  return { supa, rpc, BASE, abs, money, esc, hace, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, sidebar, layout, homeMain, cardOfertasSemana };
 })();
