@@ -42,6 +42,12 @@
   .search input{border:0;background:none;outline:none;font-family:inherit;font-size:14px;width:100%}
   .chip{font-size:12.5px;font-weight:600;border:1px solid var(--line);background:var(--surface);color:var(--gris);border-radius:20px;padding:7px 13px;cursor:pointer;white-space:nowrap}
   .chip.on{background:var(--teal);border-color:var(--teal);color:#fff}
+  .catrow{margin-bottom:8px}
+  .catrow .chip{font-weight:700}
+  .subrow{margin:-2px 0 14px;padding:8px 11px;background:#eef5f4;border-radius:10px;align-items:center}
+  .subrow .sublbl{font-size:12px;font-weight:800;color:var(--teal-deep);margin-right:2px}
+  .chip.sm{font-size:11.5px;padding:5px 10px}
+  .chip b{opacity:.75;font-weight:800}
   .syncwrap{margin-left:auto;text-align:right;flex-shrink:0}
   .btnsync{background:var(--teal);color:#fff;border:0;border-radius:10px;padding:11px 18px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:7px;box-shadow:var(--shadow)}
   .btnsync:hover{filter:brightness(1.07)} .btnsync:disabled{opacity:.6;cursor:default}
@@ -150,7 +156,7 @@ function aplicarCosto(it){
 function fmtDT(s){ if(!s) return ""; try{ return new Date(String(s).replace(" ","T")+"Z").toLocaleString("es-AR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch(e){ return s; } }
 function fuenteLbl(x,dias){ if(x.fuente==='manual') return '✎ manual '+fmtDT(x.manualD); if(x.fuente==='compra'){ const b=dias===0?'compra hoy':dias!=null?'compra '+dias+'d':'compra'; return b+(x.ivaAplicado?(' +'+Math.round(x.ivaCosto*100)+'% IVA'):''); } return 'costo Odoo'; }
 function costoTip(x){ const p=[]; if(x.manualC>0) p.push('Manual: '+money(x.manualC)+' ('+fmtDT(x.manualD)+')'); if(x.ucC>0) p.push('Última compra: '+money(x.ucC)+(x.ivaCosto>0?(' +'+Math.round(x.ivaCosto*100)+'% = '+money(x.ucC*(1+x.ivaCosto))):'')+' ('+fmtDT(x.ucF)+')'); if(x.ivaCosto>0) p.push('Regla "IVA al costo" ('+x.reglaIva+'): al costo de compra se le suma '+Math.round(x.ivaCosto*100)+'% (IVA no descontable)'); p.push('En uso: '+(x.fuente==='manual'?'costo manual':x.fuente==='compra'?'última compra':'costo Odoo')+' — gana el más reciente'); return p.join(' · '); }
-let ST={items:[], q:"", cat:"todos", salud:"todos", sinStock:false, conStock:false, sinEsc:false};
+let ST={items:[], q:"", cat:"todos", sub:"todos", salud:"todos", sinStock:false, conStock:false, sinEsc:false};
 
 async function cargar(){
   try{
@@ -187,9 +193,11 @@ async function cargar(){
       }
       const uc=ult[p.id]||{};
       const regIva=reglaIvaCosto((p.categ_id&&p.categ_id[1])||"");
+      const catFull=(p.categ_id?p.categ_id[1]:'').replace("ALL / ","");
+      const cparts=catFull.split(" / "); const catTop=cparts[0]||"—", catSub=cparts.slice(1).join(" / ");
       const it={
         id:p.id, tmpl, sku:p.default_code, name:p.name,
-        cat:(p.categ_id?p.categ_id[1]:'').replace("ALL / ",""),
+        cat:catFull, catTop, catSub,
         stock:(p.qty_available!=null?p.qty_available:0),
         sinEscalera:!tramosRaw.length, tramoBase, tramosRaw, std:(p.standard_price||0),
         ivaCosto:(regIva?regIva.iva:0), reglaIva:(regIva?regIva.nombre:""),
@@ -207,8 +215,8 @@ function render(){
   const app=document.getElementById("app");
   let arr=ST.items;
   if(ST.q){ const q=ST.q.toLowerCase(); arr=arr.filter(x=>(x.name||"").toLowerCase().includes(q)||(x.sku||"").toLowerCase().includes(q)); }
-  const cats=[...new Set(ST.items.map(x=>x.cat))].sort();
-  if(ST.cat!=="todos") arr=arr.filter(x=>x.cat===ST.cat);
+  if(ST.cat!=="todos") arr=arr.filter(x=>x.catTop===ST.cat);
+  if(ST.sub!=="todos"){ if(ST.sub==="__dir__") arr=arr.filter(x=>!x.catSub); else arr=arr.filter(x=>x.catSub===ST.sub); }
   // KPIs
   const nProd=ST.items.length;
   const margenLista = ST.items.map(x=>x.tramos[0]?.margen).filter(m=>m!=null);
@@ -226,6 +234,21 @@ function render(){
   const cntS={ok2:0,ok:0,warn:0,bad:0}; ST.items.forEach(x=>{ const b=bucket(x.peor); if(b) cntS[b]++; });
   const pill=(k,lab,color)=>`<div class="chip ${ST.salud===k?'on':''}" onclick="ST.salud='${ST.salud===k?'todos':k}';render()"><span class="dot" style="background:${color}"></span> ${lab} <b>${cntS[k]}</b></div>`;
   const saludbar=`<div class="controls" style="margin:-4px 0 14px"><span style="font-size:12px;color:var(--gris);font-weight:700;align-self:center">Salud (peor tramo):</span><div class="chip ${ST.salud==='todos'?'on':''}" onclick="ST.salud='todos';render()">Todas</div>${pill('ok2','≥40%','var(--m-ok2)')}${pill('ok','33–40%','var(--m-ok)')}${pill('warn','27–33%','var(--m-warn)')}${pill('bad','&lt;27% piso','var(--m-bad)')}</div>`;
+  // ===== navegación por categoría (2 niveles) =====
+  const ORDEN=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS"];
+  const tops=[...new Set(ST.items.map(x=>x.catTop))].sort((a,b)=>{const ia=ORDEN.indexOf(a),ib=ORDEN.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib)||a.localeCompare(b);});
+  const cntTop=c=>ST.items.filter(x=>x.catTop===c).length;
+  const catRow=`<div class="controls catrow"><div class="chip ${ST.cat==='todos'?'on':''}" onclick="ST.cat='todos';ST.sub='todos';render()">Todas <b>${ST.items.length}</b></div>`+
+    tops.map(c=>`<div class="chip ${ST.cat===c?'on':''}" onclick="ST.cat='${esc(c)}';ST.sub='todos';render()">${esc(c)} <b>${cntTop(c)}</b></div>`).join("")+`</div>`;
+  let subRow="";
+  if(ST.cat!=='todos'){
+    const subs=[...new Set(ST.items.filter(x=>x.catTop===ST.cat && x.catSub).map(x=>x.catSub))].sort();
+    const cntSub=s=>ST.items.filter(x=>x.catTop===ST.cat && x.catSub===s).length;
+    const dir=ST.items.filter(x=>x.catTop===ST.cat && !x.catSub).length;
+    subRow=`<div class="controls subrow"><span class="sublbl">${esc(ST.cat)} →</span><div class="chip sm ${ST.sub==='todos'?'on':''}" onclick="ST.sub='todos';render()">Todas</div>`+
+      subs.map(s=>`<div class="chip sm ${ST.sub===s?'on':''}" onclick="ST.sub='${esc(s)}';render()">${esc(s)} <b>${cntSub(s)}</b></div>`).join("")+
+      (dir?`<div class="chip sm ${ST.sub==='__dir__'?'on':''}" onclick="ST.sub='__dir__';render()">(sin subcat.) <b>${dir}</b></div>`:"")+`</div>`;
+  }
   const maxTramos = Math.max(1,...ST.items.map(x=>x.tramos.length));
   const th = Array.from({length:maxTramos}).map((_,i)=>`<th class="n">Tramo ${i+1}</th>`).join("");
   const filas = arr.map(x=>{
@@ -261,9 +284,8 @@ function render(){
       <div class="chip ${ST.conStock?'on':''}" onclick="ST.conStock=!ST.conStock;ST.sinStock=false;render()">📦 Con stock <b>${nConStock}</b></div>
       <div class="chip ${ST.sinStock?'on':''}" onclick="ST.sinStock=!ST.sinStock;ST.conStock=false;render()">📦 Sin stock <b>${nSinStock}</b></div>
       <div class="chip ${ST.sinEsc?'on':''}" onclick="ST.sinEsc=!ST.sinEsc;render()">🏷️ Sin escalera <b>${nSinEsc}</b></div>
-      <div class="chip ${ST.cat==='todos'?'on':''}" onclick="ST.cat='todos';render()">Todas</div>
-      ${cats.map(c=>`<div class="chip ${ST.cat===c?'on':''}" onclick="ST.cat='${esc(c)}';render()">${esc(c)}</div>`).join("")}
     </div>
+    ${catRow}${subRow}
     <div class="tablecard"><table>
       <thead><tr><th>Producto</th><th class="n" style="text-align:right">Costo (últ. compra)</th>${th}</tr></thead>
       <tbody>${filas||'<tr><td colspan="9" class="empty">Sin resultados.</td></tr>'}</tbody>
