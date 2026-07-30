@@ -69,7 +69,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js"></script>
+<script src="../assets/core.js?v=3"></script>
 <script src="../assets/inventario-oportunidades.js"></script>
 <script>
 /* ============ EyG Core · Inventario · Oportunidades y Ofertas ============ */
@@ -80,7 +80,7 @@ const esc=s=>EYG.esc(s);
 const hoy=()=>new Date().toISOString().slice(0,10);
 function masDias(n){ const d=new Date(); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
 function fmtF(s){ if(!s) return ""; const [y,m,d]=String(s).slice(0,10).split("-"); return d+"/"+m; }
-let OPOS=[], ARCH=[], OFERTAS=[], OPORT_STOCK=[], ESTADO={ignora:[],arch:[]}, stockLoading=true, UMBRAL=0.10;
+let OPOS=[], ARCH=[], OFERTAS=[], OPORT_STOCK=[], ESTADO={ignora:[],arch:[]}, stockLoading=true, UMBRAL=0.10, SYNC_OF=[];
 
 async function getParam(k,def){ const r=await EYG.rpc("ir.config_parameter","get_param",[k]); return (r===false||r==null)?def:r; }
 async function setParam(k,v){ return EYG.rpc("ir.config_parameter","set_param",[k,String(v)]); }
@@ -91,6 +91,9 @@ async function cargar(){
     UMBRAL=parseFloat(await getParam("eyg.oferta.umbral","0.10"))||0.10;
     const ofRaw=await getParam("eyg.ofertas","[]");
     try{ OFERTAS=JSON.parse(ofRaw||"[]"); }catch(e){ OFERTAS=[]; }
+    // ofertas creadas en "Configuración de precios" (solo lectura acá)
+    const syncRaw=await getParam("eyg.sync_ofertas","[]");
+    try{ SYNC_OF=JSON.parse(syncRaw||"[]")||[]; }catch(e){ SYNC_OF=[]; }
     // estado de oportunidades por stock (ignorados / archivadas). Las oportunidades se calculan en vivo (refrescarStockOpo).
     try{ const est=JSON.parse(await getParam("eyg.oportunidades_stock_estado","{}")||"{}"); ESTADO={ignora:est.ignora||[], arch:est.arch||[]}; }catch(e){ ESTADO={ignora:[],arch:[]}; }
     OPORT_STOCK=[]; stockLoading=true;
@@ -142,7 +145,10 @@ function render(){
     ? '<div class="empty"><div class="spin" style="margin:6px auto 12px"></div>Buscando oportunidades en el stock…</div>'
     : (OPORT_STOCK.length ? OPORT_STOCK.map(cardOpoStock).join("") : '<div class="empty">No hay oportunidades de stock ahora. Se recalculan solas con los datos de stock, precios y vencimientos.</div>');
   const osArchCards = (ESTADO.arch&&ESTADO.arch.length) ? ESTADO.arch.map(cardOpoStockArch).join("") : "";
-  const ofCards = (activas.length||vencidas.length) ? activas.concat(vencidas).map(cardOferta).join("") : '<div class="empty">Todavía no hay ofertas. Confirmá una oportunidad o agregá una manual.</div>';
+  const syncActivas = SYNC_OF.filter(o=>!o.pausada && (!o.hasta || o.hasta>=hoy()));
+  const ofCards = (activas.length||vencidas.length||syncActivas.length)
+    ? (activas.concat(vencidas).map(cardOferta).join("") + syncActivas.map(cardOfertaSync).join(""))
+    : '<div class="empty">Todavía no hay ofertas. Confirmá una oportunidad o agregá una manual (o creá una en Configuración de precios).</div>';
   cont.innerHTML=`
     <div class="intro">
       <div class="grow"><b>Oportunidades y ofertas.</b> El sistema detecta oportunidades cuando <b>baja un costo</b> o cuando el panel de <b>Stock y Sobrestock</b> encuentra productos por vencer, con sobrestock o sin venta. Confirmala (elegí precio, stock y vigencia) y va a la tarjeta <b>“Combos y ofertas de la semana”</b> de los comerciales. También podés agregar ofertas o combos a mano.</div>
@@ -155,7 +161,7 @@ function render(){
     <h2 class="sec">📦 Oportunidades por stock <span class="n">${stockLoading?'…':OPORT_STOCK.length}</span><button class="btn ghost sm" style="margin-left:auto" onclick="refrescarStockOpo()" ${stockLoading?'disabled':''}>🔄 Actualizar</button></h2>
     <div class="grid">${osCards}</div>
     ${osArchCards?`<h2 class="sec">📥 Stock archivadas <span class="n">${ESTADO.arch.length}</span></h2><div class="grid">${osArchCards}</div>`:''}
-    <h2 class="sec">🏷️ Ofertas y combos activos <span class="n">${activas.length}</span></h2>
+    <h2 class="sec">🏷️ Ofertas y combos activos <span class="n">${activas.length+syncActivas.length}</span></h2>
     <div class="grid">${ofCards}</div>`;
 }
 
@@ -199,6 +205,23 @@ function cardOferta(o){
       <button class="btn ghost sm" onclick="abrirOferta('${o.id}')">Editar</button>
       <button class="btn warn sm" onclick="eliminarOferta('${o.id}')">Eliminar</button>
     </div></div>`;
+}
+// oferta creada en "Configuración de precios": SOLO LECTURA acá (se gestiona allá)
+function cardOfertaSync(o){
+  const desc = o.modo==='pct' ? ('−'+(Math.round((o.valor||0)*1000)/10)+'%')
+             : o.modo==='monto' ? ('−'+money(o.valor)+' c/u')
+             : ('precio '+money(o.valor));
+  const como = (o.reemplaza||o.modo==='precio') ? 'precio único (desde 1)' : 'descuento sobre la escalera';
+  return `<div class="card oferta"><span class="tag t">${o.tipo==='p'?'Oferta':'Oferta · categoría'}</span>
+    <h3>${esc(o.targetName||('#'+o.target))}</h3>
+    <div class="meta">${o.tipo==='p'?'🔖 producto':'📂 categoría / subcategoría'} · ${esc(como)}</div>
+    <div class="drop"><span class="b">${esc(desc)}</span></div>
+    <div class="kv">
+      <span>Stock: <b>${o.stock||'—'}</b></span>
+      <span>Vigencia: <b>${o.hasta?('hasta '+fmtF(o.hasta)):'sin límite'}</b></span>
+    </div>
+    <div class="meta" style="opacity:.7;margin-top:6px">⚙️ Creada en <b>Configuración de precios</b> · solo lectura acá</div>
+  </div>`;
 }
 
 function cardOpoStock(o){
@@ -326,14 +349,16 @@ function actualizarMargen(){
 }
 window.cerrarModal=()=>{ document.getElementById("modal").innerHTML=""; };
 window.quitarItem=id=>{ FORM.items=FORM.items.filter(i=>i.id!==id); modalOferta(); };
-let tBus=null;
-window.buscarProd=q=>{ clearTimeout(tBus); tBus=setTimeout(async()=>{
+let busQ="";
+window.buscarProd=EYG.debounce(async q=>{
+  busQ=q;
   const pick=document.getElementById("f-pick"); if(!pick) return;
   if(!q||q.length<2){ pick.style.display="none"; return; }
   const r=await EYG.rpc("product.product","search_read",[["|",["name","ilike",q],["default_code","ilike",q]],["id","default_code","name"]],Object.assign({limit:12},LANG));
+  if(busQ!==q) return;                 // llegó tarde: ya hay una búsqueda más nueva
   pick.style.display="block";
   pick.innerHTML=r.map(x=>`<div class="r" onclick="addItem(${x.id},'${esc((x.default_code||'')).replace(/'/g,'')}','${esc((x.name||'').slice(0,60)).replace(/'/g,'')}')"><span>${esc(x.name)}</span><span style="color:var(--gris2)">${esc(x.default_code||'')}</span></div>`).join("")||'<div class="r">Sin resultados</div>';
-},250); };
+},300);
 window.addItem=(id,sku,nombre)=>{ if(!FORM.items.some(i=>i.id===id)){ if(FORM.tipo==='oferta') FORM.items=[]; FORM.items.push({id,sku,nombre}); } modalOferta(); };
 async function guardarOferta(){
   const g=id=>document.getElementById(id);
