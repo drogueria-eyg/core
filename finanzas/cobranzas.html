@@ -55,6 +55,18 @@
   .cardsec .sectitle .secclr{font-size:11.5px;font-weight:700;letter-spacing:0;text-transform:none;color:var(--teal);cursor:pointer;white-space:nowrap}
   .cardsec .sectitle .secclr:hover{text-decoration:underline}
   .cardsec .kpis{margin-bottom:0}
+  /* Desempeño de cobranzas */
+  .desemp .dtiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px;margin:8px 0 16px}
+  .dtile{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px 13px}
+  .dtile .dv{font-size:20px;font-weight:800;line-height:1.12}
+  .dtile .dl{font-size:11.5px;color:var(--gris);font-weight:700;margin-top:3px}
+  .dtile .ds{font-size:11px;color:var(--gris2);margin-top:4px;line-height:1.4}
+  .dtile .up{color:var(--t0);font-weight:700} .dtile .down{color:var(--t6);font-weight:700}
+  .cflabel{font-size:11.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--gris);margin:4px 0 8px}
+  .cfleg{display:flex;gap:16px;margin-top:8px;font-size:11.5px;color:var(--gris)}
+  .cfleg span{display:flex;align-items:center;gap:6px}.cfleg i{width:11px;height:11px;border-radius:3px;display:inline-block}
+  .faith{margin-top:13px;font-size:11.5px;color:var(--gris);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 12px;line-height:1.55}
+  .faith b{color:var(--teal-deep)}
 
   /* Panorama (evolución + composición) */
   .panorama{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 18px;margin-bottom:14px}
@@ -239,7 +251,7 @@ const hoyStr=hoy.toISOString().slice(0,10);
 const diasMora=f=> f? Math.floor((hoy-new Date(f+"T00:00:00"))/86400000) : 0;
 const fmtFecha=f=> f? f.split("-").reverse().join("/") : "—";
 
-let CLI=[], EVO=[], BOVEDA={}, filtro={tramo:"", comercial:"", rubro:"", q:"", orden:"prioridad", boveda:false};
+let CLI=[], EVO=[], BOVEDA={}, DESEMP=null, filtro={tramo:"", comercial:"", rubro:"", q:"", orden:"prioridad", boveda:false};
 const BOV_TAG="[BOVEDA]"; // marcador en el chatter del contacto (fuente de verdad, con historial)
 let CONTACTOS={};          // partnerId → fecha/hora (UTC) del último contacto de cobranzas
 const CONTACTO_TAG="[COBRO-CONTACTO]";
@@ -401,6 +413,7 @@ async function cargar(silent){
     const _sy = silent ? window.scrollY : 0;
     render();
     if(silent) window.scrollTo(0, _sy);
+    if(!silent) cargarDesempeno();
   }catch(e){
     if(silent){ console.warn("Refresco falló, mantengo la vista actual", e); return; }
     document.getElementById("app").innerHTML='<div class="errbox"><b>No pude calcular la deuda.</b><br>'+esc(e.message||e)+'</div>';
@@ -471,6 +484,101 @@ function compoHTML(porTramo,totalReal){
     <div class="cbar">${bar}</div><div class="cleg">${leg}</div></div>`;
 }
 
+// ---- Desempeño de cobranzas (métricas fieles) ----
+function hace(d){const x=new Date(hoy);x.setDate(x.getDate()-d);return x.toISOString().slice(0,10);}
+function monthsRange(a,b){const [sy,sm]=a.split("-").map(Number);const [ey,em]=b.split("-").map(Number);const out=[];let y=sy,m=sm;while(y<ey||(y===ey&&m<=em)){out.push(y+"-"+String(m).padStart(2,"0"));if(++m>12){m=1;y++;}}return out;}
+const rangeFrom=g=>{const k=Object.keys(g.__range||{})[0];return k?g.__range[k].from:null;};
+
+async function cargarDesempeno(){
+  try{
+    const desde="2025-03-01", d7=hace(7), d30=hace(30);
+    const [pagM,facM,ncM,pagos30,gest]=await Promise.all([
+      // COBRADO REAL: pagos de clientes posteados, por fecha de pago, SIN transferencias internas (ni conciliaciones, que no son pagos)
+      rpc("account.payment","read_group",[[["partner_type","=","customer"],["payment_type","=","inbound"],["state","=","posted"],["is_internal_transfer","=",false],["date",">=",desde]],["amount:sum"],["date:month"]],{lazy:false,orderby:"date asc"}),
+      rpc("account.move","read_group",[[["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",desde]],["amount_total:sum"],["invoice_date:month"]],{lazy:false,orderby:"invoice_date asc"}),
+      rpc("account.move","read_group",[[["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",desde]],["amount_total:sum"],["invoice_date:month"]],{lazy:false,orderby:"invoice_date asc"}),
+      rpc("account.payment","search_read",[[["partner_type","=","customer"],["payment_type","=","inbound"],["state","=","posted"],["is_internal_transfer","=",false],["date",">=",d30]]],{fields:["partner_id","amount","date"],limit:0}),
+      // Gestiones de cobranza = marcador [COBRO-CONTACTO] que ya deja el panel al contactar
+      rpc("mail.message","search_read",[[["model","=","res.partner"],["body","like","[COBRO-CONTACTO]"],["date",">=",d30+" 00:00:00"]]],{fields:["res_id","date"],limit:0})
+    ]);
+    const mCob={},mFac={},mNc={};
+    pagM.forEach(g=>{const f=rangeFrom(g);if(f)mCob[f.slice(0,7)]=g.amount||0;});
+    facM.forEach(g=>{const f=rangeFrom(g);if(f)mFac[f.slice(0,7)]=g.amount_total||0;});
+    ncM.forEach(g=>{const f=rangeFrom(g);if(f)mNc[f.slice(0,7)]=g.amount_total||0;});
+    const curYM=hoyStr.slice(0,7);
+    const series=monthsRange("2025-03",curYM).map(ym=>({ym,cob:mCob[ym]||0,facN:(mFac[ym]||0)-(mNc[ym]||0)}));
+    const cur=series[series.length-1]||{cob:0,facN:0}, prev=series[series.length-2]||{cob:0,facN:0};
+    const last3=series.slice(Math.max(0,series.length-4),series.length-1);
+    const c3=last3.reduce((s,x)=>s+x.cob,0), f3=last3.reduce((s,x)=>s+x.facN,0);
+    const cobradoSemana=pagos30.filter(p=>p.date>=d7).reduce((s,p)=>s+(p.amount||0),0);
+    const deuda=CLI.filter(c=>!c.boveda).reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
+    // Conversión de gestión: de los clientes gestionados, cuántos pagaron DESPUÉS de la gestión
+    const pagByP={}; pagos30.forEach(p=>{if(!p.partner_id)return;const id=p.partner_id[0];(pagByP[id]=pagByP[id]||[]).push(p);});
+    const gestFirst={}; gest.forEach(m=>{const id=m.res_id,d=(m.date||"").slice(0,10);if(!id||!d)return;if(!gestFirst[id]||d<gestFirst[id])gestFirst[id]=d;});
+    const gestP=Object.keys(gestFirst); let paidN=0,cobradoGest=0;
+    gestP.forEach(id=>{const g=gestFirst[id];const ps=(pagByP[id]||[]).filter(x=>x.date>=g);if(ps.length){paidN++;cobradoGest+=ps.reduce((s,x)=>s+(x.amount||0),0);}});
+    DESEMP={
+      series12:series.slice(-12), cobradoMes:cur.cob, cobradoMesPrev:prev.cob, cobradoSemana,
+      cov3: f3>0?c3/f3:0, covMesPrev: prev.facN>0?prev.cob/prev.facN:0,
+      dso: prev.facN>0? deuda/prev.facN*30 : 0,
+      conv:{gest:gestP.length, paid:paidN, cobrado:cobradoGest, total:gest.length}
+    };
+    render();
+  }catch(e){ DESEMP={error:e.message||String(e)}; render(); }
+}
+
+function barChartCF(S){
+  if(!S||!S.length) return "";
+  const W=1000,H=200,pl=54,pr=12,pt=14,pb=26;
+  const maxV=Math.max(...S.map(s=>Math.max(s.cob,s.facN)),1);
+  const niceMax=Math.ceil(maxV/1e8)*1e8||1e8, n=S.length;
+  const bw=(W-pl-pr)/n, gap=bw*0.16, barw=(bw-gap*3)/2;
+  const Y=v=>H-pb-(v/niceMax)*(H-pt-pb);
+  let grid=""; for(let i=0;i<=3;i++){const v=niceMax*i/3,y=Y(v);
+    grid+=`<line x1="${pl}" y1="${y.toFixed(1)}" x2="${W-pr}" y2="${y.toFixed(1)}" stroke="#E7F0EE"/>`
+        +`<text x="${pl-8}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="11" fill="#8A9A97">${fmtM(v)}</text>`;}
+  let bars="",xlab=""; const step=Math.max(1,Math.ceil(n/8));
+  S.forEach((s,i)=>{const x0=pl+i*bw+gap, xf=x0, xc=x0+barw+gap, yf=Y(s.facN), yc=Y(s.cob);
+    bars+=`<rect x="${xf.toFixed(1)}" y="${yf.toFixed(1)}" width="${barw.toFixed(1)}" height="${(H-pb-yf).toFixed(1)}" rx="2" fill="#C9D8D5"><title>Facturado neto ${money(s.facN)}</title></rect>`
+        +`<rect x="${xc.toFixed(1)}" y="${yc.toFixed(1)}" width="${barw.toFixed(1)}" height="${(H-pb-yc).toFixed(1)}" rx="2" fill="#048782"><title>Cobrado ${money(s.cob)}</title></rect>`;
+    const [yy,mm]=s.ym.split("-");
+    if(i%step===0||i===n-1) xlab+=`<text x="${(x0+barw+gap/2).toFixed(1)}" y="${H-8}" text-anchor="middle" font-size="11" fill="#8A9A97">${MESAB[+mm]} '${yy.slice(2)}</text>`;
+  });
+  return `<svg class="evosvg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cobrado vs Facturado">${grid}${bars}${xlab}</svg>`;
+}
+
+function desempenoHTML(totalReal,totalVenc){
+  if(DESEMP===null) return `<div class="panorama" style="text-align:center;color:var(--gris);padding:26px">📊 Calculando desempeño de cobranzas…</div>`;
+  if(DESEMP.error) return `<div class="panorama"><div class="cap" style="color:var(--t6)">No pude calcular el desempeño: ${esc(DESEMP.error)}</div></div>`;
+  const D=DESEMP, cov=D.cov3;
+  let sem,semTxt,semC;
+  if(cov>=1){sem="🟢";semTxt="Sana — se cobra más de lo que se factura";semC="var(--t0)";}
+  else if(cov>=0.9){sem="🟡";semTxt="Ajustada — la deuda sube de a poco";semC="var(--t3)";}
+  else {sem="🔴";semTxt="En atención — la deuda crece más rápido de lo que se cobra";semC="var(--t6)";}
+  const diaMes=hoy.getDate(), diasMes=new Date(hoy.getFullYear(),hoy.getMonth()+1,0).getDate();
+  const proy=diaMes>0?D.cobradoMes/diaMes*diasMes:D.cobradoMes;
+  const covC=cov>=1?'var(--t0)':cov>=0.9?'var(--t3)':'var(--t6)';
+  const pctVenc=totalReal>0?Math.round(totalVenc/totalReal*100):0;
+  const conv=D.conv;
+  const convTile = conv.gest>0
+    ? `<div class="dv">${Math.round(conv.paid/conv.gest*100)}%</div><div class="dl">Gestionados que pagaron</div><div class="ds">${conv.paid}/${conv.gest} clientes · ${money(conv.cobrado)} cobrado</div>`
+    : `<div class="dv" style="font-size:15px;color:var(--gris)">Sin gestiones aún</div><div class="dl">Conversión de gestión</div><div class="ds">Se mide desde que se usa 📞/💰. Empieza al registrar contactos.</div>`;
+  return `<div class="panorama desemp">
+    <div class="ptop"><h3>📊 Desempeño de cobranzas</h3><div class="cap" style="font-weight:700;color:${semC}">${sem} ${semTxt}</div></div>
+    <div class="dtiles">
+      <div class="dtile"><div class="dv">${money(D.cobradoMes)}</div><div class="dl">Cobrado este mes (al día ${diaMes})</div><div class="ds">proyección ~${money(proy)} · mes ant. ${money(D.cobradoMesPrev)}</div></div>
+      <div class="dtile"><div class="dv">${money(D.cobradoSemana)}</div><div class="dl">Cobrado últimos 7 días</div><div class="ds">pagos reales de clientes</div></div>
+      <div class="dtile"><div class="dv" style="color:${covC}">${Math.round(cov*100)}%</div><div class="dl">Cobertura (últ. 3 meses)</div><div class="ds">cobrado ÷ facturado neto · ≥100% baja la deuda</div></div>
+      <div class="dtile"><div class="dv">${Math.round(D.dso)} días</div><div class="dl">Días de deuda (DSO)</div><div class="ds">${pctVenc}% de la deuda está vencida</div></div>
+      <div class="dtile">${convTile}</div>
+    </div>
+    <div class="cflabel">Cobrado vs Facturado por mes</div>
+    ${barChartCF(D.series12)}
+    <div class="cfleg"><span><i style="background:#048782"></i>Cobrado real</span><span><i style="background:#C9D8D5"></i>Facturado neto</span></div>
+    <div class="faith">🔒 <b>Todo fiel:</b> la cobranza real cuenta solo <b>pagos de clientes posteados, por su fecha de pago</b>. Excluye transferencias internas, ajustes y conciliaciones (que no son plata nueva). Un pago viejo asentado ahora cuenta en su mes real, no hoy.</div>
+  </div>`;
+}
+
 function render(){
   const app=document.getElementById("app");
   const activos=CLI.filter(c=>!c.boveda);      // en gestión (fuera de bóveda)
@@ -512,6 +620,8 @@ function render(){
       ${evoSVG()}
       ${compoHTML(porTramo,totalReal)}
     </div>`:''}
+
+    ${desempenoHTML(totalReal,totalVenc)}
 
     <div class="cardsec sec-mora">
       <div class="sectitle"><span>⏱️ Deuda por antigüedad de mora</span>${filtro.tramo?`<a class="secclr" onclick="setTramo(filtro.tramo)">✕ quitar filtro</a>`:''}</div>
