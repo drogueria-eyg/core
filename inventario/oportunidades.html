@@ -117,6 +117,47 @@ async function quitarPrecioOferta(varId){
   if(filt.length===arr.length) return;   // no había override de oportunidades para este producto
   await escribirSyncOf(filt, varId);
 }
+/* Reconciliación: alinea los overrides de precio (eyg.sync_ofertas) con las ofertas del panel
+   (eyg.ofertas). Cura casos donde la oferta se creó con el HTML viejo cacheado (fue solo al panel)
+   y da de baja overrides cuya oferta ya venció o se borró. Sólo toca los de _origen "oportunidades".
+   En estado estable no hace nada (no reescribe ni recalcula). Se corre al cargar el módulo. */
+async function reconciliarOfertasConMotor(){
+  const hoyS=hoy();
+  const activas = OFERTAS.filter(o=>o.tipo==='oferta' && (o.items||[]).length===1 && o.precio>0 && (!o.hasta||o.hasta>=hoyS));
+  let arr=await leerSyncOf();
+  const porId={}; arr.forEach(o=>porId[o.id]=o);
+  // resolver template ids de los productos ofertados (una sola lectura)
+  const varIds=[...new Set(activas.map(o=>o.items[0].id))];
+  const tmplBy={};
+  if(varIds.length){
+    try{ const rows=await EYG.rpc("product.product","read",[varIds,["product_tmpl_id"]],LANG); rows.forEach(r=>{ tmplBy[r.id]=r.product_tmpl_id&&r.product_tmpl_id[0]; }); }catch(e){}
+  }
+  const recalc=new Set(); let changed=false;
+  // alta/actualización de overrides faltantes o desfasados
+  for(const o of activas){
+    const it=o.items[0], varId=it.id, tmpl=tmplBy[varId]; if(!tmpl) continue;
+    const oid="opo_"+varId, ex=porId[oid];
+    if(!ex || ex.valor!==o.precio || ex.hasta!==(o.hasta||"") || ex.target!==tmpl || ex.pausada){
+      const reg={id:oid,tipo:'p',target:tmpl,targetName:it.nombre,modo:'precio',valor:o.precio,reemplaza:true,hasta:o.hasta||"",stock:o.stock||0,pausada:false,_origen:'oportunidades'};
+      const i=arr.findIndex(x=>x.id===oid); if(i>=0) arr[i]=reg; else arr.push(reg);
+      porId[oid]=reg; recalc.add(varId); changed=true;
+    }
+  }
+  // baja de overrides de oportunidades cuya oferta ya no está activa (vencida / eliminada)
+  const activasIds=new Set(activas.map(o=>"opo_"+o.items[0].id));
+  for(const o of arr.slice()){
+    if(o._origen==='oportunidades' && !activasIds.has(o.id)){
+      const varId=parseInt(String(o.id).replace("opo_",""))||0;
+      arr=arr.filter(x=>x.id!==o.id); if(varId) recalc.add(varId); changed=true;
+    }
+  }
+  if(changed){
+    await setParam(KEY_SYNC_OF, JSON.stringify(arr));
+    await setParam(KEY_SYNC_OF_FLAT, ofSyncFlat(arr));
+    for(const v of recalc){ try{ await EYG.rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR",eyg_solo_producto:v}}); }catch(e){} }
+    SYNC_OF=arr;
+  }
+}
 
 async function cargar(){
   const cont=document.getElementById("cont"); cont.innerHTML='<div class="spin"></div>';
@@ -127,6 +168,8 @@ async function cargar(){
     // ofertas creadas en "Configuración de precios" (solo lectura acá)
     const syncRaw=await getParam("eyg.sync_ofertas","[]");
     try{ SYNC_OF=JSON.parse(syncRaw||"[]")||[]; }catch(e){ SYNC_OF=[]; }
+    // alinea overrides de precio con el panel (cura ofertas creadas con HTML viejo, baja las vencidas)
+    try{ await reconciliarOfertasConMotor(); }catch(e){}
     // precio actual (con la oferta aplicada) para las ofertas de PRODUCTO
     const prodOf=SYNC_OF.filter(o=>o.tipo==='p'&&o.target);
     if(prodOf.length){
