@@ -53,6 +53,20 @@
   .form .acts .cancel{background:#fff;border:1px solid var(--line);color:var(--gris)}
   @media(max-width:820px){.form .grid{grid-template-columns:repeat(2,1fr)}}
   .empty{padding:40px;text-align:center;color:var(--gris)}
+  .cptabs{display:flex;gap:6px;margin-bottom:14px}
+  .cptab{background:#eef5f4;border:1px solid var(--line);border-radius:10px 10px 0 0;padding:10px 18px;font-family:inherit;font-size:13.5px;font-weight:700;color:var(--gris);cursor:pointer}
+  .cptab.on{background:var(--teal);color:#fff;border-color:var(--teal)}
+  .oflist{display:flex;flex-direction:column;gap:9px}
+  .ofrow{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:11px 14px;flex-wrap:wrap}
+  .ofmain{flex:1;min-width:200px}
+  .oftgt{font-weight:800;color:var(--ink);font-size:13.5px}
+  .ofdet{font-size:12px;color:var(--gris);margin-top:2px}
+  .ofbadge{font-size:11px;font-weight:800;border-radius:20px;padding:2px 10px}
+  .ofbadge.act{background:#DDF3E6;color:#0E6B39} .ofbadge.pau{background:#fdf0d5;color:#8a5a00} .ofbadge.ven{background:#f6eceb;color:#9a4b48}
+  .ofbusq{border:1px solid var(--line);border-radius:0 0 10px 10px;border-top:none;max-height:220px;overflow:auto;background:#fff}
+  .ofbitem{padding:8px 11px;font-size:13px;cursor:pointer;border-top:1px solid var(--line)}
+  .ofbitem:hover{background:#f2faf8}
+  .oftgtsel{font-weight:700;color:var(--teal-deep);display:flex;align-items:center;gap:10px;padding:8px 0}
 </style>
 </head>
 <body>
@@ -61,11 +75,15 @@
 <script>
 const KEY="eyg.sync_precios_config";      // JSON (para este editor)
 const KEY_FLAT="eyg.sync_precios_flat";    // texto plano que lee el cron (una regla por linea)
+const KEY_OF="eyg.sync_ofertas";           // JSON de ofertas temporales (editor)
+const KEY_OF_FLAT="eyg.sync_ofertas_flat"; // texto plano de ofertas que lee el cron
 const ROOTS=[24,10,51,11,369,370];         // Hospitalarios, Farmacopea, Descartables, Perfumeria, Equipos, Ortopedia
 const esc=EYG.esc, rpc=EYG.rpc;
 const MODOS=[["embalaje","Por embalaje (fracciona de la caja real a la caja del nombre)"],["fijo","Fijo (venta por unidad/caja, sin fraccionar)"]];
 const DEF={genera:false, recargo:0.80, piso:0.30, modo:"fijo", cortes:[1,10,20,40], desc:[0,0.07,0.14,0.20], unidad:"unidades", ivaCosto:0};
 let CATS=[], byId={}, CFG={v:1,reglas:{}}, editId=null, abiertos={}, dirty=false;
+let OFERTAS=[], vista="reglas", ofDraft=null, ofBusq=[];
+const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
 
 const pct=x=>Math.round((x||0)*1000)/10;           // 0.07 -> 7
 const frac=x=>{const n=parseFloat(x); return isNaN(n)?0:n/100;};
@@ -85,6 +103,8 @@ async function cargar(){
     const raw=await rpc("ir.config_parameter","get_param",[KEY]);
     CFG = raw ? JSON.parse(raw) : {v:1,reglas:{}};
     if(!CFG.reglas) CFG.reglas={};
+    const rawOf=await rpc("ir.config_parameter","get_param",[KEY_OF]);
+    OFERTAS = rawOf ? (JSON.parse(rawOf)||[]) : [];
     render();
   }catch(e){ cont.innerHTML='<div class="empty">No pude cargar: '+esc(e.message)+'</div>'; }
 }
@@ -130,8 +150,11 @@ window.consolidar = rootId => {
   cand.ids.forEach(id=>{ delete CFG.reglas[id]; });                // saca las repetidas -> heredan
   dirty=true; editId=null; render();
 };
+window.setVista = v => { vista=v; ofDraft=null; ofBusq=[]; render(); };
 function render(){
   const cont=document.getElementById("cont");
+  const tabs=`<div class="cptabs"><button class="cptab ${vista==='reglas'?'on':''}" onclick="setVista('reglas')">📊 Reglas de precio</button><button class="cptab ${vista==='ofertas'?'on':''}" onclick="setVista('ofertas')">🏷️ Ofertas temporales${OFERTAS.length?' · '+OFERTAS.length:''}</button></div>`;
+  if(vista==='ofertas'){ cont.innerHTML=tabs+renderOfertas(); return; }
   const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA","ETICOS"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
   const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardarTodo()">💾 Guardar cambios</button><button class="btn-recalc" onclick="recalcularAhora()">⚡ Recalcular precios ahora</button>${dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>'}</div>`;
   const intro=`<div class="intro"><b>Reglas del motor de precios.</b> Definí por categoría (y subcategoría) cómo se arma la escalera: <b>recargo</b> sobre el costo, <b>piso</b> de margen, <b>modo</b> de cortes (embalaje / fijo), <b>cortes</b> y <b>descuento por tramo</b>, <b>unidad</b> e <b>IVA al costo</b>. <b>La subcategoría pisa a la categoría</b>; si no tiene regla propia, hereda del padre. <b>Al guardar, el motor recalcula todos los precios al instante.</b> El costo lo toma solo (más reciente entre manual, compra y estándar); la caja cerrada se maneja por producto en el Maestro.</div>`;
@@ -147,7 +170,64 @@ function render(){
       : ((rr&&rr.own)?`<span class="badge gen" style="margin-left:8px">regla general</span>`:`<span class="badge no" style="margin-left:8px">sin regla general</span>`);
     return `<div class="grp"><div class="grphead" onclick="toggleGrp('${esc(top)}')"><span>${open?"▾":"▸"}</span> ${esc(top)} ${hb} <span class="cnt">${subs.length} subcat.</span></div>${body}</div>`;
   }).join("");
-  cont.innerHTML=savebar+intro+grupos;
+  cont.innerHTML=tabs+savebar+intro+grupos;
+}
+
+/* =================== OFERTAS TEMPORALES =================== */
+function ofEstado(o){
+  if(o.pausada) return {t:"Pausada", c:"pau"};
+  if(o.hasta && o.hasta < hoyStr()) return {t:"Vencida", c:"ven"};
+  return {t:"Activa", c:"act"};
+}
+function ofDesc(o){
+  const v = o.modo==='pct' ? (pct(o.valor)+"%") : (o.modo==='monto' ? ("$"+Math.round(o.valor)) : ("$"+Math.round(o.valor)));
+  const t = o.modo==='pct'?("−"+v):(o.modo==='monto'?("−"+v):("precio fijo "+v));
+  const como = (o.reemplaza||o.modo==='precio') ? "reemplaza (precio único desde 1)" : "pisa la escalera";
+  return `${t} · ${como}`;
+}
+function renderOfertas(){
+  const intro=`<div class="intro"><b>Ofertas y descuentos temporales.</b> Aplican <b>por encima</b> de la escalera del motor y <b>se caen solas</b> al vencer (o al pausar/eliminar). Elegí una <b>categoría, subcategoría o un producto</b>, el descuento (%, monto o precio fijo), si <b>reemplaza</b> la escalera (precio único desde 1) o la <b>pisa</b> (descuenta cada tramo), y hasta cuándo. Pueden bajar del piso de margen.</div>`;
+  const nueva = `<div style="margin:0 0 14px"><button class="btn-recalc" onclick="nuevaOferta()">+ Nueva oferta</button> <button class="btn-recalc" style="background:var(--teal)" onclick="recalcularAhora()">⚡ Recalcular precios ahora</button></div>`;
+  const form = ofDraft ? ofFormHTML() : "";
+  let lista;
+  if(!OFERTAS.length){ lista=`<div class="empty">No hay ofertas cargadas. Tocá <b>+ Nueva oferta</b>.</div>`; }
+  else {
+    lista = OFERTAS.map(o=>{
+      const st=ofEstado(o);
+      const tgt = o.tipo==='p' ? ("🔖 "+esc(o.targetName||("#"+o.target))) : ("📂 "+esc(o.targetName||("cat #"+o.target)));
+      return `<div class="ofrow"><div class="ofmain"><div class="oftgt">${tgt}</div><div class="ofdet">${esc(ofDesc(o))}${o.hasta?(" · hasta "+esc(o.hasta)):" · sin vencimiento"}${o.stock?(" · stock "+esc(String(o.stock))):""}</div></div>
+        <span class="ofbadge ${st.c}">${st.t}</span>
+        <button class="btn-mini" onclick="pausarOferta('${esc(o.id)}')">${o.pausada?"▶ Reanudar":"⏸ Pausar"}</button>
+        <button class="btn-mini del" onclick="eliminarOferta('${esc(o.id)}')">🗑 Eliminar</button></div>`;
+    }).join("");
+  }
+  return intro+nueva+form+`<div class="oflist">${lista}</div>`;
+}
+function ofFormHTML(){
+  const d=ofDraft;
+  const tgtTxt = d.target ? (d.tipo==='p'?"🔖 ":"📂 ")+esc(d.targetName) : "";
+  const results = (!d.target && ofBusq.length) ? `<div class="ofbusq">${ofBusq.map(r=>`<div class="ofbitem" onclick="elegirTarget('${r.k}',${r.id},'${esc((r.name||'').replace(/'/g,''))}')">${r.k==='p'?"🔖":"📂"} ${esc(r.name)}${r.sku?(" · "+esc(r.sku)):""}</div>`).join("")}</div>` : "";
+  return `<div class="form" onclick="event.stopPropagation()" style="margin-top:0">
+    <div class="fld2" style="margin-bottom:12px"><label>Aplicar a (categoría, subcategoría o producto)</label>
+      ${d.target ? `<div class="oftgtsel">${tgtTxt} <button class="btn-mini" onclick="ofDraft.target=null;ofDraft.targetName='';render()">cambiar</button></div>`
+                 : `<input type="text" id="of-busq" placeholder="Escribí nombre o SKU…" oninput="buscarTarget(this.value)" autocomplete="off">${results}`}
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(4,1fr)">
+      <div class="fld2"><label>Tipo de descuento</label><select id="of-modo" onchange="ofDraft.modo=this.value">
+        <option value="pct" ${d.modo==='pct'?'selected':''}>Porcentaje (%)</option>
+        <option value="monto" ${d.modo==='monto'?'selected':''}>Monto fijo ($ off)</option>
+        <option value="precio" ${d.modo==='precio'?'selected':''}>Precio fijo ($)</option>
+      </select><div class="hint">precio fijo = reemplaza siempre</div></div>
+      <div class="fld2"><label>Valor</label><div class="inpu"><input type="number" id="of-valor" step="0.01" value="${d.valor||''}"><span class="suf">${d.modo==='pct'?'%':'$'}</span></div><div class="hint">${d.modo==='pct'?'ej: 20':'ej: 1500'}</div></div>
+      <div class="fld2"><label>Cómo aplica</label><select id="of-reemplaza" ${d.modo==='precio'?'disabled':''}>
+        <option value="1" ${(d.reemplaza||d.modo==='precio')?'selected':''}>Reemplaza (precio único desde 1)</option>
+        <option value="0" ${(!d.reemplaza&&d.modo!=='precio')?'selected':''}>Pisa la escalera (descuenta cada tramo)</option>
+      </select><div class="hint">reemplaza = un solo precio</div></div>
+      <div class="fld2"><label>Vigencia hasta</label><input type="date" id="of-hasta" value="${esc(d.hasta||'')}"><div class="hint">vacío = sin vencimiento</div></div>
+      <div class="fld2"><label>Stock a ofertar (informativo)</label><input type="number" id="of-stock" min="0" value="${d.stock||''}"><div class="hint">no se descuenta con ventas · lo controlás vos</div></div>
+    </div>
+    <div class="acts"><button class="cancel" onclick="ofDraft=null;render()">Cancelar</button><button class="ok" onclick="guardarOferta()">Guardar oferta</button></div>
+  </div>`;
 }
 
 // Regla de TODA la categoría (el nodo raíz). La toman todas las subcategorías que no tengan la suya.
@@ -227,6 +307,46 @@ function construirFlat(){
   });
   return out.join("\n");
 }
+// ---- acciones de ofertas ----
+function ofFlat(){ return OFERTAS.map(o=>[o.id,o.tipo,o.target,o.modo,o.valor,(o.reemplaza||o.modo==='precio')?1:0,o.hasta||'',o.pausada?1:0].join("~")).join("\n"); }
+async function guardarOfertasParams(recalc){
+  await rpc("ir.config_parameter","set_param",[KEY_OF, JSON.stringify(OFERTAS)]);
+  await rpc("ir.config_parameter","set_param",[KEY_OF_FLAT, ofFlat()]);
+  if(recalc){ try{ await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}}); }catch(e){} }
+}
+window.nuevaOferta = () => { ofDraft={id:"of"+Date.now(), tipo:null, target:null, targetName:"", modo:"pct", valor:"", reemplaza:true, hasta:"", stock:"", pausada:false}; ofBusq=[]; render(); };
+window.buscarTarget = async q => {
+  q=(q||"").trim();
+  if(q.length<2){ ofBusq=[]; render(); const el0=document.getElementById("of-busq"); if(el0){el0.focus();el0.value=q;} return; }
+  const ql=q.toLowerCase();
+  const cats=CATS.filter(c=>c.full.toLowerCase().includes(ql)).slice(0,6).map(c=>({k:'c',id:c.id,name:c.full}));
+  let prods=[];
+  try{ const ps=await rpc("product.template","search_read",[["|",["name","ilike",q],["default_code","ilike",q]],["name","default_code"]],{limit:8,context:{lang:"es_AR"}}); prods=ps.map(p=>({k:'p',id:p.id,name:p.name,sku:p.default_code})); }catch(e){}
+  ofBusq=cats.concat(prods);
+  render();
+  const el=document.getElementById("of-busq"); if(el){ el.focus(); el.value=q; }
+};
+window.elegirTarget = (k,id,name) => { if(!ofDraft) return; ofDraft.tipo=k; ofDraft.target=id; ofDraft.targetName=name; ofBusq=[]; render(); };
+window.guardarOferta = async () => {
+  const d=ofDraft; if(!d) return;
+  if(!d.target){ alert("Elegí a qué aplica: categoría, subcategoría o producto."); return; }
+  d.modo=document.getElementById("of-modo").value;
+  const valorRaw=parseFloat(document.getElementById("of-valor").value);
+  if(!(valorRaw>0)){ alert("Cargá un valor válido (mayor a 0)."); return; }
+  d.valor = d.modo==='pct' ? valorRaw/100 : valorRaw;
+  const remEl=document.getElementById("of-reemplaza");
+  d.reemplaza = d.modo==='precio' ? true : (remEl && remEl.value==='1');
+  d.hasta=document.getElementById("of-hasta").value||"";
+  d.stock=document.getElementById("of-stock").value||"";
+  const i=OFERTAS.findIndex(o=>o.id===d.id);
+  if(i>=0) OFERTAS[i]=d; else OFERTAS.push(d);
+  ofDraft=null;
+  await guardarOfertasParams(true);
+  render(); toast("Oferta guardada y aplicada ✓");
+};
+window.pausarOferta = async id => { const o=OFERTAS.find(x=>x.id===id); if(!o)return; o.pausada=!o.pausada; await guardarOfertasParams(true); render(); toast(o.pausada?"Oferta pausada ✓":"Oferta reanudada ✓"); };
+window.eliminarOferta = async id => { if(!confirm("¿Eliminar esta oferta? Vuelve la escalera normal.")) return; OFERTAS=OFERTAS.filter(x=>x.id!==id); await guardarOfertasParams(true); render(); toast("Oferta eliminada ✓"); };
+
 window.guardarTodo = async () => {
   const btn=document.querySelector(".btn-save"); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
   try{
