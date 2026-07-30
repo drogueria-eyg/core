@@ -738,8 +738,8 @@ function ofTxtSync(o){
 
 /* Pasa las ofertas de Configuración de precios (eyg.sync_ofertas) a la forma de
    eyg.ofertas, para que el resto del bloque no tenga que saber de dónde vienen.
-   - tipo 'p' (un producto): resuelve la variante y el precio de lista para poder
-     mostrar "antes → ahora". Si no hay precio base, cae a tarjeta informativa.
+   - tipo 'p' (un producto): resuelve la variante y trae el precio de la lista TAL CUAL
+     (ya viene con la oferta aplicada por el motor). Si no hay precio, cae a informativa.
    - tipo 'c' (categoría entera): no hay precio único ni producto que contar →
      tarjeta informativa (_info): descuento y vigencia, sin barra de progreso. */
 async function normalizarSync(sync){
@@ -762,14 +762,20 @@ async function normalizarSync(sync){
       stock:o.stock||0, hasta:o.hasta||"", nota:"", _off:ofTxtSync(o) };
     if(o.tipo!=="p") return {...com, items:[], precio:0, precioAntes:0, _info:true,
       _alcance:"📂 Descuento en toda la línea"};
-    const pv=variante[o.target], b=base[o.target]?base[o.target].p:0;
-    const precio = o.modo==="precio" ? (o.valor||0)
-                 : o.modo==="pct"    ? b*(1-(o.valor||0))
-                 :                     b-(o.valor||0);
+    const pv=variante[o.target], precio=base[o.target]?base[o.target].p:0;
     if(!(precio>0) || !pv) return {...com, items:[], precio:0, precioAntes:0, _info:true,
       _alcance:"🔖 Descuento sobre el precio de lista"};
+    // OJO: el precio de la lista YA VIENE CON LA OFERTA APLICADA. Al guardar en
+    // Configuracion de precios se corre la accion 1213 (el motor), que reescribe la
+    // escalera con el descuento adentro. Asi que el precio se trae tal cual, sin tocar:
+    // volver a aplicarle el descuento lo dejaba al cuadrado (un -20% daba -36%).
+    // El "antes" es lo unico que se calcula, revirtiendo el descuento.
+    const v=o.valor||0;
+    const antes = o.modo==="pct"   ? (v>0&&v<1 ? precio/(1-v) : 0)
+                : o.modo==="monto" ? (v>0 ? precio+v : 0)
+                :                    0;   // precio fijo: no hay "antes" que reconstruir
     return {...com, items:[{id:pv, nombre:o.targetName||("#"+o.target)}],
-      precio, precioAntes: b>precio ? b : 0};
+      precio, precioAntes: antes>precio ? antes : 0};
   });
 }
 
