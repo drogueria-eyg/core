@@ -158,6 +158,18 @@ window.EYGHome = (function(){
   const domSocios = extra => (SC.cartera?[["id","in",SC.cartera]]:[]).concat(extra||[]);
   const domCuenta = extra => (SC.cartera?[["partner_id","in",SC.cartera]]:[]).concat(extra||[]);
 
+  /* Facturas (out_invoice) o notas de crédito (out_refund) emitidas este mes.
+     Devuelve {ok} para poder ocultar el dato si el rol no puede leer contabilidad,
+     en vez de mostrar un $0 que se leería como "no facturamos nada". */
+  async function facturado(tipo){
+    try{
+      const g=await rpc("account.move","read_group",
+        [domCuenta([["move_type","=",tipo],["state","=","posted"],["invoice_date",">=",MES_INI]]),["amount_untaxed:sum"],[]],
+        Object.assign({lazy:false},CTX));
+      return {m:(g[0]&&g[0].amount_untaxed)||0, n:(g[0]&&g[0].__count)||0, ok:true};
+    }catch(e){ return {m:0,n:0,ok:false}; }
+  }
+
   async function sumaVentas(desde, hasta){
     const d=domVentas([["date_order",">=",uDesde(desde)]]);
     if(hasta) d.push(["date_order","<=",uHasta(hasta)]);
@@ -277,13 +289,18 @@ window.EYGHome = (function(){
       if(mAntFin>=MES_INI) mAntFin=addD(MES_INI,-1);         // meses cortos (31 de marzo → 28 de febrero)
       const semAntIni=addD(SEM_INI,-7), semAntFin=addD(SEM_INI,-7+dow(HOY));
 
-      const [ord, sem, semAnt, mes, mesAnt, ano] = await Promise.all([
+      const [ord, sem, semAnt, mes, mesAnt, ano, fac, nc] = await Promise.all([
         rpc("sale.order","search_read",[domVentas([["date_order",">=",uDesde(addD(HOY,-7))]]),
             ["name","partner_id","date_order","amount_untaxed","user_id"]],Object.assign({limit:0,order:"date_order desc"},CTX)),
         sumaVentas(SEM_INI), sumaVentas(semAntIni,semAntFin),
         sumaVentas(MES_INI),  sumaVentas(mAntIni,mAntFin),
         sumaVentas(ANO_INI),
+        /* Facturado del mes, para contrastar contra los pedidos en la misma tarjeta.
+           Pedidos y facturas NUNCA van a coincidir: el pedido se confirma un día y
+           se factura otro. Si esto falla no debe tumbar los KPIs de venta. */
+        facturado("out_invoice"), facturado("out_refund"),
       ]);
+      const facNeto = fac.m - nc.m, facOK = fac.ok && nc.ok;
       ORD8 = ord.map(o=>Object.assign({
         id:o.id, name:o.name, cli:o.partner_id?o.partner_id[1]:"—",
         vend:o.user_id?o.user_id[1]:"", amt:o.amount_untaxed||0
@@ -316,7 +333,12 @@ window.EYGHome = (function(){
           <div class="kspark">${spark}</div>
         </div>
         <div class="ktile"><div class="kl">Esta semana</div><div class="kv" data-to="${sem.m}" title="${M(sem.m)}">$0</div><div class="ks">${delta(sem.m,semAnt.m,"vs semana pasada")}</div></div>
-        <div class="ktile"><div class="kl">Este mes</div><div class="kv" data-to="${mes.m}" title="${M(mes.m)}">$0</div><div class="ks">${delta(mes.m,mesAnt.m,"vs igual tramo del mes pasado")}</div></div>
+        <div class="ktile" title="Pedidos confirmados del mes (estado venta/bloqueado), importe sin IVA, por fecha de pedido.&#10;Facturado neto = facturas emitidas menos notas de crédito, sin IVA.&#10;Los dos números no coinciden nunca: el pedido se confirma un día y se factura otro.">
+          <div class="kl">Este mes · pedidos</div>
+          <div class="kv" data-to="${mes.m}" title="${M(mes.m)}">$0</div>
+          <div class="ks">confirmados, sin IVA · ${delta(mes.m,mesAnt.m,"vs mes pasado")}</div>
+          ${facOK?`<div class="ksplit"><span>Facturado neto<i>facturas − notas de crédito</i></span><b title="${M(facNeto)}">${mc(facNeto)}</b></div>`:""}
+        </div>
         <div class="ktile"><div class="kl">Ticket promedio · mes</div><div class="kv" data-to="${mes.n?mes.m/mes.n:0}" title="${M(mes.n?mes.m/mes.n:0)}">$0</div><div class="ks">${ent(mes.n)} pedidos · ayer cerró en ${mc(ayerTot)}</div></div>
         <div class="ktile"><div class="kl">Este año</div><div class="kv" data-to="${ano.m}" title="${M(ano.m)}">$0</div><div class="ks">${ent(ano.n)} pedidos desde enero</div></div>
       </div>`);
@@ -381,7 +403,7 @@ window.EYGHome = (function(){
     const pills=`<div class="pills" id="evo-pills">${Object.keys(GRAN).map(k=>
       `<button data-k="${k}" class="${k===GRA?"on":""}" onclick="EYGHome.ver('${k}')">${GRAN[k].lab}</button>`).join("")}</div>`;
     if(!z.dataset.armado){
-      z.innerHTML=`<div class="cx-h"><h2>📈 Evolución de ventas</h2>${pills}</div><div id="evo-body"></div>`;
+      z.innerHTML=`<div class="cx-h"><div><h2>📈 Evolución de ventas</h2><div class="hint">pedidos confirmados, sin IVA · por fecha de pedido</div></div>${pills}</div><div id="evo-body"></div>`;
       z.dataset.armado="1";
     }else{
       const p=document.getElementById("evo-pills"); if(p) p.outerHTML=pills;
