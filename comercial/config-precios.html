@@ -82,7 +82,7 @@ const esc=EYG.esc, rpc=EYG.rpc;
 const MODOS=[["embalaje","Por embalaje (fracciona de la caja real a la caja del nombre)"],["fijo","Fijo (venta por unidad/caja, sin fraccionar)"]];
 const DEF={genera:false, recargo:0.80, piso:0.30, modo:"fijo", cortes:[1,10,20,40], desc:[0,0.07,0.14,0.20], unidad:"unidades", ivaCosto:0};
 let CATS=[], byId={}, CFG={v:1,reglas:{}}, editId=null, abiertos={}, dirty=false;
-let OFERTAS=[], vista="reglas", ofDraft=null, ofBusq=[];
+let OFERTAS=[], vista="reglas", ofDraft=null, ofBusq=[], ofBusqQ="";
 const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
 
 const pct=x=>Math.round((x||0)*1000)/10;           // 0.07 -> 7
@@ -150,7 +150,7 @@ window.consolidar = rootId => {
   cand.ids.forEach(id=>{ delete CFG.reglas[id]; });                // saca las repetidas -> heredan
   dirty=true; editId=null; render();
 };
-window.setVista = v => { vista=v; ofDraft=null; ofBusq=[]; render(); };
+window.setVista = v => { vista=v; ofDraft=null; ofBusq=[]; ofBusqQ=""; render(); };
 function render(){
   const cont=document.getElementById("cont");
   const tabs=`<div class="cptabs"><button class="cptab ${vista==='reglas'?'on':''}" onclick="setVista('reglas')">📊 Reglas de precio</button><button class="cptab ${vista==='ofertas'?'on':''}" onclick="setVista('ofertas')">🏷️ Ofertas temporales${OFERTAS.length?' · '+OFERTAS.length:''}</button></div>`;
@@ -197,6 +197,7 @@ function renderOfertas(){
       const tgt = o.tipo==='p' ? ("🔖 "+esc(o.targetName||("#"+o.target))) : ("📂 "+esc(o.targetName||("cat #"+o.target)));
       return `<div class="ofrow"><div class="ofmain"><div class="oftgt">${tgt}</div><div class="ofdet">${esc(ofDesc(o))}${o.hasta?(" · hasta "+esc(o.hasta)):" · sin vencimiento"}${o.stock?(" · stock "+esc(String(o.stock))):""}</div></div>
         <span class="ofbadge ${st.c}">${st.t}</span>
+        <button class="btn-mini" onclick="editarOferta('${esc(o.id)}')">✎ Editar</button>
         <button class="btn-mini" onclick="pausarOferta('${esc(o.id)}')">${o.pausada?"▶ Reanudar":"⏸ Pausar"}</button>
         <button class="btn-mini del" onclick="eliminarOferta('${esc(o.id)}')">🗑 Eliminar</button></div>`;
     }).join("");
@@ -209,8 +210,8 @@ function ofFormHTML(){
   const results = (!d.target && ofBusq.length) ? `<div class="ofbusq">${ofBusq.map(r=>`<div class="ofbitem" onclick="elegirTarget('${r.k}',${r.id},'${esc((r.name||'').replace(/'/g,''))}')">${r.k==='p'?"🔖":"📂"} ${esc(r.name)}${r.sku?(" · "+esc(r.sku)):""}</div>`).join("")}</div>` : "";
   return `<div class="form" onclick="event.stopPropagation()" style="margin-top:0">
     <div class="fld2" style="margin-bottom:12px"><label>Aplicar a (categoría, subcategoría o producto)</label>
-      ${d.target ? `<div class="oftgtsel">${tgtTxt} <button class="btn-mini" onclick="ofDraft.target=null;ofDraft.targetName='';render()">cambiar</button></div>`
-                 : `<input type="text" id="of-busq" placeholder="Escribí nombre o SKU…" oninput="buscarTarget(this.value)" autocomplete="off">${results}`}
+      ${d.target ? `<div class="oftgtsel">${tgtTxt} <button class="btn-mini" onclick="ofDraft.target=null;ofDraft.targetName='';ofBusq=[];ofBusqQ='';render()">cambiar</button></div>`
+                 : `<input type="text" id="of-busq" placeholder="Escribí nombre o SKU…" value="${esc(ofBusqQ)}" oninput="buscarTarget(this.value)" autocomplete="off">${results}`}
     </div>
     <div class="grid" style="grid-template-columns:repeat(4,1fr)">
       <div class="fld2"><label>Tipo de descuento</label><select id="of-modo" onchange="ofDraft.modo=this.value">
@@ -218,7 +219,7 @@ function ofFormHTML(){
         <option value="monto" ${d.modo==='monto'?'selected':''}>Monto fijo ($ off)</option>
         <option value="precio" ${d.modo==='precio'?'selected':''}>Precio fijo ($)</option>
       </select><div class="hint">precio fijo = reemplaza siempre</div></div>
-      <div class="fld2"><label>Valor</label><div class="inpu"><input type="number" id="of-valor" step="0.01" value="${d.valor||''}"><span class="suf">${d.modo==='pct'?'%':'$'}</span></div><div class="hint">${d.modo==='pct'?'ej: 20':'ej: 1500'}</div></div>
+      <div class="fld2"><label>Valor</label><div class="inpu"><input type="number" id="of-valor" step="0.01" value="${d.valor?(d.modo==='pct'?pct(d.valor):d.valor):''}"><span class="suf">${d.modo==='pct'?'%':'$'}</span></div><div class="hint">${d.modo==='pct'?'ej: 20':'ej: 1500'}</div></div>
       <div class="fld2"><label>Cómo aplica</label><select id="of-reemplaza" ${d.modo==='precio'?'disabled':''}>
         <option value="1" ${(d.reemplaza||d.modo==='precio')?'selected':''}>Reemplaza (precio único desde 1)</option>
         <option value="0" ${(!d.reemplaza&&d.modo!=='precio')?'selected':''}>Pisa la escalera (descuenta cada tramo)</option>
@@ -325,19 +326,24 @@ async function guardarOfertasParams(recalcTmpl){
     }
   }catch(e){}
 }
-window.nuevaOferta = () => { ofDraft={id:"of"+Date.now(), tipo:null, target:null, targetName:"", modo:"pct", valor:"", reemplaza:true, hasta:"", stock:"", pausada:false}; ofBusq=[]; render(); };
-window.buscarTarget = async q => {
-  q=(q||"").trim();
-  if(q.length<2){ ofBusq=[]; render(); const el0=document.getElementById("of-busq"); if(el0){el0.focus();el0.value=q;} return; }
+window.nuevaOferta = () => { ofDraft={id:"of"+Date.now(), tipo:null, target:null, targetName:"", modo:"pct", valor:"", reemplaza:true, hasta:"", stock:"", pausada:false}; ofBusq=[]; ofBusqQ=""; render(); };
+window.editarOferta = id => { const o=OFERTAS.find(x=>x.id===id); if(!o) return; ofDraft=JSON.parse(JSON.stringify(o)); ofBusq=[]; if(typeof ofBusqQ!=='undefined') ofBusqQ=""; render(); const el=document.querySelector('.form'); if(el) el.scrollIntoView({behavior:'smooth',block:'center'}); };
+/* Antes pegaba a Odoo en cada tecla y después de cada respuesta re-renderizaba y
+   reescribía el input a mano (el.value=q), lo que mandaba el cursor al final.
+   Ahora: se espera a que dejes de tipear, el template conserva lo escrito con
+   value="${esc(ofBusqQ)}", y EYG.repintar devuelve foco y cursor. */
+window.buscarTarget = EYG.debounce(async q => {
+  q=(q||"").trim(); ofBusqQ=q;
+  if(q.length<2){ ofBusq=[]; EYG.repintar(render); return; }
   const ql=q.toLowerCase();
   const cats=CATS.filter(c=>c.full.toLowerCase().includes(ql)).slice(0,6).map(c=>({k:'c',id:c.id,name:c.full}));
   let prods=[];
   try{ const ps=await rpc("product.template","search_read",[["|",["name","ilike",q],["default_code","ilike",q]],["name","default_code"]],{limit:8,context:{lang:"es_AR"}}); prods=ps.map(p=>({k:'p',id:p.id,name:p.name,sku:p.default_code})); }catch(e){}
+  if(ofBusqQ!==q) return;            // llegó tarde: ya hay una búsqueda más nueva
   ofBusq=cats.concat(prods);
-  render();
-  const el=document.getElementById("of-busq"); if(el){ el.focus(); el.value=q; }
-};
-window.elegirTarget = (k,id,name) => { if(!ofDraft) return; ofDraft.tipo=k; ofDraft.target=id; ofDraft.targetName=name; ofBusq=[]; render(); };
+  EYG.repintar(render);
+}, 350);
+window.elegirTarget = (k,id,name) => { if(!ofDraft) return; ofDraft.tipo=k; ofDraft.target=id; ofDraft.targetName=name; ofBusq=[]; ofBusqQ=""; render(); };
 window.guardarOferta = async () => {
   const d=ofDraft; if(!d) return;
   if(!d.target){ alert("Elegí a qué aplica: categoría, subcategoría o producto."); return; }
