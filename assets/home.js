@@ -158,16 +158,34 @@ window.EYGHome = (function(){
   const domSocios = extra => (SC.cartera?[["id","in",SC.cartera]]:[]).concat(extra||[]);
   const domCuenta = extra => (SC.cartera?[["partner_id","in",SC.cartera]]:[]).concat(extra||[]);
 
-  /* Facturas (out_invoice) o notas de crédito (out_refund) emitidas este mes.
-     Devuelve {ok} para poder ocultar el dato si el rol no puede leer contabilidad,
-     en vez de mostrar un $0 que se leería como "no facturamos nada". */
-  async function facturado(tipo){
-    try{
+  /* Facturación del año AGRUPADA POR DÍA, en dos consultas (facturas y notas de
+     crédito). Con eso armo hoy/semana/mes/año del lado del cliente: pedir cada
+     período por separado serían 10 llamadas por refresco en vez de 2.
+     Devuelve {ok:false} si el rol no puede leer contabilidad, para ocultar el
+     dato en vez de mostrar un $0 que se leería como "no facturamos nada".
+     Ojo: `invoice_date` es fecha (no fecha-hora), así que no lleva ajuste de
+     huso; los pedidos sí, porque `date_order` es fecha-hora en UTC. */
+  async function facturacion(){
+    const porDia = async tipo => {
       const g=await rpc("account.move","read_group",
-        [domCuenta([["move_type","=",tipo],["state","=","posted"],["invoice_date",">=",MES_INI]]),["amount_untaxed:sum"],[]],
+        [domCuenta([["move_type","=",tipo],["state","=","posted"],["invoice_date",">=",ANO_INI]]),
+         ["amount_untaxed:sum"],["invoice_date:day"]],
         Object.assign({lazy:false},CTX));
-      return {m:(g[0]&&g[0].amount_untaxed)||0, n:(g[0]&&g[0].__count)||0, ok:true};
-    }catch(e){ return {m:0,n:0,ok:false}; }
+      return g.map(r=>{
+        const rg=r.__range&&r.__range["invoice_date:day"];
+        return {d:String(rg?rg.from:(r["invoice_date:day"]||"")).slice(0,10), m:r.amount_untaxed||0, n:r.__count||0};
+      }).filter(x=>x.d);
+    };
+    try{
+      const [inv, ref] = await Promise.all([porDia("out_invoice"), porDia("out_refund")]);
+      const acum=(filas,desde,hasta)=>filas.reduce((a,f)=>
+        (f.d>=desde && (!hasta||f.d<=hasta)) ? {m:a.m+f.m, n:a.n+f.n} : a, {m:0,n:0});
+      const neto=(desde,hasta)=>acum(inv,desde,hasta).m - acum(ref,desde,hasta).m;
+      const facMes=acum(inv,MES_INI);
+      return {ok:true,
+        hoy:neto(HOY,HOY), sem:neto(SEM_INI), mes:neto(MES_INI), ano:neto(ANO_INI),
+        ticketMes: facMes.n?facMes.m/facMes.n:0, nFacMes:facMes.n};
+    }catch(e){ return {ok:false}; }
   }
 
   async function sumaVentas(desde, hasta){
@@ -289,18 +307,17 @@ window.EYGHome = (function(){
       if(mAntFin>=MES_INI) mAntFin=addD(MES_INI,-1);         // meses cortos (31 de marzo → 28 de febrero)
       const semAntIni=addD(SEM_INI,-7), semAntFin=addD(SEM_INI,-7+dow(HOY));
 
-      const [ord, sem, semAnt, mes, mesAnt, ano, fac, nc] = await Promise.all([
+      const [ord, sem, semAnt, mes, mesAnt, ano, FAC] = await Promise.all([
         rpc("sale.order","search_read",[domVentas([["date_order",">=",uDesde(addD(HOY,-7))]]),
             ["name","partner_id","date_order","amount_untaxed","user_id"]],Object.assign({limit:0,order:"date_order desc"},CTX)),
         sumaVentas(SEM_INI), sumaVentas(semAntIni,semAntFin),
         sumaVentas(MES_INI),  sumaVentas(mAntIni,mAntFin),
         sumaVentas(ANO_INI),
-        /* Facturado del mes, para contrastar contra los pedidos en la misma tarjeta.
-           Pedidos y facturas NUNCA van a coincidir: el pedido se confirma un día y
-           se factura otro. Si esto falla no debe tumbar los KPIs de venta. */
-        facturado("out_invoice"), facturado("out_refund"),
+        /* Facturado, para contrastar contra los pedidos en cada tarjeta.
+           Pedidos y facturas NUNCA van a coincidir: el pedido se confirma un día
+           y se factura otro. Si esto falla no debe tumbar los KPIs de venta. */
+        facturacion(),
       ]);
-      const facNeto = fac.m - nc.m, facOK = fac.ok && nc.ok;
       ORD8 = ord.map(o=>Object.assign({
         id:o.id, name:o.name, cli:o.partner_id?o.partner_id[1]:"—",
         vend:o.user_id?o.user_id[1]:"", amt:o.amount_untaxed||0
@@ -325,22 +342,44 @@ window.EYGHome = (function(){
       const dias=Object.keys(porDia), maxD=Math.max(...dias.map(d=>porDia[d]),1);
       const spark=dias.map(d=>`<i class="${d===HOY?"now":""}" style="height:${Math.max(4,Math.round(porDia[d]/maxD*100))}%;animation-delay:${dias.indexOf(d)*45}ms" title="${DIA3[dow(d)]} ${dm(d)}: ${M(porDia[d])}"></i>`).join("");
 
+      /* Segunda línea de cada tile: la misma métrica leída desde la facturación.
+         Se oculta entera si no pudimos leer contabilidad (ver facturacion()). */
+      const AYUDA = "Arriba: pedidos confirmados, importe sin IVA, por fecha de pedido.&#10;Abajo: facturado neto = facturas emitidas menos notas de crédito, sin IVA, por fecha de factura.&#10;Nunca coinciden: el pedido se confirma un día y se factura otro.";
+      const contra = (etq,val) => FAC.ok ? `<div class="ksplit"><span>${etq}</span><b title="${M(val)}">${mc(val)}</b></div>` : "";
+      const tt = FAC.ok ? ` title="${AYUDA}"` : "";
+
       put("dz-kpi",`<div class="kgrid">
-        <div class="ktile big">
-          <div class="kl">⚡ ${V.propio?"Tus ventas":"Ventas"} de hoy</div>
+        <div class="ktile big"${tt}>
+          <div class="kl">⚡ ${V.propio?"Tus pedidos":"Pedidos"} de hoy</div>
           <div class="kv" data-to="${totHoy}" data-fmt="mc" title="${M(totHoy)}">$0</div>
           <div class="ks">${ent(nHoy)} pedido${nHoy===1?"":"s"} · ${ent(cliHoy.size)} cliente${cliHoy.size===1?"":"s"} · ${delta(totHoy,ayerAhora,"vs ayer a esta hora")}</div>
           <div class="kspark">${spark}</div>
+          ${contra("Facturado neto hoy", FAC.hoy)}
         </div>
-        <div class="ktile"><div class="kl">Esta semana</div><div class="kv" data-to="${sem.m}" title="${M(sem.m)}">$0</div><div class="ks">${delta(sem.m,semAnt.m,"vs semana pasada")}</div></div>
-        <div class="ktile" title="Pedidos confirmados del mes (estado venta/bloqueado), importe sin IVA, por fecha de pedido.&#10;Facturado neto = facturas emitidas menos notas de crédito, sin IVA.&#10;Los dos números no coinciden nunca: el pedido se confirma un día y se factura otro.">
+        <div class="ktile"${tt}>
+          <div class="kl">Esta semana · pedidos</div>
+          <div class="kv" data-to="${sem.m}" title="${M(sem.m)}">$0</div>
+          <div class="ks">${delta(sem.m,semAnt.m,"vs semana pasada")}</div>
+          ${contra("Facturado neto", FAC.sem)}
+        </div>
+        <div class="ktile"${tt}>
           <div class="kl">Este mes · pedidos</div>
           <div class="kv" data-to="${mes.m}" title="${M(mes.m)}">$0</div>
-          <div class="ks">confirmados, sin IVA · ${delta(mes.m,mesAnt.m,"vs mes pasado")}</div>
-          ${facOK?`<div class="ksplit"><span>Facturado neto<i>facturas − notas de crédito</i></span><b title="${M(facNeto)}">${mc(facNeto)}</b></div>`:""}
+          <div class="ks">${delta(mes.m,mesAnt.m,"vs mes pasado")}</div>
+          ${contra("Facturado neto", FAC.mes)}
         </div>
-        <div class="ktile"><div class="kl">Ticket promedio · mes</div><div class="kv" data-to="${mes.n?mes.m/mes.n:0}" title="${M(mes.n?mes.m/mes.n:0)}">$0</div><div class="ks">${ent(mes.n)} pedidos · ayer cerró en ${mc(ayerTot)}</div></div>
-        <div class="ktile"><div class="kl">Este año</div><div class="kv" data-to="${ano.m}" title="${M(ano.m)}">$0</div><div class="ks">${ent(ano.n)} pedidos desde enero</div></div>
+        <div class="ktile" title="Arriba: importe promedio de un pedido confirmado del mes (sin IVA).&#10;Abajo: importe promedio de una factura emitida este mes (sin IVA).&#10;Suele haber más facturas que pedidos: un pedido puede facturarse en partes, y hay facturas que no nacen de un pedido.">
+          <div class="kl">Ticket promedio · mes</div>
+          <div class="kv" data-to="${mes.n?mes.m/mes.n:0}" title="${M(mes.n?mes.m/mes.n:0)}">$0</div>
+          <div class="ks">${ent(mes.n)} pedidos · ayer cerró en ${mc(ayerTot)}</div>
+          ${FAC.ok?`<div class="ksplit"><span>Ticket facturado<i>${ent(FAC.nFacMes)} facturas</i></span><b title="${M(FAC.ticketMes)}">${mc(FAC.ticketMes)}</b></div>`:""}
+        </div>
+        <div class="ktile"${tt}>
+          <div class="kl">Este año · pedidos</div>
+          <div class="kv" data-to="${ano.m}" title="${M(ano.m)}">$0</div>
+          <div class="ks">${ent(ano.n)} pedidos desde enero</div>
+          ${contra("Facturado neto", FAC.ano)}
+        </div>
       </div>`);
 
       if(GRA==="hora") pintarEvo(); else pintarEvo(true);
