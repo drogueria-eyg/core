@@ -328,13 +328,26 @@ const inicioMes=`${now.getFullYear()}-${pad(now.getMonth()+1)}-01`;
 const hace=d=>{const x=new Date(now);x.setDate(x.getDate()-d);return `${x.getFullYear()}-${pad(x.getMonth()+1)}-${pad(x.getDate())}`;};
 
 // ===== Ofertas y combos =====
-// Las publica Inventario desde "Oportunidades y Ofertas" (inventario/oportunidades.html),
-// que las guarda en el parámetro de Odoo eyg.ofertas. Acá sólo se muestran las VIGENTES
-// (sin 'hasta', o con 'hasta' >= hoy) y se cuenta contra Odoo a cuántos clientes de la
-// cartera se les colocó cada una.
-// Forma de cada oferta, tal cual la escribe Oportunidades:
-//   {id, tipo:'oferta'|'combo', titulo, items:[{id,sku,nombre}], precio, precioAntes,
-//    stock, hasta, nota, creada}   ← 'desde' y 'metaClientes' son opcionales (hay default).
+// El comercial ve TODO lo que está activo, venga de donde venga. Hay dos orígenes:
+//
+//   eyg.ofertas       ← "Oportunidades y Ofertas" (inventario/oportunidades.html).
+//                       Son las que Inventario confirmó a mano, sea desde una oportunidad
+//                       por costo, una por stock, o cargadas manualmente. Activa = vigente.
+//                       {id, tipo:'oferta'|'combo', titulo, items:[{id,sku,nombre}],
+//                        precio, precioAntes, stock, hasta, nota, creada}
+//
+//   eyg.sync_ofertas  ← "Configuración de precios" (comercial/config-precios.html).
+//                       Nacen ya activas: son reglas de precio que el motor aplica solas.
+//                       Activa = !pausada y vigente. Modelo distinto: apuntan a un
+//                       product.template O a una categoría entera, y el descuento es
+//                       RELATIVO (modo pct/monto/precio + valor), no un precio absoluto.
+//                       {id, tipo:'p'|'c', target, targetName, modo, valor, reemplaza,
+//                        stock, hasta, pausada}
+//
+// Las de sync se normalizan a la forma de eyg.ofertas (ver normalizarSync). Las que
+// apuntan a una categoría no tienen precio único: quedan como tarjeta informativa
+// (_info), sin precio ni barra de progreso, sólo el descuento y la vigencia.
+const LISTA=3;              // pricelist de la que sale el precio base (misma que usa Oportunidades)
 const OF_META_CLIENTES=5;   // meta de clientes por oferta cuando la oferta no trae la suya
 const OF_META_NIVEL=5;      // clientes distintos con alguna oferta colocada que valen los 25 pts
 const OF_PTS_TOTAL=25;      // máx. de "Combos / ofertas" en nivel(); la tarjeta muestra el mismo número
@@ -659,15 +672,20 @@ function ofClientes(){ const s=new Set(); for(const o of Object.values(ST.oferta
 function ofPuntos(){ return OF_PTS_TOTAL*Math.min(ofClientes().size/OF_META_NIVEL,1); }
 
 /* Texto para compartir por WhatsApp. Formato de WhatsApp: *negrita*, ~tachado~.
-   Sale del mismo dato que publicó Inventario, así el comercial no reescribe nada. */
+   Sale del mismo dato que se publicó, así el comercial no reescribe nada. */
 function ofertaMsg(o){
   const items=ofItems(o), off=ofDesc(o), tit=o.titulo||items, L=[];
   L.push(o.tipo==="combo"?"🎁 *Combo Droguería EyG*":"🏷️ *Oferta Droguería EyG*");
   L.push("*"+tit+"*");
   if(items && items!==tit) L.push(items);   // si el título ES la lista de items, no la repite
-  L.push(o.precioAntes>o.precio
-    ? "~"+money(o.precioAntes)+"~ → *"+money(o.precio)+"*"+(off?" (−"+off+"%)":"")
-    : "*"+money(o.precio)+"*");
+  if(o._info){                              // sin precio único (categoría entera)
+    if(o._alcance) L.push(o._alcance);
+    if(o._off)     L.push("*"+o._off+"*");
+  }else{
+    L.push(o.precioAntes>o.precio
+      ? "~"+money(o.precioAntes)+"~ → *"+money(o.precio)+"*"+(off?" (−"+off+"%)":"")
+      : "*"+money(o.precio)+"*");
+  }
   if(o.stock>0) L.push("📦 "+o.stock+" disponibles");
   if(o.nota)    L.push("📝 "+o.nota);
   if(o.hasta)   L.push("⏳ Válido hasta el "+fFecha(o.hasta));
@@ -687,13 +705,19 @@ function ofertasHTML(){
     // daba "vence mañana" y una a 5 días daba 6.
     const dl=o.hasta?Math.round((new Date(o.hasta+"T00:00:00")-new Date(hoyStr+"T00:00:00"))/86400000):null;
     const venc=dl==null?"Sin fecha de cierre":dl<=0?"Último día":dl===1?"Vence mañana":("Vence en "+dl+"d");
+    // _info = descuento sobre una categoría entera: no hay precio único que mostrar ni
+    // producto contra el cual contar, así que va sin precio y sin barra de progreso.
+    const badge = o._info ? (o._off?`<span class="of-off">${esc(o._off)}</span>`:'')
+                          : (off?`<span class="of-off">−${off}%</span>`:'');
     return `<div class="of-card">
-      <div class="of-top"><span class="of-name">${esc(tit)}</span>${off?`<span class="of-off">−${off}%</span>`:''}</div>
-      ${(items&&items!==tit)?`<div class="of-prod">${esc(items)}</div>`:''}
-      <div class="of-price">${o.precioAntes>o.precio?`<span class="of-old">${money(o.precioAntes)}</span>`:''}<span class="of-new">${money(o.precio)}</span></div>
+      <div class="of-top"><span class="of-name">${esc(tit)}</span>${badge}</div>
+      ${o._info
+        ? (o._alcance?`<div class="of-prod">${esc(o._alcance)}</div>`:'')
+        : (items&&items!==tit)?`<div class="of-prod">${esc(items)}</div>`:''}
+      ${o._info?'':`<div class="of-price">${o.precioAntes>o.precio?`<span class="of-old">${money(o.precioAntes)}</span>`:''}<span class="of-new">${money(o.precio)}</span></div>`}
       ${(o.stock>0||o.nota)?`<div class="of-extra">${o.stock>0?'📦 '+o.stock+' disponibles':''}${(o.stock>0&&o.nota)?' · ':''}${o.nota?'📝 '+esc(o.nota):''}</div>`:''}
-      <div class="of-bar"><i style="width:${pct}%"></i></div>
-      <div class="of-foot"><span>${col==null?'…':col} / ${meta} clientes</span>${(st&&st.monto>0)?`<span class="p">${money(st.monto)}</span>`:''}</div>
+      ${o._info?'':`<div class="of-bar"><i style="width:${pct}%"></i></div>
+      <div class="of-foot"><span>${col==null?'…':col} / ${meta} clientes</span>${(st&&st.monto>0)?`<span class="p">${money(st.monto)}</span>`:''}</div>`}
       <span class="of-venc">⏳ ${venc}</span>
       <a class="of-wa" href="https://wa.me/?text=${encodeURIComponent(ofertaMsg(o))}" target="_blank" rel="noopener">Compartir por WhatsApp</a>
     </div>`;
@@ -705,12 +729,63 @@ function ofertasHTML(){
   </div>`;
 }
 
-/* Trae las ofertas VIGENTES que publicó Inventario y, para cada una, cuenta contra Odoo
-   a qué clientes de esta cartera se les colocó dentro de la vigencia. */
+/* Texto del descuento de una oferta de Configuración de precios, que es relativo. */
+function ofTxtSync(o){
+  if(o.modo==="pct")   return "−"+(Math.round((o.valor||0)*1000)/10)+"%";
+  if(o.modo==="monto") return "−"+money(o.valor)+" c/u";
+  return "Precio "+money(o.valor);
+}
+
+/* Pasa las ofertas de Configuración de precios (eyg.sync_ofertas) a la forma de
+   eyg.ofertas, para que el resto del bloque no tenga que saber de dónde vienen.
+   - tipo 'p' (un producto): resuelve la variante y el precio de lista para poder
+     mostrar "antes → ahora". Si no hay precio base, cae a tarjeta informativa.
+   - tipo 'c' (categoría entera): no hay precio único ni producto que contar →
+     tarjeta informativa (_info): descuento y vigencia, sin barra de progreso. */
+async function normalizarSync(sync){
+  const tmpls=[...new Set(sync.filter(o=>o.tipo==="p"&&o.target).map(o=>o.target))];
+  const variante={}, base={};
+  if(tmpls.length){
+    const [tps,pit]=await Promise.all([
+      rpc("product.template","read",[tmpls,["product_variant_id"]],{context:{lang:"es_AR"}}).catch(()=>[]),
+      rpc("product.pricelist.item","search_read",
+        [[["pricelist_id","=",LISTA],["applied_on","=","1_product"],["product_tmpl_id","in",tmpls]]],
+        {fields:["product_tmpl_id","min_quantity","fixed_price"],limit:20000}).catch(()=>[])
+    ]);
+    for(const t of tps) if(t.product_variant_id) variante[t.id]=t.product_variant_id[0];
+    // precio base = el tramo de la escalera con menor cantidad mínima
+    for(const it of pit){ const t=it.product_tmpl_id[0];
+      if(!base[t]||it.min_quantity<base[t].q) base[t]={q:it.min_quantity,p:it.fixed_price}; }
+  }
+  return sync.map(o=>{
+    const com={ id:"sync:"+o.id, tipo:"oferta", titulo:o.targetName||("#"+o.target),
+      stock:o.stock||0, hasta:o.hasta||"", nota:"", _off:ofTxtSync(o) };
+    if(o.tipo!=="p") return {...com, items:[], precio:0, precioAntes:0, _info:true,
+      _alcance:"📂 Descuento en toda la línea"};
+    const pv=variante[o.target], b=base[o.target]?base[o.target].p:0;
+    const precio = o.modo==="precio" ? (o.valor||0)
+                 : o.modo==="pct"    ? b*(1-(o.valor||0))
+                 :                     b-(o.valor||0);
+    if(!(precio>0) || !pv) return {...com, items:[], precio:0, precioAntes:0, _info:true,
+      _alcance:"🔖 Descuento sobre el precio de lista"};
+    return {...com, items:[{id:pv, nombre:o.targetName||("#"+o.target)}],
+      precio, precioAntes: b>precio ? b : 0};
+  });
+}
+
+/* Trae TODO lo activo —lo confirmado en Oportunidades y lo creado en Configuración de
+   precios— y, para lo que apunta a productos concretos, cuenta contra Odoo a qué
+   clientes de esta cartera se les colocó dentro de la vigencia. */
 async function cargarOfertas(ids){
   try{
-    const todas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas"])||"[]")||[];
-    OFERTAS=todas.filter(o=>o && o.id && (!o.hasta || o.hasta>=hoyStr));
+    const [rawOf,rawSync]=await Promise.all([
+      rpc("ir.config_parameter","get_param",["eyg.ofertas"]).catch(()=>"[]"),
+      rpc("ir.config_parameter","get_param",["eyg.sync_ofertas"]).catch(()=>"[]")
+    ]);
+    const propias=(JSON.parse(rawOf||"[]")||[]).filter(o=>o && o.id && (!o.hasta || o.hasta>=hoyStr));
+    // las de sync nacen activas: alcanza con que no estén pausadas y sigan vigentes
+    const sync=(JSON.parse(rawSync||"[]")||[]).filter(o=>o && o.id && !o.pausada && (!o.hasta || o.hasta>=hoyStr));
+    OFERTAS=propias.concat(sync.length?await normalizarSync(sync):[]);
   }catch(e){ OFERTAS=[]; return; }
   await Promise.all(OFERTAS.map(async o=>{
     const pids=(o.items||[]).map(i=>i.id).filter(Boolean);
