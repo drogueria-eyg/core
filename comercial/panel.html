@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js"></script>
+<script src="../assets/core.js?v=3"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -157,7 +157,12 @@
   .of-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
   .of-name{font-weight:700;font-size:14px;color:#fff;line-height:1.25}
   .of-off{background:var(--gold);color:#3a2c07;font-size:11px;font-weight:800;padding:2px 7px;border-radius:7px;white-space:nowrap}
-  .of-prod{font-size:11.5px;color:#a9d8d3;margin:5px 0 10px;line-height:1.35}
+  .of-prod{font-size:11.5px;color:#a9d8d3;margin:5px 0 0;line-height:1.35}
+  .of-price{display:flex;align-items:baseline;gap:8px;margin:7px 0 3px}
+  .of-old{color:#8fc9c4;text-decoration:line-through;font-size:12px}
+  .of-new{color:#fff;font-weight:900;font-size:19px;letter-spacing:-.3px}
+  .of-extra{font-size:11px;color:#a9d8d3;margin-bottom:9px;line-height:1.35}
+  .of-price+.of-bar{margin-top:10px}
   .of-bar{height:7px;background:rgba(255,255,255,.12);border-radius:20px;overflow:hidden;margin-bottom:5px}
   .of-bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--aqua),var(--teal-med));border-radius:20px;transition:width .6s}
   .of-foot{display:flex;justify-content:space-between;font-size:11.5px;color:#9fd0cb;align-items:center}
@@ -322,13 +327,18 @@ const hoyStr=`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())
 const inicioMes=`${now.getFullYear()}-${pad(now.getMonth()+1)}-01`;
 const hace=d=>{const x=new Date(now);x.setDate(x.getDate()-d);return `${x.getFullYear()}-${pad(x.getMonth()+1)}-${pad(x.getDate())}`;};
 
-// ===== Ofertas y combos (las diseña la dirección; se cuentan solas leyendo Odoo) =====
-// Cada oferta: productos=[product_id de Odoo]; el panel cuenta cuántos clientes de la cartera
-// los compraron dentro de la vigencia. Editá acá (o luego desde un admin) para cambiar la oferta.
-const OFERTAS=[
-  {id:"fisio", titulo:"Combo Solución Fisiológica", detalle:"Sol. Fisiológica 500 ml + 250 ml (Jayor)", productos:[63520,63519], desc:"−10%", metaClientes:8, ptsMax:12, desde:hace(6), hasta:hace(-4), ejemplo:true},
-  {id:"enox",  titulo:"Combo Anticoagulantes",       detalle:"Enoxanorth 60 mg + 40 mg x 50 jer. (Northia)", productos:[67329,65708], desc:"−8%",  metaClientes:5, ptsMax:8,  desde:hace(6), hasta:hace(-4), ejemplo:true},
-];
+// ===== Ofertas y combos =====
+// Las publica Inventario desde "Oportunidades y Ofertas" (inventario/oportunidades.html),
+// que las guarda en el parámetro de Odoo eyg.ofertas. Acá sólo se muestran las VIGENTES
+// (sin 'hasta', o con 'hasta' >= hoy) y se cuenta contra Odoo a cuántos clientes de la
+// cartera se les colocó cada una.
+// Forma de cada oferta, tal cual la escribe Oportunidades:
+//   {id, tipo:'oferta'|'combo', titulo, items:[{id,sku,nombre}], precio, precioAntes,
+//    stock, hasta, nota, creada}   ← 'desde' y 'metaClientes' son opcionales (hay default).
+const OF_META_CLIENTES=5;   // meta de clientes por oferta cuando la oferta no trae la suya
+const OF_META_NIVEL=5;      // clientes distintos con alguna oferta colocada que valen los 25 pts
+const OF_PTS_TOTAL=25;      // máx. de "Combos / ofertas" en nivel(); la tarjeta muestra el mismo número
+let OFERTAS=[];
 
 let ST={userId:null, contactos:[], catFiscal:[], catId:[], catProv:[], fact:{sem:0,mes:0,semPed:0,semNC:0,mesPed:0,mesNC:0}, cc:{porP:{},porCobrar:0,vencido:0,cobradoMes:0,aFacturar:0,aParcial:0,nDeud:0}, nuevos:0, contactadosHoy:new Set(), orders:{}, ofertas:{}, base:null, act:{ped:0,cli:0}, diag:{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}, alFondo:new Set(), filtro:"pend", q:""};
 
@@ -422,8 +432,10 @@ async function cargar(){
       let ventasHoy=0; for(const x of facHist){ const dd=(x.invoice_date||"").slice(0,10); if(dd===hoy10)ventasHoy+=(x.move_type==="out_refund"?-1:1)*(x.amount_untaxed||0); }
       ST.diag={ ventasHoy, pedHoy, pedSem, cliSem:cliSemS.size };
     }catch(e){ ST.base=ST.base||{objetivoCobro:0,promPed:1,promCli:1,perfil:"farm"}; ST.act=ST.act||{ped:0,cli:0}; ST.diag=ST.diag||{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}; }
+    // Las ofertas se cargan ANTES de pintar: el nivel usa los combos colocados y, si el
+    // conteo llegara después, el panel mostraría un nivel (y una comisión) más bajos.
+    await cargarOfertas(ids);
     render();
-    cargarOfertas(ids);
   }catch(e){ document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar el panel.</b><br>'+esc(e.message)+'</div>'; }
 }
 
@@ -435,15 +447,17 @@ const PERFIL={ inst:{valor:38,activ:12,nom:"Instituciones"}, farm:{valor:25,acti
 function nivel(){
   const b=ST.base||{objetivoCobro:0,promPed:0,promCli:0,perfil:"farm"};
   const sp=PERFIL[b.perfil]||PERFIL.farm;
-  const coloc=Object.values(ST.ofertas).filter(o=>(o.colocados||0)>0).length;
+  // clientes DISTINTOS a los que se les colocó alguna oferta vigente (el que compró dos
+  // combos cuenta una vez), para que el número case con la meta, que también es de clientes.
+  const coloc=ofClientes().size;
   const act=ST.act||{ped:0,cli:0};
   const P=[];
   const rValor=b.objetivoCobro>0?Math.min(ST.cc.cobradoMes/b.objetivoCobro,1):0;
   P.push({ic:"💰",lab:"Cobro vs tu objetivo",max:sp.valor,pts:sp.valor*rValor,det:money(ST.cc.cobradoMes)+" de "+money(b.objetivoCobro)+" · "+Math.round(rValor*100)+"%"});
   const rPed=b.promPed>0?Math.min(act.ped/b.promPed,1):0, rCli=b.promCli>0?Math.min(act.cli/b.promCli,1):0, rAct=(rPed+rCli)/2;
   P.push({ic:"📞",lab:"Actividad (pedidos + clientes)",max:sp.activ,pts:sp.activ*rAct,det:act.ped+" ped / "+act.cli+" cli vs "+b.promPed+"/"+b.promCli+" prom · "+Math.round(rAct*100)+"%"});
-  const metaC=5, rC=Math.min(coloc/metaC,1);
-  P.push({ic:"🎁",lab:"Combos / ofertas colocados",max:25,pts:25*rC,det:coloc+" de "+metaC+" clientes"});
+  const metaC=OF_META_NIVEL, rC=Math.min(coloc/metaC,1);
+  P.push({ic:"🎁",lab:"Combos / ofertas colocados",max:OF_PTS_TOTAL,pts:OF_PTS_TOTAL*rC,det:coloc+" de "+metaC+" clientes"});
   const rN=Math.min(ST.nuevos/3,1);
   P.push({ic:"🆕",lab:"Clientes nuevos (meta 3)",max:20,pts:20*rN,det:ST.nuevos+" este mes"});
   const rCo=Math.min(ST.contactadosHoy.size/10,1);
@@ -498,7 +512,6 @@ function render(){
           <div class="hstat ${sd.salud<70?'warn':''}" onclick="hd('salDet',this)"><div class="t">🩺 Salud</div><div class="n" style="color:${scol}">${Math.round(sd.salud)}<small style="font-size:12px;color:var(--gris)">/100</small></div><div class="hbar"><i style="width:${Math.round(sd.salud)}%;background:${scol}"></i></div></div>
         </div>`}
     </div>
-    <div id="ofSemana"></div>
     ${externo?'':`
     <div id="nivDet" class="hdetail" style="display:none">
       <div style="font-size:12px;color:var(--gris2);margin-bottom:10px">Nivel <b style="color:var(--teal)">${nv.nombre} ×${nv.mult.toFixed(2)}</b> · perfil ${nv.perfil} · ${nv.pts.toFixed(0)}/100 pts. Sumás puntos cumpliendo tus objetivos.</div>
@@ -578,7 +591,7 @@ function render(){
       </div>
     </div>
 
-    ${OFERTAS.length?`<div class="kpi ofcard neon" style="margin-bottom:20px">
+    ${OFERTAS.length?`<div id="ofertasBox" class="kpi ofcard neon" style="margin-bottom:20px">
       <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">🎁</span><div class="kmeta"><div class="kl">Combos y ofertas de la semana</div><div class="kv" style="font-size:19px">${OFERTAS.length} activa${OFERTAS.length>1?'s':''}</div><div class="ks">tocá para verlas y compartir por WhatsApp</div></div><span class="kchev">▾</span></div>
       <div class="acc"><div class="accw"><div class="accin" style="padding-top:8px">${ofertasHTML()}</div></div></div>
     </div>`:''}
@@ -586,7 +599,7 @@ function render(){
       <button class="newbtn" onclick="nuevo()">＋ Nuevo contacto</button></div>
     <div class="filters">
       <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-        <input placeholder="Buscar contacto…" value="${esc(ST.q)}" oninput="ST.q=this.value;lista()"></div>
+        <input id="q" placeholder="Buscar contacto…" value="${esc(ST.q)}" oninput="buscar(this.value)"></div>
       <div class="chip ${ST.filtro==='sintel'?'on':''}" onclick="setF('sintel')" style="${sinTelN?'':'opacity:.5'}">📞 Sin teléfono${sinTelN?' ('+sinTelN+')':''}</div>
       <div class="chip ${ST.filtro==='pend'?'on':''}" onclick="setF('pend')">Incompletos primero</div>
       <div class="chip ${ST.filtro==='deudavenc'?'on':''}" onclick="setF('deudavenc')" style="${ST.cc.vencido>0?'':'opacity:.5'}">💰 Con deuda vencida${ST.cc.nDeud?'':''}</div>
@@ -596,8 +609,11 @@ function render(){
     </div>
     <div id="lista" class="clist"></div>`;
   lista();
-  if(EYG.cardOfertasSemana) EYG.cardOfertasSemana("ofSemana");
 }
+
+/* lista() rearma toda la cartera. Sin debounce eso corría en cada tecla y en
+   carteras grandes trababa el tipeo. */
+window.buscar = EYG.buscador(v => { ST.q=v; lista(); });
 
 function lista(){
   const box=document.getElementById("lista"); if(!box) return;
@@ -632,43 +648,84 @@ function hd(id,badge){ const el=document.getElementById(id); if(!el)return; cons
 function alFondo(ev,id){ ev.stopPropagation(); if(ST.alFondo.has(id))ST.alFondo.delete(id); else ST.alFondo.add(id); lista(); }
 
 // ===== Ofertas y combos =====
+const OF_DIAS_DEF=30;                       // ventana de conteo cuando la oferta no trae 'desde' ni 'creada'
+const fFecha=s=>{const p=String(s||"").slice(0,10).split("-"); return p.length===3?p[2]+"/"+p[1]:"";};
+const ofItems=o=>(o.items||[]).map(i=>i.nombre).filter(Boolean).join(" + ");
+const ofDesc=o=>(o.precioAntes>0&&o.precioAntes>o.precio)?Math.round((1-o.precio/o.precioAntes)*100):0;
+const ofMeta=o=>o.metaClientes>0?o.metaClientes:OF_META_CLIENTES;
+const ofDesde=o=>String(o.desde||o.creada||hace(OF_DIAS_DEF)).slice(0,10);
+// clientes DISTINTOS con al menos una oferta vigente colocada (es la unidad de la meta del nivel)
+function ofClientes(){ const s=new Set(); for(const o of Object.values(ST.ofertas)) for(const c of (o.cli||[])) s.add(c); return s; }
+function ofPuntos(){ return OF_PTS_TOTAL*Math.min(ofClientes().size/OF_META_NIVEL,1); }
+
+/* Texto para compartir por WhatsApp. Formato de WhatsApp: *negrita*, ~tachado~.
+   Sale del mismo dato que publicó Inventario, así el comercial no reescribe nada. */
+function ofertaMsg(o){
+  const items=ofItems(o), off=ofDesc(o), tit=o.titulo||items, L=[];
+  L.push(o.tipo==="combo"?"🎁 *Combo Droguería EyG*":"🏷️ *Oferta Droguería EyG*");
+  L.push("*"+tit+"*");
+  if(items && items!==tit) L.push(items);   // si el título ES la lista de items, no la repite
+  L.push(o.precioAntes>o.precio
+    ? "~"+money(o.precioAntes)+"~ → *"+money(o.precio)+"*"+(off?" (−"+off+"%)":"")
+    : "*"+money(o.precio)+"*");
+  if(o.stock>0) L.push("📦 "+o.stock+" disponibles");
+  if(o.nota)    L.push("📝 "+o.nota);
+  if(o.hasta)   L.push("⏳ Válido hasta el "+fFecha(o.hasta));
+  L.push("");
+  L.push("¿Lo sumamos a tu próximo pedido?");
+  return L.join("\n");
+}
+
 function ofertasHTML(){
   if(!OFERTAS.length) return "";
-  let total=0;
   const cards=OFERTAS.map(o=>{
     const st=ST.ofertas[o.id]; const col=st?st.colocados:null;
-    const pct=col==null?0:Math.min(100,Math.round(col/o.metaClientes*100));
-    const pts=col==null?0:Math.round(o.ptsMax*Math.min(col/o.metaClientes,1)); total+=pts;
-    const dl=Math.ceil((new Date(o.hasta+"T23:59:59")-now)/86400000);
-    const venc=dl<=0?"Último día":("Vence en "+dl+"d");
-    const msg=`🎁 Oferta de Droguería EyG: ${o.titulo} (${o.detalle})${o.desc?" con "+o.desc:""}. ¿Lo sumamos a tu próximo pedido?`;
+    const meta=ofMeta(o);
+    const pct=col==null?0:Math.min(100,Math.round(col/meta*100));
+    const off=ofDesc(o), items=ofItems(o), tit=o.titulo||items;
+    // días enteros de calendario: con la resta de timestamps, una oferta que cierra hoy
+    // daba "vence mañana" y una a 5 días daba 6.
+    const dl=o.hasta?Math.round((new Date(o.hasta+"T00:00:00")-new Date(hoyStr+"T00:00:00"))/86400000):null;
+    const venc=dl==null?"Sin fecha de cierre":dl<=0?"Último día":dl===1?"Vence mañana":("Vence en "+dl+"d");
     return `<div class="of-card">
-      <div class="of-top"><span class="of-name">${esc(o.titulo)}${o.ejemplo?' <span style="font-weight:600;color:#8fc9c4;font-size:10px">(ejemplo)</span>':''}</span>${o.desc?`<span class="of-off">${esc(o.desc)}</span>`:''}</div>
-      <div class="of-prod">${esc(o.detalle)}</div>
+      <div class="of-top"><span class="of-name">${esc(tit)}</span>${off?`<span class="of-off">−${off}%</span>`:''}</div>
+      ${(items&&items!==tit)?`<div class="of-prod">${esc(items)}</div>`:''}
+      <div class="of-price">${o.precioAntes>o.precio?`<span class="of-old">${money(o.precioAntes)}</span>`:''}<span class="of-new">${money(o.precio)}</span></div>
+      ${(o.stock>0||o.nota)?`<div class="of-extra">${o.stock>0?'📦 '+o.stock+' disponibles':''}${(o.stock>0&&o.nota)?' · ':''}${o.nota?'📝 '+esc(o.nota):''}</div>`:''}
       <div class="of-bar"><i style="width:${pct}%"></i></div>
-      <div class="of-foot"><span>${col==null?'…':col} / ${o.metaClientes} clientes</span><span class="p">+${pts} pts</span></div>
+      <div class="of-foot"><span>${col==null?'…':col} / ${meta} clientes</span>${(st&&st.monto>0)?`<span class="p">${money(st.monto)}</span>`:''}</div>
       <span class="of-venc">⏳ ${venc}</span>
-      <a class="of-wa" href="https://wa.me/?text=${encodeURIComponent(msg)}" target="_blank">Compartir por WhatsApp</a>
+      <a class="of-wa" href="https://wa.me/?text=${encodeURIComponent(ofertaMsg(o))}" target="_blank" rel="noopener">Compartir por WhatsApp</a>
     </div>`;
   }).join("");
   return `<div class="ofertas">
-    <div class="of-head"><div><span class="of-ttl">🎁 Ofertas y combos</span><span class="of-sub">Diseñadas por EyG · colocalas y sumás puntos</span></div>
-      <span class="of-pts">+${Math.min(total,20)} pts${total>20?' (máx 20)':''}</span></div>
+    <div class="of-head"><div><span class="of-ttl">🎁 Ofertas y combos</span><span class="of-sub">Publicadas por EyG · colocalas y sumás puntos</span></div>
+      <span class="of-pts">+${Math.round(ofPuntos())} de ${OF_PTS_TOTAL} pts</span></div>
     <div class="of-grid">${cards}</div>
   </div>`;
 }
+
+/* Trae las ofertas VIGENTES que publicó Inventario y, para cada una, cuenta contra Odoo
+   a qué clientes de esta cartera se les colocó dentro de la vigencia. */
 async function cargarOfertas(ids){
-  for(const o of OFERTAS){
-    if(!o.productos||!o.productos.length){ ST.ofertas[o.id]={colocados:0}; continue; }
+  try{
+    const todas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas"])||"[]")||[];
+    OFERTAS=todas.filter(o=>o && o.id && (!o.hasta || o.hasta>=hoyStr));
+  }catch(e){ OFERTAS=[]; return; }
+  await Promise.all(OFERTAS.map(async o=>{
+    const pids=(o.items||[]).map(i=>i.id).filter(Boolean);
+    if(!pids.length || !ids.length){ ST.ofertas[o.id]={colocados:0,cli:[]}; return; }
+    const desde=ofDesde(o), hasta=(o.hasta||hoyStr).slice(0,10);
     try{
       const g=await rpc("sale.order.line","read_group",
-        [[["order_partner_id","in",ids],["product_id","in",o.productos],["state","in",["sale","done"]],
-          ["order_id.date_order",">=",o.desde+" 00:00:00"],["order_id.date_order","<=",o.hasta+" 23:59:59"]],
+        [[["order_partner_id","in",ids],["product_id","in",pids],["state","in",["sale","done"]],
+          ["order_id.date_order",">=",desde+" 00:00:00"],["order_id.date_order","<=",hasta+" 23:59:59"]],
          ["price_subtotal:sum"],["order_partner_id"]],{lazy:false});
-      ST.ofertas[o.id]={colocados:g.length, monto:g.reduce((s,x)=>s+(x.price_subtotal||0),0)};
-    }catch(e){ ST.ofertas[o.id]={colocados:0,err:true}; }
-  }
-  const box=document.getElementById("ofertasBox"); if(box) box.innerHTML=ofertasHTML();
+      ST.ofertas[o.id]={ colocados:g.length,
+        cli:g.map(x=>x.order_partner_id&&x.order_partner_id[0]).filter(Boolean),
+        monto:g.reduce((s,x)=>s+(x.price_subtotal||0),0) };
+    }catch(e){ ST.ofertas[o.id]={colocados:0,cli:[],err:true}; }
+  }));
 }
 
 // ===== Drawer =====
