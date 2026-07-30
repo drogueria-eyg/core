@@ -85,6 +85,39 @@ let OPOS=[], ARCH=[], OFERTAS=[], OPORT_STOCK=[], ESTADO={ignora:[],arch:[]}, st
 async function getParam(k,def){ const r=await EYG.rpc("ir.config_parameter","get_param",[k]); return (r===false||r==null)?def:r; }
 async function setParam(k,v){ return EYG.rpc("ir.config_parameter","set_param",[k,String(v)]); }
 
+/* ============ integración con el motor de precios ============
+   Una oferta de Oportunidades (por costo o por stock), además de ir al panel del comercial,
+   pisa temporalmente la escalera de "Configuración de precios": se inyecta como una oferta de
+   PRECIO FIJO en el mismo pipeline que ya recalcula el cron (eyg.sync_ofertas). Al vencer, el
+   propio motor la deja de aplicar y vuelve la escalera normal. No toca las ofertas creadas en
+   Configuración de precios: cada override lleva id "opo_<producto>" y _origen:"oportunidades". */
+const KEY_SYNC_OF="eyg.sync_ofertas", KEY_SYNC_OF_FLAT="eyg.sync_ofertas_flat";
+// mismo formato plano que lee el cron (idéntico a ofFlat() de config-precios)
+function ofSyncFlat(arr){ return arr.map(o=>[o.id,o.tipo,o.target,o.modo,o.valor,(o.reemplaza||o.modo==='precio')?1:0,o.hasta||'',o.pausada?1:0,o.stock||0].join("~")).join("\n"); }
+async function leerSyncOf(){ try{ return JSON.parse(await getParam(KEY_SYNC_OF,"[]")||"[]")||[]; }catch(e){ return []; } }
+async function escribirSyncOf(arr, varId){
+  await setParam(KEY_SYNC_OF, JSON.stringify(arr));
+  await setParam(KEY_SYNC_OF_FLAT, ofSyncFlat(arr));
+  // recalcula sólo ese producto (instantáneo), como hace config-precios
+  try{ await EYG.rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR",eyg_solo_producto:varId}}); }catch(e){}
+}
+// crea/actualiza el override de precio fijo para el producto y lo aplica ya
+async function pisarPrecioConOferta(varId, tmplId, nombre, precio, hasta, stock){
+  const arr=await leerSyncOf();
+  const oid="opo_"+varId;   // id estable por producto: re-ofertar el mismo producto pisa el anterior
+  const reg={ id:oid, tipo:'p', target:tmplId, targetName:nombre, modo:'precio', valor:precio,
+    reemplaza:true, hasta:hasta||"", stock:stock||0, pausada:false, _origen:'oportunidades' };
+  const i=arr.findIndex(o=>o.id===oid); if(i>=0) arr[i]=reg; else arr.push(reg);
+  await escribirSyncOf(arr, varId);
+}
+// quita el override de un producto (si existía) y restaura la escalera
+async function quitarPrecioOferta(varId){
+  const arr=await leerSyncOf(); const oid="opo_"+varId;
+  const filt=arr.filter(o=>o.id!==oid);
+  if(filt.length===arr.length) return;   // no había override de oportunidades para este producto
+  await escribirSyncOf(filt, varId);
+}
+
 async function cargar(){
   const cont=document.getElementById("cont"); cont.innerHTML='<div class="spin"></div>';
   try{
@@ -154,7 +187,8 @@ function render(){
     ? '<div class="empty"><div class="spin" style="margin:6px auto 12px"></div>Buscando oportunidades en el stock…</div>'
     : (OPORT_STOCK.length ? OPORT_STOCK.map(cardOpoStock).join("") : '<div class="empty">No hay oportunidades de stock ahora. Se recalculan solas con los datos de stock, precios y vencimientos.</div>');
   const osArchCards = (ESTADO.arch&&ESTADO.arch.length) ? ESTADO.arch.map(cardOpoStockArch).join("") : "";
-  const syncActivas = SYNC_OF.filter(o=>!o.pausada && (!o.hasta || o.hasta>=hoy()));
+  // las de _origen "oportunidades" ya se muestran arriba (cardOferta); acá sólo las de Configuración de precios
+  const syncActivas = SYNC_OF.filter(o=>o._origen!=='oportunidades' && !o.pausada && (!o.hasta || o.hasta>=hoy()));
   const ofCards = (activas.length||vencidas.length||syncActivas.length)
     ? (activas.concat(vencidas).map(cardOferta).join("") + syncActivas.map(cardOfertaSync).join(""))
     : '<div class="empty">Todavía no hay ofertas. Confirmá una oportunidad o agregá una manual (o creá una en Configuración de precios).</div>';
@@ -396,19 +430,41 @@ async function guardarOferta(){
   const desdeOpo=FORM._desdeOpo, desdeStock=FORM._desdeStock; delete FORM._venc;
   try{
     await setParam("eyg.ofertas", JSON.stringify(OFERTAS.map(o=>{const c={...o};delete c._venc;delete c._desdeOpo;delete c._desdeStock;return c;})));
+    // Además del panel del comercial: pisar temporalmente la escalera con el precio de oferta.
+    // Sólo ofertas de UN producto (los combos tienen precio total, no mapea a un precio por producto).
+    let pisado=false;
+    if(FORM.tipo==='oferta' && FORM.items.length===1 && FORM.precio>0){
+      const it=FORM.items[0];
+      try{
+        const pr=await EYG.rpc("product.product","read",[[it.id],["product_tmpl_id"]],LANG);
+        const tmpl=pr&&pr[0]&&pr[0].product_tmpl_id&&pr[0].product_tmpl_id[0];
+        if(tmpl){ await pisarPrecioConOferta(it.id, tmpl, it.nombre, FORM.precio, FORM.hasta, FORM.stock); pisado=true; }
+      }catch(e){}
+    }
     if(desdeOpo){ await EYG.rpc("product.product","write",[[desdeOpo],{x_oportunidad:false,x_oportunidad_archivada:false}],LANG); OPOS=OPOS.filter(x=>x.id!==desdeOpo); ARCH=ARCH.filter(x=>x.id!==desdeOpo); }
     if(desdeStock){
       OPORT_STOCK=OPORT_STOCK.filter(x=>x.id!==desdeStock);
       ESTADO.arch=ESTADO.arch.filter(x=>x.id!==desdeStock); ESTADO.ignora=ESTADO.ignora.filter(x=>x!==desdeStock);
       await guardarEstado(); refrescarStockOpo();   // ya está en oferta activa → se excluye sola y entra una nueva
     }
-    cerrarModal(); toast("Oferta guardada ✓ — ya aparece en el panel de comerciales", true); render();
+    // reflejar el precio pisado en las tarjetas sin recargar
+    if(pisado){ try{ SYNC_OF=await leerSyncOf(); }catch(e){} }
+    cerrarModal();
+    toast(pisado ? "Oferta guardada ✓ — en el panel de comerciales y aplicada al precio del producto"
+                 : "Oferta guardada ✓ — ya aparece en el panel de comerciales", true);
+    render();
   }catch(e){ toast("Error: "+e.message); }
 }
 window.eliminarOferta=async id=>{
-  if(!confirm("¿Eliminar esta oferta?")) return;
+  if(!confirm("¿Eliminar esta oferta? Vuelve el precio normal del producto.")) return;
+  const of=OFERTAS.find(x=>x.id===id);
   OFERTAS=OFERTAS.filter(o=>o.id!==id);
-  try{ await setParam("eyg.ofertas", JSON.stringify(OFERTAS)); toast("Eliminada ✓"); render(); }catch(e){ toast("Error: "+e.message); }
+  try{
+    await setParam("eyg.ofertas", JSON.stringify(OFERTAS));
+    if(of&&of.items) for(const it of of.items){ try{ await quitarPrecioOferta(it.id); }catch(e){} }
+    try{ SYNC_OF=await leerSyncOf(); }catch(e){}
+    toast("Eliminada ✓ — precio del producto restaurado"); render();
+  }catch(e){ toast("Error: "+e.message); }
 };
 window.archivar=async pid=>{
   try{ await EYG.rpc("product.product","write",[[pid],{x_oportunidad:false,x_oportunidad_archivada:true}],LANG);
