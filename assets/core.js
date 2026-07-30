@@ -45,6 +45,50 @@ window.EYG = (function(){
     const g={}; p.forEach(x=>g[x.type]=x.value); return ((+g.hour)%24)+(+g.minute)/60;
   }
 
+  /* ---- Buscadores: poder escribir sin que el campo "se escape" ----
+     Los módulos se dibujan con innerHTML. Si el oninput de la búsqueda dispara
+     el render de un bloque que CONTIENE al propio <input>, el navegador tira ese
+     input y crea uno nuevo: se pierde el foco y la posición del cursor, y a la
+     segunda letra ya no se puede seguir escribiendo. Dos remedios, siempre juntos:
+       · debounce  -> filtra/consulta recién cuando dejás de tipear
+       · repintar  -> devuelve foco y cursor al campo después del render
+     Regla para módulos nuevos: TODO campo de búsqueda lleva id, lleva su
+     value="${esc(...)}" en el template, y se engancha con EYG.buscador(). */
+  const BUSCA_MS = 280;
+
+  function debounce(fn, ms){
+    let t;
+    const d = function(){ const args=arguments, self=this; clearTimeout(t); t=setTimeout(()=>fn.apply(self,args), ms==null?BUSCA_MS:ms); };
+    d.cancel = ()=>clearTimeout(t);
+    return d;
+  }
+
+  /* Corre fn() (el render) conservando foco y cursor del campo que está activo.
+     Necesita que el campo tenga id: es lo único que sobrevive a un innerHTML. */
+  function repintar(fn){
+    const a = document.activeElement;
+    const campo = !!a && /^(INPUT|TEXTAREA)$/.test(a.tagName||"") && !!a.id;
+    let ini=null, fin=null;
+    if(campo){ try{ ini=a.selectionStart; fin=a.selectionEnd; }catch(e){} }
+    fn();
+    if(!campo) return;
+    const n = document.getElementById(a.id);
+    if(!n || n===a) return;                 // el render no lo tocó: no hay nada que restaurar
+    try{
+      n.focus({preventScroll:true});
+      // setSelectionRange no existe en type=number/date/email: por eso el try
+      if(ini!=null && n.setSelectionRange) n.setSelectionRange(ini, fin);
+    }catch(e){}
+  }
+
+  /* Handler listo para pegar en un oninput:
+       const buscar = EYG.buscador(v => { ST.q=v; render(); });
+       <input id="q" value="${esc(ST.q)}" oninput="buscar(this.value)">
+     Para búsquedas que pegan contra Odoo, pasar un ms más alto (350–400). */
+  function buscador(aplicar, ms){
+    return debounce(function(v){ repintar(()=>aplicar(v)); }, ms);
+  }
+
   /* ---- auth ---- */
   async function session(){ const {data} = await supa().auth.getSession(); return data.session; }
 
@@ -280,5 +324,5 @@ window.EYG = (function(){
     </div>`;
   }
 
-  return { supa, rpc, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana };
+  return { supa, rpc, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS };
 })();
