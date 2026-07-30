@@ -28,6 +28,23 @@ window.EYG = (function(){
   const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   const hace = d => { const t=new Date(); t.setDate(t.getDate()-d); return t.toISOString().slice(0,10); };
 
+  /* Fechas en hora de Argentina. Odoo guarda todo en UTC: si comparamos contra
+     la hora del navegador, entre las 21 y las 24 los pedidos "de hoy" caen en
+     el día siguiente. Siempre resolver el día/hora con estos helpers. */
+  const TZ = "America/Argentina/Buenos_Aires";
+  function argToday(){ return new Intl.DateTimeFormat("en-CA",{timeZone:TZ}).format(new Date()); }
+  function argParts(s){
+    const d = new Date(String(s).replace(" ","T")+"Z");
+    const p = new Intl.DateTimeFormat("en-CA",{timeZone:TZ,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(d);
+    const g={}; p.forEach(x=>g[x.type]=x.value);
+    const hh = (+g.hour)%24;
+    return {date:`${g.year}-${g.month}-${g.day}`, hour:hh, min:+g.minute, frac:hh+(+g.minute)/60, hm:String(hh).padStart(2,"0")+":"+g.minute};
+  }
+  function argNowFrac(){
+    const p = new Intl.DateTimeFormat("en-CA",{timeZone:TZ,hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(new Date());
+    const g={}; p.forEach(x=>g[x.type]=x.value); return ((+g.hour)%24)+(+g.minute)/60;
+  }
+
   /* ---- auth ---- */
   async function session(){ const {data} = await supa().auth.getSession(); return data.session; }
 
@@ -263,5 +280,5 @@ window.EYG = (function(){
     </div>`;
   }
 
-  return { supa, rpc, BASE, abs, money, esc, hace, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, sidebar, layout, homeMain, cardOfertasSemana };
+  return { supa, rpc, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana };
 })();
