@@ -309,10 +309,21 @@ function construirFlat(){
 }
 // ---- acciones de ofertas ----
 function ofFlat(){ return OFERTAS.map(o=>[o.id,o.tipo,o.target,o.modo,o.valor,(o.reemplaza||o.modo==='precio')?1:0,o.hasta||'',o.pausada?1:0,o.stock||0].join("~")).join("\n"); }
-async function guardarOfertasParams(recalc){
+// recalcTmpl: id de plantilla si la oferta es de UN producto -> recalcula solo ese (instantáneo).
+// null -> recálculo completo (oferta de categoría; toca muchos productos, tarda unos segundos).
+async function guardarOfertasParams(recalcTmpl){
   await rpc("ir.config_parameter","set_param",[KEY_OF, JSON.stringify(OFERTAS)]);
   await rpc("ir.config_parameter","set_param",[KEY_OF_FLAT, ofFlat()]);
-  if(recalc){ try{ await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}}); }catch(e){} }
+  try{
+    if(recalcTmpl){
+      const t=await rpc("product.template","read",[[recalcTmpl],["product_variant_id"]],{context:{lang:"es_AR"}});
+      const vid=t&&t[0]&&t[0].product_variant_id&&t[0].product_variant_id[0];
+      if(vid) await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR",eyg_solo_producto:vid}});
+      else await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
+    } else {
+      await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
+    }
+  }catch(e){}
 }
 window.nuevaOferta = () => { ofDraft={id:"of"+Date.now(), tipo:null, target:null, targetName:"", modo:"pct", valor:"", reemplaza:true, hasta:"", stock:"", pausada:false}; ofBusq=[]; render(); };
 window.buscarTarget = async q => {
@@ -341,11 +352,13 @@ window.guardarOferta = async () => {
   const i=OFERTAS.findIndex(o=>o.id===d.id);
   if(i>=0) OFERTAS[i]=d; else OFERTAS.push(d);
   ofDraft=null;
-  await guardarOfertasParams(true);
+  const esProd = d.tipo==='p';
+  if(!esProd) toast("Oferta guardada · aplicando a la categoría (unos segundos)…");
+  await guardarOfertasParams(esProd ? d.target : null);
   render(); toast("Oferta guardada y aplicada ✓");
 };
-window.pausarOferta = async id => { const o=OFERTAS.find(x=>x.id===id); if(!o)return; o.pausada=!o.pausada; await guardarOfertasParams(true); render(); toast(o.pausada?"Oferta pausada ✓":"Oferta reanudada ✓"); };
-window.eliminarOferta = async id => { if(!confirm("¿Eliminar esta oferta? Vuelve la escalera normal.")) return; OFERTAS=OFERTAS.filter(x=>x.id!==id); await guardarOfertasParams(true); render(); toast("Oferta eliminada ✓"); };
+window.pausarOferta = async id => { const o=OFERTAS.find(x=>x.id===id); if(!o)return; o.pausada=!o.pausada; await guardarOfertasParams(o.tipo==='p'?o.target:null); render(); toast(o.pausada?"Oferta pausada ✓":"Oferta reanudada ✓"); };
+window.eliminarOferta = async id => { const o=OFERTAS.find(x=>x.id===id); if(!o) return; if(!confirm("¿Eliminar esta oferta? Vuelve la escalera normal.")) return; const tgt=o.tipo==='p'?o.target:null; OFERTAS=OFERTAS.filter(x=>x.id!==id); await guardarOfertasParams(tgt); render(); toast("Oferta eliminada ✓"); };
 
 window.guardarTodo = async () => {
   const btn=document.querySelector(".btn-save"); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
