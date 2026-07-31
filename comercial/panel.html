@@ -140,6 +140,16 @@
   .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;padding:13px 22px;border-radius:30px;font-weight:600;font-size:14px;opacity:0;transition:.3s;z-index:80;box-shadow:0 8px 30px rgba(0,0,0,.25)}
   .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
   .toast.win{background:linear-gradient(135deg,var(--gold),#c9871f)}
+  /* confirmación de envío de WhatsApp */
+  .waconfirm{position:fixed;left:0;right:0;bottom:0;display:flex;justify-content:center;padding:16px;z-index:90;pointer-events:none;transform:translateY(120%);transition:transform .28s cubic-bezier(.22,1,.36,1)}
+  .waconfirm.on{transform:none;pointer-events:auto}
+  .waconfirm .wcbox{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 12px 40px rgba(6,65,62,.25);padding:16px 18px;max-width:440px;width:100%}
+  .waconfirm .wct{font-size:15px;font-weight:700;color:var(--ink)}
+  .waconfirm .wcsub{font-size:12px;color:var(--gris2);margin:4px 0 12px}
+  .waconfirm .wcb{display:flex;gap:10px}
+  .waconfirm .wcb button{flex:1;font-family:inherit;font-size:14px;font-weight:700;border:0;border-radius:10px;padding:12px;cursor:pointer}
+  .waconfirm .wcb .no{background:#EFF2F1;color:var(--gris)}
+  .waconfirm .wcb .si{background:var(--wa);color:#fff}
   #confetti{position:fixed;inset:0;pointer-events:none;z-index:90}
   .conf{position:absolute;width:9px;height:14px;opacity:.95;will-change:transform}
   @keyframes fall{to{transform:translateY(105vh) rotate(720deg);opacity:.6}}
@@ -353,7 +363,7 @@ const OF_META_NIVEL=5;      // clientes distintos con alguna oferta colocada que
 const OF_PTS_TOTAL=25;      // máx. de "Combos / ofertas" en nivel(); la tarjeta muestra el mismo número
 let OFERTAS=[];
 
-let ST={userId:null, contactos:[], catFiscal:[], catId:[], catProv:[], fact:{sem:0,mes:0,semPed:0,semNC:0,mesPed:0,mesNC:0}, cc:{porP:{},porCobrar:0,vencido:0,cobradoMes:0,aFacturar:0,aParcial:0,nDeud:0}, nuevos:0, contactadosHoy:new Set(), orders:{}, ofertas:{}, base:null, act:{ped:0,cli:0}, diag:{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}, alFondo:new Set(), filtro:"pend", q:""};
+let ST={userId:null, contactos:[], catFiscal:[], catId:[], catProv:[], fact:{sem:0,mes:0,semPed:0,semNC:0,mesPed:0,mesNC:0}, cc:{porP:{},porCobrar:0,vencido:0,cobradoMes:0,aFacturar:0,aParcial:0,nDeud:0}, nuevos:0, contactadosHoy:new Set(), msgs:[], orders:{}, ofertas:{}, base:null, act:{ped:0,cli:0}, diag:{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}, alFondo:new Set(), filtro:"pend", q:""};
 
 const PFIELDS=["id","name","company_type","is_company","street","street2","city","zip","state_id","phone","mobile","email","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","customer_rank"];
 
@@ -384,7 +394,8 @@ async function cargar(){
     // recencia/frecuencia + notas de hoy + cuentas corrientes (deuda) + cobrado del mes
     const [og,notas,ccLines,cobrado,aFact,facMes,facSem,ncMes,ncSem]=await Promise.all([
       rpc("sale.order","read_group",[[["partner_id","in",ids],["state","in",["sale","done"]]],["date_order:max","amount_total:sum"],["partner_id"]],{lazy:false}),
-      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",hoyStr+" 00:00:00"],["body","like","EyGCRM"]]],{fields:["res_id"],limit:0}),
+      // Mensajes de WhatsApp registrados (confirmados) de la SEMANA: [EyGWA] tipo/nuevo|seg. Incluye legacy [EyGCRM].
+      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",hace(7)+" 00:00:00"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id","date","body"],limit:0}),
       // CUENTA CORRIENTE = saldo REAL contable (líneas de cuentas por cobrar sin conciliar). Ya neteado de pagos a cuenta recibidos.
       rpc("account.move.line","search_read",[[["partner_id","in",ids],["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false]]],{fields:["partner_id","amount_residual","date_maturity"],limit:0}),
       // cobrado del mes = pagos entrantes (posted) de la cartera → base de la comisión
@@ -399,7 +410,10 @@ async function cargar(){
       rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",hace(7)]],["amount_untaxed:sum"],[]],{lazy:false})
     ]);
     ST.orders={}; og.forEach(g=>{if(g.partner_id)ST.orders[g.partner_id[0]]={ultima:g.date_order,pedidos:g.__count,total:g.amount_total};});
-    ST.contactadosHoy=new Set(notas.map(n=>n.res_id));
+    // Mensajes WA de la semana, parseados; contactados hoy = distintos con mensaje hoy
+    ST.msgs=notas.map(n=>{const p=parseWA(n.body); return p?{res_id:n.res_id,date:(n.date||"").slice(0,10),tipo:p.tipo,ng:p.ng}:null;}).filter(Boolean);
+    const _t=hoyStr.slice(0,10);
+    ST.contactadosHoy=new Set(ST.msgs.filter(m=>m.date===_t).map(m=>m.res_id));
     // ---- VENTA = facturado neto (facturas − NC) de la cartera ----
     const facM=facMes[0]?.amount_untaxed||0, facS=facSem[0]?.amount_untaxed||0;
     const ncM=ncMes[0]?.amount_untaxed||0, ncS=ncSem[0]?.amount_untaxed||0;
@@ -503,6 +517,10 @@ function saludCuenta(){
 function render(){
   const app=document.getElementById("app");
   const dHoy=ST.contactadosHoy.size, dObj=OBJ.diarioContactos;
+  const _t=hoyStr.slice(0,10), _s7=hace(7).slice(0,10);
+  const _mH=(ST.msgs||[]).filter(m=>m.date===_t);
+  const envH={total:_mH.length, nuevo:_mH.filter(m=>m.ng==="nuevo").length, seg:_mH.filter(m=>m.ng!=="nuevo").length};
+  const envS=(ST.msgs||[]).filter(m=>m.date>=_s7).length;
   const pDia=Math.min(100,Math.round(dHoy/dObj*100)), pNue=Math.min(100,Math.round(ST.nuevos/OBJ.mensualNuevos*100)), pFac=Math.min(100,Math.round(ST.fact.sem/OBJ.semanalFact*100));
   const externo=esExterno();
   const nv=nivel(); const completas=ST.contactos.filter(c=>completar(c).pct>=100).length; const incompletas=ST.contactos.length-completas;
@@ -539,7 +557,7 @@ function render(){
     </div>`}
     <div class="secrow"><h2 class="sec">🎯 Tus objetivos</h2></div>
     <div class="goals">
-      <div class="goal ${pDia>=100?'done':''}"><span class="chk">✅</span>${ring(pDia,dHoy,dObj,'var(--teal)')}<div><div class="gt">Hoy · contactos</div><div class="gn">${dHoy}/${dObj}</div><div class="gs">${dHoy>=dObj?'¡Meta cumplida! 🎉':(dObj-dHoy)+' para tu meta'}</div></div></div>
+      <div class="goal ${pDia>=100?'done':''}"><span class="chk">✅</span>${ring(pDia,dHoy,dObj,'var(--teal)')}<div><div class="gt">Hoy · contactos</div><div class="gn">${dHoy}/${dObj}</div><div class="gs">${dHoy>=dObj?'¡Meta cumplida! 🎉':(dObj-dHoy)+' para tu meta'}${envH.total?` · 📤 ${envH.total} msg`:''}</div></div></div>
       <div class="goal ${pNue>=100?'done':''}"><span class="chk">✅</span>${ring(pNue,ST.nuevos,OBJ.mensualNuevos,'var(--coral)')}<div><div class="gt">Mes · nuevos</div><div class="gn">${ST.nuevos}/${OBJ.mensualNuevos}</div><div class="gs">clientes nuevos</div></div></div>
       <div class="goal ${pFac>=100?'done':''}"><span class="chk">✅</span>${ring(pFac,pFac+'%','','var(--gold)')}<div><div class="gt">Semana · ventas</div><div class="gn">${money(ST.fact.sem)}</div><div class="gs">meta ${money(OBJ.semanalFact)} · neto</div></div></div>
     </div>
@@ -549,6 +567,8 @@ function render(){
         <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">☀️</span><div class="kmeta"><div class="kl">Hoy</div><div class="kv">${ST.diag.ventasHoy>0?money(ST.diag.ventasHoy):ST.diag.pedHoy+' ped.'}</div><div class="ks">${ST.diag.pedHoy} pedidos · ${dHoy}/${dObj} contactos</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
           <div class="prow"><div class="pl"><span>Contactos trabajados hoy · meta ${dObj}</span><b>${dHoy}/${dObj}</b></div><div class="pbar"><i style="width:${Math.min(100,pDia)}%;background:var(--teal)"></i></div></div>
+          <div class="drow"><span>📤 Mensajes enviados hoy</span><b>${envH.total} <span style="font-weight:600;color:var(--gris2);font-size:11px">${envH.nuevo} nuevos · ${envH.seg} seguim.</span></b></div>
+          <div class="drow"><span>📤 Mensajes esta semana</span><b>${envS}</b></div>
           <div class="drow"><span>🧾 Ventas facturadas hoy</span><b>${money(ST.diag.ventasHoy)}</b></div>
           <div class="drow"><span>📦 Pedidos hoy</span><b>${ST.diag.pedHoy}</b></div>
         </div></div></div>
@@ -826,7 +846,7 @@ function abrirForm(c,isNew){
       <div class="istat" id="intelStats"><div class="b"><div class="v">…</div><div class="l">cargando</div></div><div class="b"><div class="v">…</div><div class="l"></div></div><div class="b"><div class="v">…</div><div class="l"></div></div></div>
       <div id="intelProds"></div>
       ${ccBlock(c)}
-      ${(c.phone||c.mobile)?`<a class="wa-contact" href="https://api.whatsapp.com/send?phone=${waN(c.phone||c.mobile)}&text=${encodeURIComponent(msgPred(c))}" target="_blank" onclick="marcarContactado(${c.id})"><svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2z"/></svg>Contactar por WhatsApp</a>`:`<div class="wa-contact" data-off>Sin teléfono — cargalo abajo para poder contactar</div>`}
+      ${(c.phone||c.mobile)?`<a class="wa-contact" href="https://api.whatsapp.com/send?phone=${waN(c.phone||c.mobile)}&text=${encodeURIComponent(msgPred(c))}" target="_blank" onclick="confirmarEnvio(${c.id},'contacto')"><svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2z"/></svg>Contactar por WhatsApp</a>`:`<div class="wa-contact" data-off>Sin teléfono — cargalo abajo para poder contactar</div>`}
     </div>`;
   d.innerHTML=`
     <div class="dhead"><span class="x" onclick="cerrar()">✕</span>
@@ -891,7 +911,7 @@ function ccBlock(c){
       <div class="b"><div class="v" style="color:${dv>1?'#A5312E':'inherit'}">${money(dv)}</div><div class="l">vencido</div></div>
       <div class="b"><div class="v">${dias==null?'—':(dias>0?dias+'d':'al día')}</div><div class="l">mora</div></div>
     </div>
-    ${wa?`<a class="wa-contact" style="background:var(--warn)" href="https://api.whatsapp.com/send?phone=${wa}&text=${encodeURIComponent(msgCobro(c,deuda))}" target="_blank" onclick="marcarContactado(${c.id})">💰 Recordar pago por WhatsApp</a>`:''}
+    ${wa?`<a class="wa-contact" style="background:var(--warn)" href="https://api.whatsapp.com/send?phone=${wa}&text=${encodeURIComponent(msgCobro(c,deuda))}" target="_blank" onclick="confirmarEnvio(${c.id},'cobranza')">💰 Recordar pago por WhatsApp</a>`:''}
     <div style="text-align:right;margin-top:8px"><a href="${odoo('id='+c.id+'&model=res.partner&view_type=form')}" target="_blank" style="font-size:12px;font-weight:700;color:var(--teal);text-decoration:none">Ver cuenta corriente en Odoo ↗</a></div>
   </div>`;
 }
@@ -942,13 +962,32 @@ async function guardar(){
   }catch(e){ btn.disabled=false; btn.textContent=EDIT&&EDIT.isNew?"Crear contacto":"Guardar ficha"; toast("⚠️ No se pudo guardar: "+e.message); }
 }
 
-async function marcarContactado(id){
-  if(ST.contactadosHoy.has(id)) return;
-  ST.contactadosHoy.add(id); const n=ST.contactadosHoy.size;
-  try{ await rpc("res.partner","message_post",[[id]],{body:"☎️ [EyGCRM] Contacto trabajado por "+COMERCIAL, message_type:"comment"}); }catch(e){}
-  if(n===OBJ.diarioContactos){ toast("🏆 ¡Meta diaria cumplida! "+OBJ.diarioContactos+" contactos 🎉",true); confetti(); }
-  else toast("Contacto registrado ("+n+"/"+OBJ.diarioContactos+" hoy)");
-  const badge=document.querySelector(".dhead .cpct");
+/* Lee un mensaje WA del cuerpo de la nota. Nuevo formato: "[EyGWA] tipo/nuevo|seg · por X".
+   Legacy "[EyGCRM] Contacto trabajado" → contacto/seg (sin distinción nuevo). */
+function parseWA(body){ const b=(body||"").replace(/<[^>]+>/g,""); const m=b.match(/\[EyGWA\]\s*(\w+)\/(\w+)/); if(m) return {tipo:m[1],ng:m[2]}; if(/EyGCRM/.test(b)) return {tipo:"contacto",ng:"seg"}; return null; }
+
+/* Al tocar "Contactar por WhatsApp" se ABRE el chat (href) y aparece esta confirmación:
+   el contacto NO cuenta hasta que el comercial confirma que envió. Así un clic solo no infla. */
+function confirmarEnvio(id, tipo){
+  const c=ST.contactos.find(x=>x.id===id); const nom=c?(c.name||"este contacto"):"este contacto";
+  let el=document.getElementById("waconfirm");
+  if(!el){ el=document.createElement("div"); el.id="waconfirm"; el.className="waconfirm"; document.body.appendChild(el); }
+  el.innerHTML=`<div class="wcbox"><div class="wct">📤 ¿Enviaste el mensaje a <b>${esc(nom)}</b>?</div>
+    <div class="wcsub">Solo se cuenta como contacto trabajado si confirmás el envío.</div>
+    <div class="wcb"><button class="no" onclick="cerrarWAConfirm()">No, no envié</button><button class="si" onclick="registrarEnvio(${id},'${tipo}')">Sí, envié ✓</button></div></div>`;
+  requestAnimationFrame(()=>el.classList.add("on"));
+}
+function cerrarWAConfirm(){ const el=document.getElementById("waconfirm"); if(el) el.classList.remove("on"); }
+async function registrarEnvio(id, tipo){
+  cerrarWAConfirm();
+  // nuevo vs seguimiento: ¿ya le habíamos mandado un WA antes?
+  let ng="nuevo";
+  try{ const prev=await rpc("mail.message","search_count",[[["model","=","res.partner"],["res_id","=",id],["body","like","EyGWA"]]]); if(prev>0) ng="seg"; }catch(e){}
+  try{ await rpc("res.partner","message_post",[[id]],{body:"📤 [EyGWA] "+tipo+"/"+ng+" · por "+COMERCIAL, message_type:"comment"}); }catch(e){}
+  const t=hoyStr.slice(0,10); ST.msgs.push({res_id:id, date:t, tipo, ng});
+  const eraContacto=ST.contactadosHoy.has(id); ST.contactadosHoy.add(id); const n=ST.contactadosHoy.size;
+  if(!eraContacto && n===OBJ.diarioContactos){ toast("🏆 ¡Meta diaria cumplida! "+OBJ.diarioContactos+" contactos 🎉",true); confetti(); }
+  else toast("Mensaje registrado ✓ ("+(ng==="nuevo"?"nuevo contacto":"seguimiento")+")", true);
   render();
 }
 

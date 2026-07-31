@@ -100,6 +100,7 @@
   .ec .prog{height:6px;background:#EDF2F1;border-radius:4px;overflow:hidden;margin:9px 0 3px} .ec .prog>i{display:block;height:100%;border-radius:4px;transition:width .5s}
   .ec .foot{display:flex;justify-content:space-between;align-items:flex-end;margin-top:10px;gap:8px}
   .ec .foot .hoy{font-size:12px;color:var(--gris)} .ec .foot .hoy b{color:var(--teal-deep);font-weight:900;font-size:13.5px}
+  .ec .wamini{font-size:11.5px;color:var(--gris);background:#F0FAF8;border:1px solid #D6EFEA;border-radius:8px;padding:5px 9px;margin:8px 0 2px} .ec .wamini b{color:var(--teal-deep)}
   .ec .spark{display:flex;align-items:flex-end;gap:1.5px;height:26px;flex:1;max-width:120px}
   .ec .spark i{flex:1;background:var(--aqua);border-radius:2px 2px 0 0;min-height:2px} .ec .spark i.now{background:var(--coral)}
   .ec .shim{color:var(--gris2);font-size:11px;display:inline-flex;align-items:center;gap:6px}
@@ -511,7 +512,7 @@ function renderEquipo(){
     const hmax=Math.max(...d.horas,1);
     const spark=d.horas.slice(7,22).map((v,i)=>`<i class="${(i+7)===curH?'now':''}" style="height:${Math.round(v/hmax*100)}%"></i>`).join("");
     // nivel/salud/ritmo si la ficha ya cargó
-    let lv="", saludHTML="", prog="", trend="";
+    let lv="", saludHTML="", prog="", trend="", wamini="";
     if(f){
       const ext=f.perfil==="externo";
       lv = ext?"🔵 Externo":`${f.nivel.emoji} ${f.nivel.nombre}`;
@@ -522,6 +523,7 @@ function renderEquipo(){
       prog = ext?`<div class="lbl">Facturado del mes</div><div class="prog"><i style="width:${Math.min(100,cumpl)}%;background:var(--teal-med)"></i></div>`
         : `<div class="lbl">Meta del mes · ${Math.round(cumpl)}%</div><div class="prog"><i style="width:${Math.min(100,cumpl)}%;background:${pcol}"></i></div>`;
       const up=ritmo>=100; trend=`<span class="trend ${up?'up':'down'}">${up?'▲':'▼'} ${Math.round(ritmo)}%<span style="font-weight:600;color:var(--gris2)"> ritmo</span></span>`;
+      wamini=`<div class="wamini" title="Mensajes de WhatsApp confirmados">📤 <b>${f.waHoyMsg||0}</b> hoy${f.waHoyMsg?` · ${f.waHoyNuevo} nuevos`:''} <span style="color:var(--gris2)">· ${f.waSemMsg||0} sem</span></div>`;
     }else{
       saludHTML=`<div class="shim">${FICHAS_LOADING?'<span class="spin-sm"></span>':''}</div>`;
       prog=`<div class="lbl shim">${FICHAS_LOADING?'analizando…':''}</div>`;
@@ -536,6 +538,7 @@ function renderEquipo(){
       </div>
       <div class="big"><span class="v">${M(d.mes)}</span>${trend}</div>
       ${prog}
+      ${wamini}
       <div class="foot">
         <div class="hoy">Hoy <b>${M(d.hoy)}</b></div>
         <div class="spark" title="Hoy, hora por hora (7–21h)">${spark}</div>
@@ -623,7 +626,7 @@ function renderDetalle(){
 async function fichaData(uid, name){
   const t=argToday(), y=t.slice(0,4), mo=t.slice(0,7), inicioMes=mo+"-01", inicioAno=y+"-01-01";
   const cartera=await EYG.rpc("res.partner","search",[[["user_id","=",uid]]]);
-  const [facM,ncM,cobM,ml,facHist,cob3,nuevos,ord6,pf,mg]=await Promise.all([
+  const [facM,ncM,cobM,ml,facHist,cob3,nuevos,ord6,pf,mg,waMsgs]=await Promise.all([
     EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
     EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
     EYG.rpc("account.payment","read_group",[[["partner_id","in",cartera],["payment_type","=","inbound"],["state","=","posted"],["date",">=",inicioMes]],["amount:sum"],[]],{lazy:false}),
@@ -634,7 +637,14 @@ async function fichaData(uid, name){
     EYG.rpc("sale.order","search_read",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",EYG.hace(190)]]],{fields:["partner_id","date_order","amount_untaxed"],limit:0}),
     EYG.rpc("res.partner","search_read",[[["user_id","=",uid]]],{fields:["vat","phone","mobile","email","street"],limit:0}),
     EYG.rpc("sale.order.line","read_group",[[["order_id.user_id","=",uid],["order_id.state","in",["sale","done"]],["order_id.date_order",">=",inicioAno]],["margin:sum","price_subtotal:sum"],[]],{lazy:false}),
+    // mensajes WA confirmados de la semana sobre su cartera (para medir contactos por WhatsApp)
+    EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",cartera],["date",">=",EYG.hace(7)+" 00:00:00"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id","date","body"],limit:0}),
   ]);
+  // WA: hoy (contactos distintos + mensajes + nuevo/seg) y semana
+  const _wt=t.slice(0,10); const _pw=b=>{const s=(b||"").replace(/<[^>]+>/g,"");const m=s.match(/\[EyGWA\]\s*(\w+)\/(\w+)/);return m?m[2]:(/EyGCRM/.test(s)?"seg":null);};
+  const _wm=(waMsgs||[]).map(x=>({res_id:x.res_id,date:(x.date||"").slice(0,10),ng:_pw(x.body)})).filter(x=>x.ng);
+  const _wh=_wm.filter(x=>x.date===_wt);
+  const waHoyMsg=_wh.length, waHoyCont=new Set(_wh.map(x=>x.res_id)).size, waHoyNuevo=_wh.filter(x=>x.ng==="nuevo").length, waSemMsg=_wm.length;
   const factMes=(facM[0]?.amount_untaxed||0)-(ncM[0]?.amount_untaxed||0), cobradoMes=cobM[0]?.amount||0;
   let porCobrar=0,vencido=0; for(const l of ml){const r=l.amount_residual||0; if(r>0){porCobrar+=r; if(l.date_maturity&&l.date_maturity<t)vencido+=r;}}
   const fbk={}; for(const x of facHist){const m=(x.invoice_date||"").slice(0,7); if(!m)continue; fbk[m]=(fbk[m]||0)+(x.move_type==="out_refund"?-1:1)*(x.amount_untaxed||0);}
@@ -650,7 +660,7 @@ async function fichaData(uid, name){
   const rentabilidad=(mg[0]&&mg[0].price_subtotal)?(mg[0].margin/mg[0].price_subtotal):null;
   const dd=new Date(), dim=new Date(dd.getFullYear(),dd.getMonth()+1,0).getDate(), diaMesFrac=dd.getDate()/dim;
   const perfil=EYGM.perfilDe(name, avgTicket);
-  const d={nombre:name, perfil, factMes, factBaseline, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, combos:0, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad};
+  const d={nombre:name, perfil, factMes, factBaseline, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, combos:0, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg};
   d.nivel=EYGM.nivel(d); d.salud=EYGM.salud(d); d.com=EYGM.comision(d);
   return d;
 }
@@ -679,6 +689,7 @@ function fichaHTML(d){
       <div class="fstat"><div class="l">Cobrado del mes</div><div class="v">${M(d.cobradoMes)}</div></div>
       <div class="fstat"><div class="l">Vencido</div><div class="v" style="color:${vencPct>=40?'var(--coral)':vencPct>=25?'var(--gold)':'var(--ink)'}">${M(d.vencido)}</div><div class="s">${vencPct}% de ${M(d.porCobrar)}</div></div>
       <div class="fstat"><div class="l">Clientes nuevos</div><div class="v">${d.nuevos}</div><div class="s">este mes</div></div>
+      <div class="fstat"><div class="l">📤 WhatsApp hoy</div><div class="v">${d.waHoyMsg||0}<span style="font-size:12px;color:var(--gris2)"> msg</span></div><div class="s">${d.waHoyCont||0} contactos · ${d.waHoyNuevo||0} nuevos · ${d.waSemMsg||0} sem</div></div>
       <div class="fstat"><div class="l">Cartera</div><div class="v">${d.cartera}</div><div class="s">clientes</div></div>
     </div>
     ${d.perfil==="externo"?niv:`<div class="cols2"><div>${niv}</div><div>${sal}</div></div>${obj}`}
