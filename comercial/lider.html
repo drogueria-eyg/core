@@ -484,14 +484,24 @@ async function mapLimit(items, limit, fn){
   let i=0; const work=async()=>{ while(i<items.length){ const idx=i++; try{ await fn(items[idx],idx); }catch(e){} } };
   await Promise.all(Array.from({length:Math.min(limit,items.length||1)}, work));
 }
+const FICHAS_INFLIGHT=new Set();
+/* Carga la ficha de UN comercial (si no está ya cargada ni en curso). Repinta las
+   tarjetas y, si es el comercial abierto, su detalle. La usan tanto la carga de fondo
+   como el clic (que la prioriza para no esperar a la cola). */
+async function loadFicha(c){
+  if(FICHAS[c.uid] || FICHAS_INFLIGHT.has(c.uid)) return FICHAS[c.uid]||null;
+  FICHAS_INFLIGHT.add(c.uid);
+  try{
+    const d=await fichaData(c.uid,c.name);
+    if(d){ FICHAS[c.uid]=d; computeAGG(); renderEquipo(); if(SEL===c.uid) renderDetalle(); }
+    return d;
+  }catch(e){ return null; }
+  finally{ FICHAS_INFLIGHT.delete(c.uid); }
+}
 async function cargarFichas(){
   FICHAS_LOADING=true; renderEquipo();
   // De a 2 comerciales por vez (cada ficha son ~14 consultas): fiable y sin trabar.
-  // Se pinta a medida que llega cada una, así las tarjetas se enriquecen progresivamente.
-  await mapLimit(COM, 2, async c=>{
-    const d=await fichaData(c.uid,c.name).catch(()=>null);
-    if(d){ FICHAS[c.uid]=d; computeAGG(); renderEquipo(); }
-  });
+  await mapLimit(COM, 2, c=>loadFicha(c));
   computeAGG(); FICHAS_LOADING=false; renderEquipo();
 }
 // métricas comparables de una ficha
@@ -590,7 +600,14 @@ function renderEquipo(){
     <div id="detCom"></div>`;
   if(SEL!=null) renderDetalle();
 }
-function selCom(uid){ SEL=(SEL===uid?null:uid); renderEquipo(); if(SEL!=null){ const el=document.getElementById("detCom"); if(el) el.scrollIntoView({behavior:"smooth",block:"nearest"}); } }
+function selCom(uid){
+  SEL=(SEL===uid?null:uid); renderEquipo();
+  if(SEL!=null){
+    const el=document.getElementById("detCom"); if(el) el.scrollIntoView({behavior:"smooth",block:"nearest"});
+    // Prioridad: si su ficha aún no cargó, traerla YA (sin esperar a la cola de fondo).
+    if(!FICHAS[SEL]){ const c=COM.find(x=>x.uid===SEL); if(c) loadFicha(c); }
+  }
+}
 
 // ---- puntos fuertes / a mejorar / oportunidades (derivados de la ficha vs equipo) ----
 function fortDeb(d){
@@ -665,52 +682,71 @@ function renderDetalle(){
     </div>
   </div>`;
 }
+/* OPTIMIZADO: 8 consultas agregadas (antes 14, dos de ellas leían miles de registros).
+   Como el edge function contiende en Odoo con consultas pesadas, menos y más livianas
+   = mucho más rápido. Los buckets por mes salen del __range que devuelve read_group. */
 async function fichaData(uid, name){
   const t=argToday(), y=t.slice(0,4), mo=t.slice(0,7), inicioMes=mo+"-01", inicioAno=y+"-01-01";
   const cartera=await EYG.rpc("res.partner","search",[[["user_id","=",uid]]]);
-  const [facM,ncM,cobM,ml,facHist,cob3,nuevos,ord6,pf,mg,waMsgs,pedG,canG,draG]=await Promise.all([
-    EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
-    EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
-    EYG.rpc("account.payment","read_group",[[["partner_id","in",cartera],["payment_type","=","inbound"],["state","=","posted"],["date",">=",inicioMes]],["amount:sum"],[]],{lazy:false}),
+  const [movG,payG,ml,ordG,estG,pf,mg,waMsgs]=await Promise.all([
+    // facturas+NC por mes y tipo (190d) → factMes, baseline y desglose de facturación
+    EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",EYG.hace(190)]],["amount_untaxed:sum"],["invoice_date:month","move_type"]],{lazy:false}),
+    // cobros entrantes por mes (100d) → cobrado del mes + objetivo (prom 3m)
+    EYG.rpc("account.payment","read_group",[[["partner_id","in",cartera],["payment_type","=","inbound"],["state","=","posted"],["date",">=",EYG.hace(100)]],["amount:sum"],["date:month"]],{lazy:false}),
+    // saldos a cobrar sin conciliar → por cobrar / vencido
     EYG.rpc("account.move.line","search_read",[[["partner_id","in",cartera],["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false]]],{fields:["amount_residual","date_maturity"],limit:0}),
-    EYG.rpc("account.move","search_read",[[["partner_id","in",cartera],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",EYG.hace(190)]]],{fields:["invoice_date","amount_untaxed","move_type"],limit:0}),
-    EYG.rpc("account.payment","read_group",[[["partner_id","in",cartera],["payment_type","=","inbound"],["state","=","posted"],["date",">=",EYG.hace(100)]],["amount:sum"],[]],{lazy:false}),
-    EYG.rpc("res.partner","search_count",[[["user_id","=",uid],["create_date",">=",inicioMes]]]),
-    EYG.rpc("sale.order","search_read",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",EYG.hace(190)]]],{fields:["partner_id","date_order","amount_untaxed"],limit:0}),
-    EYG.rpc("res.partner","search_read",[[["user_id","=",uid]]],{fields:["vat","phone","mobile","email","street"],limit:0}),
+    // pedidos confirmados por mes y cliente (190d) → promedios, actividad, ticket y pedidos netos del mes
+    EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",EYG.hace(190)]],["amount_untaxed:sum"],["date_order:month","partner_id"]],{lazy:false}),
+    // órdenes del mes por estado → cancelados / presupuestos (desglose)
+    EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["date_order",">=",inicioMes]],["amount_untaxed:sum"],["state"]],{lazy:false}),
+    // cartera: datos de ficha + fecha de alta (para "nuevos" sin consulta aparte)
+    EYG.rpc("res.partner","search_read",[[["user_id","=",uid]]],{fields:["vat","phone","mobile","email","street","create_date"],limit:0}),
+    // margen del año → rentabilidad
     EYG.rpc("sale.order.line","read_group",[[["order_id.user_id","=",uid],["order_id.state","in",["sale","done"]],["order_id.date_order",">=",inicioAno]],["margin:sum","price_subtotal:sum"],[]],{lazy:false}),
-    // mensajes WA confirmados de la semana sobre su cartera (para medir contactos por WhatsApp)
+    // mensajes WA confirmados de la semana sobre su cartera
     EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",cartera],["date",">=",EYG.hace(7)+" 00:00:00"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id","date","body"],limit:0}),
-    // desglose de ventas del mes (por vendedor de la orden): pedidos confirmados, cancelados, presupuestos
-    EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
-    EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["state","=","cancel"],["date_order",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
-    EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["state","in",["draft","sent"]],["date_order",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
   ]);
-  // WA: hoy (contactos distintos + mensajes + nuevo/seg) y semana
+  const mkey=(r,f)=>{ const rg=r.__range&&r.__range[f]; return rg?rg.from.slice(0,7):String(r[f]||"").slice(0,7); };
+  // WhatsApp: hoy (contactos distintos + mensajes + nuevo/seg) y semana
   const _wt=t.slice(0,10); const _pw=b=>{const s=(b||"").replace(/<[^>]+>/g,"");const m=s.match(/\[EyGWA\]\s*(\w+)\/(\w+)/);return m?m[2]:(/EyGCRM/.test(s)?"seg":null);};
   const _wm=(waMsgs||[]).map(x=>({res_id:x.res_id,date:(x.date||"").slice(0,10),ng:_pw(x.body)})).filter(x=>x.ng);
   const _wh=_wm.filter(x=>x.date===_wt);
   const waHoyMsg=_wh.length, waHoyCont=new Set(_wh.map(x=>x.res_id)).size, waHoyNuevo=_wh.filter(x=>x.ng==="nuevo").length, waSemMsg=_wm.length;
-  const factMes=(facM[0]?.amount_untaxed||0)-(ncM[0]?.amount_untaxed||0), cobradoMes=cobM[0]?.amount||0;
+  // Facturación: neto por mes + desglose del mes
+  const netMes={}; let facMonto=0,facN=0,ncMonto=0,ncN=0;
+  for(const r of movG){ const m=mkey(r,"invoice_date:month"), amt=r.amount_untaxed||0, inv=r.move_type==="out_invoice";
+    netMes[m]=(netMes[m]||0)+(inv?1:-1)*amt;
+    if(m===mo){ if(inv){facMonto=amt;facN=r.__count||0;} else {ncMonto=amt;ncN=r.__count||0;} } }
+  const factMes=facMonto-ncMonto;
+  const fprev=Object.keys(netMes).filter(m=>m<mo); const factBaseline=fprev.length?fprev.reduce((s,m)=>s+netMes[m],0)/fprev.length:0;
+  // Cobros
+  let cobradoMes=0, cob3=0;
+  for(const r of payG){ const m=mkey(r,"date:month"), amt=r.amount||0; cob3+=amt; if(m===mo) cobradoMes=amt; }
+  const objetivoCobro=cob3/3*1.1;
+  // Por cobrar / vencido
   let porCobrar=0,vencido=0; for(const l of ml){const r=l.amount_residual||0; if(r>0){porCobrar+=r; if(l.date_maturity&&l.date_maturity<t)vencido+=r;}}
-  const fbk={}; for(const x of facHist){const m=(x.invoice_date||"").slice(0,7); if(!m)continue; fbk[m]=(fbk[m]||0)+(x.move_type==="out_refund"?-1:1)*(x.amount_untaxed||0);}
-  const fprev=Object.keys(fbk).filter(m=>m<mo); const factBaseline=fprev.length?fprev.reduce((s,m)=>s+fbk[m],0)/fprev.length:0;
-  const objetivoCobro=(cob3[0]?.amount||0)/3*1.1;
-  const bk={}; let sumTot=0,cnt=0; for(const o of ord6){const m=(o.date_order||"").slice(0,7); if(!m)continue; (bk[m]=bk[m]||{ped:0,cli:new Set()}); bk[m].ped++; if(o.partner_id)bk[m].cli.add(o.partner_id[0]); sumTot+=o.amount_untaxed||0; cnt++;}
+  // Actividad / ticket / pedidos netos del mes (cada fila = un cliente en un mes)
+  const bk={}; let sumTot=0,cnt=0, pedM=0,pedN=0;
+  for(const r of ordG){ const m=mkey(r,"date_order:month"), n=r.__count||0, amt=r.amount_untaxed||0;
+    (bk[m]=bk[m]||{ped:0,cli:0,tot:0}); bk[m].ped+=n; bk[m].cli+=1; bk[m].tot+=amt; sumTot+=amt; cnt+=n;
+    if(m===mo){ pedM+=amt; pedN+=n; } }
   const prev=Object.keys(bk).filter(m=>m<mo), nP=prev.length||1;
-  const promPed=Math.round(prev.reduce((s,m)=>s+bk[m].ped,0)/nP)||1, promCli=Math.round(prev.reduce((s,m)=>s+bk[m].cli.size,0)/nP)||1;
-  const cur=bk[mo]||{ped:0,cli:new Set()};
-  const actividadRatio=(Math.min(cur.ped/promPed,1)+Math.min((cur.cli.size||0)/promCli,1))/2;
+  const promPed=Math.round(prev.reduce((s,m)=>s+bk[m].ped,0)/nP)||1, promCli=Math.round(prev.reduce((s,m)=>s+bk[m].cli,0)/nP)||1;
+  const cur=bk[mo]||{ped:0,cli:0};
+  const actividadRatio=(Math.min(cur.ped/promPed,1)+Math.min((cur.cli||0)/promCli,1))/2;
   const avgTicket=cnt?sumTot/cnt:0;
+  // Estados del mes: cancelados / presupuestos
+  let canN=0,canM=0,draN=0,draM=0;
+  for(const r of estG){ const st=r.state, n=r.__count||0, amt=r.amount_untaxed||0;
+    if(st==="cancel"){canN+=n;canM+=amt;} else if(st==="draft"||st==="sent"){draN+=n;draM+=amt;} }
+  // Fichas + nuevos (de la cartera ya traída)
   const compl=pf.filter(p=>p.vat&&(p.phone||p.mobile)&&p.email&&p.street).length, fichasPct=pf.length?compl/pf.length:0;
+  const nuevos=pf.filter(p=>(p.create_date||"")>=inicioMes).length;
   const rentabilidad=(mg[0]&&mg[0].price_subtotal)?(mg[0].margin/mg[0].price_subtotal):null;
   const dd=new Date(), dim=new Date(dd.getFullYear(),dd.getMonth()+1,0).getDate(), diaMesFrac=dd.getDate()/dim;
   const perfil=EYGM.perfilDe(name, avgTicket);
-  const gN=g=>g&&g[0]?g[0].__count||0:0, gM=g=>g&&g[0]?g[0].amount_untaxed||0:0;
-  const pedMes=gM(pedG);
-  const desglose={ pedN:gN(pedG), pedM:pedMes, canN:gN(canG), canM:gM(canG), draN:gN(draG), draM:gM(draG),
-    facN:gN(facM), facMonto:gM(facM), ncN:gN(ncM), ncMonto:gM(ncM) };
-  const d={nombre:name, perfil, factMes, factBaseline, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, combos:0, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg, pedMes, desglose};
+  const desglose={ pedN, pedM, canN, canM, draN, draM, facN, facMonto, ncN, ncMonto };
+  const d={nombre:name, perfil, factMes, factBaseline, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, combos:0, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg, pedMes:pedM, desglose};
   d.nivel=EYGM.nivel(d); d.salud=EYGM.salud(d); d.com=EYGM.comision(d);
   return d;
 }
