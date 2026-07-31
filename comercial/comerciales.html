@@ -29,16 +29,103 @@
   .mrow.small{font-size:12px;color:var(--gris2);border-top:1px solid var(--line);margin-top:4px;padding-top:8px}
   .mrow.small .go{color:var(--teal);font-weight:700}
   .spin-sm{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--teal);border-radius:50%;display:inline-block;animation:spin 1s linear infinite}
+  /* organigrama (admin) */
+  .org{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:18px 20px;margin-bottom:26px}
+  .org h2{font-size:16px;font-weight:800;display:flex;align-items:center;gap:9px}
+  .org .sub{font-size:12.5px;color:var(--gris2);margin:2px 0 14px}
+  .org .pick{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+  .org select{font-family:inherit;font-size:14px;border:1px solid var(--line);border-radius:9px;padding:9px 12px;background:var(--surface);color:var(--ink)}
+  .org .lbl{font-size:12.5px;font-weight:700;color:var(--gris)}
+  .org .team{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+  .org .mem{display:inline-flex;align-items:center;gap:8px;background:#F1F7F6;border:1px solid var(--line);border-radius:22px;padding:7px 8px 7px 13px;font-size:13.5px;font-weight:700}
+  .org .mem .x{border:0;background:#e2ebe9;color:var(--gris);width:22px;height:22px;border-radius:50%;cursor:pointer;font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center}
+  .org .mem .x:hover{background:var(--coral);color:#fff}
+  .org .empty{font-size:13px;color:var(--gris2);padding:6px 0 12px}
+  .org .add{display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid var(--line);padding-top:13px}
+  .org .add button{font-family:inherit;font-size:13.5px;font-weight:700;border:0;border-radius:9px;padding:9px 15px;background:var(--teal);color:#fff;cursor:pointer}
+  .org .add button:disabled{opacity:.5;cursor:default}
+  .org .note{font-size:11.5px;color:var(--gris2);margin-top:10px}
+  .otoast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;padding:12px 20px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;z-index:50}
+  .otoast.on{opacity:1;transform:translateX(-50%) translateY(0)} .otoast.ok{background:var(--teal-deep)}
 </style>
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js"></script>
+<script src="../assets/core.js?v=3"></script>
 <script>
+let PERFIL=null;
 EYG.requireAuth(["admin","direccion","lider"], perfil=>{
-  document.body.innerHTML = EYG.layout(perfil, "panel", '<div id="ov"><div class="loading"><div class="spinner"></div>Cargando el equipo desde Odoo…</div></div>', "Panel comerciales");
+  PERFIL=perfil;
+  document.body.innerHTML = EYG.layout(perfil, "panel", '<div id="org"></div><div id="ov"><div class="loading"><div class="spinner"></div>Cargando el equipo desde Odoo…</div></div>', "Panel comerciales");
+  document.body.insertAdjacentHTML("beforeend",'<div class="otoast" id="otoast"></div>');
   cargar();
+  if(perfil.rol==="admin"||perfil.rol==="direccion") montarOrg();
 });
+let otoastT;
+function otoast(msg, ok){ const t=document.getElementById("otoast"); if(!t)return; t.textContent=msg; t.className="otoast on"+(ok?" ok":""); clearTimeout(otoastT); otoastT=setTimeout(()=>t.className="otoast",2600); }
+
+/* ===== Organigrama: asignar/quitar comerciales a un líder (hr.employee.parent_id) =====
+   Es la fuente que lee el Panel del Líder. Mover un comercial acá cambia su jefe en Odoo
+   y, en el acto, de qué equipo forma parte. Sólo admin/dirección. */
+let ORG={ emps:[], liderEmp:null };
+async function montarOrg(){
+  const box=document.getElementById("org"); if(!box)return;
+  box.innerHTML='<div class="org"><h2>🧭 Equipos comerciales</h2><div class="floading" style="padding:12px 0;color:var(--gris)"><span class="spin-sm"></span> Leyendo el organigrama…</div></div>';
+  try{
+    // empleados que tienen cuenta de usuario = candidatos a líder o miembro
+    ORG.emps = await EYG.rpc("hr.employee","search_read",[[["user_id","!=",false]]],{fields:["id","name","user_id","parent_id"]});
+    // líder por defecto: el que más subordinados-con-usuario tiene
+    const conHijos = ORG.emps.map(e=>({e, n:ORG.emps.filter(x=>x.parent_id&&x.parent_id[0]===e.id).length})).filter(x=>x.n>0).sort((a,b)=>b.n-a.n);
+    ORG.liderEmp = conHijos.length?conHijos[0].e.id:ORG.emps[0].id;
+    renderOrg();
+  }catch(e){ box.innerHTML='<div class="org"><h2>🧭 Equipos comerciales</h2><div class="empty">No pude leer el organigrama: '+EYG.esc(e.message)+'</div></div>'; }
+}
+function renderOrg(){
+  const box=document.getElementById("org"); if(!box)return; const esc=EYG.esc;
+  const emps=ORG.emps.slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const lider=emps.find(e=>e.id===ORG.liderEmp);
+  const miembros=emps.filter(e=>e.parent_id&&e.parent_id[0]===ORG.liderEmp);
+  const candidatos=emps.filter(e=>e.id!==ORG.liderEmp && !(e.parent_id&&e.parent_id[0]===ORG.liderEmp));
+  box.innerHTML=`<div class="org">
+    <h2>🧭 Equipos comerciales</h2>
+    <div class="sub">Asigná o quitá comerciales a un líder. Es lo que ve cada líder en su panel. Se guarda en Odoo al instante.</div>
+    <div class="pick"><span class="lbl">Líder:</span>
+      <select onchange="ORG.liderEmp=parseInt(this.value,10);renderOrg()">
+        ${emps.map(e=>`<option value="${e.id}" ${e.id===ORG.liderEmp?'selected':''}>${esc(e.name)}</option>`).join("")}
+      </select>
+      <span class="lbl">${miembros.length} comercial${miembros.length===1?"":"es"} en el equipo</span>
+    </div>
+    <div class="team">
+      ${miembros.length?miembros.map(m=>`<span class="mem">${esc(m.name)}<button class="x" title="Quitar del equipo" onclick="quitarMiembro(${m.id})">✕</button></span>`).join("")
+        :'<div class="empty">Este líder todavía no tiene comerciales asignados.</div>'}
+    </div>
+    <div class="add"><span class="lbl">Agregar:</span>
+      <select id="org_add">${candidatos.map(e=>`<option value="${e.id}">${esc(e.name)}${e.parent_id?' · hoy con '+esc(e.parent_id[1]):' · sin líder'}</option>`).join("")}</select>
+      <button onclick="addMiembro()" ${candidatos.length?'':'disabled'}>＋ Agregar al equipo</button>
+    </div>
+    <div class="note">Agregar mueve al comercial desde su líder actual (si tenía). Quitar lo deja sin líder hasta reasignarlo.</div>
+  </div>`;
+}
+async function addMiembro(){
+  const sel=document.getElementById("org_add"); if(!sel||!sel.value)return;
+  const empId=parseInt(sel.value,10); const emp=ORG.emps.find(e=>e.id===empId);
+  const lider=ORG.emps.find(e=>e.id===ORG.liderEmp);
+  try{
+    await EYG.rpc("hr.employee","write",[[empId],{parent_id:ORG.liderEmp}]);
+    if(emp) emp.parent_id=[ORG.liderEmp, lider?lider.name:""];
+    otoast((emp?emp.name:"Comercial")+" → equipo de "+(lider?lider.name.split(" ")[0]:"")+" ✓", true);
+    renderOrg();
+  }catch(e){ otoast("No se pudo asignar: "+e.message); }
+}
+async function quitarMiembro(empId){
+  const emp=ORG.emps.find(e=>e.id===empId); if(!emp)return;
+  try{
+    await EYG.rpc("hr.employee","write",[[empId],{parent_id:false}]);
+    emp.parent_id=false;
+    otoast((emp.name)+" quitado del equipo ✓", true);
+    renderOrg();
+  }catch(e){ otoast("No se pudo quitar: "+e.message); }
+}
 async function cargar(){
   let sellers=[];
   try{
