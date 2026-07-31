@@ -67,6 +67,9 @@
   .ofbitem{padding:8px 11px;font-size:13px;cursor:pointer;border-top:1px solid var(--line)}
   .ofbitem:hover{background:#f2faf8}
   .oftgtsel{font-weight:700;color:var(--teal-deep);display:flex;align-items:center;gap:10px;padding:8px 0}
+  .rentbox{margin:2px 0 4px;padding:10px 13px;border-radius:10px;font-size:13px;background:#f3f8f7;border:1px solid var(--line);color:var(--ink);line-height:1.5}
+  .rentbox.ok{background:#e7f6ec;border-color:#bfe6cc} .rentbox.low{background:#fdf4e3;border-color:#f0dcae} .rentbox.neg{background:#fbeceb;border-color:#f2c9c6}
+  .rentbox b{font-weight:800} .rentbox .sub2{color:var(--gris2);font-size:11.5px;font-weight:600}
   /* panel éticos por escala */
   .escwrap{padding:12px 16px 6px}
   .escbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
@@ -102,6 +105,7 @@ const MODOS=[["embalaje","Por embalaje (fracciona de la caja real a la caja del 
 const DEF={genera:false, recargo:0.80, piso:0.30, modo:"fijo", cortes:[1,10,20,40], desc:[0,0.07,0.14,0.20], unidad:"unidades", ivaCosto:0};
 let CATS=[], byId={}, CFG={v:1,reglas:{}}, editId=null, abiertos={}, dirty=false;
 let OFERTAS=[], vista="reglas", ofDraft=null, ofBusq=[], ofBusqQ="";
+let ofCosto=null, ofTramos=null;   // costo (recencia) y escalera del producto elegido, para rentabilidad en vivo
 const KEY_ESC="eyg.eticos_escala";       // {subcatId:'A'|'B'} clasificación de labs éticos
 let ESCALA={}, escFiltro="todos", editEsc=null, editLab=null;   // clasificación, filtro, regla de escala en edición, regla de lab en edición
 const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
@@ -178,7 +182,7 @@ window.setVista = v => { vista=v; ofDraft=null; ofBusq=[]; ofBusqQ=""; render();
 function render(){
   const cont=document.getElementById("cont");
   const tabs=`<div class="cptabs"><button class="cptab ${vista==='reglas'?'on':''}" onclick="setVista('reglas')">📊 Reglas de precio</button><button class="cptab ${vista==='ofertas'?'on':''}" onclick="setVista('ofertas')">🏷️ Ofertas temporales${OFERTAS.length?' · '+OFERTAS.length:''}</button></div>`;
-  if(vista==='ofertas'){ cont.innerHTML=tabs+renderOfertas(); return; }
+  if(vista==='ofertas'){ cont.innerHTML=tabs+renderOfertas(); if(ofDraft&&ofDraft.tipo==='p') setTimeout(actualizarRent,0); return; }
   const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA","ETICOS"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
   const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardarTodo()">💾 Guardar cambios</button><button class="btn-recalc" onclick="recalcularAhora()">⚡ Recalcular precios ahora</button>${dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>'}</div>`;
   const intro=`<div class="intro"><b>Reglas del motor de precios.</b> Definí por categoría (y subcategoría) cómo se arma la escalera: <b>recargo</b> sobre el costo, <b>piso</b> de margen, <b>modo</b> de cortes (embalaje / fijo), <b>cortes</b> y <b>descuento por tramo</b>, <b>unidad</b> e <b>IVA al costo</b>. <b>La subcategoría pisa a la categoría</b>; si no tiene regla propia, hereda del padre. <b>Al guardar, el motor recalcula todos los precios al instante.</b> El costo lo toma solo (más reciente entre manual, compra y estándar); la caja cerrada se maneja por producto en el Maestro.</div>`;
@@ -327,25 +331,27 @@ function ofFormHTML(){
   const d=ofDraft;
   const tgtTxt = d.target ? (d.tipo==='p'?"🔖 ":"📂 ")+esc(d.targetName) : "";
   const results = (!d.target && ofBusq.length) ? `<div class="ofbusq">${ofBusq.map(r=>`<div class="ofbitem" onclick="elegirTarget('${r.k}',${r.id},'${esc((r.name||'').replace(/'/g,''))}')">${r.k==='p'?"🔖":"📂"} ${esc(r.name)}${r.sku?(" · "+esc(r.sku)):""}</div>`).join("")}</div>` : "";
+  const rent = d.tipo==='p' ? `<div class="fld2" style="margin-bottom:2px"><label>Rentabilidad final en vivo</label><div id="of-rent" class="rentbox">Calculando el costo del producto…</div><div class="hint">se actualiza al mover el descuento · sobre el costo actual (neto, sin IVA)</div></div>` : "";
   return `<div class="form" onclick="event.stopPropagation()" style="margin-top:0">
     <div class="fld2" style="margin-bottom:12px"><label>Aplicar a (categoría, subcategoría o producto)</label>
-      ${d.target ? `<div class="oftgtsel">${tgtTxt} <button class="btn-mini" onclick="ofDraft.target=null;ofDraft.targetName='';ofBusq=[];ofBusqQ='';render()">cambiar</button></div>`
+      ${d.target ? `<div class="oftgtsel">${tgtTxt} <button class="btn-mini" onclick="ofDraft.target=null;ofDraft.targetName='';ofBusq=[];ofBusqQ='';ofCosto=null;ofTramos=null;render()">cambiar</button></div>`
                  : `<input type="text" id="of-busq" placeholder="Escribí nombre o SKU…" value="${esc(ofBusqQ)}" oninput="buscarTarget(this.value)" autocomplete="off">${results}`}
     </div>
     <div class="grid" style="grid-template-columns:repeat(4,1fr)">
-      <div class="fld2"><label>Tipo de descuento</label><select id="of-modo" onchange="ofDraft.modo=this.value">
+      <div class="fld2"><label>Tipo de descuento</label><select id="of-modo" onchange="ofDraft.modo=this.value;ofDraft.valor='';render()">
         <option value="pct" ${d.modo==='pct'?'selected':''}>Porcentaje (%)</option>
         <option value="monto" ${d.modo==='monto'?'selected':''}>Monto fijo ($ off)</option>
         <option value="precio" ${d.modo==='precio'?'selected':''}>Precio fijo ($)</option>
       </select><div class="hint">precio fijo = reemplaza siempre</div></div>
-      <div class="fld2"><label>Valor</label><div class="inpu"><input type="number" id="of-valor" step="0.01" value="${d.valor?(d.modo==='pct'?pct(d.valor):d.valor):''}"><span class="suf">${d.modo==='pct'?'%':'$'}</span></div><div class="hint">${d.modo==='pct'?'ej: 20':'ej: 1500'}</div></div>
-      <div class="fld2"><label>Cómo aplica</label><select id="of-reemplaza" ${d.modo==='precio'?'disabled':''}>
+      <div class="fld2"><label>Valor</label><div class="inpu"><input type="number" id="of-valor" step="0.01" value="${d.valor?(d.modo==='pct'?pct(d.valor):d.valor):''}" oninput="ofDraft.valor=(this.value===''?'':(ofDraft.modo==='pct'?parseFloat(this.value)/100:parseFloat(this.value)));actualizarRent()"><span class="suf">${d.modo==='pct'?'%':'$'}</span></div><div class="hint">${d.modo==='pct'?'ej: 20':'ej: 1500'}</div></div>
+      <div class="fld2"><label>Cómo aplica</label><select id="of-reemplaza" ${d.modo==='precio'?'disabled':''} onchange="ofDraft.reemplaza=this.value==='1';actualizarRent()">
         <option value="1" ${(d.reemplaza||d.modo==='precio')?'selected':''}>Reemplaza (precio único desde 1)</option>
         <option value="0" ${(!d.reemplaza&&d.modo!=='precio')?'selected':''}>Pisa la escalera (descuenta cada tramo)</option>
       </select><div class="hint">reemplaza = un solo precio</div></div>
       <div class="fld2"><label>Vigencia hasta</label><input type="date" id="of-hasta" value="${esc(d.hasta||'')}"><div class="hint">vacío = sin vencimiento</div></div>
       <div class="fld2"><label>Stock a ofertar (informativo)</label><input type="number" id="of-stock" min="0" value="${d.stock||''}"><div class="hint">no se descuenta con ventas · lo controlás vos</div></div>
     </div>
+    ${rent}
     <div class="acts"><button class="cancel" onclick="ofDraft=null;render()">Cancelar</button><button class="ok" onclick="guardarOferta()">Guardar oferta</button></div>
   </div>`;
 }
@@ -454,8 +460,8 @@ async function guardarOfertasParams(recalcTmpl){
     }
   }catch(e){}
 }
-window.nuevaOferta = () => { ofDraft={id:"of"+Date.now(), tipo:null, target:null, targetName:"", modo:"pct", valor:"", reemplaza:true, hasta:"", stock:"", pausada:false}; ofBusq=[]; ofBusqQ=""; render(); };
-window.editarOferta = id => { const o=OFERTAS.find(x=>x.id===id); if(!o) return; ofDraft=JSON.parse(JSON.stringify(o)); ofBusq=[]; if(typeof ofBusqQ!=='undefined') ofBusqQ=""; render(); const el=document.querySelector('.form'); if(el) el.scrollIntoView({behavior:'smooth',block:'center'}); };
+window.nuevaOferta = () => { ofDraft={id:"of"+Date.now(), tipo:null, target:null, targetName:"", modo:"pct", valor:"", reemplaza:true, hasta:"", stock:"", pausada:false}; ofBusq=[]; ofBusqQ=""; ofCosto=null; ofTramos=null; render(); };
+window.editarOferta = async id => { const o=OFERTAS.find(x=>x.id===id); if(!o) return; ofDraft=JSON.parse(JSON.stringify(o)); ofBusq=[]; if(typeof ofBusqQ!=='undefined') ofBusqQ=""; ofCosto=null; ofTramos=null; render(); const el=document.querySelector('.form'); if(el) el.scrollIntoView({behavior:'smooth',block:'center'}); if(o.tipo==='p'&&o.target){ await cargarRentProducto(o.target); actualizarRent(); } };
 /* Antes pegaba a Odoo en cada tecla y después de cada respuesta re-renderizaba y
    reescribía el input a mano (el.value=q), lo que mandaba el cursor al final.
    Ahora: se espera a que dejes de tipear, el template conserva lo escrito con
@@ -471,7 +477,65 @@ window.buscarTarget = EYG.debounce(async q => {
   ofBusq=cats.concat(prods);
   EYG.repintar(render);
 }, 350);
-window.elegirTarget = (k,id,name) => { if(!ofDraft) return; ofDraft.tipo=k; ofDraft.target=id; ofDraft.targetName=name; ofBusq=[]; ofBusqQ=""; render(); };
+window.elegirTarget = async (k,id,name) => {
+  if(!ofDraft) return;
+  ofDraft.tipo=k; ofDraft.target=id; ofDraft.targetName=name; ofBusq=[]; ofBusqQ="";
+  ofCosto=null; ofTramos=null; render();
+  if(k==='p'){ await cargarRentProducto(id); actualizarRent(); }
+};
+// costo (misma recencia que el motor: manual > última compra > estándar) + escalera del producto
+async function cargarRentProducto(tmplId){
+  try{
+    const t=await rpc("product.template","read",[[tmplId],["product_variant_id"]],{context:{lang:"es_AR"}});
+    const vid=t&&t[0]&&t[0].product_variant_id&&t[0].product_variant_id[0];
+    let costo=0;
+    if(vid){
+      const pv=await rpc("product.product","read",[[vid],["x_costo_manual","x_costo_manual_date","standard_price"]],{context:{lang:"es_AR"}});
+      const p=(pv&&pv[0])||{};
+      const m=p.x_costo_manual||0, md=p.x_costo_manual_date||null;
+      let uc=0, uf=null;
+      try{
+        const pol=await rpc("purchase.order.line","search_read",[[["product_id","=",vid],["state","in",["purchase","done"]],["product_qty",">",0]],["price_subtotal","product_qty","date_order"]],{limit:1, order:"date_order desc", context:{lang:"es_AR"}});
+        if(pol&&pol[0]&&pol[0].price_subtotal>0){ uc=pol[0].price_subtotal/(pol[0].product_qty||1); uf=pol[0].date_order||null; }
+      }catch(e){}
+      if(m>0 && ((!uf)||(md&&md>=uf))) costo=m;
+      else if(uc>0) costo=uc;
+      else if((p.standard_price||0)>0) costo=p.standard_price;
+    }
+    ofCosto=costo>0?costo:null;
+    const its=await rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","=",tmplId],["compute_price","=","fixed"]],["min_quantity","fixed_price"]],{limit:50,context:{lang:"es_AR"}});
+    its.sort((a,b)=>a.min_quantity-b.min_quantity);
+    ofTramos=its.map(i=>({q:i.min_quantity,p:i.fixed_price}));
+  }catch(e){ ofCosto=null; ofTramos=null; }
+}
+function actualizarRent(){
+  const box=document.getElementById("of-rent"); if(!box||!ofDraft) return;
+  const modo=(document.getElementById("of-modo")||{}).value||ofDraft.modo;
+  const valRaw=parseFloat((document.getElementById("of-valor")||{}).value);
+  const rem = modo==='precio' ? true : ((document.getElementById("of-reemplaza")||{}).value==='1');
+  const costo=ofCosto;
+  const M=n=>"$"+Math.round(n).toLocaleString("es-AR");
+  if(costo==null){ box.className="rentbox"; box.innerHTML="No hay costo cargado en Odoo para este producto."; return; }
+  if(!(valRaw>0)){ box.className="rentbox"; box.innerHTML=`Cargá el valor para ver la rentabilidad. <span class="sub2">costo ${M(costo)}</span>`; return; }
+  const base=(ofTramos&&ofTramos.length)?ofTramos[0].p:null;   // tramo 1 (precio a cantidad 1)
+  const mrg=pr=>pr>0?Math.round((pr-costo)/pr*100):-999;
+  const cls=mm=>mm<0?"neg":(mm<15?"low":"ok");
+  const finalDe=pr=>modo==='precio'?valRaw:(modo==='monto'?pr-valRaw:pr*(1-valRaw/100));
+  if(modo!=='precio' && base==null){ box.className="rentbox"; box.innerHTML="Este producto todavía no tiene escalera. Usá <b>Precio fijo</b> para ver la rentabilidad."; return; }
+  if(rem || modo==='precio'){
+    const pf=modo==='precio'?valRaw:finalDe(base);
+    const mm=mrg(pf);
+    box.className="rentbox "+cls(mm);
+    box.innerHTML=`Precio único <b>${M(pf)}</b> · Rentabilidad <b>${mm}%</b> <span class="sub2">(${M(pf-costo)}/u · costo ${M(costo)})</span>${mm<0?' ⚠️ perdés plata':(mm<15?' · margen ajustado':'')}`;
+  } else {
+    const t1=ofTramos[0], tN=ofTramos[ofTramos.length-1];
+    const p1=finalDe(t1.p), pN=finalDe(tN.p);
+    const m1=mrg(p1), mN=mrg(pN);
+    box.className="rentbox "+cls(mN);
+    const rango = ofTramos.length>1 ? `de <b>${m1}%</b> (${t1.q}u → ${M(p1)}) a <b>${mN}%</b> (${tN.q}u → ${M(pN)})` : `<b>${m1}%</b> (${M(p1)})`;
+    box.innerHTML=`Sobre la escalera · Rentabilidad ${rango} <span class="sub2">· costo ${M(costo)}</span>${mN<0?' ⚠️ el último tramo pierde plata':(mN<15?' · último tramo ajustado':'')}`;
+  }
+}
 window.guardarOferta = async () => {
   const d=ofDraft; if(!d) return;
   if(!d.target){ alert("Elegí a qué aplica: categoría, subcategoría o producto."); return; }
