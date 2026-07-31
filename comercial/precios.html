@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js"></script>
+<script src="../assets/core.js?v=2"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF; --agua:#E2F1EF;
@@ -96,7 +96,7 @@
   <div class="topbar">
     <span class="mono">E<span class="y">y</span>G</span><span class="tag">Core</span>
     <a href="../index.html" style="color:#fff;text-decoration:none;font-size:13px;font-weight:600;opacity:.9">← Inicio</a>
-    <div class="who"><b>Rentabilidad y Precios</b><span>escalas de LISTA 1 EyG · Hosp. + Farmacopea + Descartables + Perfumería + Equipos</span></div>
+    <div class="who"><b>Rentabilidad y Precios</b><span>escalas de LISTA 1 EyG · Hosp. + Farmacopea + Descartables + Perfumería + Equipos + Éticos</span></div>
   </div>
   <div class="wrap"><div id="app"><div class="loading"><div class="spinner"></div>Leyendo precios y costos de Odoo…</div></div></div>
   <div class="toast" id="toast"></div>
@@ -160,19 +160,21 @@ let ST={items:[], q:"", cat:"todos", sub:"todos", salud:"todos", sinStock:false,
 
 async function cargar(){
   try{
-    // 1) Hospitalarios (24) + Farmacopea (10) + Descartables (51) + Perfumería (11) + Equipos Médicos (369)
-    const prods=await rpc("product.product","search_read",
-      [["|","|","|","|",["categ_id","child_of",24],["categ_id","child_of",10],["categ_id","child_of",51],["categ_id","child_of",11],["categ_id","child_of",369]]],
-      {fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","qty_available","x_costo_manual","x_costo_manual_date"], context:ES, limit:5000});
-    if(!prods.length){ document.getElementById("app").innerHTML='<div class="empty">No hay productos para mostrar.</div>'; return; }
-    const allTmpl=[...new Set(prods.map(p=>p.product_tmpl_id&&p.product_tmpl_id[0]).filter(Boolean))];
-    // 2) escaleras (tramos) en LISTA 1 EyG de esos templates
+    // 1) TODAS las escaleras de la LISTA (para saber qué templates tienen escalera)
     const raw=await rpc("product.pricelist.item","search_read",
-      [[["pricelist_id","=",LISTA],["applied_on","=","1_product"],["min_quantity",">",0],["product_tmpl_id","in",allTmpl]]],
-      {fields:["product_tmpl_id","min_quantity","fixed_price","compute_price"], limit:20000});
+      [[["pricelist_id","=",LISTA],["applied_on","=","1_product"],["min_quantity",">",0]]],
+      {fields:["product_tmpl_id","min_quantity","fixed_price","compute_price"], limit:40000});
     const porT={};
     for(const it of raw){ if(!it.product_tmpl_id) continue; const t=it.product_tmpl_id[0];
       (porT[t]=porT[t]||[]).push({q:it.min_quantity||0, p:it.fixed_price, tipo:it.compute_price}); }
+    const conEsc=Object.keys(porT).map(Number);
+    // 2) Hosp(24)+Farma(10)+Descart(51)+Perfum(11)+Equipos(369) completos + Éticos(12) SOLO con stock o con escalera
+    //    (los éticos son 17k del catálogo Alfabeta; sin este filtro colgaría el navegador)
+    const domBase=["|","|","|","|",["categ_id","child_of",24],["categ_id","child_of",10],["categ_id","child_of",51],["categ_id","child_of",11],["categ_id","child_of",369]];
+    const domEticos=["&",["categ_id","child_of",12],"|",["qty_available",">",0],["product_tmpl_id","in",conEsc]];
+    const prods=await rpc("product.product","search_read",[["|"].concat(domBase,domEticos)],
+      {fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","qty_available","x_costo_manual","x_costo_manual_date"], context:ES, limit:8000});
+    if(!prods.length){ document.getElementById("app").innerHTML='<div class="empty">No hay productos para mostrar.</div>'; return; }
     // 3) última compra de TODOS (para el margen y para comparar contra el costo manual)
     const pid2=prods.map(p=>p.id);
     const ult={};
@@ -211,6 +213,11 @@ async function cargar(){
   }catch(e){ document.getElementById("app").innerHTML='<div class="errbox"><b>No pude leer los datos.</b><br>'+esc(e.message)+'</div>'; }
 }
 
+/* render() redibuja TODA la vista, incluido el propio campo de búsqueda. Sin
+   debounce eso rearmaba la tabla entera en cada tecla y el input se perdía el
+   foco. EYG.buscador filtra al soltar la tecla y devuelve foco + cursor. */
+window.buscar = EYG.buscador(v => { ST.q=v; render(); });
+
 function render(){
   const app=document.getElementById("app");
   let arr=ST.items;
@@ -235,7 +242,7 @@ function render(){
   const pill=(k,lab,color)=>`<div class="chip ${ST.salud===k?'on':''}" onclick="ST.salud='${ST.salud===k?'todos':k}';render()"><span class="dot" style="background:${color}"></span> ${lab} <b>${cntS[k]}</b></div>`;
   const saludbar=`<div class="controls" style="margin:-4px 0 14px"><span style="font-size:12px;color:var(--gris);font-weight:700;align-self:center">Salud (peor tramo):</span><div class="chip ${ST.salud==='todos'?'on':''}" onclick="ST.salud='todos';render()">Todas</div>${pill('ok2','≥40%','var(--m-ok2)')}${pill('ok','33–40%','var(--m-ok)')}${pill('warn','27–33%','var(--m-warn)')}${pill('bad','&lt;27% piso','var(--m-bad)')}</div>`;
   // ===== navegación por categoría (2 niveles) =====
-  const ORDEN=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS"];
+  const ORDEN=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ETICOS"];
   const tops=[...new Set(ST.items.map(x=>x.catTop))].sort((a,b)=>{const ia=ORDEN.indexOf(a),ib=ORDEN.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib)||a.localeCompare(b);});
   const cntTop=c=>ST.items.filter(x=>x.catTop===c).length;
   const catRow=`<div class="controls catrow"><div class="chip ${ST.cat==='todos'?'on':''}" onclick="ST.cat='todos';ST.sub='todos';render()">Todas <b>${ST.items.length}</b></div>`+
@@ -269,7 +276,7 @@ function render(){
   }).join("");
   app.innerHTML=`
     <div class="hero"><div><h1>Rentabilidad y precios</h1>
-      <div class="msg">Hospitalarios, Farmacopea, Descartables, Perfumería y Equipos Médicos. Los que tienen escalera muestran su margen por tramo; los que no, quedan marcados <b>“sin escalera”</b>. Podés fijar un <b>costo manual</b> en cada fila (💾): <b>gana el más reciente</b> entre ese costo y la última compra — si después entra una compra posterior, la compra vuelve a pisar.</div></div>
+      <div class="msg">Hospitalarios, Farmacopea, Descartables, Perfumería, Equipos Médicos y Éticos (de éticos solo los que tienen stock o escalera, no el catálogo entero). Los que tienen escalera muestran su margen por tramo; los que no, quedan marcados <b>“sin escalera”</b>. Podés fijar un <b>costo manual</b> en cada fila (💾): <b>gana el más reciente</b> entre ese costo y la última compra — si después entra una compra posterior, la compra vuelve a pisar.</div></div>
     </div>
     <div class="kpis">
       <div class="kpi"><div class="l">Productos</div><div class="v">${nProd}</div></div>
@@ -280,7 +287,7 @@ function render(){
     </div>
     ${saludbar}
     <div class="controls">
-      <div class="search"><input placeholder="Buscar por nombre o SKU…" value="${esc(ST.q)}" oninput="ST.q=this.value;render()"></div>
+      <div class="search"><input id="q" placeholder="Buscar por nombre o SKU…" value="${esc(ST.q)}" oninput="buscar(this.value)"></div>
       <div class="chip ${ST.conStock?'on':''}" onclick="ST.conStock=!ST.conStock;ST.sinStock=false;render()">📦 Con stock <b>${nConStock}</b></div>
       <div class="chip ${ST.sinStock?'on':''}" onclick="ST.sinStock=!ST.sinStock;ST.conStock=false;render()">📦 Sin stock <b>${nSinStock}</b></div>
       <div class="chip ${ST.sinEsc?'on':''}" onclick="ST.sinEsc=!ST.sinEsc;render()">🏷️ Sin escalera <b>${nSinEsc}</b></div>
