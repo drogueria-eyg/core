@@ -15,6 +15,16 @@
   .kpi .v{font-size:22px;font-weight:900;letter-spacing:-.5px;margin-top:3px}
   .kpi .s{font-size:11.5px;color:var(--gris2);margin-top:2px}
   .kpi.hoy{background:linear-gradient(145deg,var(--teal),var(--teal-deep));color:#fff} .kpi.hoy .l,.kpi.hoy .s{color:#d9f1ee}
+  .kpi.period{cursor:pointer;transition:transform .12s,box-shadow .12s,border-color .12s;position:relative}
+  .kpi.period:hover{transform:translateY(-2px);box-shadow:0 10px 26px rgba(6,65,62,.13);border-color:var(--teal-med)}
+  .kpi.period.sel{background:linear-gradient(145deg,var(--teal),var(--teal-deep));color:#fff;border-color:var(--teal)}
+  .kpi.period.sel .l,.kpi.period.sel .s{color:#d9f1ee}
+  .kpi.period .pick{position:absolute;top:10px;right:12px;font-size:11px;opacity:.55}
+  .kpi.period.sel .pick{opacity:1}
+  /* barras del gráfico por período */
+  .chartbox .segs{display:inline-flex;gap:0;background:#EDF2F1;border-radius:9px;padding:3px;margin-left:auto}
+  .chartbox .segs button{border:0;background:none;font-family:inherit;font-size:12px;font-weight:700;color:var(--gris);padding:5px 11px;border-radius:7px;cursor:pointer}
+  .chartbox .segs button.on{background:var(--surface);color:var(--teal-deep);box-shadow:0 1px 3px rgba(0,0,0,.1)}
   /* chart */
   .chartbox{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:18px 20px 12px;box-shadow:var(--shadow);margin-bottom:22px}
   .chartbox .ch-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px}
@@ -187,6 +197,9 @@ const M=EYG.money, esc=EYG.esc;
 const COLORS=["#048782","#EC8B5E","#0AA89F","#E5A93B","#5FC8BF","#B0413E","#6E8B86","#04635F"];
 let COM=[], UIDS=[], DATA=[], TODAY=[], PRODS=[], FICHAS={}, chartTimer=null;
 let PERFIL=null, LIDER=null;   // LIDER = {uid, name, empId, team:[{uid,name}]}
+let PERIODO="hoy", SERIES={};  // período elegido para el gráfico + series por día/mes cacheadas
+const MESES=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+const DIASSEM=["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
 
 EYG.requireAuth(["lider","admin","direccion"], perfil=>{
   PERFIL=perfil;
@@ -333,16 +346,63 @@ function renderProds(){
 function tot(k){ return DATA.reduce((s,d)=>s+d[k],0); }
 function renderKpis(){
   const box=document.getElementById("kpis"); if(!box)return;
+  const card=(k,lab,val,sub)=>`<div class="kpi period ${PERIODO===k?'sel':''}" onclick="setPeriodo('${k}')">
+    <span class="pick">${PERIODO===k?'📊 en el gráfico':'ver gráfico'}</span>
+    <div class="l">${lab}</div><div class="v">${val}</div><div class="s">${sub||'&nbsp;'}</div></div>`;
   box.innerHTML=`<div class="kpis">
-    <div class="kpi hoy"><div class="l">Hoy · equipo</div><div class="v">${M(tot("hoy"))}</div><div class="s">${TODAY.length} pedidos</div></div>
-    <div class="kpi"><div class="l">Esta semana</div><div class="v">${M(tot("sem"))}</div></div>
-    <div class="kpi"><div class="l">Este mes</div><div class="v">${M(tot("mes"))}</div></div>
-    <div class="kpi"><div class="l">Este año</div><div class="v">${M(tot("ano"))}</div></div>
+    ${card("hoy","Hoy · equipo",M(tot("hoy")),TODAY.length+" pedidos")}
+    ${card("sem","Esta semana",M(tot("sem")),"por día")}
+    ${card("mes","Este mes",M(tot("mes")),"por día")}
+    ${card("ano","Este año",M(tot("ano")),"por mes")}
     <div class="kpi"><div class="l">Comerciales activos hoy</div><div class="v">${DATA.filter(d=>d.hoy>0).length}<span style="font-size:14px;color:var(--gris2)"> / ${DATA.length}</span></div></div>
   </div>`;
 }
-function renderChart(){
-  const box=document.getElementById("chart"); if(!box)return;
+async function setPeriodo(p){
+  if(p===PERIODO) return; PERIODO=p; renderKpis();
+  if(p!=="hoy" && !SERIES[p]){ renderChart(); try{ await cargarSerie(p); }catch(e){} }
+  renderChart();
+}
+/* Serie temporal del equipo para el período: semana→por día, mes→por día, año→por mes.
+   Odoo read_group agrupa por fecha y devuelve el rango exacto de cada bucket en __range. */
+async function cargarSerie(p){
+  if(SERIES[p]) return SERIES[p];
+  const t=argToday(), y=t.slice(0,4), mo=t.slice(0,7);
+  const dom=(desde,gran)=>EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde+" 00:00:00"]],["amount_untaxed:sum"],["date_order:"+gran]],{lazy:false});
+  const bucket=(g,gran)=>{ const m={}; g.forEach(r=>{ const rg=r.__range&&r.__range["date_order:"+gran]; const f=rg?rg.from.slice(0,10):null; if(f) m[f]=(m[f]||0)+(r.amount_untaxed||0); }); return m; };
+  if(p==="sem"){
+    const d=new Date(t+"T00:00:00"); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow);
+    const ini=lun.toISOString().slice(0,10); const m=bucket(await dom(ini,"day"),"day"); const arr=[];
+    for(let i=0;i<7;i++){ const dd=new Date(lun); dd.setDate(lun.getDate()+i); const k=dd.toISOString().slice(0,10); arr.push({label:DIASSEM[i], val:m[k]||0, cur:k===t}); }
+    return SERIES.sem=arr;
+  }
+  if(p==="mes"){
+    const ini=mo+"-01"; const m=bucket(await dom(ini,"day"),"day");
+    const [yy,mm]=mo.split("-").map(Number); const dim=new Date(yy,mm,0).getDate(); const arr=[];
+    for(let dd=1;dd<=dim;dd++){ const k=`${mo}-${String(dd).padStart(2,"0")}`; arr.push({label:String(dd), val:m[k]||0, cur:k===t}); }
+    return SERIES.mes=arr;
+  }
+  if(p==="ano"){
+    const m=bucket(await dom(y+"-01-01","month"),"month"); const arr=[];
+    for(let mm=1;mm<=12;mm++){ const k=`${y}-${String(mm).padStart(2,"0")}`; arr.push({label:MESES[mm-1], val:m[k+"-01"]||0, cur:k===mo}); }
+    return SERIES.ano=arr;
+  }
+}
+// gráfico de barras (semana/mes/año). viewBox normal para que las etiquetas no se deformen.
+function barChart(series){
+  const W=1000,H=230,PADB=28,PADT=12,PADL=6; const n=series.length||1;
+  const max=Math.max(...series.map(s=>s.val),1);
+  const bw=(W-PADL*2)/n; const gap=n>20?1.5:n>12?2.5:6;
+  const bars=series.map((s,i)=>{ const h=(s.val/max)*(H-PADB-PADT); const x=PADL+i*bw+gap/2, yy=H-PADB-h, w=Math.max(1,bw-gap);
+    return `<rect x="${x.toFixed(1)}" y="${yy.toFixed(1)}" width="${w.toFixed(1)}" height="${Math.max(0,h).toFixed(1)}" rx="${Math.min(3,w/2).toFixed(1)}" fill="${s.cur?'var(--coral)':'url(#gb)'}"><title>${esc(s.label)}: ${M(s.val)}</title></rect>`; }).join("");
+  const step=n>24?Math.ceil(n/15):1;
+  const labels=series.map((s,i)=>{ if(i%step!==0 && !s.cur) return ""; const x=PADL+i*bw+bw/2;
+    return `<text x="${x.toFixed(1)}" y="${H-9}" text-anchor="middle" font-size="12" fill="${s.cur?'var(--coral)':'#9AAcA8'}" font-weight="${s.cur?800:500}">${esc(s.label)}</text>`; }).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;margin-top:6px">
+    <defs><linearGradient id="gb" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0AA89F"/><stop offset="1" stop-color="#7ad5cc"/></linearGradient></defs>
+    ${bars}${labels}</svg>`;
+}
+const CHART_TIT={hoy:"Evolución de hoy",sem:"Ventas de la semana · por día",mes:"Ventas del mes · por día",ano:"Ventas del año · por mes"};
+function chartHoy(){
   const orders=TODAY.slice().sort((a,b)=>a.frac-b.frac);
   const x0=7, x1=21; const W=1000, H=210, PADB=22;
   let cum=0; const pts=[[x0,0]];
@@ -355,17 +415,28 @@ function renderChart(){
   const area=line+` L ${X(nf).toFixed(1)} ${H-PADB} L ${X(x0).toFixed(1)} ${H-PADB} Z`;
   const lastX=X(nf), lastY=Y(cum);
   const ticks=[]; for(let h=x0;h<=x1;h+=2){ ticks.push(`<text x="${X(h).toFixed(0)}" y="${H-6}" fill="#9AAcA8" font-size="11" text-anchor="middle">${h}h</text><line x1="${X(h)}" y1="0" x2="${X(h)}" y2="${H-PADB}" stroke="#EEF4F3"/>`); }
-  box.innerHTML=`<div class="chartbox">
-    <div class="ch-head"><h2>Evolución de hoy</h2><span class="live"><span class="dot"></span>En vivo · minuto a minuto</span></div>
-    <div class="ch-tot">${M(cum)} <span style="font-size:12px;color:var(--gris2);font-weight:600">acumulado del día</span></div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:210px;display:block;margin-top:6px">
+  return { tot:cum, totLbl:"acumulado del día", live:true,
+    svg:`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:210px;display:block;margin-top:6px">
       <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0AA89F" stop-opacity=".28"/><stop offset="1" stop-color="#0AA89F" stop-opacity="0"/></linearGradient></defs>
       ${ticks.join("")}
       <path d="${area}" fill="url(#g)"/>
       <path d="${line}" fill="none" stroke="#048782" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
       <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="9" fill="#22e0c6" opacity=".25"/>
       <circle class="neon" cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="5" fill="#22e0c6" style="filter:drop-shadow(0 0 6px #22e0c6)"/>
-    </svg>
+    </svg>` };
+}
+function renderChart(){
+  const box=document.getElementById("chart"); if(!box)return;
+  const segs=`<div class="segs">${["hoy","sem","mes","ano"].map(p=>`<button class="${PERIODO===p?'on':''}" onclick="setPeriodo('${p}')">${{hoy:"Hoy",sem:"Semana",mes:"Mes",ano:"Año"}[p]}</button>`).join("")}</div>`;
+  let tot=0, totLbl="", svg="", live=false;
+  if(PERIODO==="hoy"){ const c=chartHoy(); tot=c.tot; totLbl=c.totLbl; svg=c.svg; live=true; }
+  else{ const s=SERIES[PERIODO];
+    if(!s){ svg=`<div class="floading"><span class="spin-sm"></span> cargando ${CHART_TIT[PERIODO].toLowerCase()}…</div>`; }
+    else{ tot=s.reduce((a,b)=>a+b.val,0); totLbl="total del período"; svg=barChart(s); } }
+  box.innerHTML=`<div class="chartbox">
+    <div class="ch-head"><h2>${CHART_TIT[PERIODO]}</h2>${live?'<span class="live"><span class="dot"></span>En vivo · minuto a minuto</span>':''}${segs}</div>
+    <div class="ch-tot">${M(tot)} <span style="font-size:12px;color:var(--gris2);font-weight:600">${totLbl}</span></div>
+    ${svg}
   </div>`;
 }
 function renderTabla(){
