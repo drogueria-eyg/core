@@ -67,6 +67,26 @@
   .ofbitem{padding:8px 11px;font-size:13px;cursor:pointer;border-top:1px solid var(--line)}
   .ofbitem:hover{background:#f2faf8}
   .oftgtsel{font-weight:700;color:var(--teal-deep);display:flex;align-items:center;gap:10px;padding:8px 0}
+  /* panel éticos por escala */
+  .escwrap{padding:12px 16px 6px}
+  .escbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .escbar .fl{font-size:12px;color:var(--gris);font-weight:700;margin-right:2px}
+  .escpill{background:#fff;border:1px solid var(--line);border-radius:20px;padding:5px 13px;font-size:12.5px;font-weight:700;color:var(--gris);cursor:pointer;font-family:inherit}
+  .escpill.on{background:var(--teal);color:#fff;border-color:var(--teal)}
+  .esccards{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+  @media(max-width:720px){.esccards{grid-template-columns:1fr}}
+  .esccard{border:1px solid var(--line);border-radius:12px;background:#f8fbfa;padding:13px 15px}
+  .esccard.A{border-left:4px solid #0f7d84} .esccard.B{border-left:4px solid #c07216}
+  .esccard h4{margin:0 0 3px;font-size:14px;font-weight:800;display:flex;align-items:center;gap:8px}
+  .esccard .sub{font-size:11.5px;color:var(--gris2);margin-bottom:9px}
+  .esccard .sum{font-size:12px;color:var(--gris);margin:6px 0 9px}
+  .chipesc{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;border-radius:6px;font-size:11.5px;font-weight:800;padding:0 6px;cursor:pointer;user-select:none;border:1px solid transparent}
+  .chipesc.A{background:#dcefef;color:#0a5a60} .chipesc.B{background:#f6e9d5;color:#8a5210}
+  .chipesc.none{background:#eef2f1;color:var(--gris2);border:1px dashed var(--line)}
+  .lablist{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px}
+  .labrow{display:flex;align-items:center;gap:9px;background:#fff;border:1px solid var(--line);border-radius:9px;padding:7px 11px;font-size:13px}
+  .labrow .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .labrow small{color:var(--gris2)}
 </style>
 </head>
 <body>
@@ -83,6 +103,8 @@ const MODOS=[["embalaje","Por embalaje (fracciona de la caja real a la caja del 
 const DEF={genera:false, recargo:0.80, piso:0.30, modo:"fijo", cortes:[1,10,20,40], desc:[0,0.07,0.14,0.20], unidad:"unidades", ivaCosto:0};
 let CATS=[], byId={}, CFG={v:1,reglas:{}}, editId=null, abiertos={}, dirty=false;
 let OFERTAS=[], vista="reglas", ofDraft=null, ofBusq=[], ofBusqQ="";
+const KEY_ESC="eyg.eticos_escala";       // {subcatId:'A'|'B'} clasificación de labs éticos
+let ESCALA={}, escFiltro="todos", editEsc=null;   // clasificación, filtro del panel éticos, regla de escala en edición
 const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
 
 const pct=x=>Math.round((x||0)*1000)/10;           // 0.07 -> 7
@@ -103,6 +125,9 @@ async function cargar(){
     const raw=await rpc("ir.config_parameter","get_param",[KEY]);
     CFG = raw ? JSON.parse(raw) : {v:1,reglas:{}};
     if(!CFG.reglas) CFG.reglas={};
+    if(!CFG.escala) CFG.escala={A:null,B:null};    // dos reglas por escala (base PVP)
+    const rawEsc=await rpc("ir.config_parameter","get_param",[KEY_ESC]);
+    ESCALA = rawEsc ? (JSON.parse(rawEsc)||{}) : {};
     const rawOf=await rpc("ir.config_parameter","get_param",[KEY_OF]);
     OFERTAS = rawOf ? (JSON.parse(rawOf)||[]) : [];
     render();
@@ -160,18 +185,88 @@ function render(){
   const intro=`<div class="intro"><b>Reglas del motor de precios.</b> Definí por categoría (y subcategoría) cómo se arma la escalera: <b>recargo</b> sobre el costo, <b>piso</b> de margen, <b>modo</b> de cortes (embalaje / fijo), <b>cortes</b> y <b>descuento por tramo</b>, <b>unidad</b> e <b>IVA al costo</b>. <b>La subcategoría pisa a la categoría</b>; si no tiene regla propia, hereda del padre. <b>Al guardar, el motor recalcula todos los precios al instante.</b> El costo lo toma solo (más reciente entre manual, compra y estándar); la caja cerrada se maneja por producto en el Maestro.</div>`;
   const grupos=tops.map(top=>{
     const cats=CATS.filter(c=>c.top===top);
+    const open=!!abiertos[top];
+    if(top==="ETICOS"){
+      const labs=cats.filter(c=>c.pid!==1);
+      const hb=`<span class="badge gen" style="margin-left:8px;background:#7c3aed">reglas por escala A/B · base PVP</span>`;
+      const body=open?renderEticos(labs):"";
+      return `<div class="grp"><div class="grphead" onclick="toggleGrp('ETICOS')"><span>${open?"▾":"▸"}</span> ETICOS ${hb} <span class="cnt">${labs.length} labs</span></div>${body}</div>`;
+    }
     const root=cats.find(c=>c.pid===1);              // la categoría raíz = la que cuelga directo de ALL
     const subs=cats.filter(c=>c.pid!==1).sort((a,b)=>a.full.localeCompare(b.full));
-    const open=!!abiertos[top];
     const body=open ? ((root?filaRoot(root):"")+subs.map(c=>fila(c)).join("")) : "";
     const rr=root?resolver(root.id):null;
-    const eticos = top==="ETICOS";
-    const hb = eticos ? `<span class="badge no" style="margin-left:8px">⚠ Precios por Alfabeta — no cablear acá</span>`
-      : ((rr&&rr.own)?`<span class="badge gen" style="margin-left:8px">regla general</span>`:`<span class="badge no" style="margin-left:8px">sin regla general</span>`);
+    const hb = (rr&&rr.own)?`<span class="badge gen" style="margin-left:8px">regla general</span>`:`<span class="badge no" style="margin-left:8px">sin regla general</span>`;
     return `<div class="grp"><div class="grphead" onclick="toggleGrp('${esc(top)}')"><span>${open?"▾":"▸"}</span> ${esc(top)} ${hb} <span class="cnt">${subs.length} subcat.</span></div>${body}</div>`;
   }).join("");
   cont.innerHTML=tabs+savebar+intro+grupos;
 }
+
+/* =================== ETICOS · REGLAS POR ESCALA (base PVP) =================== */
+function resumenEscala(r){
+  if(!r) return "";
+  if(!r.genera) return "NO genera escalera";
+  const n=(r.cortes&&r.cortes.length)||0;
+  return "PVP −"+pct(r.recargo)+"% · piso "+pct(r.piso)+"% · "+n+" tramos ("+(r.cortes||[]).join("/")+")";
+}
+function renderEticos(labs){
+  // filtro A / B / todos
+  const pills=[["todos","Todos"],["A","Escala A"],["B","Escala B"],["none","Sin escala"]].map(([v,t])=>
+    `<button class="escpill ${escFiltro===v?'on':''}" onclick="setFiltroEsc('${v}')">${t}</button>`).join("");
+  const nA=labs.filter(c=>ESCALA[c.id]==='A').length, nB=labs.filter(c=>ESCALA[c.id]==='B').length, nN=labs.filter(c=>!ESCALA[c.id]).length;
+  const bar=`<div class="escbar"><span class="fl">Ver:</span>${pills}<span style="margin-left:auto;font-size:11.5px;color:var(--gris2)">${nA} A · ${nB} B · ${nN} sin escala</span></div>`;
+  // dos tarjetas de regla por escala
+  const card=(e,nombre,extra)=>{
+    const r=CFG.escala&&CFG.escala[e];
+    const has=r&&r.genera;
+    const badge=has?`<span class="badge gen">activa</span>`:`<span class="badge no">sin regla</span>`;
+    const sum=r?`<div class="sum">${esc(resumenEscala(r))}</div>`:`<div class="sum">Sin definir. Aplica a los <b>${e==='A'?nA:nB} labs</b> de escala ${e}.</div>`;
+    const btns=r
+      ? `<button class="btn-mini" onclick="editarEscala('${e}')">Editar</button><button class="btn-mini del" onclick="quitarEscala('${e}')">Quitar</button>`
+      : `<button class="btn-mini" onclick="editarEscala('${e}')">+ Definir regla de escala ${e}</button>`;
+    const form=editEsc===e?formEscalaHTML(e):"";
+    return `<div class="esccard ${e}"><h4><span class="chipesc ${e}">${e}</span> Escala ${e} <small style="font-weight:600;color:var(--gris2)">${extra}</small> ${badge}</h4><div class="sub">base = PVP de Alfabeta − descuento · piso de margen sobre el costo</div>${sum}${btns}${form}</div>`;
+  };
+  const cards=`<div class="esccards">${card('A','marcas')}${card('B','genéricos')}</div>`;
+  // lista de labs filtrada
+  const vis=labs.filter(c=>{ const e=ESCALA[c.id]||null; if(escFiltro==='todos') return true; if(escFiltro==='none') return !e; return e===escFiltro; })
+                .sort((a,b)=>a.full.localeCompare(b.full));
+  const rows=vis.map(c=>{
+    const e=ESCALA[c.id]||null;
+    const chip=`<span class="chipesc ${e||'none'}" title="Tocá para cambiar" onclick="cicloEscala(${c.id})">${e||'—'}</span>`;
+    const sub=c.full.includes(" / ")? c.full.split(" / ").slice(1).join(" / ") : c.name;
+    return `<div class="labrow">${chip}<span class="nm">${esc(sub)}</span><small>#${c.id}</small></div>`;
+  }).join("") || `<div class="empty" style="padding:22px">No hay labs con este filtro.</div>`;
+  const intro=`<div class="intro" style="margin:0 12px 12px">Los éticos se precian desde el <b>PVP de Alfabeta</b>. Cada lab tiene una <b>escala</b> (A marcas · B genéricos); definí <b>una regla por escala</b> y todos los labs de esa escala la toman. Tocá el cuadradito de un lab para cambiarle la escala. <b>Con las reglas vacías no se toca ningún precio</b> — queda listo para cuando las cargues.</div>`;
+  return `<div class="escwrap">${intro}${bar}${cards}<div class="lablist">${rows}</div></div>`;
+}
+function formEscalaHTML(e){
+  const r=(CFG.escala&&CFG.escala[e])||{genera:true,recargo:0,piso:0,cortes:[1,5,10]};
+  return `<div class="form" onclick="event.stopPropagation()">
+    <label class="chk"><input type="checkbox" id="f-genera-esc" ${r.genera?"checked":""}> <span>Genera escalera de precios para la escala ${e}</span></label>
+    <div class="grid" style="grid-template-columns:repeat(3,1fr)">
+      <div class="fld2"><label>Descuento sobre PVP</label><div class="inpu"><input type="number" id="f-descpvp" step="1" value="${r.recargo?pct(r.recargo):''}" placeholder="ej: 33"><span class="suf">%</span></div><div class="hint">base = PVP − este %</div></div>
+      <div class="fld2"><label>Piso de margen</label><div class="inpu"><input type="number" id="f-pisopvp" step="1" value="${r.piso?pct(r.piso):''}" placeholder="ej: 9"><span class="suf">%</span></div><div class="hint">margen mínimo sobre costo · último tramo</div></div>
+      <div class="fld2"><label>Tramos por cantidad</label><input type="text" id="f-cortespvp" value="${(r.cortes||[1,5,10]).join(', ')}" placeholder="1, 5, 10"><div class="hint">cantidades de cada escalón</div></div>
+    </div>
+    <div class="acts"><button class="cancel" onclick="editEsc=null;render()">Cancelar</button><button class="ok" onclick="guardarEscala('${e}')">Aplicar regla de escala ${e}</button></div>
+  </div>`;
+}
+window.setFiltroEsc = v => { escFiltro=v; render(); };
+window.editarEscala = e => { editEsc=e; abiertos['ETICOS']=true; render(); };
+window.quitarEscala = e => { if(!confirm("¿Quitar la regla de la escala "+e+"? Los labs de esa escala dejan de tener regla.")) return; CFG.escala[e]=null; dirty=true; editEsc=null; render(); };
+window.guardarEscala = e => {
+  const gv=x=>document.getElementById(x).value;
+  const genera=document.getElementById("f-genera-esc").checked;
+  const recargo=frac(gv("f-descpvp")), piso=frac(gv("f-pisopvp"));
+  let cortes=listNum(gv("f-cortespvp")).map(x=>Math.round(x)).filter(x=>x>=1);
+  if(!cortes.length) cortes=[1];
+  cortes=[...new Set(cortes)].sort((a,b)=>a-b);
+  const desc=cortes.map(()=>0);   // placeholder: el motor recalcula el descuento por producto (PVP vs costo)
+  CFG.escala[e]={ genera, base:'pvp', recargo, piso, modo:'fijo', unidad:'', cortes, desc, ivaCosto:0 };
+  dirty=true; editEsc=null; render();
+};
+window.cicloEscala = id => { const cur=ESCALA[id]||null; ESCALA[id] = cur==='A'?'B':(cur==='B'?null:'A'); dirty=true; render(); };
 
 /* =================== OFERTAS TEMPORALES =================== */
 function ofEstado(o){
@@ -306,6 +401,12 @@ function construirFlat(){
       out.push([c.id, r.recargo, r.piso, (r.modo||"fijo"), (r.cortes||[]).join(","), (r.desc||[]).join(","), (r.unidad||"unidades"), (r.ivaCosto||0)].join("~"));
     }
   });
+  // ETICOS: una línea por lab según su escala, con base=pvp (9º campo). El cron lee el PVP de Alfabeta.
+  CATS.filter(c=>c.top==='ETICOS' && c.pid!==1).forEach(c=>{
+    const e=ESCALA[c.id]; if(!e) return;
+    const r=CFG.escala&&CFG.escala[e]; if(!r||!r.genera) return;
+    out.push([c.id, r.recargo, r.piso, (r.modo||"fijo"), (r.cortes||[]).join(","), (r.desc||[]).join(","), (r.unidad||"unidades"), (r.ivaCosto||0), "pvp"].join("~"));
+  });
   return out.join("\n");
 }
 // ---- acciones de ofertas ----
@@ -370,6 +471,7 @@ window.guardarTodo = async () => {
   const btn=document.querySelector(".btn-save"); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
   try{
     await rpc("ir.config_parameter","set_param",[KEY, JSON.stringify(CFG)]);
+    await rpc("ir.config_parameter","set_param",[KEY_ESC, JSON.stringify(ESCALA)]);
     await rpc("ir.config_parameter","set_param",[KEY_FLAT, construirFlat()]);
     if(btn) btn.textContent="Recalculando precios…";
     await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
