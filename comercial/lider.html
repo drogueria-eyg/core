@@ -345,8 +345,8 @@ function pintarVista(){
   if(VISTA==="rendimiento"){
     // Orden: pulso del equipo (kpis + evolución de hoy) → rendimiento por comercial
     // (el centro del panel) → productos (secundario) → ofertas de la semana.
-    v.innerHTML=`<div id="kpis"></div><div id="chart"></div><div id="equipo"></div><div id="prods"></div><div id="ofSemana"></div>`;
-    renderKpis(); renderChart(); renderEquipo(); renderProds();
+    v.innerHTML=`<div id="kpis"></div><div id="ventasEq"></div><div id="chart"></div><div id="equipo"></div><div id="prods"></div><div id="ofSemana"></div>`;
+    renderKpis(); renderVentasEq(); renderChart(); renderEquipo(); renderProds();
     if(EYG.cardOfertasSemana) EYG.cardOfertasSemana("ofSemana");
   }else{
     renderContactos();
@@ -474,10 +474,10 @@ let SEL=null, AGG=null, FICHAS_LOADING=false, FICHAS_STALE=false;
 /* Carga la ficha completa de cada comercial (nivel/salud/comisión/cartera) en paralelo,
    arma los promedios del equipo (AGG) para las comparativas, y repinta las tarjetas. */
 async function cargarFichas(){
-  FICHAS_LOADING=true; renderEquipo();
+  FICHAS_LOADING=true; renderEquipo(); renderVentasEq();
   const res=await Promise.all(COM.map(c=>fichaData(c.uid,c.name).then(d=>({uid:c.uid,d})).catch(()=>({uid:c.uid,d:null}))));
   res.forEach(r=>{ if(r.d) FICHAS[r.uid]=r.d; });
-  computeAGG(); FICHAS_LOADING=false; renderEquipo();
+  computeAGG(); FICHAS_LOADING=false; renderEquipo(); renderVentasEq();
 }
 // métricas comparables de una ficha
 function mval(d,k){
@@ -700,20 +700,26 @@ async function fichaData(uid, name){
   return d;
 }
 /* Bloque de ventas: PEDIDOS (neto) grande vs FACTURADO (neto) abajo, con el detalle
-   contable desplegable. Va arriba de todo en el detalle del comercial. */
-function ventasHTML(d){
-  const nom1=esc((d.nombre||"").split(" ")[0]);
+   contable desplegable. Se usa para un comercial (detalle) y para el equipo (arriba).
+   opts: {quien, id, titulo, cargaLbl, factLbl} para reusar sin chocar ids. */
+function ventasHTML(d, opts){
+  opts=opts||{};
+  const quien=opts.quien||esc((d.nombre||"").split(" ")[0]);
+  const id=opts.id||"desgBox";
+  const titulo=opts.titulo||"💵 Ventas del mes";
+  const cargaLbl=opts.cargaLbl||("lo que cargó "+quien+" · órdenes confirmadas");
+  const factLbl=opts.factLbl||"facturas − notas de crédito, de su cartera";
   const g=d.desglose||{pedN:0,pedM:0,canN:0,canM:0,draN:0,draM:0,facN:0,facMonto:0,ncN:0,ncMonto:0};
   const op=n=>n===1?"1 operación":(n||0).toLocaleString("es-AR")+" operaciones";
   const drow=(ic,lab,n,m,neg,mut)=>`<div class="drow2${mut?' mut':''}"><span class="dl">${ic} ${lab}</span><span class="dc">${op(n)}</span><b class="da">${neg&&m?'−':''}${M(m)}</b></div>`;
   return `<div class="ventas">
-      <div class="vhead"><div class="vt">💵 Ventas del mes</div><button class="vinfo" onclick="toggleDesg()">🧮 Ver la cuenta</button></div>
+      <div class="vhead"><div class="vt">${titulo}</div><button class="vinfo" onclick="toggleDesg('${id}')">🧮 Ver la cuenta</button></div>
       <div class="vmain">
-        <div class="vcol"><div class="vlab">Pedidos <span class="mut2">(neto)</span></div><div class="vbig">${M(d.pedMes)}</div><div class="vsrc">lo que cargó ${nom1} · órdenes confirmadas</div></div>
+        <div class="vcol"><div class="vlab">Pedidos <span class="mut2">(neto)</span></div><div class="vbig">${M(d.pedMes)}</div><div class="vsrc">${cargaLbl}</div></div>
         <div class="vsep">vs</div>
-        <div class="vcol"><div class="vlab">Facturado <span class="mut2">(neto)</span></div><div class="vbig2">${M(d.factMes)}</div><div class="vsrc">facturas − notas de crédito, de su cartera</div></div>
+        <div class="vcol"><div class="vlab">Facturado <span class="mut2">(neto)</span></div><div class="vbig2">${M(d.factMes)}</div><div class="vsrc">${factLbl}</div></div>
       </div>
-      <div id="desgBox" class="desg" style="display:none">
+      <div id="${id}" class="desg" style="display:none">
         <div class="desgh">Pedidos (por vendedor de la orden)</div>
         ${drow("🧾","Pedidos confirmados", g.pedN, g.pedM)}
         ${drow("🚫","Pedidos cancelados", g.canN, g.canM, true, true)}
@@ -723,9 +729,26 @@ function ventasHTML(d){
         ${drow("📄","Facturas emitidas", g.facN, g.facMonto)}
         ${drow("↩️","Notas de crédito", g.ncN, g.ncMonto, true)}
         <div class="drow2 tot"><span class="dl">= Facturado neto</span><b class="da">${M(d.factMes)}</b></div>
-        <div class="desgnote">Fuente: <b>Pedidos</b> = <code>sale.order</code> confirmados (estado venta/hecho), por el <b>vendedor de la orden</b>. <b>Facturado</b> = <code>account.move</code> (facturas − NC posteadas), por los <b>clientes de su cartera</b>. Difieren por tiempo (un pedido de fin de mes se factura después) y por atribución.</div>
+        <div class="desgnote">Fuente: <b>Pedidos</b> = <code>sale.order</code> confirmados (estado venta/hecho), por el <b>vendedor de la orden</b>. <b>Facturado</b> = <code>account.move</code> (facturas − NC posteadas), por los <b>clientes de la cartera</b>. Difieren por tiempo (un pedido de fin de mes se factura después) y por atribución.</div>
       </div>
     </div>`;
+}
+// Suma el desglose de todo el equipo (una vez cargadas las fichas de los comerciales).
+function equipoDesglose(){
+  const ds=COM.map(c=>FICHAS[c.uid]).filter(Boolean); if(!ds.length) return null;
+  const g={pedN:0,pedM:0,canN:0,canM:0,draN:0,draM:0,facN:0,facMonto:0,ncN:0,ncMonto:0};
+  let pedMes=0, factMes=0;
+  for(const d of ds){ pedMes+=d.pedMes||0; factMes+=d.factMes||0; const x=d.desglose||{}; for(const k in g) g[k]+=(x[k]||0); }
+  return {n:ds.length, pedMes, factMes, desglose:g};
+}
+function renderVentasEq(){
+  const box=document.getElementById("ventasEq"); if(!box) return;
+  const eq=equipoDesglose();
+  if(!eq){ box.innerHTML = FICHAS_LOADING?`<div class="ventas"><div class="floading"><span class="spin-sm"></span> sumando pedidos y facturación del equipo…</div></div>`:""; return; }
+  box.innerHTML = ventasHTML(
+    {pedMes:eq.pedMes, factMes:eq.factMes, desglose:eq.desglose},
+    {quien:"el equipo", id:"desgEquipo", titulo:"💵 Ventas del equipo · este mes",
+     cargaLbl:"suma de los pedidos de tus "+eq.n+" comerciales", factLbl:"suma de lo facturado a sus carteras"});
 }
 function fichaHTML(d){
   const perfilNom=d.perfil==="externo"?"Externo (3/4%)":(d.perfil==="inst"?"Instituciones":"Farmacias");
@@ -763,7 +786,7 @@ function fichaHTML(d){
     <a class="fplink" href="panel.html?c=${encodeURIComponent(d.nombre)}">Entrar al panel completo de ${nom1} →</a>
   </div>`;
 }
-function toggleDesg(){ const el=document.getElementById("desgBox"); if(el) el.style.display=el.style.display==="none"?"block":"none"; }
+function toggleDesg(id){ const el=document.getElementById(id||"desgBox"); if(el) el.style.display=el.style.display==="none"?"block":"none"; }
 function toggleFuentes(){ const el=document.getElementById("fuentesBox"); if(el) el.style.display=el.style.display==="none"?"block":"none"; }
 function fuentesHTML(d){
   const ext=d.perfil==="externo";
