@@ -105,7 +105,7 @@ const MODOS=[["embalaje","Por embalaje (fracciona de la caja real a la caja del 
 const DEF={genera:false, recargo:0.80, piso:0.30, modo:"fijo", cortes:[1,10,20,40], desc:[0,0.07,0.14,0.20], unidad:"unidades", ivaCosto:0};
 let CATS=[], byId={}, CFG={v:1,reglas:{}}, editId=null, abiertos={}, dirty=false;
 let OFERTAS=[], vista="reglas", ofDraft=null, ofBusq=[], ofBusqQ="";
-let ofCosto=null, ofTramos=null;   // costo (recencia) y escalera del producto elegido, para rentabilidad en vivo
+let ofCosto=null, ofTramos=null, ofTramosBase=null, ofAppliedOffer=null;   // costo, escalera actual, escalera BASE (sin la oferta ya aplicada), y la oferta aplicada al editar
 const KEY_ESC="eyg.eticos_escala";       // {subcatId:'A'|'B'} clasificación de labs éticos
 let ESCALA={}, escFiltro="todos", editEsc=null, editLab=null;   // clasificación, filtro, regla de escala en edición, regla de lab en edición
 const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
@@ -334,7 +334,7 @@ function ofFormHTML(){
   const rent = d.tipo==='p' ? `<div class="fld2" style="margin-bottom:2px"><label>Rentabilidad final en vivo</label><div id="of-rent" class="rentbox">Calculando el costo del producto…</div><div class="hint">se actualiza al mover el descuento · sobre el costo actual (neto, sin IVA)</div></div>` : "";
   return `<div class="form" onclick="event.stopPropagation()" style="margin-top:0">
     <div class="fld2" style="margin-bottom:12px"><label>Aplicar a (categoría, subcategoría o producto)</label>
-      ${d.target ? `<div class="oftgtsel">${tgtTxt} <button class="btn-mini" onclick="ofDraft.target=null;ofDraft.targetName='';ofBusq=[];ofBusqQ='';ofCosto=null;ofTramos=null;render()">cambiar</button></div>`
+      ${d.target ? `<div class="oftgtsel">${tgtTxt} <button class="btn-mini" onclick="ofDraft.target=null;ofDraft.targetName='';ofBusq=[];ofBusqQ='';ofCosto=null;ofTramos=null;ofTramosBase=null;ofAppliedOffer=null;render()">cambiar</button></div>`
                  : `<input type="text" id="of-busq" placeholder="Escribí nombre o SKU…" value="${esc(ofBusqQ)}" oninput="buscarTarget(this.value)" autocomplete="off">${results}`}
     </div>
     <div class="grid" style="grid-template-columns:repeat(4,1fr)">
@@ -460,8 +460,11 @@ async function guardarOfertasParams(recalcTmpl){
     }
   }catch(e){}
 }
-window.nuevaOferta = () => { ofDraft={id:"of"+Date.now(), tipo:null, target:null, targetName:"", modo:"pct", valor:"", reemplaza:true, hasta:"", stock:"", pausada:false}; ofBusq=[]; ofBusqQ=""; ofCosto=null; ofTramos=null; render(); };
-window.editarOferta = async id => { const o=OFERTAS.find(x=>x.id===id); if(!o) return; ofDraft=JSON.parse(JSON.stringify(o)); ofBusq=[]; if(typeof ofBusqQ!=='undefined') ofBusqQ=""; ofCosto=null; ofTramos=null; render(); const el=document.querySelector('.form'); if(el) el.scrollIntoView({behavior:'smooth',block:'center'}); if(o.tipo==='p'&&o.target){ await cargarRentProducto(o.target); actualizarRent(); } };
+window.nuevaOferta = () => { ofDraft={id:"of"+Date.now(), tipo:null, target:null, targetName:"", modo:"pct", valor:"", reemplaza:true, hasta:"", stock:"", pausada:false}; ofBusq=[]; ofBusqQ=""; ofCosto=null; ofTramos=null; ofTramosBase=null; ofAppliedOffer=null; render(); };
+window.editarOferta = async id => { const o=OFERTAS.find(x=>x.id===id); if(!o) return; ofDraft=JSON.parse(JSON.stringify(o)); ofBusq=[]; if(typeof ofBusqQ!=='undefined') ofBusqQ=""; ofCosto=null; ofTramos=null; ofTramosBase=null;
+  // la oferta guardada YA está aplicada al pricelist -> guardo sus datos para deshacerla y recuperar la base
+  ofAppliedOffer = o.tipo==='p' ? {modo:o.modo, valor:o.valor, reemplaza:o.reemplaza, pausada:o.pausada, hasta:o.hasta} : null;
+  render(); const el=document.querySelector('.form'); if(el) el.scrollIntoView({behavior:'smooth',block:'center'}); if(o.tipo==='p'&&o.target){ await cargarRentProducto(o.target); actualizarRent(); } };
 /* Antes pegaba a Odoo en cada tecla y después de cada respuesta re-renderizaba y
    reescribía el input a mano (el.value=q), lo que mandaba el cursor al final.
    Ahora: se espera a que dejes de tipear, el template conserva lo escrito con
@@ -480,7 +483,8 @@ window.buscarTarget = EYG.debounce(async q => {
 window.elegirTarget = async (k,id,name) => {
   if(!ofDraft) return;
   ofDraft.tipo=k; ofDraft.target=id; ofDraft.targetName=name; ofBusq=[]; ofBusqQ="";
-  ofCosto=null; ofTramos=null; render();
+  ofCosto=null; ofTramos=null; ofTramosBase=null; ofAppliedOffer=null;   // producto recién elegido: ninguna oferta de ESTE draft está aplicada
+  render();
   if(k==='p'){ await cargarRentProducto(id); actualizarRent(); }
 };
 // costo (misma recencia que el motor: manual > última compra > estándar) + escalera del producto
@@ -506,7 +510,18 @@ async function cargarRentProducto(tmplId){
     const its=await rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","=",tmplId],["compute_price","=","fixed"]],["min_quantity","fixed_price"]],{limit:50,context:{lang:"es_AR"}});
     its.sort((a,b)=>a.min_quantity-b.min_quantity);
     ofTramos=its.map(i=>({q:i.min_quantity,p:i.fixed_price}));
-  }catch(e){ ofCosto=null; ofTramos=null; }
+    ofTramosBase=tramosBaseFrom(ofTramos, ofAppliedOffer);   // deshace la oferta ya aplicada para no descontar dos veces
+  }catch(e){ ofCosto=null; ofTramos=null; ofTramosBase=null; }
+}
+// Recupera la escalera BASE (sin oferta) deshaciendo la oferta que YA está aplicada al pricelist (al editar).
+function tramosBaseFrom(tramos, applied){
+  if(!tramos) return null;
+  if(!applied) return tramos;                                  // oferta nueva: el pricelist ya es la base
+  if(applied.pausada || (applied.hasta && applied.hasta < hoyStr())) return tramos;  // no está aplicada
+  const v=applied.valor||0;
+  if(applied.modo==='pct' && v>0 && v<1) return tramos.map(t=>({q:t.q, p:t.p/(1-v)}));
+  if(applied.modo==='monto' && v>0)      return tramos.map(t=>({q:t.q, p:t.p+v}));
+  return null;   // 'precio' fijo: la escalera base se perdió (colapsó a un precio único), no se puede recuperar
 }
 function actualizarRent(){
   const box=document.getElementById("of-rent"); if(!box||!ofDraft) return;
@@ -517,22 +532,22 @@ function actualizarRent(){
   const M=n=>"$"+Math.round(n).toLocaleString("es-AR");
   if(costo==null){ box.className="rentbox"; box.innerHTML="No hay costo cargado en Odoo para este producto."; return; }
   if(!(valRaw>0)){ box.className="rentbox"; box.innerHTML=`Cargá el valor para ver la rentabilidad. <span class="sub2">costo ${M(costo)}</span>`; return; }
-  const base=(ofTramos&&ofTramos.length)?ofTramos[0].p:null;   // tramo 1 (precio a cantidad 1)
+  const base=(ofTramosBase&&ofTramosBase.length)?ofTramosBase[0].p:null;   // tramo 1 de la escalera BASE (sin oferta)
   const mrg=pr=>pr>0?Math.round((pr-costo)/pr*100):-999;
   const cls=mm=>mm<0?"neg":(mm<15?"low":"ok");
   const finalDe=pr=>modo==='precio'?valRaw:(modo==='monto'?pr-valRaw:pr*(1-valRaw/100));
-  if(modo!=='precio' && base==null){ box.className="rentbox"; box.innerHTML="Este producto todavía no tiene escalera. Usá <b>Precio fijo</b> para ver la rentabilidad."; return; }
+  if(modo!=='precio' && base==null){ box.className="rentbox"; box.innerHTML="No puedo estimar la escalera base de este producto (la oferta actual es precio fijo o no tiene escalera). Usá <b>Precio fijo</b> para ver la rentabilidad."; return; }
   if(rem || modo==='precio'){
     const pf=modo==='precio'?valRaw:finalDe(base);
     const mm=mrg(pf);
     box.className="rentbox "+cls(mm);
     box.innerHTML=`Precio único <b>${M(pf)}</b> · Rentabilidad <b>${mm}%</b> <span class="sub2">(${M(pf-costo)}/u · costo ${M(costo)})</span>${mm<0?' ⚠️ perdés plata':(mm<15?' · margen ajustado':'')}`;
   } else {
-    const t1=ofTramos[0], tN=ofTramos[ofTramos.length-1];
+    const t1=ofTramosBase[0], tN=ofTramosBase[ofTramosBase.length-1];
     const p1=finalDe(t1.p), pN=finalDe(tN.p);
     const m1=mrg(p1), mN=mrg(pN);
     box.className="rentbox "+cls(mN);
-    const rango = ofTramos.length>1 ? `de <b>${m1}%</b> (${t1.q}u → ${M(p1)}) a <b>${mN}%</b> (${tN.q}u → ${M(pN)})` : `<b>${m1}%</b> (${M(p1)})`;
+    const rango = ofTramosBase.length>1 ? `de <b>${m1}%</b> (${t1.q}u → ${M(p1)}) a <b>${mN}%</b> (${tN.q}u → ${M(pN)})` : `<b>${m1}%</b> (${M(p1)})`;
     box.innerHTML=`Sobre la escalera · Rentabilidad ${rango} <span class="sub2">· costo ${M(costo)}</span>${mN<0?' ⚠️ el último tramo pierde plata':(mN<15?' · último tramo ajustado':'')}`;
   }
 }
