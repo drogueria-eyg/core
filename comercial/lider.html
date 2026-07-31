@@ -311,6 +311,7 @@ async function init(){
     await refreshHoy();
     render();
     chartTimer=setInterval(tick, 60000);
+    cargarVentasEq();     // ventas del equipo con consultas propias (rápido, no espera a las fichas)
     cargarFichas();       // análisis por comercial (nivel/salud/comparativas) en segundo plano
     cargarProductos();
   }catch(e){ const el=document.getElementById("ld"); if(el) el.innerHTML='<div class="errbox">No pude cargar el tablero: '+esc(e.message)+'</div>'; }
@@ -344,7 +345,7 @@ function render(){
 }
 function setVista(v){ if(v===VISTA)return; VISTA=v; render();
   // al volver a Rendimiento tras mover/archivar contactos, refresca el análisis (la cartera cambió)
-  if(v==="rendimiento" && FICHAS_STALE){ FICHAS_STALE=false; cargarFichas(); } }
+  if(v==="rendimiento" && FICHAS_STALE){ FICHAS_STALE=false; cargarVentasEq(); cargarFichas(); } }
 function pintarVista(){
   const v=document.getElementById("vista"); if(!v)return;
   if(VISTA==="rendimiento"){
@@ -478,11 +479,20 @@ let SEL=null, AGG=null, FICHAS_LOADING=false, FICHAS_STALE=false;
 
 /* Carga la ficha completa de cada comercial (nivel/salud/comisión/cartera) en paralelo,
    arma los promedios del equipo (AGG) para las comparativas, y repinta las tarjetas. */
+// Corre fn sobre items con como máximo `limit` en paralelo (evita saturar el edge function).
+async function mapLimit(items, limit, fn){
+  let i=0; const work=async()=>{ while(i<items.length){ const idx=i++; try{ await fn(items[idx],idx); }catch(e){} } };
+  await Promise.all(Array.from({length:Math.min(limit,items.length||1)}, work));
+}
 async function cargarFichas(){
-  FICHAS_LOADING=true; renderEquipo(); renderVentasEq();
-  const res=await Promise.all(COM.map(c=>fichaData(c.uid,c.name).then(d=>({uid:c.uid,d})).catch(()=>({uid:c.uid,d:null}))));
-  res.forEach(r=>{ if(r.d) FICHAS[r.uid]=r.d; });
-  computeAGG(); FICHAS_LOADING=false; renderEquipo(); renderVentasEq();
+  FICHAS_LOADING=true; renderEquipo();
+  // De a 2 comerciales por vez (cada ficha son ~14 consultas): fiable y sin trabar.
+  // Se pinta a medida que llega cada una, así las tarjetas se enriquecen progresivamente.
+  await mapLimit(COM, 2, async c=>{
+    const d=await fichaData(c.uid,c.name).catch(()=>null);
+    if(d){ FICHAS[c.uid]=d; computeAGG(); renderEquipo(); }
+  });
+  computeAGG(); FICHAS_LOADING=false; renderEquipo();
 }
 // métricas comparables de una ficha
 function mval(d,k){
@@ -738,22 +748,35 @@ function ventasHTML(d, opts){
       </div>
     </div>`;
 }
-// Suma el desglose de todo el equipo (una vez cargadas las fichas de los comerciales).
-function equipoDesglose(){
-  const ds=COM.map(c=>FICHAS[c.uid]).filter(Boolean); if(!ds.length) return null;
-  const g={pedN:0,pedM:0,canN:0,canM:0,draN:0,draM:0,facN:0,facMonto:0,ncN:0,ncMonto:0};
-  let pedMes=0, factMes=0;
-  for(const d of ds){ pedMes+=d.pedMes||0; factMes+=d.factMes||0; const x=d.desglose||{}; for(const k in g) g[k]+=(x[k]||0); }
-  return {n:ds.length, pedMes, factMes, desglose:g};
+/* Desglose de ventas del EQUIPO con consultas propias a nivel equipo (pocas y rápidas),
+   NO sumando las fichas (que son 14 consultas c/u y saturaban). Coincide con los KPIs
+   de arriba porque usa el mismo criterio (sale.order por user_id in UIDS). */
+let VENTASEQ=null;
+async function cargarVentasEq(){
+  const t=argToday(), inicioMes=t.slice(0,7)+"-01";
+  try{
+    const cartera=await EYG.rpc("res.partner","search",[[["user_id","in",UIDS]]]);
+    const so=dom=>EYG.rpc("sale.order","read_group",[dom,["amount_untaxed:sum"],[]],{lazy:false});
+    const am=mt=>EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=",mt],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false});
+    const [ped,can,dra,fac,nc]=await Promise.all([
+      so([["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",inicioMes]]),
+      so([["user_id","in",UIDS],["state","=","cancel"],["date_order",">=",inicioMes]]),
+      so([["user_id","in",UIDS],["state","in",["draft","sent"]],["date_order",">=",inicioMes]]),
+      am("out_invoice"), am("out_refund"),
+    ]);
+    const gN=g=>g&&g[0]?g[0].__count||0:0, gM=g=>g&&g[0]?g[0].amount_untaxed||0:0;
+    const desglose={pedN:gN(ped),pedM:gM(ped),canN:gN(can),canM:gM(can),draN:gN(dra),draM:gM(dra),facN:gN(fac),facMonto:gM(fac),ncN:gN(nc),ncMonto:gM(nc)};
+    VENTASEQ={n:COM.length, pedMes:desglose.pedM, factMes:desglose.facMonto-desglose.ncMonto, desglose};
+  }catch(e){ VENTASEQ=null; }
+  renderVentasEq();
 }
 function renderVentasEq(){
   const box=document.getElementById("ventasEq"); if(!box) return;
-  const eq=equipoDesglose();
-  if(!eq){ box.innerHTML = FICHAS_LOADING?`<div class="ventas"><div class="floading"><span class="spin-sm"></span> sumando pedidos y facturación del equipo…</div></div>`:""; return; }
+  if(!VENTASEQ){ box.innerHTML=`<div class="ventas"><div class="floading"><span class="spin-sm"></span> sumando ventas del equipo…</div></div>`; return; }
   box.innerHTML = ventasHTML(
-    {pedMes:eq.pedMes, factMes:eq.factMes, desglose:eq.desglose},
+    {pedMes:VENTASEQ.pedMes, factMes:VENTASEQ.factMes, desglose:VENTASEQ.desglose},
     {quien:"el equipo", id:"desgEquipo", titulo:"💵 Ventas del equipo · este mes",
-     cargaLbl:"suma de los pedidos de tus "+eq.n+" comerciales", factLbl:"suma de lo facturado a sus carteras"});
+     cargaLbl:"suma de los pedidos de tus "+VENTASEQ.n+" comerciales", factLbl:"suma de lo facturado a sus carteras"});
 }
 function fichaHTML(d){
   const perfilNom=d.perfil==="externo"?"Externo (3/4%)":(d.perfil==="inst"?"Instituciones":"Farmacias");
