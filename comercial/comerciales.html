@@ -47,6 +47,17 @@
   .org .note{font-size:11.5px;color:var(--gris2);margin-top:10px}
   .otoast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;padding:12px 20px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;z-index:50}
   .otoast.on{opacity:1;transform:translateX(-50%) translateY(0)} .otoast.ok{background:var(--teal-deep)}
+  /* archivados */
+  .archlist{display:grid;gap:9px;margin-top:6px}
+  .archrow{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:11px 14px;background:#FCFBF8;flex-wrap:wrap}
+  .archrow .ai{flex:1;min-width:180px}
+  .archrow .an{font-weight:800;font-size:14px}
+  .archrow .am{font-size:12px;color:var(--gris);margin-top:2px}
+  .archrow .am2{font-size:11px;color:var(--gris2);margin-top:2px}
+  .archrow .aa{display:flex;gap:8px}
+  .archrow .aa button{font-family:inherit;font-size:12.5px;font-weight:700;border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:8px 13px;cursor:pointer}
+  .archrow .aa .rest{color:var(--teal-deep);border-color:#BFE2DD} .archrow .aa .rest:hover{background:#EAF7F5}
+  .archrow .aa .del{color:#B0413E} .archrow .aa .del:hover{background:#FDECEA;border-color:#F0C4BE}
 </style>
 </head>
 <body>
@@ -56,10 +67,10 @@
 let PERFIL=null;
 EYG.requireAuth(["admin","direccion","lider"], perfil=>{
   PERFIL=perfil;
-  document.body.innerHTML = EYG.layout(perfil, "panel", '<div id="org"></div><div id="ov"><div class="loading"><div class="spinner"></div>Cargando el equipo desde Odoo…</div></div>', "Panel comerciales");
+  document.body.innerHTML = EYG.layout(perfil, "panel", '<div id="org"></div><div id="arch"></div><div id="ov"><div class="loading"><div class="spinner"></div>Cargando el equipo desde Odoo…</div></div>', "Panel comerciales");
   document.body.insertAdjacentHTML("beforeend",'<div class="otoast" id="otoast"></div>');
   cargar();
-  if(perfil.rol==="admin"||perfil.rol==="direccion") montarOrg();
+  if(perfil.rol==="admin"||perfil.rol==="direccion"){ montarOrg(); montarArchivados(); }
 });
 let otoastT;
 function otoast(msg, ok){ const t=document.getElementById("otoast"); if(!t)return; t.textContent=msg; t.className="otoast on"+(ok?" ok":""); clearTimeout(otoastT); otoastT=setTimeout(()=>t.className="otoast",2600); }
@@ -125,6 +136,73 @@ async function quitarMiembro(empId){
     otoast((emp.name)+" quitado del equipo ✓", true);
     renderOrg();
   }catch(e){ otoast("No se pudo quitar: "+e.message); }
+}
+
+/* ===== Contactos archivados (revisión de la gerencia) =====
+   Los líderes archivan con la etiqueta 63 (marca suave, ver panel del líder). Acá el
+   nivel superior (gerente) los revisa: restaura (quita la etiqueta) o elimina (unlink).
+   Eliminar puede fallar si el cliente tiene ventas/facturas — se avisa y queda archivado. */
+const ARCH_TAG=63;
+let ARCH={ list:[], cargado:false };
+async function montarArchivados(){
+  const box=document.getElementById("arch"); if(!box)return;
+  box.innerHTML='<div class="org"><h2>🗂️ Contactos archivados <span class="sub" style="margin:0">· revisión</span></h2><div class="floading" style="padding:12px 0;color:var(--gris)"><span class="spin-sm"></span> Leyendo archivados…</div></div>';
+  try{
+    const list=await EYG.rpc("res.partner","search_read",[[["category_id","in",[ARCH_TAG]]]],{fields:["id","name","user_id","city","vat","write_date"],limit:0,context:{active_test:false}});
+    // quién/cuándo archivó (última nota [EyG-ARCH] por contacto)
+    const ids=list.map(c=>c.id); let byId={};
+    if(ids.length){
+      try{ const msgs=await EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["body","like","EyG-ARCH"]]],{fields:["res_id","date","body"],order:"date desc",limit:0});
+        for(const m of msgs){ if(!byId[m.res_id]){ const mm=(m.body||"").replace(/<[^>]+>/g,"").match(/Archivado por (.+?)(\s*$|<)/); byId[m.res_id]={por:mm?mm[1].trim():"", fecha:(m.date||"").slice(0,10)}; } }
+      }catch(e){}
+    }
+    ARCH.list=list.map(c=>({...c, _arch:byId[c.id]||{}})); ARCH.cargado=true;
+    renderArch();
+  }catch(e){ box.innerHTML='<div class="org"><h2>🗂️ Contactos archivados</h2><div class="empty">No pude leer los archivados: '+EYG.esc(e.message)+'</div></div>'; }
+}
+function renderArch(){
+  const box=document.getElementById("arch"); if(!box)return; const esc=EYG.esc;
+  if(!ARCH.list.length){ box.innerHTML='<div class="org"><h2>🗂️ Contactos archivados <span class="sub" style="margin:0">· revisión</span></h2><div class="empty">No hay contactos archivados para revisar. 👌</div></div>'; return; }
+  box.innerHTML=`<div class="org">
+    <h2>🗂️ Contactos archivados <span class="n" style="background:var(--gold);color:#3a2c07">${ARCH.list.length}</span></h2>
+    <div class="sub">Los líderes los archivaron para que decidas: restaurarlos o eliminarlos. Eliminar es definitivo.</div>
+    <div class="archlist">
+      ${ARCH.list.map(c=>`<div class="archrow" id="arch-${c.id}">
+        <div class="ai"><div class="an">${esc(c.name||'(sin nombre)')}</div>
+          <div class="am">${c.user_id?'👤 '+esc(c.user_id[1]):'sin comercial'}${c.city?' · '+esc(c.city):''}${c.vat?' · '+esc(c.vat):''}</div>
+          <div class="am2">🗂️ Archivado${c._arch.por?' por '+esc(c._arch.por):''}${c._arch.fecha?' · '+c._arch.fecha:''}</div></div>
+        <div class="aa">
+          <button class="rest" onclick="restaurarArch(${c.id})">↩ Restaurar</button>
+          <button class="del" onclick="eliminarArch(${c.id})">🗑 Eliminar</button>
+        </div>
+      </div>`).join("")}
+    </div>
+  </div>`;
+}
+async function restaurarArch(id){
+  const c=ARCH.list.find(x=>x.id===id); if(!c)return;
+  try{
+    await EYG.rpc("res.partner","write",[[id],{category_id:[[3,ARCH_TAG]]}]);
+    ARCH.list=ARCH.list.filter(x=>x.id!==id);
+    otoast("Restaurado ✓ — vuelve a la lista del comercial", true);
+    renderArch();
+  }catch(e){ otoast("No se pudo restaurar: "+e.message); }
+}
+async function eliminarArch(id){
+  const c=ARCH.list.find(x=>x.id===id); if(!c)return;
+  if(!confirm('¿ELIMINAR definitivamente «'+(c.name||"este contacto")+'»?\n\nEsta acción no se puede deshacer.')) return;
+  try{
+    await EYG.rpc("res.partner","unlink",[[id]]);
+    ARCH.list=ARCH.list.filter(x=>x.id!==id);
+    otoast("Eliminado ✓", true);
+    renderArch();
+  }catch(e){
+    // Odoo bloquea el borrado si tiene ventas/facturas: lo dejamos archivado y desactivado
+    try{ await EYG.rpc("res.partner","write",[[id],{active:false}]); }catch(e2){}
+    otoast("No se puede borrar (tiene movimientos). Quedó archivado y desactivado.", false);
+    ARCH.list=ARCH.list.filter(x=>x.id!==id);
+    renderArch();
+  }
 }
 async function cargar(){
   let sellers=[];
