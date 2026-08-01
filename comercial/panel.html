@@ -285,7 +285,7 @@ async function rpc(model,method,args,kwargs={},intentos=3){
 }
 
 // ===== Config / objetivos =====
-const OBJ={diarioContactos:10, mensualNuevos:10, semanalFact:10000000}; // semanalFact = objetivo de VENTA NETA semanal (sin IVA, ya descontadas las notas de crédito)
+const OBJ={diarioContactos:10, mensualNuevos:3, semanalFact:10000000}; // semanalFact = objetivo de VENTA NETA semanal (sin IVA, ya descontadas las notas de crédito)
 // ===== Comisión: escalera marginal sobre FACTURADO NETO (base). El cobro NO es la base: es PREMIO → sube el nivel/multiplicador que agranda toda la comisión =====
 // 3 SISTEMAS · escalera 2 tramos con corte en el OBJETIVO (baseline facturado ×1,2), MARGINAL:
 //  🏥 Instituciones 2%/3% · 💊 Farmacias 2,5%/3,5% (× nivel) · 🔵 Externo (Samanta) 3%/4% @ $50M fijo, sin nivel.
@@ -809,9 +809,18 @@ async function cargarOfertas(ids){
       rpc("ir.config_parameter","get_param",["eyg.sync_ofertas"]).catch(()=>"[]")
     ]);
     const propias=(JSON.parse(rawOf||"[]")||[]).filter(o=>o && o.id && (!o.hasta || o.hasta>=hoyStr));
-    // las de sync nacen activas: alcanza con que no estén pausadas y sigan vigentes
-    const sync=(JSON.parse(rawSync||"[]")||[]).filter(o=>o && o.id && !o.pausada && (!o.hasta || o.hasta>=hoyStr));
-    OFERTAS=propias.concat(sync.length?await normalizarSync(sync):[]);
+    // productos (variantes) ya cubiertos por una oferta confirmada, para no duplicar
+    const propiaPids=new Set(propias.flatMap(o=>(o.items||[]).map(i=>i.id)));
+    // las de sync nacen activas: alcanza con que no estén pausadas y sigan vigentes.
+    // Al confirmar una oportunidad se crea la oferta (eyg.ofertas) Y su regla de precio
+    // (eyg.sync_ofertas con id "opo_<variante>"): son la MISMA oferta. Se descartan acá
+    // para que no aparezca dos veces la misma tarjeta.
+    let sync=(JSON.parse(rawSync||"[]")||[]).filter(o=>o && o.id && !o.pausada && (!o.hasta || o.hasta>=hoyStr))
+      .filter(o=>{ const m=/^opo_(\d+)$/.exec(o.id||""); return !(m && propiaPids.has(+m[1])); });
+    let syncNorm = sync.length?await normalizarSync(sync):[];
+    // por si quedara algún producto ya cubierto por una oferta propia, se saca también
+    syncNorm = syncNorm.filter(o=>{ const pv=(o.items||[])[0]&&o.items[0].id; return !(pv && propiaPids.has(pv)); });
+    OFERTAS=propias.concat(syncNorm);
   }catch(e){ OFERTAS=[]; return; }
   await Promise.all(OFERTAS.map(async o=>{
     const pids=(o.items||[]).map(i=>i.id).filter(Boolean);
