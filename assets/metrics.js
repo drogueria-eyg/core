@@ -35,7 +35,7 @@ window.EYGM = (function(){
     const rt=d.perfil==="externo"?{base:.03,high:.04}:(RATES[d.perfil]||RATES.farm);
     const pen=d.perfil==="externo"?0:salud(d).penaltyPt/100;
     const rB=Math.max(0,rt.base-pen), rH=Math.max(0,rt.high-pen);
-    const corte=d.perfil==="externo"?50e6:(d.factBaseline||0)*1.3;
+    const corte=d.perfil==="externo"?50e6:(d.factBaseline||0)*1.2;   // meta = baseline +20% (marginal)
     const base=d.factMes<=corte?d.factMes*rB:corte*rB+(d.factMes-corte)*rH;
     const mult=d.perfil==="externo"?1:nivel(d).mult;
     return {base, mult, total:base*mult, corte, rt, penaltyPt: d.perfil==="externo"?0:salud(d).penaltyPt};
