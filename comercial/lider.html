@@ -132,6 +132,14 @@
   .ec .spark i{flex:1;background:var(--aqua);border-radius:2px 2px 0 0;min-height:2px} .ec .spark i.now{background:var(--coral)}
   .ec .shim{color:var(--gris2);font-size:11px;display:inline-flex;align-items:center;gap:6px}
   .up{color:#1E7D46} .down{color:#C0554A}
+  /* histórico: evolución por comercial */
+  .hrow{display:grid;grid-template-columns:1.3fr 2fr 1fr .9fr;gap:12px;align-items:center;padding:11px 16px;border-top:1px solid var(--line)}
+  .hrow.head{border-top:0;background:#F1F7F6;font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--gris);font-weight:800}
+  .hrow .nm{font-weight:800;font-size:14px;display:flex;align-items:center;gap:8px}
+  .hrow .num{text-align:right;font-weight:700;font-size:13.5px}
+  .hspark{display:flex;align-items:flex-end;gap:3px;height:36px}
+  .hspark i{flex:1;background:var(--aqua);border-radius:2px 2px 0 0;min-height:2px} .hspark i.pre{background:#cddedb} .hspark i.cur{background:var(--coral)}
+  @media(max-width:620px){ .hrow{grid-template-columns:1.2fr 1.4fr .9fr} .hrow .col-va{display:none} }
   /* panel de detalle del comercial seleccionado */
   .det{background:var(--surface);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:0;margin-bottom:22px;overflow:hidden;animation:fadeup .35s both}
   .det .dtop{display:flex;align-items:center;gap:13px;padding:18px 22px;background:linear-gradient(135deg,var(--teal),var(--teal-deep));color:#fff}
@@ -341,6 +349,7 @@ function render(){
   document.getElementById("ld").innerHTML = `${headerLider()}
     <div class="tabs">
       <button class="tab ${VISTA==='rendimiento'?'on':''}" onclick="setVista('rendimiento')">📊 Rendimiento</button>
+      <button class="tab ${VISTA==='historico'?'on':''}" onclick="setVista('historico')">📈 Histórico</button>
       <button class="tab ${VISTA==='contactos'?'on':''}" onclick="setVista('contactos')">🗂️ Contactos del equipo</button>
     </div>
     <div id="vista"></div>`;
@@ -357,6 +366,9 @@ function pintarVista(){
     v.innerHTML=`<div id="kpis"></div><div id="ventasEq"></div><div id="chart"></div><div id="equipo"></div><div id="prods"></div><div id="ofSemana"></div>`;
     renderKpis(); renderVentasEq(); renderChart(); renderEquipo(); renderProds();
     if(EYG.cardOfertasSemana) EYG.cardOfertasSemana("ofSemana");
+  }else if(VISTA==="historico"){
+    v.innerHTML=`<div id="hist"></div>`;
+    cargarHistorico();
   }else{
     renderContactos();
   }
@@ -429,7 +441,8 @@ function barChart(series){
   const max=Math.max(...series.map(s=>s.val),1);
   const bw=(W-PADL*2)/n; const gap=n>20?1.5:n>12?2.5:6;
   const bars=series.map((s,i)=>{ const h=(s.val/max)*(H-PADB-PADT); const x=PADL+i*bw+gap/2, yy=H-PADB-h, w=Math.max(1,bw-gap);
-    return `<rect x="${x.toFixed(1)}" y="${yy.toFixed(1)}" width="${w.toFixed(1)}" height="${Math.max(0,h).toFixed(1)}" rx="${Math.min(3,w/2).toFixed(1)}" fill="${s.cur?'var(--coral)':'url(#gb)'}"><title>${esc(s.label)}: ${M(s.val)}</title></rect>`; }).join("");
+    const fill=s.cur?'var(--coral)':s.pre?'#cddedb':'url(#gb)';
+    return `<rect x="${x.toFixed(1)}" y="${yy.toFixed(1)}" width="${w.toFixed(1)}" height="${Math.max(0,h).toFixed(1)}" rx="${Math.min(3,w/2).toFixed(1)}" fill="${fill}"><title>${esc(s.label)}: ${M(s.val)}</title></rect>`; }).join("");
   const step=n>24?Math.ceil(n/15):1;
   const labels=series.map((s,i)=>{ if(i%step!==0 && !s.cur) return ""; const x=PADL+i*bw+bw/2;
     return `<text x="${x.toFixed(1)}" y="${H-9}" text-anchor="middle" font-size="12" fill="${s.cur?'var(--coral)':'#9AAcA8'}" font-weight="${s.cur?800:500}">${esc(s.label)}</text>`; }).join("");
@@ -803,26 +816,27 @@ function periodoRango(p){
 }
 let VENTASEQ={};        // desglose del equipo cacheado por período
 let CARTERA_EQ=null;    // cartera del equipo (para no reconsultarla en cada período)
+/* Desglose del equipo para un rango [desde, hasta). hasta opcional (abierto = hasta hoy).
+   Lo usan la tarjeta por período y la consulta de un mes histórico. */
+async function desgloseEquipo(desde, hasta){
+  if(!CARTERA_EQ) CARTERA_EQ=await EYG.rpc("res.partner","search",[[["user_id","in",UIDS]]]);
+  const cartera=CARTERA_EQ;
+  const rg=f=>{ const d=[[f,">=",desde]]; if(hasta) d.push([f,"<",hasta]); return d; };
+  const so=st=>EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],...st,...rg("date_order")],["amount_untaxed:sum"],[]],{lazy:false});
+  const am=mt=>EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=",mt],["state","=","posted"],...rg("invoice_date")],["amount_untaxed:sum"],[]],{lazy:false});
+  const [ped,can,dra,fac,nc]=await Promise.all([
+    so([["state","in",["sale","done"]]]), so([["state","=","cancel"]]), so([["state","in",["draft","sent"]]]),
+    am("out_invoice"), am("out_refund"),
+  ]);
+  const gN=g=>g&&g[0]?g[0].__count||0:0, gM=g=>g&&g[0]?g[0].amount_untaxed||0:0;
+  const desglose={pedN:gN(ped),pedM:gM(ped),canN:gN(can),canM:gM(can),draN:gN(dra),draM:gM(dra),facN:gN(fac),facMonto:gM(fac),ncN:gN(nc),ncMonto:gM(nc)};
+  return {n:COM.length, pedMes:desglose.pedM, factMes:desglose.facMonto-desglose.ncMonto, desglose};
+}
 async function cargarVentasEq(p){
   p=p||PERIODO;
   if(VENTASEQ[p]){ renderVentasEq(); return; }
   renderVentasEq(); // muestra "cargando…" del período pedido
-  const {desde}=periodoRango(p);
-  try{
-    if(!CARTERA_EQ) CARTERA_EQ=await EYG.rpc("res.partner","search",[[["user_id","in",UIDS]]]);
-    const cartera=CARTERA_EQ;
-    const so=dom=>EYG.rpc("sale.order","read_group",[dom,["amount_untaxed:sum"],[]],{lazy:false});
-    const am=mt=>EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=",mt],["state","=","posted"],["invoice_date",">=",desde]],["amount_untaxed:sum"],[]],{lazy:false});
-    const [ped,can,dra,fac,nc]=await Promise.all([
-      so([["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]]),
-      so([["user_id","in",UIDS],["state","=","cancel"],["date_order",">=",desde]]),
-      so([["user_id","in",UIDS],["state","in",["draft","sent"]],["date_order",">=",desde]]),
-      am("out_invoice"), am("out_refund"),
-    ]);
-    const gN=g=>g&&g[0]?g[0].__count||0:0, gM=g=>g&&g[0]?g[0].amount_untaxed||0:0;
-    const desglose={pedN:gN(ped),pedM:gM(ped),canN:gN(can),canM:gM(can),draN:gN(dra),draM:gM(dra),facN:gN(fac),facMonto:gM(fac),ncN:gN(nc),ncMonto:gM(nc)};
-    VENTASEQ[p]={n:COM.length, pedMes:desglose.pedM, factMes:desglose.facMonto-desglose.ncMonto, desglose};
-  }catch(e){}
+  try{ VENTASEQ[p]=await desgloseEquipo(periodoRango(p).desde); }catch(e){}
   renderVentasEq();
 }
 function renderVentasEq(){
@@ -833,6 +847,70 @@ function renderVentasEq(){
     {pedMes:v.pedMes, factMes:v.factMes, desglose:v.desglose},
     {quien:"el equipo", id:"desgEquipo", titulo:"💵 Ventas del equipo · "+lbl,
      cargaLbl:"suma de los pedidos de tus "+v.n+" comerciales", factLbl:"suma de lo facturado a sus carteras"});
+}
+/* ===================== HISTÓRICO Y EVOLUCIÓN =====================
+   Evolución del equipo mes a mes + por comercial + consulta del desglose de cualquier mes.
+   Punto 0 = lanzamiento del sistema (agosto 2026): los meses previos se ven como
+   referencia (gris), sin puntos ni niveles (que arrancan recién ahora). */
+const LAUNCH="2026-08";
+let HIST=null, HISTMES=null;
+function mesLbl(m){ return MESES[(+m.split("-")[1])-1]||m; }
+async function cargarHistorico(){
+  if(HIST){ renderHistorico(); return; }
+  const box=document.getElementById("hist"); if(box) box.innerHTML=`<div class="floading"><span class="spin-sm"></span> cargando el histórico del equipo…</div>`;
+  const desde=argToday().slice(0,4)+"-01-01";
+  try{
+    if(!CARTERA_EQ) CARTERA_EQ=await EYG.rpc("res.partner","search",[[["user_id","in",UIDS]]]);
+    const [movG,ordCom]=await Promise.all([
+      EYG.rpc("account.move","read_group",[[["partner_id","in",CARTERA_EQ],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",desde]],["amount_untaxed:sum"],["invoice_date:month","move_type"]],{lazy:false}),
+      EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],["amount_untaxed:sum"],["date_order:month","user_id"]],{lazy:false}),
+    ]);
+    const mk=(r,f)=>{const rg=r.__range&&r.__range[f];return rg?rg.from.slice(0,7):"";};
+    const teamNet={}; for(const r of movG){ const m=mk(r,"invoice_date:month"); if(m) teamNet[m]=(teamNet[m]||0)+(r.move_type==="out_invoice"?1:-1)*(r.amount_untaxed||0); }
+    const byCom={}, teamPed={};
+    for(const r of ordCom){ const m=mk(r,"date_order:month"); const uid=r.user_id&&r.user_id[0], amt=r.amount_untaxed||0; if(!m)continue; teamPed[m]=(teamPed[m]||0)+amt; if(uid){ (byCom[uid]=byCom[uid]||{})[m]=(byCom[uid][m]||0)+amt; } }
+    const meses=[...new Set([...Object.keys(teamNet),...Object.keys(teamPed)])].sort();
+    HIST={meses, teamNet, teamPed, byCom};
+  }catch(e){ HIST={meses:[],teamNet:{},teamPed:{},byCom:{}}; }
+  renderHistorico();
+}
+function renderHistorico(){
+  const box=document.getElementById("hist"); if(!box) return;
+  if(!HIST){ box.innerHTML=`<div class="floading"><span class="spin-sm"></span> cargando…</div>`; return; }
+  const meses=HIST.meses; if(!meses.length){ box.innerHTML=`<div class="cempty">Sin datos históricos para mostrar.</div>`; return; }
+  const curM=argToday().slice(0,7);
+  const serie=meses.map(m=>({label:mesLbl(m), val:HIST.teamNet[m]||0, cur:m===curM, pre:m<LAUNCH}));
+  const filas=COM.map(c=>{ const vals=meses.map(m=>(HIST.byCom[c.uid]&&HIST.byCom[c.uid][m])||0);
+    const last=vals[vals.length-1]||0, prev=vals.length>1?vals[vals.length-2]:0; const dpct=prev>0?Math.round((last/prev-1)*100):null;
+    return {c,vals,last,dpct}; }).sort((a,b)=>b.last-a.last);
+  const maxCom=Math.max(1,...filas.flatMap(f=>f.vals));
+  const spark=vals=>`<span class="hspark">${vals.map((v,i)=>`<i style="height:${Math.max(2,Math.round((v/maxCom)*100))}%" class="${meses[i]<LAUNCH?'pre':''}${meses[i]===curM?' cur':''}" title="${mesLbl(meses[i])} ${meses[i].slice(0,4)}: ${M(v)}"></i>`).join("")}</span>`;
+  box.innerHTML=`
+    <div class="scopenote">📈 Evolución histórica del equipo. El sistema de <b>puntos y niveles arranca en agosto 2026</b> (lanzamiento). Los meses anteriores se muestran como <b>referencia</b> (en gris), sin puntaje.</div>
+    <div class="chartbox"><div class="ch-head"><h2>Facturado neto del equipo · por mes</h2></div>
+      ${barChart(serie)}
+      <div class="muted" style="margin-top:4px">▪ gris = antes del lanzamiento (referencia) · ▪ coral = mes actual</div>
+    </div>
+    <div class="eqhead"><h2>👥 Evolución por comercial <span class="muted" style="font-weight:600;font-size:12px">· pedidos por mes</span></h2></div>
+    <div class="tbl">
+      <div class="hrow head"><div>Comercial</div><div>Evolución</div><div class="num">Último mes</div><div class="num">vs anterior</div></div>
+      ${filas.map(f=>`<div class="hrow"><div class="nm"><span class="dotc" style="background:${f.c.color}"></span>${esc(f.c.name)}</div><div>${spark(f.vals)}</div><div class="num">${M(f.last)}</div><div class="num ${f.dpct==null?'':f.dpct>=0?'up':'down'}">${f.dpct==null?'—':(f.dpct>=0?'▲ ':'▼ ')+Math.abs(f.dpct)+'%'}</div></div>`).join("")}
+    </div>
+    <div class="eqhead" style="margin-top:18px"><h2>🔎 Consultar un mes</h2><span class="muted">tocá un mes para ver su desglose completo</span></div>
+    <div class="cfilters">${meses.slice().reverse().map(m=>`<div class="cchip ${HISTMES===m?'on':''}" data-m="${m}" onclick="verMesHist('${m}')">${mesLbl(m)} ${m.slice(0,4)}${m<LAUNCH?' · ref.':''}</div>`).join("")}</div>
+    <div id="histMes"></div>`;
+  if(HISTMES) verMesHist(HISTMES);
+}
+async function verMesHist(m){
+  HISTMES=m;
+  document.querySelectorAll("#hist .cchip").forEach(el=>el.classList.toggle("on", el.dataset.m===m));
+  const box=document.getElementById("histMes"); if(!box) return;
+  box.innerHTML=`<div class="ventas"><div class="floading"><span class="spin-sm"></span> cargando ${mesLbl(m)} ${m.slice(0,4)}…</div></div>`;
+  const [y,mm]=m.split("-").map(Number); const next=(mm===12)?`${y+1}-01-01`:`${y}-${String(mm+1).padStart(2,"0")}-01`;
+  try{
+    const v=await desgloseEquipo(m+"-01", next);
+    box.innerHTML=ventasHTML({pedMes:v.pedMes,factMes:v.factMes,desglose:v.desglose},{quien:"el equipo",id:"desgHistBox",titulo:"💵 Ventas del equipo · "+mesLbl(m)+" "+y,cargaLbl:"suma de los pedidos de tus "+v.n+" comerciales",factLbl:"suma de lo facturado a sus carteras"});
+  }catch(e){ box.innerHTML=`<div class="cempty">No pude cargar el desglose del mes.</div>`; }
 }
 function fichaHTML(d){
   const perfilNom=d.perfil==="externo"?"Externo (3/4%)":(d.perfil==="inst"?"Instituciones":"Farmacias");
