@@ -227,7 +227,7 @@
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js?v=3"></script>
-<script src="../assets/metrics.js?v=2"></script>
+<script src="../assets/metrics.js?v=3"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const COLORS=["#048782","#EC8B5E","#0AA89F","#E5A93B","#5FC8BF","#B0413E","#6E8B86","#04635F"];
@@ -493,6 +493,26 @@ function renderTabla(){
   renderEquipo();
 }
 let SEL=null, AGG=null, FICHAS_LOADING=false, FICHAS_STALE=false;
+let OFPIDS_LIDER=[], PARTMAP={}, PREP_OF=false;
+/* Prepara, una sola vez, los ids de producto de las ofertas vigentes y el partner de
+   cada comercial (para contar ofertas vendidas/enviadas en fichaData). */
+async function prepOfertasLider(){
+  if(PREP_OF) return; PREP_OF=true;
+  try{
+    const hoy=argToday();
+    const [ofR,syncR,users]=await Promise.all([
+      EYG.rpc("ir.config_parameter","get_param",["eyg.ofertas"]).catch(()=>"[]"),
+      EYG.rpc("ir.config_parameter","get_param",["eyg.sync_ofertas"]).catch(()=>"[]"),
+      EYG.rpc("res.users","read",[UIDS,["partner_id"]]).catch(()=>[]),
+    ]);
+    for(const u of users) if(u.partner_id) PARTMAP[u.id]=u.partner_id[0];
+    const of=JSON.parse(ofR||"[]")||[], sync=JSON.parse(syncR||"[]")||[]; const pids=new Set();
+    for(const o of of){ if(o&&(!o.hasta||o.hasta>=hoy)) (o.items||[]).forEach(i=>i.id&&pids.add(i.id)); }
+    const tmpls=[...new Set(sync.filter(o=>o&&o.tipo==="p"&&o.target&&!o.pausada&&(!o.hasta||o.hasta>=hoy)).map(o=>o.target))];
+    if(tmpls.length){ const tps=await EYG.rpc("product.template","read",[tmpls,["product_variant_id"]],{context:{lang:"es_AR"}}).catch(()=>[]); for(const t of tps) if(t.product_variant_id) pids.add(t.product_variant_id[0]); }
+    OFPIDS_LIDER=[...pids];
+  }catch(e){}
+}
 
 /* Carga la ficha completa de cada comercial (nivel/salud/comisión/cartera) en paralelo,
    arma los promedios del equipo (AGG) para las comparativas, y repinta las tarjetas. */
@@ -517,7 +537,8 @@ async function loadFicha(c){
 }
 async function cargarFichas(){
   FICHAS_LOADING=true; renderEquipo();
-  // De a 2 comerciales por vez (cada ficha son ~14 consultas): fiable y sin trabar.
+  await prepOfertasLider();   // ids de ofertas + partners (para ofertas vendidas/enviadas)
+  // De a 2 comerciales por vez: fiable y sin trabar.
   await mapLimit(COM, 2, c=>loadFicha(c));
   computeAGG(); FICHAS_LOADING=false; renderEquipo();
 }
@@ -707,7 +728,7 @@ function renderDetalle(){
 async function fichaData(uid, name){
   const t=argToday(), y=t.slice(0,4), mo=t.slice(0,7), inicioMes=mo+"-01", inicioAno=y+"-01-01";
   const cartera=await EYG.rpc("res.partner","search",[[["user_id","=",uid]]]);
-  const [movG,payG,ml,ordG,estG,pf,mg,waMsgs]=await Promise.all([
+  const [movG,payG,ml,ordG,estG,pf,mg,waMsgs,ofVenG,ofEnvC]=await Promise.all([
     // facturas+NC por mes y tipo (190d) → factMes, baseline y desglose de facturación
     EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",EYG.hace(190)]],["amount_untaxed:sum"],["invoice_date:month","move_type"]],{lazy:false}),
     // cobros entrantes por mes (100d) → cobrado del mes + objetivo (prom 3m)
@@ -724,6 +745,10 @@ async function fichaData(uid, name){
     EYG.rpc("sale.order.line","read_group",[[["order_id.user_id","=",uid],["order_id.state","in",["sale","done"]],["order_id.date_order",">=",inicioAno]],["margin:sum","price_subtotal:sum"],[]],{lazy:false}),
     // mensajes WA confirmados de la semana sobre su cartera
     EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",cartera],["date",">=",EYG.hace(7)+" 00:00:00"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id","date","body"],limit:0}),
+    // ofertas VENDIDAS este mes (cliente × oferta) sobre productos en oferta
+    EYG.rpc("sale.order.line","read_group",[[["order_partner_id","in",cartera],["product_id","in",OFPIDS_LIDER.length?OFPIDS_LIDER:[0]],["state","in",["sale","done"]],["order_id.date_order",">=",inicioMes]],["price_subtotal:sum"],["order_partner_id","product_id"]],{lazy:false}),
+    // ofertas ENVIADAS este mes (notas [EyGOFENV] en el partner del comercial)
+    EYG.rpc("mail.message","search_count",[[["model","=","res.partner"],["res_id","=",PARTMAP[uid]||0],["date",">=",inicioMes+" 00:00:00"],["body","like","EyGOFENV"]]]),
   ]);
   const mkey=(r,f)=>{ const rg=r.__range&&r.__range[f]; return rg?rg.from.slice(0,7):String(r[f]||"").slice(0,7); };
   // WhatsApp: hoy (contactos distintos + mensajes + nuevo/seg) y semana
@@ -765,7 +790,8 @@ async function fichaData(uid, name){
   const dd=new Date(), dim=new Date(dd.getFullYear(),dd.getMonth()+1,0).getDate(), diaMesFrac=dd.getDate()/dim;
   const perfil=EYGM.perfilDe(name, avgTicket);
   const desglose={ pedN, pedM, canN, canM, draN, draM, facN, facMonto, ncN, ncMonto };
-  const d={nombre:name, perfil, factMes, factBaseline, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, combos:0, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg, pedMes:pedM, desglose};
+  const ofVendidas=(ofVenG||[]).length, ofEnviadas=ofEnvC||0;
+  const d={nombre:name, perfil, factMes, factBaseline, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, ofEnviadas, ofVendidas, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg, pedMes:pedM, desglose};
   d.nivel=EYGM.nivel(d); d.salud=EYGM.salud(d); d.com=EYGM.comision(d);
   return d;
 }
@@ -944,6 +970,7 @@ function fichaHTML(d){
       <div class="fstat"><div class="l">Vencido</div><div class="v" style="color:${vencPct>=40?'var(--coral)':vencPct>=25?'var(--gold)':'var(--ink)'}">${M(d.vencido)}</div><div class="s">${vencPct}% de ${M(d.porCobrar)} · saldos a cobrar vencidos</div></div>
       <div class="fstat"><div class="l">Clientes nuevos</div><div class="v">${d.nuevos}</div><div class="s">contactos creados este mes</div></div>
       <div class="fstat"><div class="l">📤 WhatsApp hoy</div><div class="v">${d.waHoyMsg||0}<span style="font-size:12px;color:var(--gris2)"> msg</span></div><div class="s">${d.waHoyCont||0} contactos · ${d.waHoyNuevo||0} nuevos · ${d.waSemMsg||0} sem</div></div>
+      <div class="fstat"><div class="l">🎁 Ofertas del mes</div><div class="v">${d.ofVendidas||0}<span style="font-size:12px;color:var(--gris2)"> vendidas</span></div><div class="s">${d.ofEnviadas||0}/30 enviadas · ${d.ofVendidas||0}/10 vendidas</div></div>
       <div class="fstat"><div class="l">Cartera</div><div class="v">${d.cartera}</div><div class="s">clientes asignados (user_id)</div></div>
     </div>
     ${d.perfil==="externo"?niv:`<div class="cols2"><div>${niv}</div><div>${sal}</div></div>${obj}`}

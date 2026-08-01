@@ -358,12 +358,13 @@ const hace=d=>{const x=new Date(now);x.setDate(x.getDate()-d);return `${x.getFul
 // apuntan a una categoría no tienen precio único: quedan como tarjeta informativa
 // (_info), sin precio ni barra de progreso, sólo el descuento y la vigencia.
 const LISTA=3;              // pricelist de la que sale el precio base (misma que usa Oportunidades)
-const OF_META_CLIENTES=5;   // meta de clientes por oferta cuando la oferta no trae la suya
-const OF_META_NIVEL=5;      // clientes distintos con alguna oferta colocada que valen los 25 pts
-const OF_PTS_TOTAL=25;      // máx. de "Combos / ofertas" en nivel(); la tarjeta muestra el mismo número
-let OFERTAS=[];
+const OF_META_CLIENTES=5;   // meta de clientes por oferta (display de cada tarjeta)
+// Puntaje de ofertas en el nivel (25 pts): actividad exigible (enviar) + resultado (vender, fuerte)
+const OF_PTS_ENV=8,  OF_META_ENV=30;   // ofertas ENVIADAS este mes → 8 pts
+const OF_PTS_VEN=17, OF_META_VEN=10;   // ofertas VENDIDAS este mes (cliente×oferta) → 17 pts (fuerte)
+let OFERTAS=[], OFPIDS=[];   // OFPIDS = ids de variante de todas las ofertas vigentes
 
-let ST={userId:null, contactos:[], catFiscal:[], catId:[], catProv:[], fact:{sem:0,mes:0,semPed:0,semNC:0,mesPed:0,mesNC:0}, cc:{porP:{},porCobrar:0,vencido:0,cobradoMes:0,aFacturar:0,aParcial:0,nDeud:0}, nuevos:0, contactadosHoy:new Set(), msgs:[], orders:{}, ofertas:{}, base:null, act:{ped:0,cli:0}, diag:{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}, alFondo:new Set(), filtro:"pend", q:""};
+let ST={userId:null, contactos:[], catFiscal:[], catId:[], catProv:[], fact:{sem:0,mes:0,semPed:0,semNC:0,mesPed:0,mesNC:0}, cc:{porP:{},porCobrar:0,vencido:0,cobradoMes:0,aFacturar:0,aParcial:0,nDeud:0}, nuevos:0, contactadosHoy:new Set(), msgs:[], orders:{}, ofertas:{}, ofEnviadas:0, ofVendidas:0, userPartner:null, base:null, act:{ped:0,cli:0}, diag:{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}, alFondo:new Set(), filtro:"pend", q:""};
 
 const PFIELDS=["id","name","company_type","is_company","street","street2","city","zip","state_id","phone","mobile","email","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","customer_rank"];
 
@@ -379,9 +380,9 @@ const diasDe=f=> f? Math.floor((now-new Date(f))/86400000):null;
 
 async function cargar(){
   try{
-    const u=await rpc("res.users","search_read",[[["name","=",COMERCIAL]]],{fields:["id","name"],limit:1});
+    const u=await rpc("res.users","search_read",[[["name","=",COMERCIAL]]],{fields:["id","name","partner_id"],limit:1});
     if(!u.length) throw new Error("No encontré al comercial \""+COMERCIAL+"\".");
-    ST.userId=u[0].id; document.getElementById("whoName").textContent=u[0].name;
+    ST.userId=u[0].id; ST.userPartner=u[0].partner_id&&u[0].partner_id[0]; document.getElementById("whoName").textContent=u[0].name;
     const [contactos,fiscal,idt,prov,nuevos] = await Promise.all([
       rpc("res.partner","search_read",[[["user_id","=",ST.userId]]],{fields:PFIELDS,limit:0}),
       rpc("l10n_ar.afip.responsibility.type","search_read",[[]],{fields:["id","name"]}),
@@ -474,17 +475,17 @@ const PERFIL={ inst:{valor:38,activ:12,nom:"Instituciones"}, farm:{valor:25,acti
 function nivel(){
   const b=ST.base||{objetivoCobro:0,promPed:0,promCli:0,perfil:"farm"};
   const sp=PERFIL[b.perfil]||PERFIL.farm;
-  // clientes DISTINTOS a los que se les colocó alguna oferta vigente (el que compró dos
-  // combos cuenta una vez), para que el número case con la meta, que también es de clientes.
-  const coloc=ofClientes().size;
   const act=ST.act||{ped:0,cli:0};
   const P=[];
   const rValor=b.objetivoCobro>0?Math.min(ST.cc.cobradoMes/b.objetivoCobro,1):0;
   P.push({ic:"💰",lab:"Cobro vs tu objetivo",max:sp.valor,pts:sp.valor*rValor,det:money(ST.cc.cobradoMes)+" de "+money(b.objetivoCobro)+" · "+Math.round(rValor*100)+"%"});
   const rPed=b.promPed>0?Math.min(act.ped/b.promPed,1):0, rCli=b.promCli>0?Math.min(act.cli/b.promCli,1):0, rAct=(rPed+rCli)/2;
   P.push({ic:"📞",lab:"Actividad (pedidos + clientes)",max:sp.activ,pts:sp.activ*rAct,det:act.ped+" ped / "+act.cli+" cli vs "+b.promPed+"/"+b.promCli+" prom · "+Math.round(rAct*100)+"%"});
-  const metaC=OF_META_NIVEL, rC=Math.min(coloc/metaC,1);
-  P.push({ic:"🎁",lab:"Combos / ofertas colocados",max:OF_PTS_TOTAL,pts:OF_PTS_TOTAL*rC,det:coloc+" de "+metaC+" clientes"});
+  // Ofertas: enviar (actividad exigible) + vender (resultado, fuerte)
+  const env=ST.ofEnviadas||0, rEnv=Math.min(env/OF_META_ENV,1);
+  P.push({ic:"📤",lab:"Ofertas enviadas",max:OF_PTS_ENV,pts:OF_PTS_ENV*rEnv,det:env+" de "+OF_META_ENV+" este mes"});
+  const ven=ST.ofVendidas||0, rVen=Math.min(ven/OF_META_VEN,1);
+  P.push({ic:"🎁",lab:"Ofertas vendidas",max:OF_PTS_VEN,pts:OF_PTS_VEN*rVen,det:ven+" de "+OF_META_VEN+" colocadas"});
   const rN=Math.min(ST.nuevos/3,1);
   P.push({ic:"🆕",lab:"Clientes nuevos (meta 3)",max:20,pts:20*rN,det:ST.nuevos+" este mes"});
   const rCo=Math.min(ST.contactadosHoy.size/10,1);
@@ -688,8 +689,8 @@ const ofDesc=o=>(o.precioAntes>0&&o.precioAntes>o.precio)?Math.round((1-o.precio
 const ofMeta=o=>o.metaClientes>0?o.metaClientes:OF_META_CLIENTES;
 const ofDesde=o=>String(o.desde||o.creada||hace(OF_DIAS_DEF)).slice(0,10);
 // clientes DISTINTOS con al menos una oferta vigente colocada (es la unidad de la meta del nivel)
-function ofClientes(){ const s=new Set(); for(const o of Object.values(ST.ofertas)) for(const c of (o.cli||[])) s.add(c); return s; }
-function ofPuntos(){ return OF_PTS_TOTAL*Math.min(ofClientes().size/OF_META_NIVEL,1); }
+// puntos de la dimensión ofertas = enviar (actividad) + vender (resultado)
+function ofPuntos(){ return Math.min((ST.ofEnviadas||0)/OF_META_ENV,1)*OF_PTS_ENV + Math.min((ST.ofVendidas||0)/OF_META_VEN,1)*OF_PTS_VEN; }
 
 /* Texto para compartir por WhatsApp. Formato de WhatsApp: *negrita*, ~tachado~.
    Sale del mismo dato que se publicó, así el comercial no reescribe nada. */
@@ -739,12 +740,12 @@ function ofertasHTML(){
       ${o._info?'':`<div class="of-bar"><i style="width:${pct}%"></i></div>
       <div class="of-foot" title="Clientes de tu cartera que la compraron desde que se publicó la oferta (meta ${meta})"><span>${col==null?'…':(col>=meta?col+' clientes ✓':col+' / '+meta+' clientes')}</span>${(st&&st.monto>0)?`<span class="p">${money(st.monto)}</span>`:''}</div>`}
       <span class="of-venc">⏳ ${venc}</span>
-      <a class="of-wa" href="https://api.whatsapp.com/send?text=${encodeURIComponent(ofertaMsg(o))}" target="_blank" rel="noopener">Compartir por WhatsApp</a>
+      <a class="of-wa" href="https://api.whatsapp.com/send?text=${encodeURIComponent(ofertaMsg(o))}" target="_blank" rel="noopener" onclick="confirmarCompartir('${(o.id||'').replace(/'/g,'')}')">Compartir por WhatsApp</a>
     </div>`;
   }).join("");
   return `<div class="ofertas">
     <div class="of-head"><div><span class="of-ttl">🎁 Ofertas y combos</span><span class="of-sub">Publicadas por EyG · colocalas y sumás puntos</span></div>
-      <span class="of-pts">+${Math.round(ofPuntos())} de ${OF_PTS_TOTAL} pts</span></div>
+      <span class="of-pts">+${Math.round(ofPuntos())} de ${OF_PTS_ENV+OF_PTS_VEN} pts</span></div>
     <div class="of-grid">${cards}</div>
   </div>`;
 }
@@ -839,6 +840,19 @@ async function cargarOfertas(ids){
         monto:g.reduce((s,x)=>s+(x.price_subtotal||0),0) };
     }catch(e){ ST.ofertas[o.id]={colocados:0,cli:[],err:true}; }
   }));
+  // ---- Para el puntaje: ofertas VENDIDAS y ENVIADAS este mes ----
+  OFPIDS=[...new Set(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i.id)).filter(Boolean))];
+  try{
+    if(OFPIDS.length && ids.length){
+      const g=await rpc("sale.order.line","read_group",
+        [[["order_partner_id","in",ids],["product_id","in",OFPIDS],["state","in",["sale","done"]],["order_id.date_order",">=",inicioMes+" 00:00:00"]],
+         ["price_subtotal:sum"],["order_partner_id","product_id"]],{lazy:false});
+      ST.ofVendidas=g.length;   // colocaciones (cliente × oferta) del mes
+    } else ST.ofVendidas=0;
+  }catch(e){ ST.ofVendidas=0; }
+  try{
+    if(ST.userPartner) ST.ofEnviadas=await rpc("mail.message","search_count",[[["model","=","res.partner"],["res_id","=",ST.userPartner],["date",">=",inicioMes+" 00:00:00"],["body","like","EyGOFENV"]]]);
+  }catch(e){ ST.ofEnviadas=0; }
 }
 
 // ===== Drawer =====
@@ -1000,6 +1014,30 @@ async function registrarEnvio(id, tipo){
   const eraContacto=ST.contactadosHoy.has(id); ST.contactadosHoy.add(id); const n=ST.contactadosHoy.size;
   if(!eraContacto && n===OBJ.diarioContactos){ toast("🏆 ¡Meta diaria cumplida! "+OBJ.diarioContactos+" contactos 🎉",true); confetti(); }
   else toast("Mensaje registrado ✓ ("+(ng==="nuevo"?"nuevo contacto":"seguimiento")+")", true);
+  render();
+}
+
+/* Al compartir una OFERTA (botón de la tarjeta): abre WhatsApp y pide confirmar.
+   Sólo cuenta como "enviada" si el comercial confirma. Se registra en su propio
+   partner con el marcador [EyGOFENV] para contarlas por mes (puntaje). */
+function confirmarCompartir(ofId){
+  const o=OFERTAS.find(x=>x.id===ofId); const tit=o?(o.titulo||ofItems(o)||"la oferta"):"la oferta";
+  let el=document.getElementById("waconfirm");
+  if(!el){ el=document.createElement("div"); el.id="waconfirm"; el.className="waconfirm"; document.body.appendChild(el); }
+  el.innerHTML=`<div class="wcbox"><div class="wct">📤 ¿Compartiste <b>${esc(tit)}</b>?</div>
+    <div class="wcsub">Solo se cuenta como oferta enviada si confirmás.</div>
+    <div class="wcb"><button class="no" onclick="cerrarWAConfirm()">No</button><button class="si" onclick="registrarEnvioOferta('${(ofId||'').replace(/'/g,'')}')">Sí, la compartí ✓</button></div></div>`;
+  requestAnimationFrame(()=>el.classList.add("on"));
+}
+async function registrarEnvioOferta(ofId){
+  cerrarWAConfirm();
+  const o=OFERTAS.find(x=>x.id===ofId); const tit=o?(o.titulo||ofItems(o)||"oferta"):"oferta";
+  if(!ST.userPartner){ toast("No pude registrar el envío"); return; }
+  try{ await rpc("res.partner","message_post",[[ST.userPartner]],{body:"📤 [EyGOFENV] "+COMERCIAL+" · "+tit, message_type:"comment"}); }catch(e){}
+  ST.ofEnviadas=(ST.ofEnviadas||0)+1;
+  const meta=OF_META_ENV;
+  if(ST.ofEnviadas===meta){ toast("🏆 ¡Meta de ofertas enviadas! "+meta+" este mes 🎉",true); confetti(); }
+  else toast("Oferta enviada ✓ ("+ST.ofEnviadas+"/"+meta+" este mes)", true);
   render();
 }
 

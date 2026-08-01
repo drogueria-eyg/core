@@ -8,7 +8,7 @@ window.EYGM = (function(){
 
   function perfilDe(nombre, avgTicket){ if(EXTERNOS.includes(nombre)) return "externo"; return (avgTicket||0)>=300000?"inst":"farm"; }
 
-  // d = {nombre, perfil, factMes, factBaseline, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, combos, avgTicket, diaMesFrac}
+  // d = {nombre, perfil, factMes, factBaseline, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, ofEnviadas, ofVendidas, avgTicket, diaMesFrac}
   function salud(d){
     if(d.perfil==="externo") return {salud:100, penaltyPt:0, items:[]};
     const venc=d.porCobrar>0?d.vencido/d.porCobrar:0;
@@ -26,7 +26,8 @@ window.EYGM = (function(){
     const sp=PERFIL[d.perfil]||PERFIL.farm; const P=[];
     const rV=d.objetivoCobro>0?Math.min(d.cobradoMes/d.objetivoCobro,1):0; P.push({ic:"💰",lab:"Cobro vs objetivo",max:sp.valor,pts:sp.valor*rV,det:Math.round(rV*100)+"%"});
     const rA=cl(d.actividadRatio||0,0,1); P.push({ic:"📞",lab:"Actividad",max:sp.activ,pts:sp.activ*rA,det:Math.round(rA*100)+"%"});
-    const rC=Math.min((d.combos||0)/5,1); P.push({ic:"🎁",lab:"Combos",max:25,pts:25*rC,det:(d.combos||0)+"/5"});
+    const rEnv=Math.min((d.ofEnviadas||0)/30,1); P.push({ic:"📤",lab:"Ofertas enviadas",max:8,pts:8*rEnv,det:(d.ofEnviadas||0)+"/30 este mes"});
+    const rVen=Math.min((d.ofVendidas||0)/10,1); P.push({ic:"🎁",lab:"Ofertas vendidas",max:17,pts:17*rVen,det:(d.ofVendidas||0)+"/10 colocadas"});
     const rN=Math.min((d.nuevos||0)/3,1); P.push({ic:"🆕",lab:"Nuevos",max:20,pts:20*rN,det:(d.nuevos||0)+" este mes"});
     const pts=P.reduce((s,p)=>s+p.pts,0), idx=pts<40?0:pts<60?1:pts<80?2:pts<95?3:4;
     return {nombre:NIV[idx].n,emoji:NIV[idx].e,mult:NIV[idx].m,pts,params:P,perfil:sp.nom};
