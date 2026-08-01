@@ -24,8 +24,8 @@ window.EYGM = (function(){
   function nivel(d){
     if(d.perfil==="externo") return {nombre:"Externo",emoji:"🔵",mult:1,pts:0,params:[],perfil:"Externo"};
     const sp=PERFIL[d.perfil]||PERFIL.farm; const P=[];
-    const rV=d.objetivoCobro>0?Math.min(d.cobradoMes/d.objetivoCobro,1):0; P.push({ic:"💰",lab:"Cobro vs objetivo",max:sp.valor,pts:sp.valor*rV,det:Math.round(rV*100)+"%"});
-    const rA=cl(d.actividadRatio||0,0,1); P.push({ic:"📞",lab:"Actividad",max:sp.activ,pts:sp.activ*rA,det:Math.round(rA*100)+"%"});
+    const rV=d.objetivoCobro>0?Math.min(d.cobradoMes/d.objetivoCobro,1):0; P.push({ic:"💰",lab:"Cobro vs objetivo de cobranza",max:sp.valor,pts:sp.valor*rV,det:Math.round(rV*100)+"% de "+Math.round((d.objetivoCobro||0)/1e6)+"M (distinto de la meta de facturación)"});
+    const rA=cl(d.actividadRatio||0,0,1); P.push({ic:"📞",lab:"Actividad",max:sp.activ,pts:sp.activ*rA,det:Math.round(rA*100)+"% de tu promedio mensual"});
     const rEnv=Math.min((d.ofEnviadas||0)/30,1); P.push({ic:"📤",lab:"Ofertas enviadas",max:8,pts:8*rEnv,det:(d.ofEnviadas||0)+"/30 este mes"});
     const rVen=Math.min((d.ofVendidas||0)/10,1); P.push({ic:"🎁",lab:"Ofertas vendidas",max:17,pts:17*rVen,det:(d.ofVendidas||0)+"/10 colocadas"});
     const rN=Math.min((d.nuevos||0)/3,1); P.push({ic:"🆕",lab:"Nuevos",max:20,pts:20*rN,det:(d.nuevos||0)+" este mes"});
