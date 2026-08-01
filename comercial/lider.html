@@ -124,7 +124,10 @@
   .ec .prog{height:6px;background:#EDF2F1;border-radius:4px;overflow:hidden;margin:9px 0 3px} .ec .prog>i{display:block;height:100%;border-radius:4px;transition:width .5s}
   .ec .foot{display:flex;justify-content:space-between;align-items:flex-end;margin-top:10px;gap:8px}
   .ec .foot .hoy{font-size:12px;color:var(--gris)} .ec .foot .hoy b{color:var(--teal-deep);font-weight:900;font-size:13.5px}
+  .ec .metaline{font-size:11px;color:var(--gris2);margin-top:4px} .ec .metaline b{color:var(--ink)}
   .ec .wamini{font-size:11.5px;color:var(--gris);background:#F0FAF8;border:1px solid #D6EFEA;border-radius:8px;padding:5px 9px;margin:8px 0 2px} .ec .wamini b{color:var(--teal-deep)}
+  .metabox{background:#F7FAF9;border:1px solid var(--line);border-radius:10px;padding:11px 13px;font-size:13px;line-height:1.5;margin-bottom:8px}
+  .metabox b{color:var(--ink)} .metabox .falta{color:var(--coral);font-weight:800} .metabox .ok{color:var(--teal);font-weight:800}
   .ec .spark{display:flex;align-items:flex-end;gap:1.5px;height:26px;flex:1;max-width:120px}
   .ec .spark i{flex:1;background:var(--aqua);border-radius:2px 2px 0 0;min-height:2px} .ec .spark i.now{background:var(--coral)}
   .ec .shim{color:var(--gris2);font-size:11px;display:inline-flex;align-items:center;gap:6px}
@@ -345,7 +348,7 @@ function render(){
 }
 function setVista(v){ if(v===VISTA)return; VISTA=v; render();
   // al volver a Rendimiento tras mover/archivar contactos, refresca el análisis (la cartera cambió)
-  if(v==="rendimiento" && FICHAS_STALE){ FICHAS_STALE=false; cargarVentasEq(); cargarFichas(); } }
+  if(v==="rendimiento" && FICHAS_STALE){ FICHAS_STALE=false; VENTASEQ={}; CARTERA_EQ=null; cargarVentasEq(); cargarFichas(); } }
 function pintarVista(){
   const v=document.getElementById("vista"); if(!v)return;
   if(VISTA==="rendimiento"){
@@ -390,7 +393,8 @@ function renderKpis(){
   <div class="scopenote">🔒 Estos totales son <b>sólo de tus ${COM.length} comerciales</b> (${COM.map(c=>esc(c.name.split(" ")[0])).join(", ")}), no de toda la droguería. Son la suma de sus ventas en Odoo.</div>`;
 }
 async function setPeriodo(p){
-  if(p===PERIODO) return; PERIODO=p; renderKpis();
+  if(p===PERIODO) return; PERIODO=p; renderKpis(); renderVentasEq();
+  cargarVentasEq(p);   // la tarjeta "Ventas del equipo" acompaña el período elegido
   if(p!=="hoy" && !SERIES[p]){ renderChart(); try{ await cargarSerie(p); }catch(e){} }
   renderChart();
 }
@@ -569,9 +573,11 @@ function renderEquipo(){
       const s=Math.round(f.salud.salud), scol=s>=80?'var(--teal)':s>=60?'var(--gold)':'var(--coral)';
       saludHTML = ext?"":`<div class="salud" title="Salud ${s}/100">${ringSVG(s,scol,38)}</div>`;
       const cumpl=mval(f,"cumpl"), ritmo=mval(f,"ritmo");
+      const meta=(f.factBaseline||0)*1.3, falta=Math.max(0,meta-f.factMes);
       const pcol=cumpl>=100?'var(--teal)':cumpl>=60?'var(--gold)':'var(--coral)';
-      prog = ext?`<div class="lbl">Facturado del mes</div><div class="prog"><i style="width:${Math.min(100,cumpl)}%;background:var(--teal-med)"></i></div>`
-        : `<div class="lbl">Meta del mes · ${Math.round(cumpl)}%</div><div class="prog"><i style="width:${Math.min(100,cumpl)}%;background:${pcol}"></i></div>`;
+      prog = ext?`<div class="lbl">Facturado del mes: <b>${M(f.factMes)}</b></div><div class="prog"><i style="width:${Math.min(100,cumpl)}%;background:var(--teal-med)"></i></div>`
+        : `<div class="lbl">Meta del mes · ${Math.round(cumpl)}%</div><div class="prog"><i style="width:${Math.min(100,cumpl)}%;background:${pcol}"></i></div>
+           <div class="metaline">${M(f.factMes)} de <b>${M(meta)}</b> · ${cumpl>=100?'✓ cumplida':'faltan '+M(falta)}</div>`;
       const up=ritmo>=100; trend=`<span class="trend ${up?'up':'down'}">${up?'▲':'▼'} ${Math.round(ritmo)}%<span style="font-weight:600;color:var(--gris2)"> ritmo</span></span>`;
       wamini=`<div class="wamini" title="Mensajes de WhatsApp confirmados">📤 <b>${f.waHoyMsg||0}</b> hoy${f.waHoyMsg?` · ${f.waHoyNuevo} nuevos`:''} <span style="color:var(--gris2)">· ${f.waSemMsg||0} sem</span></div>`;
     }else{
@@ -775,7 +781,7 @@ function ventasHTML(d, opts){
         ${drow("🧾","Pedidos confirmados", g.pedN, g.pedM)}
         ${drow("🚫","Pedidos cancelados", g.canN, g.canM, true, true)}
         ${drow("📝","Presupuestos abiertos", g.draN, g.draM, false, true)}
-        <div class="drow2 tot"><span class="dl">Pedidos netos del mes</span><b class="da">${M(g.pedM)}</b></div>
+        <div class="drow2 tot"><span class="dl">Pedidos netos (confirmados)</span><b class="da">${M(g.pedM)}</b></div>
         <div class="desgh" style="margin-top:12px">Facturación (por cliente de la cartera)</div>
         ${drow("📄","Facturas emitidas", g.facN, g.facMonto)}
         ${drow("↩️","Notas de crédito", g.ncN, g.ncMonto, true)}
@@ -787,32 +793,46 @@ function ventasHTML(d, opts){
 /* Desglose de ventas del EQUIPO con consultas propias a nivel equipo (pocas y rápidas),
    NO sumando las fichas (que son 14 consultas c/u y saturaban). Coincide con los KPIs
    de arriba porque usa el mismo criterio (sale.order por user_id in UIDS). */
-let VENTASEQ=null;
-async function cargarVentasEq(){
-  const t=argToday(), inicioMes=t.slice(0,7)+"-01";
+// rango de fechas y etiqueta de cada período (acompaña a la tarjeta seleccionada arriba)
+function periodoRango(p){
+  const t=argToday();
+  if(p==="hoy") return {desde:t, lbl:"hoy"};
+  if(p==="sem"){ const d=new Date(t+"T00:00:00"); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow); return {desde:lun.toISOString().slice(0,10), lbl:"esta semana"}; }
+  if(p==="ano") return {desde:t.slice(0,4)+"-01-01", lbl:"este año"};
+  return {desde:t.slice(0,7)+"-01", lbl:"este mes"};
+}
+let VENTASEQ={};        // desglose del equipo cacheado por período
+let CARTERA_EQ=null;    // cartera del equipo (para no reconsultarla en cada período)
+async function cargarVentasEq(p){
+  p=p||PERIODO;
+  if(VENTASEQ[p]){ renderVentasEq(); return; }
+  renderVentasEq(); // muestra "cargando…" del período pedido
+  const {desde}=periodoRango(p);
   try{
-    const cartera=await EYG.rpc("res.partner","search",[[["user_id","in",UIDS]]]);
+    if(!CARTERA_EQ) CARTERA_EQ=await EYG.rpc("res.partner","search",[[["user_id","in",UIDS]]]);
+    const cartera=CARTERA_EQ;
     const so=dom=>EYG.rpc("sale.order","read_group",[dom,["amount_untaxed:sum"],[]],{lazy:false});
-    const am=mt=>EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=",mt],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false});
+    const am=mt=>EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=",mt],["state","=","posted"],["invoice_date",">=",desde]],["amount_untaxed:sum"],[]],{lazy:false});
     const [ped,can,dra,fac,nc]=await Promise.all([
-      so([["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",inicioMes]]),
-      so([["user_id","in",UIDS],["state","=","cancel"],["date_order",">=",inicioMes]]),
-      so([["user_id","in",UIDS],["state","in",["draft","sent"]],["date_order",">=",inicioMes]]),
+      so([["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]]),
+      so([["user_id","in",UIDS],["state","=","cancel"],["date_order",">=",desde]]),
+      so([["user_id","in",UIDS],["state","in",["draft","sent"]],["date_order",">=",desde]]),
       am("out_invoice"), am("out_refund"),
     ]);
     const gN=g=>g&&g[0]?g[0].__count||0:0, gM=g=>g&&g[0]?g[0].amount_untaxed||0:0;
     const desglose={pedN:gN(ped),pedM:gM(ped),canN:gN(can),canM:gM(can),draN:gN(dra),draM:gM(dra),facN:gN(fac),facMonto:gM(fac),ncN:gN(nc),ncMonto:gM(nc)};
-    VENTASEQ={n:COM.length, pedMes:desglose.pedM, factMes:desglose.facMonto-desglose.ncMonto, desglose};
-  }catch(e){ VENTASEQ=null; }
+    VENTASEQ[p]={n:COM.length, pedMes:desglose.pedM, factMes:desglose.facMonto-desglose.ncMonto, desglose};
+  }catch(e){}
   renderVentasEq();
 }
 function renderVentasEq(){
   const box=document.getElementById("ventasEq"); if(!box) return;
-  if(!VENTASEQ){ box.innerHTML=`<div class="ventas"><div class="floading"><span class="spin-sm"></span> sumando ventas del equipo…</div></div>`; return; }
+  const lbl=periodoRango(PERIODO).lbl, v=VENTASEQ[PERIODO];
+  if(!v){ box.innerHTML=`<div class="ventas"><div class="floading"><span class="spin-sm"></span> sumando ventas del equipo (${lbl})…</div></div>`; return; }
   box.innerHTML = ventasHTML(
-    {pedMes:VENTASEQ.pedMes, factMes:VENTASEQ.factMes, desglose:VENTASEQ.desglose},
-    {quien:"el equipo", id:"desgEquipo", titulo:"💵 Ventas del equipo · este mes",
-     cargaLbl:"suma de los pedidos de tus "+VENTASEQ.n+" comerciales", factLbl:"suma de lo facturado a sus carteras"});
+    {pedMes:v.pedMes, factMes:v.factMes, desglose:v.desglose},
+    {quien:"el equipo", id:"desgEquipo", titulo:"💵 Ventas del equipo · "+lbl,
+     cargaLbl:"suma de los pedidos de tus "+v.n+" comerciales", factLbl:"suma de lo facturado a sus carteras"});
 }
 function fichaHTML(d){
   const perfilNom=d.perfil==="externo"?"Externo (3/4%)":(d.perfil==="inst"?"Instituciones":"Farmacias");
@@ -825,9 +845,15 @@ function fichaHTML(d){
     d.nivel.params.map(p=>{const pct=Math.round(p.pts/p.max*100);const c=pct>=80?'var(--teal)':pct>=40?'var(--coral)':'#C0554A';return `<div class="prm"><span>${p.ic} ${p.lab} <span class="muted">${p.det}</span></span><b>${p.pts.toFixed(1)}/${p.max}</b></div><div class="pb"><i style="width:${pct}%;background:${c}"></i></div>`;}).join("");
   const sal=d.perfil==="externo"?"":`<div class="fsub">🩺 Salud ${Math.round(d.salud.salud)}/100 ${d.salud.penaltyPt>0.01?`· recorte −${d.salud.penaltyPt.toFixed(2)}pt`:""}</div><div class="pb" style="margin-bottom:8px"><i style="width:${Math.round(d.salud.salud)}%;background:${scol}"></i></div>`+
     d.salud.items.map(it=>{const pct=Math.round(it.pts/it.max*100);const c=pct<=20?'var(--teal)':pct<=55?'var(--coral)':'#C0554A';return `<div class="prm"><span>${it.ic} ${it.lab} <span class="muted">${it.det}</span></span><b style="color:${c}">−${it.pts.toFixed(0)}</b></div>`;}).join("");
+  const falta=Math.max(0,meta-d.factMes);
   const obj=d.perfil==="externo"?"":`<div class="fsub">🎯 Objetivos del mes</div>
-    <div class="prm"><span>Facturado vs meta (+30% = ${M(meta)})</span><b>${cumpl}%</b></div><div class="pb"><i style="width:${Math.min(100,cumpl)}%;background:var(--teal)"></i></div>
-    <div class="prm"><span>Cobro vs objetivo (${M(d.objetivoCobro)})</span><b>${cobroPct}%</b></div><div class="pb"><i style="width:${Math.min(100,cobroPct)}%;background:var(--gold)"></i></div>
+    <div class="metabox">
+      🎯 <b>Meta de facturación: ${M(meta)}</b><br>
+      <span class="muted">Cómo se calcula: promedio del facturado neto de tus meses previos (<b>${M(d.factBaseline)}</b>) + 30%.</span><br>
+      Vas <b>${M(d.factMes)}</b> · ${cumpl}% · ${cumpl>=100?'<span class="ok">meta cumplida ✓</span>':'<span class="falta">faltan '+M(falta)+'</span>'}
+    </div>
+    <div class="pb"><i style="width:${Math.min(100,cumpl)}%;background:${cumpl>=100?'var(--teal)':'var(--coral)'}"></i></div>
+    <div class="prm" style="margin-top:12px"><span>Cobro vs objetivo (${M(d.objetivoCobro)})</span><b>${cobroPct}%</b></div><div class="pb"><i style="width:${Math.min(100,cobroPct)}%;background:var(--gold)"></i></div>
     <div class="prm"><span>Clientes nuevos (meta 3)</span><b>${d.nuevos}/3</b></div><div class="pb"><i style="width:${Math.min(100,d.nuevos/3*100)}%;background:var(--coral)"></i></div>`;
   const logros=[{em:"💰",l:"Meta de venta",on:cumpl>=100},{em:"🤝",l:"Cobró bien",on:cobroPct>=100},{em:"🆕",l:"Trae nuevos",on:d.nuevos>=3},{em:"🟢",l:"Cartera sana",on:vencPct<15},{em:"✨",l:"Fichas ok",on:d.fichasPct>=0.6}];
   const nom1=esc((d.nombre||"").split(" ")[0]);
