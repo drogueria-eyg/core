@@ -76,6 +76,9 @@
   .panorama .cap b{color:var(--teal-deep)}
   .panorama .cap .up{color:#B0413E;font-weight:700}
   .evosvg{width:100%;height:auto;display:block;overflow:visible}
+  .evowrap{position:relative}
+  .evotip{position:absolute;pointer-events:none;background:var(--ink);color:#fff;font-size:12px;font-weight:600;padding:6px 10px;border-radius:8px;white-space:nowrap;opacity:0;transition:opacity .1s;transform:translate(-50%,-115%);z-index:5;box-shadow:0 4px 14px rgba(6,65,62,.25)}
+  .evotip b{color:var(--aqua);font-weight:700}
   .compo{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
   .compo .clbl{font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--gris);margin-bottom:7px}
   .compo .cbar{display:flex;height:16px;border-radius:6px;overflow:hidden;background:var(--bg)}
@@ -468,12 +471,37 @@ function evoSVG(){
   });
   const n1=EVO[n-1],lx=X(n-1),ly=Y(n1.val);
   const lbl=`<text x="${(lx-6).toFixed(1)}" y="${(ly-10).toFixed(1)}" text-anchor="end" font-size="14" font-weight="800" fill="#04635F">${money(n1.val)}</text>`;
+  // puntos para el tooltip interactivo (fecha + monto al pasar el mouse)
+  EVOCHART={ W, H, pts: EVO.map((p,i)=>{ const [yy,mm]=p.ym.split("-"); return {x:+X(i).toFixed(1), y:+Y(p.val).toFixed(1), val:p.val, label:MESAB[+mm]+" '"+yy.slice(2)}; }) };
   return `<svg class="evosvg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Evolución de la deuda">
     <defs><linearGradient id="evg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#0AA89F" stop-opacity=".26"/><stop offset="1" stop-color="#0AA89F" stop-opacity="0"/></linearGradient></defs>
     ${grid}<path d="${dArea}" fill="url(#evg)"/>
     <path d="${dLine}" fill="none" stroke="#048782" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-    ${dots}${lbl}${xlab}</svg>`;
+    ${dots}${lbl}${xlab}
+    <line id="evoxh" x1="0" y1="${pt}" x2="0" y2="${H-pb}" stroke="#04635F" stroke-width="1" stroke-dasharray="3 3" opacity="0" pointer-events="none"/>
+    <circle id="evodot" r="5" fill="#EC8B5E" stroke="#fff" stroke-width="1.5" opacity="0" pointer-events="none"/>
+    <rect x="${pl}" y="${pt}" width="${(W-pl-pr).toFixed(1)}" height="${(H-pt-pb).toFixed(1)}" fill="transparent" style="cursor:crosshair" onmousemove="evoHover(event)" onmouseleave="evoHoverOut()"/></svg>`;
+}
+let EVOCHART=null;
+function evoHover(e){
+  if(!EVOCHART) return;
+  const svg=e.target.ownerSVGElement; if(!svg) return;
+  const r=svg.getBoundingClientRect();
+  const sx=(e.clientX-r.left)/r.width*EVOCHART.W;
+  let best=EVOCHART.pts[0];
+  for(const p of EVOCHART.pts) if(Math.abs(p.x-sx)<Math.abs(best.x-sx)) best=p;
+  const xh=document.getElementById("evoxh"), dot=document.getElementById("evodot");
+  if(xh){ xh.setAttribute("x1",best.x); xh.setAttribute("x2",best.x); xh.setAttribute("opacity","1"); }
+  if(dot){ dot.setAttribute("cx",best.x); dot.setAttribute("cy",best.y); dot.setAttribute("opacity","1"); }
+  const tip=document.getElementById("evotip");
+  if(tip){ tip.innerHTML=`<b>${best.label}</b> · ${money(best.val)}`;
+    const px=Math.max(34, Math.min(best.x/EVOCHART.W*r.width, r.width-34));
+    tip.style.left=px+"px"; tip.style.top=(best.y/EVOCHART.H*r.height)+"px"; tip.style.opacity="1"; }
+}
+function evoHoverOut(){
+  ["evoxh","evodot"].forEach(id=>{const el=document.getElementById(id); if(el) el.setAttribute("opacity","0");});
+  const tip=document.getElementById("evotip"); if(tip) tip.style.opacity="0";
 }
 function compoHTML(porTramo,totalReal){
   const segs=TRAMOS.filter(t=>porTramo[t.k]&&porTramo[t.k].m>0);
@@ -617,7 +645,7 @@ function render(){
 
     ${EVO.length>=2?`<div class="panorama">
       <div class="ptop"><h3>📈 Evolución de la deuda</h3><div class="cap">${evoCap}</div></div>
-      ${evoSVG()}
+      <div class="evowrap">${evoSVG()}<div class="evotip" id="evotip"></div></div>
       ${compoHTML(porTramo,totalReal)}
     </div>`:''}
 
