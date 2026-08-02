@@ -118,7 +118,7 @@ window.EYG = (function(){
     let s; try{ s = await session(); }catch(e){ showLogin(); return; }
     if(!s){ showLogin(); return; }
     const p = await perfil();
-    if(!p || !p.activo){ gateMsg("🔒","Sin acceso","Tu cuenta todavía no tiene un perfil activo en el Core. Avisá al administrador.",false); return; }
+    if(!p || !p.activo){ gateMsg("🔒","Sin acceso", accesoMsg(p,s), false); return; }
     const ok = p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return; }
     if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return; }
@@ -131,7 +131,7 @@ window.EYG = (function(){
     let s; try{ s = await session(); }catch(e){ showLogin(); return new Promise(()=>{}); }
     if(!s){ showLogin(); return new Promise(()=>{}); }
     const p = await perfil();
-    if(!p || !p.activo){ gateMsg("🔒","Sin acceso","Tu cuenta todavía no tiene un perfil activo en el Core. Avisá al administrador.",false); return new Promise(()=>{}); }
+    if(!p || !p.activo){ gateMsg("🔒","Sin acceso", accesoMsg(p,s), false); return new Promise(()=>{}); }
     // Módulo EN PRUEBAS: sólo para las huellas de email listadas (ver puedeVer)
     const pr = opts && opts.pruebas;
     if(pr && pr.length && !pr.includes(p._h)){
@@ -144,6 +144,14 @@ window.EYG = (function(){
     return p;
   }
 
+  /* Mensaje del gate "Sin acceso" que dice el email exacto: si no hay perfil, es porque
+     no existe una fila en core_users con ESE email; si existe pero inactivo, avisa eso.
+     Sirve para diagnosticar altas (email mal tipeado / mayúsculas / dominio distinto). */
+  function accesoMsg(p, s){
+    const em = (s&&s.user&&s.user.email)||"";
+    if(p && !p.activo) return "Tu perfil ("+em+") está desactivado (activo=false). Avisá al administrador.";
+    return "No hay un perfil en el Core para "+em+". El administrador tiene que crear tu acceso con ese email exacto.";
+  }
   function gateMsg(ic,t,d,back){
     document.body.innerHTML = `<div class="gate"><div class="big">${ic}</div><h3>${esc(t)}</h3><p>${esc(d)}</p>`+
       (back?'<div style="margin-top:16px"><a class="btn-teal" href="'+BASE+'">Ir al inicio</a></div>':"")+
