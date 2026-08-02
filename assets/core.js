@@ -385,40 +385,81 @@ window.EYG = (function(){
     await comsGuardar(arr);
   }
 
-  /* Tarjeta de novedades para embeber en los paneles. Resalta las no leídas y deja
-     marcarlas sin salir del panel. COM_CTX guarda el perfil por elId para el onclick. */
+  /* ===== Campana de novedades (ícono para el header de los paneles) =====
+     Reemplaza a la tarjeta grande: un ícono 🔔 con badge de no leídas y un
+     desplegable con las novedades. COM_CTX guarda el perfil por punto de montaje.
+     (Fase 2: la misma campana avisará de mensajes de WhatsApp nuevos.) */
   const COM_CTX = {};
-  async function comMarcarYRepintar(elId, id){ const p=COM_CTX[elId]; if(!p) return; await comMarcarLeido(p,id); await cardComunicaciones(elId,p); }
-  async function cardComunicaciones(elId, perfil){
-    const el=document.getElementById(elId); if(!el||!perfil) return;
-    COM_CTX[elId]=perfil;
-    let arr; try{ arr=await comsLeer(); }catch(e){ return; }
+  let _bellOpen = null;
+  function comBellStyles(){
+    if(typeof document==="undefined" || document.getElementById("eyg-bell-css")) return;
+    const s=document.createElement("style"); s.id="eyg-bell-css";
+    s.textContent=`
+    .eyg-bell-wrap{position:relative;display:inline-flex}
+    .eyg-bell-btn{background:transparent;border:0;color:inherit;cursor:pointer;font-size:20px;line-height:1;padding:5px;border-radius:10px;position:relative;display:inline-flex;align-items:center;justify-content:center}
+    .eyg-bell-btn:hover{background:rgba(127,127,127,.16)}
+    .eyg-bell-badge{position:absolute;top:-1px;right:-1px;min-width:16px;height:16px;padding:0 4px;background:#EC5E4F;color:#fff;font-size:10px;font-weight:800;border-radius:20px;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 2px rgba(0,0,0,.12)}
+    .eyg-bell-dd{position:absolute;right:0;top:calc(100% + 8px);width:344px;max-width:88vw;max-height:66vh;overflow:auto;background:#fff;border:1px solid #e5eae9;border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.24);z-index:9999;padding:8px;text-align:left}
+    .eyg-bell-dd .hd{display:flex;align-items:center;justify-content:space-between;padding:6px 8px 8px;border-bottom:1px solid #eef1f0;margin-bottom:4px}
+    .eyg-bell-dd .hd b{font-size:14px;color:#0E1F1D}
+    .eyg-bell-dd .allread{background:none;border:0;color:#048782;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;padding:0}
+    .eyg-nov{padding:9px 8px;border-radius:10px}
+    .eyg-nov + .eyg-nov{border-top:1px solid #f0f3f2}
+    .eyg-nov.unread{background:#f2fbfa}
+    .eyg-nov .t{font-weight:800;font-size:13.5px;color:#0E1F1D;display:flex;align-items:center;gap:6px;line-height:1.25}
+    .eyg-nov .dot{width:7px;height:7px;border-radius:50%;background:#048782;flex:none}
+    .eyg-nov .bd{font-size:12.5px;color:#3a4a47;white-space:pre-wrap;line-height:1.4;margin-top:3px}
+    .eyg-nov .mt{font-size:11px;color:#8A9A97;margin-top:6px;display:flex;justify-content:space-between;gap:8px;align-items:center}
+    .eyg-nov .mk{background:#04635F;color:#fff;border:0;border-radius:7px;padding:4px 10px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit}
+    .eyg-bell-empty{padding:22px 12px;text-align:center;color:#8A9A97;font-size:13px}
+    .eyg-bell-alta{background:#fbe4e3;color:#b0322f;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;border-radius:20px;padding:1px 7px}`;
+    document.head.appendChild(s);
+  }
+  function comCerrarBells(){ if(typeof document==="undefined") return; document.querySelectorAll(".eyg-bell-dd").forEach(d=>d.style.display="none"); _bellOpen=null; }
+  if(typeof document!=="undefined"){ document.addEventListener("click",e=>{ if(!(e.target.closest && e.target.closest(".eyg-bell-wrap"))) comCerrarBells(); }); }
+
+  /* Monta/re-pinta la campana en el elemento `mountId`. Idempotente: llamala cada vez. */
+  async function bellComunicaciones(mountId, perfil){
+    const mount=document.getElementById(mountId); if(!mount||!perfil) return;
+    comBellStyles(); COM_CTX[mountId]=perfil;
+    let arr; try{ arr=await comsLeer(); }catch(e){ arr=[]; }
     const email=(perfil.email||"").toLowerCase();
-    const mine=comsParaMi(perfil,arr).sort((a,b)=>((b.prioridad==="alta")-(a.prioridad==="alta")) || String(b.ts||"").localeCompare(String(a.ts||"")));
-    if(!mine.length){ el.innerHTML=""; return; }
-    const noLeidas=mine.filter(c=>!comLeida(c,email)).length;
-    const fD=s=>s?(s.slice(8,10)+"/"+s.slice(5,7)):"";
-    const item=c=>{
-      const leida=comLeida(c,email), alta=c.prioridad==="alta";
-      return `<div style="background:#fff;border-radius:12px;padding:11px 13px;box-shadow:0 2px 10px rgba(0,0,0,.08);${leida?'opacity:.72':''}">
-        <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
-          ${alta?'<span style="background:#fbe4e3;color:#b0322f;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;border-radius:20px;padding:2px 8px">Importante</span>':''}
-          ${!leida?'<span style="width:8px;height:8px;border-radius:50%;background:#5FC8BF;display:inline-block;flex:none"></span>':''}
-          <span style="font-weight:800;font-size:14px;color:#0E1F1D">${esc(c.titulo||"")}</span>
-        </div>
-        <div style="font-size:13px;color:#3a4a47;margin-top:4px;white-space:pre-wrap;line-height:1.42">${esc(c.cuerpo||"")}</div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;gap:8px">
-          <span style="font-size:11px;color:#8A9A97">${esc(c.autor||"")}${c.ts?" · "+fD(c.ts.slice(0,10)):""}</span>
-          ${leida?'<span style="font-size:11px;color:#8A9A97">✓ leído</span>':`<button onclick="EYG.comMarcarYRepintar('${elId}','${c.id}')" style="background:#04635F;color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Marcar leído</button>`}
-        </div>
+    const mine=comsParaMi(perfil,arr).sort((a,b)=>{ const la=comLeida(a,email),lb=comLeida(b,email); if(la!==lb) return la?1:-1; return ((b.prioridad==="alta")-(a.prioridad==="alta"))||String(b.ts||"").localeCompare(String(a.ts||"")); });
+    const nUnread=mine.filter(c=>!comLeida(c,email)).length;
+    const fD=s=>s?(String(s).slice(8,10)+"/"+String(s).slice(5,7)):"";
+    const abierto=_bellOpen===mountId;
+    const item=c=>{ const leida=comLeida(c,email);
+      return `<div class="eyg-nov ${leida?'':'unread'}">
+        <div class="t">${!leida?'<span class="dot"></span>':''}${c.prioridad==="alta"?'<span class="eyg-bell-alta">Importante</span>':''}${esc(c.titulo||"")}</div>
+        <div class="bd">${esc(c.cuerpo||"")}</div>
+        <div class="mt"><span>${esc(c.autor||"")}${c.ts?" · "+fD(c.ts.slice(0,10)):""}</span>${leida?'<span>✓ leído</span>':`<button class="mk" onclick="EYG.comMarcarYRepintar('${mountId}','${c.id}')">Leído</button>`}</div>
       </div>`;
     };
-    el.innerHTML = `<div style="background:linear-gradient(135deg,#0E4B47,#048782);border-radius:16px;padding:15px 16px;margin:14px 0">
-      <div style="color:#fff;font-weight:800;font-size:16px;margin-bottom:11px">📣 Novedades ${noLeidas?`<span style="background:#EC8B5E;color:#3a1d10;font-weight:800;font-size:12px;border-radius:20px;padding:1px 9px">${noLeidas} sin leer</span>`:'<span style="opacity:.8;font-weight:600;font-size:12px">· al día</span>'}</div>
-      <div style="display:flex;flex-direction:column;gap:10px">${mine.map(item).join("")}</div>
+    mount.innerHTML=`<div class="eyg-bell-wrap">
+      <button class="eyg-bell-btn" title="Novedades" onclick="EYG.comToggleBell(event,'${mountId}')">🔔${nUnread?`<span class="eyg-bell-badge">${nUnread>9?'9+':nUnread}</span>`:''}</button>
+      <div class="eyg-bell-dd" style="display:${abierto?'block':'none'}">
+        <div class="hd"><b>📣 Novedades</b>${nUnread?`<button class="allread" onclick="EYG.comMarcarTodas('${mountId}')">Marcar todas leídas</button>`:''}</div>
+        ${mine.length?mine.map(item).join(""):'<div class="eyg-bell-empty">No tenés novedades por ahora.</div>'}
+      </div>
     </div>`;
+  }
+  function comToggleBell(ev, mountId){
+    if(ev){ ev.stopPropagation(); }
+    const mount=document.getElementById(mountId); const dd=mount&&mount.querySelector(".eyg-bell-dd"); if(!dd) return;
+    const abrir = dd.style.display==="none";
+    comCerrarBells();
+    if(abrir){ dd.style.display="block"; _bellOpen=mountId; }
+  }
+  async function comMarcarYRepintar(mountId, id){ const p=COM_CTX[mountId]; if(!p) return; _bellOpen=mountId; await comMarcarLeido(p,id); await bellComunicaciones(mountId,p); }
+  async function comMarcarTodas(mountId){
+    const p=COM_CTX[mountId]; if(!p) return; _bellOpen=mountId;
+    const arr=await comsLeer(); const email=(p.email||"").toLowerCase(); let ch=false;
+    comsParaMi(p,arr).forEach(c=>{ if(!comLeida(c,email)){ (c.leidoPor=c.leidoPor||[]).push({email,nombre:p.nombre||email,ts:new Date().toISOString()}); ch=true; } });
+    if(ch) await comsGuardar(arr);
+    await bellComunicaciones(mountId,p);
   }
 
   return { supa, rpc, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS,
-    COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, comsParaMi, comLeida, comMarcarLeido, comMarcarYRepintar, cardComunicaciones };
+    COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, comsParaMi, comLeida, comMarcarLeido,
+    bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas };
 })();
