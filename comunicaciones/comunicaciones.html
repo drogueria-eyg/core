@@ -54,19 +54,23 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=5"></script>
+<script src="../assets/core.js?v=6"></script>
 <script>
-/* ============ EyG Core · Comunicaciones (novedades internas) ============
-   Fase 1: novedades/bajadas. Gerencia (dirección/admin) baja a toda la empresa o a
-   departamentos elegidos; el líder baja a su equipo. Todos reciben en su Bandeja y
-   marcan leído; el emisor ve el acuse de lectura en "Enviadas".
-   Los mensajes de WhatsApp a clientes son la Fase 2 (clase 'wa'). */
+/* ============ EyG Core · Comunicaciones ============
+   Dos clases de mensaje, ambas van DIRECTO (sin aprobación de nadie):
+   · Novedades internas: Gerencia (dirección/admin) → toda la empresa o departamentos;
+     el líder → su equipo. Se leen en Bandeja; el emisor ve el acuse en "Enviadas".
+   · Mensajes de WhatsApp para clientes (clase 'wa'): Gerencia → todos los comerciales;
+     el líder → su equipo. Caen en la sección de WhatsApp del panel del comercial (con
+     "quién lo creó") para dispararlos a la cartera. En "Enviadas" el emisor ve a cuántos
+     clientes llegó cada uno. */
 const esc=s=>EYG.esc(s);
 const hoy=()=>EYG.argToday();
 function fD(s){ if(!s) return ""; s=String(s).slice(0,10); return s.slice(8,10)+"/"+s.slice(5,7)+"/"+s.slice(0,4); }
 function masDias(n){ const d=new Date(); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
 
 let PERFIL, EMISOR=false, MODO=null /* 'direccion' | 'lider' */, TEAM=[], TAB="bandeja", COMS=[], EDIT=null;
+function defaultEdit(){ return {clase:"novedad", alcance: MODO==="lider"?"equipo":"todos", departamentos:[], prioridad:"normal", desde:hoy(), hasta:"", titulo:"", cuerpo:"", liderRef:""}; }
 
 let toastT; function toast(msg, ok){ const t=document.getElementById("toast"); if(!t)return; t.textContent=msg; t.className="toast show"+(ok?" ok":""); clearTimeout(toastT); toastT=setTimeout(()=>t.className="toast",2500); }
 
@@ -109,6 +113,7 @@ function render(){
   else if(TAB==="publicar") body=vistaPublicar();
   else body=vistaEnviadas();
   cont.innerHTML=tabs+`<div id="body">${body}</div>`;
+  if(TAB==="enviadas") cargarAlcances();   // async: rellena "envíos a clientes" de los mensajes WA
 }
 function setTab(t){ if(t===TAB) return; TAB=t; if(t!=="publicar") EDIT=null; render(); }
 
@@ -148,45 +153,67 @@ function destinoLabel(c){
 
 /* ---------- Publicar (emisor) ---------- */
 function vistaPublicar(){
-  const e=EDIT||{alcance: MODO==="lider"?"equipo":"todos", departamentos:[], prioridad:"normal", desde:hoy(), hasta:"", titulo:"", cuerpo:""};
-  const esLider=MODO==="lider";
-  const alcanceUI = esLider
-    ? `<div class="fld"><label>Destino</label>
-        <div class="opt on" style="cursor:default">👥 Mi equipo${TEAM.length?` · ${TEAM.length} comercial${TEAM.length>1?'es':''}`:''}</div>
-        ${TEAM.length?`<div class="hint">Llega a: ${TEAM.map(esc).join(" · ")}</div>`:`<div class="hint" style="color:#b0322f">No pude resolver tu equipo en Odoo. Avisá al administrador.</div>`}</div>`
-    : `<div class="fld"><label>¿A quién va dirigida?</label>
-        <div class="seg">
-          <div class="opt ${e.alcance==='todos'?'on':''}" onclick="setAlcance('todos')">🏢 Toda la empresa</div>
-          <div class="opt ${e.alcance==='departamento'?'on':''}" onclick="setAlcance('departamento')">📂 Departamentos</div>
-        </div>
-        <div id="deptWrap" style="${e.alcance==='departamento'?'':'display:none'}">
-          <div class="chks">${EYG.COM_DEPTS.map(d=>`<div class="chk ${(e.departamentos||[]).includes(d.key)?'on':''}" onclick="toggleDept('${d.key}')">${esc(d.nom)}</div>`).join("")}</div>
-        </div></div>`;
+  const e=EDIT||defaultEdit();
+  const clase=e.clase||"novedad", esLider=MODO==="lider", esWA=clase==="wa";
+  const tipoUI=`<div class="fld"><label>Tipo</label>
+    <div class="seg">
+      <div class="opt ${!esWA?'on':''}" onclick="setClase('novedad')">📣 Novedad interna</div>
+      <div class="opt ${esWA?'on':''}" onclick="setClase('wa')">📱 Mensaje de WhatsApp</div>
+    </div>
+    <div class="hint">${esWA?'Un mensaje listo para que los comerciales lo manden a sus clientes por WhatsApp.':'Una comunicación interna que se lee en el Core.'}</div></div>`;
+  // destino según tipo + rol
+  let destinoUI;
+  if(esWA){
+    destinoUI = esLider
+      ? `<div class="fld"><label>Destino</label>
+          <div class="opt on" style="cursor:default">👥 Mi equipo${TEAM.length?` · ${TEAM.length} comercial${TEAM.length>1?'es':''}`:''}</div>
+          ${TEAM.length?`<div class="hint">Lo van a poder enviar: ${TEAM.map(esc).join(" · ")}</div>`:`<div class="hint" style="color:#b0322f">No pude resolver tu equipo en Odoo. Avisá al administrador.</div>`}</div>`
+      : `<div class="fld"><label>Destino</label>
+          <div class="opt on" style="cursor:default">🧑‍💼 Todos los comerciales</div>
+          <div class="hint">Va directo al panel de cada comercial para que lo envíe a sus clientes por WhatsApp.</div></div>`;
+  } else {
+    destinoUI = esLider
+      ? `<div class="fld"><label>Destino</label>
+          <div class="opt on" style="cursor:default">👥 Mi equipo${TEAM.length?` · ${TEAM.length} comercial${TEAM.length>1?'es':''}`:''}</div>
+          ${TEAM.length?`<div class="hint">Llega a: ${TEAM.map(esc).join(" · ")}</div>`:`<div class="hint" style="color:#b0322f">No pude resolver tu equipo en Odoo. Avisá al administrador.</div>`}</div>`
+      : `<div class="fld"><label>¿A quién va dirigida?</label>
+          <div class="seg">
+            <div class="opt ${e.alcance==='todos'?'on':''}" onclick="setAlcance('todos')">🏢 Toda la empresa</div>
+            <div class="opt ${e.alcance==='departamento'?'on':''}" onclick="setAlcance('departamento')">📂 Departamentos</div>
+          </div>
+          <div id="deptWrap" style="${e.alcance==='departamento'?'':'display:none'}">
+            <div class="chks">${EYG.COM_DEPTS.map(d=>`<div class="chk ${(e.departamentos||[]).includes(d.key)?'on':''}" onclick="toggleDept('${d.key}')">${esc(d.nom)}</div>`).join("")}</div>
+          </div></div>`;
+  }
+  const btnLabel = EDIT ? "Guardar cambios" : (esWA ? (esLider?"Enviar a mi equipo":"Enviar a los comerciales") : "Publicar novedad");
   return `<div class="formbox">
-    <h2>${EDIT?"Editar novedad":"Nueva novedad"}</h2>
-    <div class="fld"><label>Título</label><input id="f-titulo" maxlength="120" placeholder="Ej: Nuevos horarios de depósito" value="${esc(e.titulo)}"></div>
-    <div class="fld"><label>Mensaje</label><textarea id="f-cuerpo" placeholder="Escribí la novedad…">${esc(e.cuerpo)}</textarea></div>
-    ${alcanceUI}
-    <div class="row2">
+    <h2>${EDIT?"Editar":"Nuevo"} ${esWA?"· mensaje de WhatsApp":"· novedad"}</h2>
+    ${tipoUI}
+    <div class="fld"><label>${esWA?"Nombre interno":"Título"}</label><input id="f-titulo" maxlength="120" placeholder="${esWA?'Ej: Oferta pañales agosto (no lo ve el cliente)':'Ej: Nuevos horarios de depósito'}" value="${esc(e.titulo)}"></div>
+    <div class="fld"><label>${esWA?"Texto que recibe el cliente":"Mensaje"}</label><textarea id="f-cuerpo" placeholder="${esWA?'Hola! Te escribimos de Droguería EyG 👋 …':'Escribí la novedad…'}">${esc(e.cuerpo)}</textarea>${esWA?'<div class="hint">Se manda tal cual a cada cliente (texto fijo, sin nombre automático). Los emojis salen bien.</div>':''}</div>
+    ${destinoUI}
+    ${esWA?'':`<div class="row2">
       <div class="fld"><label>Prioridad</label>
         <div class="seg">
           <div class="opt ${e.prioridad!=='alta'?'on':''}" onclick="setPrio('normal')">Normal</div>
           <div class="opt ${e.prioridad==='alta'?'on':''}" onclick="setPrio('alta')">🔴 Importante</div>
         </div></div>
-    </div>
+    </div>`}
     <div class="row2">
       <div class="fld"><label>Desde</label><input id="f-desde" type="date" value="${esc(e.desde||hoy())}"><div class="hint">Cuándo empieza a mostrarse.</div></div>
       <div class="fld"><label>Hasta (opcional)</label><input id="f-hasta" type="date" value="${esc(e.hasta||"")}"><div class="hint">Vacío = sin vencimiento.</div></div>
     </div>
     <div class="acts" style="margin-top:4px">
-      <button class="btn" id="f-guardar" onclick="publicar()">${EDIT?"Guardar cambios":"Publicar novedad"}</button>
+      <button class="btn" id="f-guardar" onclick="publicar()">${btnLabel}</button>
       ${EDIT?`<button class="btn ghost" onclick="cancelarEdit()">Cancelar</button>`:''}
     </div>
   </div>`;
 }
 /* estado del formulario en el propio EDIT (así sobrevive a los re-render de la selección) */
-function ensureEdit(){ if(!EDIT) EDIT={alcance: MODO==="lider"?"equipo":"todos", departamentos:[], prioridad:"normal", desde:hoy(), hasta:"", titulo:"", cuerpo:""}; syncForm(); return EDIT; }
-function syncForm(){ const t=document.getElementById("f-titulo"), c=document.getElementById("f-cuerpo"), d=document.getElementById("f-desde"), h=document.getElementById("f-hasta"); if(t)EDIT.titulo=t.value; if(c)EDIT.cuerpo=c.value; if(d)EDIT.desde=d.value; if(h)EDIT.hasta=h.value; }
+function ensureEdit(){ if(!EDIT) EDIT=defaultEdit(); syncForm(); return EDIT; }
+function syncForm(){ const t=document.getElementById("f-titulo"), c=document.getElementById("f-cuerpo"), d=document.getElementById("f-desde"), h=document.getElementById("f-hasta"), L=document.getElementById("f-lider");
+  if(t)EDIT.titulo=t.value; if(c)EDIT.cuerpo=c.value; if(d)EDIT.desde=d.value; if(h)EDIT.hasta=h.value; if(L)EDIT.liderRef=L.value; }
+function setClase(k){ ensureEdit(); EDIT.clase=k; render(); }
 function setAlcance(a){ ensureEdit(); EDIT.alcance=a; render(); }
 function toggleDept(k){ ensureEdit(); const s=new Set(EDIT.departamentos||[]); s.has(k)?s.delete(k):s.add(k); EDIT.departamentos=[...s]; render(); }
 function setPrio(p){ ensureEdit(); EDIT.prioridad=p; render(); }
@@ -194,75 +221,119 @@ function cancelarEdit(){ EDIT=null; TAB="enviadas"; render(); }
 
 async function publicar(){
   syncForm();
-  const titulo=(EDIT&&EDIT.titulo||"").trim(), cuerpo=(EDIT&&EDIT.cuerpo||"").trim();
-  const alcance = MODO==="lider" ? "equipo" : (EDIT&&EDIT.alcance||"todos");
-  if(!titulo){ toast("Poné un título."); return; }
-  if(!cuerpo){ toast("Escribí el mensaje."); return; }
-  if(alcance==="departamento" && !(EDIT.departamentos||[]).length){ toast("Elegí al menos un departamento."); return; }
-  if(alcance==="equipo" && !TEAM.length){ toast("No hay equipo para enviar."); return; }
+  const clase=(EDIT&&EDIT.clase)||"novedad", esWA=clase==="wa", esLider=MODO==="lider";
+  const titulo=(EDIT&&EDIT.titulo||"").trim(), texto=(EDIT&&EDIT.cuerpo||"").trim();
+  if(!titulo){ toast(esWA?"Poné un nombre interno.":"Poné un título."); return; }
+  if(!texto){ toast(esWA?"Escribí el texto del mensaje.":"Escribí el mensaje."); return; }
+  const alcance = (!esWA && !esLider) ? (EDIT.alcance||"todos") : (esLider?"equipo":"");
+  if(!esWA){
+    if(alcance==="departamento" && !(EDIT.departamentos||[]).length){ toast("Elegí al menos un departamento."); return; }
+    if(alcance==="equipo" && !TEAM.length){ toast("No hay equipo para enviar."); return; }
+  } else {
+    if(esLider && !TEAM.length){ toast("No tenés equipo asignado."); return; }
+  }
   const btn=document.getElementById("f-guardar"); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
   try{
     const arr=await EYG.comsLeer();
     if(EDIT && EDIT.id){
       const c=arr.find(x=>x.id===EDIT.id);
-      if(c){ c.titulo=titulo; c.cuerpo=cuerpo; c.prioridad=EDIT.prioridad||"normal"; c.desde=EDIT.desde||hoy(); c.hasta=EDIT.hasta||"";
-        c.alcance=alcance; c.departamentos=alcance==="departamento"?(EDIT.departamentos||[]):[]; if(alcance==="equipo") c.destinatarios=TEAM; }
+      if(c){ c.titulo=titulo; c.desde=EDIT.desde||hoy(); c.hasta=EDIT.hasta||"";
+        if(esWA){ c.waTexto=texto; if(esLider) c.destinatarios=TEAM; }
+        else { c.cuerpo=texto; c.prioridad=EDIT.prioridad||"normal"; c.alcance=alcance;
+               c.departamentos=alcance==="departamento"?(EDIT.departamentos||[]):[]; if(alcance==="equipo") c.destinatarios=TEAM; } }
+    }else if(esWA){
+      arr.push({ id:"com_"+Date.now()+"_"+Math.random().toString(36).slice(2,7), ts:new Date().toISOString(),
+        autor:PERFIL.nombre||PERFIL.email, autorEmail:(PERFIL.email||"").toLowerCase(), autorRol:PERFIL.rol,
+        clase:"wa", titulo, waTexto:texto,
+        origen: esLider?"lider":"gerencia",
+        liderRef: esLider?(PERFIL.comercial_ref||""):"",
+        destinatarios: esLider?TEAM:[],
+        desde:EDIT.desde||hoy(), hasta:EDIT.hasta||"", activo:true, vistoPor:[] });
     }else{
       arr.push({ id:"com_"+Date.now()+"_"+Math.random().toString(36).slice(2,7), ts:new Date().toISOString(),
         autor:PERFIL.nombre||PERFIL.email, autorEmail:(PERFIL.email||"").toLowerCase(), autorRol:PERFIL.rol,
-        clase:"novedad", titulo, cuerpo, prioridad:EDIT.prioridad||"normal",
+        clase:"novedad", titulo, cuerpo:texto, prioridad:EDIT.prioridad||"normal",
         alcance, departamentos:alcance==="departamento"?(EDIT.departamentos||[]):[], destinatarios:alcance==="equipo"?TEAM:[], liderRef:alcance==="equipo"?(PERFIL.comercial_ref||""):"",
         desde:EDIT.desde||hoy(), hasta:EDIT.hasta||"", activo:true, leidoPor:[] });
     }
     await EYG.comsGuardar(arr);
-    COMS=arr; EDIT=null; TAB="enviadas"; render(); toast("Novedad publicada ✓", true);
-  }catch(e){ if(btn){ btn.disabled=false; btn.textContent="Publicar novedad"; } toast("No se pudo guardar: "+(e.message||e)); }
+    COMS=arr; EDIT=null; TAB="enviadas"; render();
+    toast(esWA?(esLider?"Enviado a tu equipo ✓":"Enviado a los comerciales ✓"):"Novedad publicada ✓", true);
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent=esWA?"Publicar":"Publicar novedad"; } toast("No se pudo guardar: "+(e.message||e)); }
 }
 
-/* ---------- Enviadas (emisor) · con acuse de lectura ---------- */
+/* ---------- Enviadas (emisor) · acuse de lectura (novedades) + envíos (WhatsApp) ---------- */
 function vistaEnviadas(){
   const todo = PERFIL.rol==="admin"||PERFIL.rol==="direccion";
-  const mias = COMS.filter(c=>c && (c.clase||"novedad")==="novedad" && (todo || c.autorEmail===(PERFIL.email||"").toLowerCase()))
+  const mias = COMS.filter(c=>c && (todo || c.autorEmail===(PERFIL.email||"").toLowerCase()))
                    .sort((a,b)=>String(b.ts||"").localeCompare(String(a.ts||"")));
-  const nuevo=`<div style="margin-bottom:14px"><button class="btn" onclick="EDIT=null;setTab('publicar')">✏️ Nueva novedad</button></div>`;
-  if(!mias.length) return nuevo+`<div class="empty">Todavía no publicaste ninguna novedad.</div>`;
-  return nuevo+mias.map(c=>{
-    const vig = (!c.hasta||c.hasta>=hoy()) && (!c.desde||c.desde<=hoy());
-    const estado = c.activo===false ? '<span class="pill off">Desactivada</span>'
-                 : (c.desde&&c.desde>hoy()) ? '<span class="pill prog">Programada</span>'
-                 : (c.hasta&&c.hasta<hoy()) ? '<span class="pill venc">Vencida</span>'
-                 : '<span class="pill dest">Activa</span>';
-    const leidos=(c.leidoPor||[]).length;
-    const total = c.alcance==="equipo" ? (c.destinatarios||[]).length : 0;   // sólo 'equipo' tiene denominador conocido
-    let lect;
-    if(total){
-      const leyeron=new Set((c.leidoPor||[]).map(x=>x.email));
-      const pend=(c.destinatarios||[]).filter(n=>!(c.leidoPor||[]).some(x=>(x.nombre||"")===n));
-      const pct=Math.round(leidos/total*100);
-      lect=`<div class="lecturas"><div class="who"><b>${leidos}/${total}</b> leyeron · ${pct}%</div>
-        <div class="bar"><i style="width:${pct}%"></i></div>
-        ${pend.length?`<div class="who pend">Falta leer: ${pend.map(esc).join(" · ")}</div>`:'<div class="who" style="color:var(--m-ok,#1E7D46)">Todo el equipo leyó ✓</div>'}</div>`;
-    }else{
-      const nombres=(c.leidoPor||[]).map(x=>x.nombre).filter(Boolean);
-      lect=`<div class="lecturas"><div class="who"><b>${leidos}</b> ${leidos===1?"persona leyó":"personas leyeron"}${nombres.length?": "+nombres.map(esc).join(" · "):""}</div>
-        <div class="hint">En bajadas a la empresa o a departamentos no se puede mostrar el total esperado (el Core no expone el padrón completo).</div></div>`;
-    }
-    return `<div class="card">
-      <div class="top">${c.prioridad==="alta"?'<span class="pill alta">Importante</span>':''}<h3>${esc(c.titulo||"")}</h3>${estado}</div>
-      <div class="cuerpo">${esc(c.cuerpo||"")}</div>
-      <div class="meta"><span>👤 ${esc(c.autor||"")}</span><span>🗓️ ${fD(c.ts)}</span>${destinoLabel(c)}${c.hasta?`<span>⏳ hasta ${fD(c.hasta)}</span>`:''}</div>
-      ${lect}
-      <div class="acts">
-        <button class="btn ghost sm" onclick="editar('${c.id}')">✏️ Editar</button>
-        <button class="btn ghost sm" onclick="toggleActiva('${c.id}')">${c.activo===false?'✅ Reactivar':'🚫 Desactivar'}</button>
-        <button class="btn warn sm" onclick="borrar('${c.id}')">🗑️ Borrar</button>
-      </div>
-    </div>`;
-  }).join("");
+  const nuevo=`<div style="margin-bottom:14px"><button class="btn" onclick="EDIT=null;setTab('publicar')">✏️ Nueva comunicación</button></div>`;
+  if(!mias.length) return nuevo+`<div class="empty">Todavía no publicaste nada.</div>`;
+  return nuevo+mias.map(c=> (c.clase==="wa") ? cardEnviadaWA(c) : cardEnviadaNovedad(c)).join("");
 }
-function editar(id){ const c=COMS.find(x=>x.id===id); if(!c) return; EDIT={...c, departamentos:(c.departamentos||[]).slice()}; TAB="publicar"; render(); }
+function estadoPill(c){
+  return c.activo===false ? '<span class="pill off">Desactivada</span>'
+       : (c.desde&&c.desde>hoy()) ? '<span class="pill prog">Programada</span>'
+       : (c.hasta&&c.hasta<hoy()) ? '<span class="pill venc">Vencida</span>'
+       : '<span class="pill dest">Activa</span>';
+}
+function actos(c){
+  return `<div class="acts">
+    <button class="btn ghost sm" onclick="editar('${c.id}')">✏️ Editar</button>
+    <button class="btn ghost sm" onclick="toggleActiva('${c.id}')">${c.activo===false?'✅ Reactivar':'🚫 Desactivar'}</button>
+    <button class="btn warn sm" onclick="borrar('${c.id}')">🗑️ Borrar</button>
+  </div>`;
+}
+function cardEnviadaNovedad(c){
+  const leidos=(c.leidoPor||[]).length;
+  const total = c.alcance==="equipo" ? (c.destinatarios||[]).length : 0;   // sólo 'equipo' tiene denominador conocido
+  let lect;
+  if(total){
+    const pend=(c.destinatarios||[]).filter(n=>!(c.leidoPor||[]).some(x=>(x.nombre||"")===n));
+    const pct=Math.round(leidos/total*100);
+    lect=`<div class="lecturas"><div class="who"><b>${leidos}/${total}</b> leyeron · ${pct}%</div>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      ${pend.length?`<div class="who pend">Falta leer: ${pend.map(esc).join(" · ")}</div>`:'<div class="who" style="color:var(--m-ok,#1E7D46)">Todo el equipo leyó ✓</div>'}</div>`;
+  }else{
+    const nombres=(c.leidoPor||[]).map(x=>x.nombre).filter(Boolean);
+    lect=`<div class="lecturas"><div class="who"><b>${leidos}</b> ${leidos===1?"persona leyó":"personas leyeron"}${nombres.length?": "+nombres.map(esc).join(" · "):""}</div>
+      <div class="hint">En bajadas a la empresa o a departamentos no se puede mostrar el total esperado (el Core no expone el padrón completo).</div></div>`;
+  }
+  return `<div class="card">
+    <div class="top">${c.prioridad==="alta"?'<span class="pill alta">Importante</span>':''}<h3>${esc(c.titulo||"")}</h3>${estadoPill(c)}</div>
+    <div class="cuerpo">${esc(c.cuerpo||"")}</div>
+    <div class="meta"><span>👤 ${esc(c.autor||"")}</span><span>🗓️ ${fD(c.ts)}</span>${destinoLabel(c)}${c.hasta?`<span>⏳ hasta ${fD(c.hasta)}</span>`:''}</div>
+    ${lect}${actos(c)}</div>`;
+}
+function cardEnviadaWA(c){
+  const destino = c.origen==="gerencia"
+    ? '<span>🧑‍💼 Todos los comerciales</span>'
+    : `<span>👥 Tu equipo · ${(c.destinatarios||[]).length} comercial${(c.destinatarios||[]).length===1?'':'es'}</span>`;
+  return `<div class="card">
+    <div class="top"><span class="pill" style="background:#e7f7ee;color:#1b6b3e">📱 WhatsApp</span><h3>${esc(c.titulo||"")}</h3>${estadoPill(c)}</div>
+    <div class="cuerpo" style="background:#f6faf9;border:1px solid #e5eae9;border-radius:9px;padding:9px 11px">${esc(c.waTexto||"")}</div>
+    <div class="meta"><span>👤 ${esc(c.autor||"")}</span><span>🗓️ ${fD(c.ts)}</span>${destino}${c.hasta?`<span>⏳ hasta ${fD(c.hasta)}</span>`:''}</div>
+    <div class="lecturas">
+      <div class="who"><b id="reach-${c.id}">…</b> clientes lo recibieron por WhatsApp</div>
+    </div>${actos(c)}</div>`;
+}
+/* Rellena "N clientes lo recibieron" contando partners con la nota [EyGWA] campana/<id> en Odoo. */
+async function cargarAlcances(){
+  const was = COMS.filter(c=>c && c.clase==="wa");
+  await Promise.all(was.map(async c=>{
+    const el=document.getElementById("reach-"+c.id); if(!el) return;
+    try{
+      const g=await EYG.rpc("mail.message","read_group",[[["model","=","res.partner"],["body","like","campana/"+c.id]]],["id"],["res_id"]);
+      el.textContent = g.length;   // grupos por res_id = clientes distintos
+    }catch(e){ el.textContent="?"; }
+  }));
+}
+
+function editar(id){ const c=COMS.find(x=>x.id===id); if(!c) return;
+  EDIT={...c, departamentos:(c.departamentos||[]).slice(), cuerpo: c.clase==="wa"?(c.waTexto||""):(c.cuerpo||"")};
+  TAB="publicar"; render(); }
 async function toggleActiva(id){ const arr=await EYG.comsLeer(); const c=arr.find(x=>x.id===id); if(!c) return; c.activo=(c.activo===false); await EYG.comsGuardar(arr); COMS=arr; render(); toast(c.activo?"Reactivada":"Desactivada", true); }
-async function borrar(id){ if(!confirm("¿Borrar esta novedad? No se puede deshacer.")) return; const arr=(await EYG.comsLeer()).filter(x=>x.id!==id); await EYG.comsGuardar(arr); COMS=arr; render(); toast("Novedad borrada", true); }
+async function borrar(id){ if(!confirm("¿Borrar esto? No se puede deshacer.")) return; const arr=(await EYG.comsLeer()).filter(x=>x.id!==id); await EYG.comsGuardar(arr); COMS=arr; render(); toast("Borrado", true); }
 </script>
 </body>
 </html>

@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=5"></script>
+<script src="../assets/core.js?v=6"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -268,6 +268,7 @@
   <div class="drawer" id="drawer"></div>
   <div class="toast" id="toast"></div>
   <div id="confetti"></div>
+  <div id="waModal"></div>
 
 <script>
 const RPC="https://yxotopoklgjowcudveoj.supabase.co/functions/v1/odoo-rpc";
@@ -370,7 +371,8 @@ const OF_PTS_ENV=8,  OF_META_ENV=30;   // ofertas ENVIADAS este mes → 8 pts
 const OF_PTS_VEN=17, OF_META_VEN=10;   // ofertas VENDIDAS este mes (cliente×oferta) → 17 pts (fuerte)
 let OFERTAS=[], OFPIDS=[];   // OFPIDS = ids de variante de todas las ofertas vigentes
 
-let ST={userId:null, contactos:[], catFiscal:[], catId:[], catProv:[], fact:{sem:0,mes:0,semPed:0,semNC:0,mesPed:0,mesNC:0}, cc:{porP:{},porCobrar:0,vencido:0,cobradoMes:0,aFacturar:0,aParcial:0,nDeud:0}, nuevos:0, contactadosHoy:new Set(), msgs:[], orders:{}, ofertas:{}, ofEnviadas:0, ofVendidas:0, userPartner:null, base:null, act:{ped:0,cli:0}, diag:{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}, alFondo:new Set(), filtro:"pend", q:""};
+let ST={userId:null, contactos:[], catFiscal:[], catId:[], catProv:[], fact:{sem:0,mes:0,semPed:0,semNC:0,mesPed:0,mesNC:0}, cc:{porP:{},porCobrar:0,vencido:0,cobradoMes:0,aFacturar:0,aParcial:0,nDeud:0}, nuevos:0, contactadosHoy:new Set(), msgs:[], orders:{}, ofertas:{}, ofEnviadas:0, ofVendidas:0, userPartner:null, base:null, act:{ped:0,cli:0}, diag:{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}, alFondo:new Set(), filtro:"pend", q:"", waMsgs:[]};
+let WA_PICK=null, BELL_OPTS=null;
 
 const PFIELDS=["id","name","company_type","is_company","street","street2","city","zip","state_id","phone","mobile","email","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","customer_rank"];
 
@@ -469,8 +471,17 @@ async function cargar(){
     // Las ofertas se cargan ANTES de pintar: el nivel usa los combos colocados y, si el
     // conteo llegara después, el panel mostraría un nivel (y una comisión) más bajos.
     await cargarOfertas(ids);
+    await cargarWA();
     render();
   }catch(e){ document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar el panel.</b><br>'+esc(e.message)+'</div>'; }
+}
+/* Mensajes de WhatsApp que este comercial puede enviar a su cartera (Comunicaciones). */
+async function cargarWA(){
+  try{
+    const arr = await EYG.comsLeer();
+    const wap = {rol:"comercial", comercial_ref:COMERCIAL, email:(window.__perfil&&window.__perfil.email)||""};
+    ST.waMsgs = EYG.wasParaComercial(wap, arr);
+  }catch(e){ ST.waMsgs=[]; }
 }
 
 // NIVELADOR POR RUBRO: reparte los 50 pts de "producción" según el perfil del vendedor (por ticket promedio),
@@ -658,6 +669,7 @@ function render(){
       </div>
     </div>
 
+    <div id="waSection">${waSectionHTML()}</div>
     ${OFERTAS.length?`<div id="ofertasBox" class="kpi ofcard neon" style="margin-bottom:20px">
       <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">🎁</span><div class="kmeta"><div class="kl">Combos y ofertas de la semana</div><div class="kv" style="font-size:19px">${OFERTAS.length} activa${OFERTAS.length>1?'s':''}</div><div class="ks">tocá para verlas y compartir por WhatsApp</div></div><span class="kchev">▾</span></div>
       <div class="acc"><div class="accw"><div class="accin" style="padding-top:8px">${ofertasHTML()}</div></div></div>
@@ -1074,6 +1086,80 @@ async function registrarEnvioOferta(ofId){
   render();
 }
 
+/* ===== Mensajes de WhatsApp para clientes (Comunicaciones) ===== */
+function refreshBell(){ if(EYG.bellComunicaciones && window.__perfil) EYG.bellComunicaciones("bellSlot", window.__perfil, BELL_OPTS); }
+/* clientes distintos a los que ESTE comercial ya le mandó la campaña (de las notas de la semana + envíos en vivo) */
+function sentCampana(msgId){ return new Set((ST.msgs||[]).filter(m=>m.tipo==="campana"&&m.ng===msgId).map(m=>m.res_id)).size; }
+/* Sección arriba de Ofertas/Combos con los mensajes listos para mandar a la cartera. */
+function waSectionHTML(){
+  const list=ST.waMsgs||[]; if(!list.length) return "";
+  const card=m=>{
+    const env=sentCampana(m.id), de=m.origen==="gerencia"?"Gerencia":(m.autor||"tu líder");
+    return `<div style="background:#fff;border-radius:12px;padding:12px 13px;box-shadow:0 2px 10px rgba(0,0,0,.08);display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
+        <b style="font-size:14px;color:#0E1F1D">${esc(m.titulo||"Mensaje")}</b>
+        <span style="font-size:11px;color:#8A9A97;white-space:nowrap">de ${esc(de)}</span></div>
+      <div style="font-size:13px;color:#3a4a47;white-space:pre-wrap;line-height:1.4;background:#f6faf9;border:1px solid #e8efee;border-radius:8px;padding:8px 10px">${esc(m.waTexto||"")}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <span style="font-size:11.5px;color:${env?'#1E7D46':'#8A9A97'};font-weight:${env?700:400}">${env?('✓ enviado a '+env+' cliente'+(env===1?'':'s')):'todavía no lo enviaste'}</span>
+        <button onclick="abrirWAenvio('${m.id}')" style="background:#25A366;color:#fff;border:0;border-radius:9px;padding:8px 13px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">Enviar a un cliente →</button>
+      </div></div>`;
+  };
+  return `<div style="background:linear-gradient(135deg,#0E5C46,#12A366);border-radius:16px;padding:15px 16px;margin:0 0 20px">
+    <div style="color:#fff;font-weight:800;font-size:16px;margin-bottom:11px">📱 Mensajes para enviar a tus clientes <span style="opacity:.85;font-weight:600;font-size:12px">· ${list.length}</span></div>
+    <div style="display:flex;flex-direction:column;gap:11px">${list.map(card).join("")}</div></div>`;
+}
+function abrirWAenvio(msgId){ const m=(ST.waMsgs||[]).find(x=>x.id===msgId); if(!m) return; WA_PICK={msgId, q:""}; pintarWAModal(); }
+function cerrarWAModal(){ WA_PICK=null; const el=document.getElementById("waModal"); if(el) el.innerHTML=""; }
+function waPickBuscar(v){ if(WA_PICK){ WA_PICK.q=v; pintarWAModal(true); } }
+function pintarWAModal(keepFocus){
+  const el=document.getElementById("waModal"); if(!el||!WA_PICK) return;
+  const m=(ST.waMsgs||[]).find(x=>x.id===WA_PICK.msgId); if(!m){ cerrarWAModal(); return; }
+  const q=(WA_PICK.q||"").toLowerCase();
+  const yaSet=new Set((ST.msgs||[]).filter(x=>x.tipo==="campana"&&x.ng===m.id).map(x=>x.res_id));
+  let lista=(ST.contactos||[]).filter(c=>(c.name||"").toLowerCase().includes(q));
+  lista.sort((a,b)=>{ const pa=!!(a.phone||a.mobile), pb=!!(b.phone||b.mobile); if(pa!==pb) return pa?-1:1; return (a.name||"").localeCompare(b.name||""); });
+  lista=lista.slice(0,60);
+  const row=c=>{ const tel=waN(c.phone||c.mobile), ya=yaSet.has(c.id);
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 2px;border-bottom:1px solid #f0f3f2">
+      <div style="min-width:0"><div style="font-weight:600;font-size:13.5px;color:#0E1F1D;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(c.name||"—")}</div>
+        <div style="font-size:11px;color:${ya?'#1E7D46':'#8A9A97'}">${ya?'✓ ya enviado':(tel?'':'sin teléfono')}</div></div>
+      ${tel?`<a href="https://api.whatsapp.com/send?phone=${tel}&text=${encodeURIComponent(m.waTexto||"")}" target="_blank" rel="noopener" onclick="confirmarEnvioCampana(${c.id},'${m.id}')" style="background:#25A366;color:#fff;border-radius:8px;padding:6px 12px;font-size:12.5px;font-weight:700;text-decoration:none;white-space:nowrap">${ya?'Reenviar':'Enviar'}</a>`:`<span style="color:#c0c8c6;font-size:12px">—</span>`}
+    </div>`;
+  };
+  el.innerHTML=`<div onclick="if(event.target===this)cerrarWAModal()" style="position:fixed;inset:0;background:rgba(14,31,29,.5);display:flex;align-items:center;justify-content:center;z-index:200;padding:16px">
+    <div style="background:#fff;border-radius:16px;max-width:460px;width:100%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="padding:14px 18px;border-bottom:1px solid #eef1f0">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:16px">📱 ${esc(m.titulo||"Mensaje")}</b><span onclick="cerrarWAModal()" style="cursor:pointer;color:#8A9A97;font-size:18px">✕</span></div>
+        <div style="font-size:12px;color:#5F716E;margin-top:6px;background:#f6faf9;border:1px solid #e8efee;border-radius:8px;padding:7px 9px;white-space:pre-wrap;max-height:96px;overflow:auto">${esc(m.waTexto||"")}</div>
+        <div style="font-size:11.5px;color:#8A9A97;margin-top:6px">Elegí el cliente: se abre WhatsApp con el mensaje listo. Confirmá el envío para que cuente.</div>
+      </div>
+      <div style="padding:10px 14px 0"><input id="wapq" placeholder="Buscar cliente…" value="${esc(WA_PICK.q||"")}" oninput="waPickBuscar(this.value)" style="width:100%;padding:9px 12px;border:1px solid #e5eae9;border-radius:9px;font-size:14px;font-family:inherit"></div>
+      <div style="padding:4px 14px 14px;overflow:auto">${lista.length?lista.map(row).join(""):'<div style="padding:20px;text-align:center;color:#8A9A97">Sin clientes que coincidan.</div>'}</div>
+    </div></div>`;
+  if(keepFocus){ const i=document.getElementById("wapq"); if(i){ i.focus(); try{ i.setSelectionRange(i.value.length,i.value.length); }catch(e){} } }
+}
+function confirmarEnvioCampana(id, msgId){
+  const c=ST.contactos.find(x=>x.id===id); const nom=c?(c.name||"este cliente"):"este cliente";
+  let el=document.getElementById("waconfirm");
+  if(!el){ el=document.createElement("div"); el.id="waconfirm"; el.className="waconfirm"; document.body.appendChild(el); }
+  el.innerHTML=`<div class="wcbox"><div class="wct">📤 ¿Enviaste el mensaje a <b>${esc(nom)}</b>?</div>
+    <div class="wcsub">Solo se cuenta como contacto si confirmás el envío.</div>
+    <div class="wcb"><button class="no" onclick="cerrarWAConfirm()">No</button><button class="si" onclick="registrarEnvioCampana(${id},'${msgId}')">Sí, envié ✓</button></div></div>`;
+  requestAnimationFrame(()=>el.classList.add("on"));
+}
+async function registrarEnvioCampana(id, msgId){
+  cerrarWAConfirm();
+  try{ await rpc("res.partner","message_post",[[id]],{body:"📤 "+EYG.waMarker(msgId)+" · por "+COMERCIAL, message_type:"comment"}); }catch(e){}
+  const t=hoyStr.slice(0,10); ST.msgs.push({res_id:id, date:t, tipo:"campana", ng:msgId});
+  const era=ST.contactadosHoy.has(id); ST.contactadosHoy.add(id); const n=ST.contactadosHoy.size;
+  if(!era && n===OBJ.diarioContactos){ toast("🏆 ¡Meta diaria cumplida! "+OBJ.diarioContactos+" contactos 🎉",true); confetti(); }
+  else toast("Enviado ✓", true);
+  // marca el mensaje como visto (apaga el aviso de la campana)
+  try{ await EYG.comMarcarVistoWA(window.__perfil||{email:""}, [msgId]); }catch(e){}
+  render(); pintarWAModal(); refreshBell();
+}
+
 let toastT;
 function toast(msg,win){const t=document.getElementById("toast");t.textContent=msg;t.className="toast on"+(win?" win":"");clearTimeout(toastT);toastT=setTimeout(()=>t.className="toast",2600);}
 function confetti(){const box=document.getElementById("confetti");const cols=["#048782","#EC8B5E","#E5A93B","#5FC8BF","#1E7D46"];
@@ -1089,7 +1175,10 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
   }
   cargar();
   // Novedades/bajadas (Comunicaciones): campana con badge en el header, cerca del nombre.
-  if(EYG.bellComunicaciones) EYG.bellComunicaciones("bellSlot", perfil);
+  // Para un comercial, la campana además avisa de mensajes de WhatsApp para enviar (opts.wa),
+  // con "Ver" que hace scroll a la sección #waSection del panel.
+  BELL_OPTS = {wa: perfil.rol==="comercial", waTarget:"waSection"};
+  if(EYG.bellComunicaciones) EYG.bellComunicaciones("bellSlot", perfil, BELL_OPTS);
 });
 </script>
 </body>

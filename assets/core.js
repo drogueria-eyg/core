@@ -385,11 +385,36 @@ window.EYG = (function(){
     await comsGuardar(arr);
   }
 
+  /* ===== Mensajes de WhatsApp a clientes (clase 'wa') =====
+     Van DIRECTO al panel de los comerciales para que los disparen a su cartera (sin aprobación
+     del líder). origen 'gerencia' llega a todos los comerciales; origen 'lider' sólo a su equipo
+     (destinatarios). Cada tarjeta muestra quién lo creó (autor). El envío a cada cliente se mide
+     con una nota [EyGWA] campana/<id> en el partner (ver waMarker). */
+  function _comVig(c,hoy){ return (!c.desde||c.desde<=hoy) && (!c.hasta||c.hasta>=hoy); }
+  /* Mensajes WA que este comercial puede enviar a su cartera. */
+  function wasParaComercial(perfil, arr){
+    const hoy=argToday(), ref=perfil.comercial_ref||"";
+    return (arr||[]).filter(c=>c && c.clase==="wa" && c.activo!==false && _comVig(c,hoy) && (c.origen==="gerencia" || (c.destinatarios||[]).includes(ref)))
+      .sort((a,b)=>String(b.ts||"").localeCompare(String(a.ts||"")));
+  }
+  function comVistoWA(c, email){ return (c.vistoPor||[]).includes((email||"").toLowerCase()); }
+  /* Marca WA como "visto" por el comercial (para apagar el aviso de la campana). RMW. */
+  async function comMarcarVistoWA(perfil, ids){
+    const email=(perfil.email||"").toLowerCase(), set=new Set(ids||[]);
+    if(!set.size) return;
+    const arr=await comsLeer(); let ch=false;
+    arr.forEach(c=>{ if(set.has(c.id)){ c.vistoPor=c.vistoPor||[]; if(!c.vistoPor.includes(email)){ c.vistoPor.push(email); ch=true; } } });
+    if(ch) await comsGuardar(arr);
+  }
+  /* Marcador de la nota que se postea en el partner cuando el comercial envía la campaña.
+     Cuenta como contacto [EyGWA] (suma a la meta diaria) y permite medir alcance por mensaje. */
+  const waMarker = id => "[EyGWA] campana/"+id;
+
   /* ===== Campana de novedades (ícono para el header de los paneles) =====
      Reemplaza a la tarjeta grande: un ícono 🔔 con badge de no leídas y un
      desplegable con las novedades. COM_CTX guarda el perfil por punto de montaje.
      (Fase 2: la misma campana avisará de mensajes de WhatsApp nuevos.) */
-  const COM_CTX = {};
+  const COM_CTX = {};   // mountId -> {perfil, opts}
   let _bellOpen = null;
   function comBellStyles(){
     if(typeof document==="undefined" || document.getElementById("eyg-bell-css")) return;
@@ -403,6 +428,8 @@ window.EYG = (function(){
     .eyg-bell-dd .hd{display:flex;align-items:center;justify-content:space-between;padding:6px 8px 8px;border-bottom:1px solid #eef1f0;margin-bottom:4px}
     .eyg-bell-dd .hd b{font-size:14px;color:#0E1F1D}
     .eyg-bell-dd .allread{background:none;border:0;color:#048782;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;padding:0}
+    .eyg-wa-banner{display:flex;align-items:center;gap:7px;background:#e7f7ee;border:1px solid #bfe6cc;color:#1b6b3e;border-radius:10px;padding:9px 11px;font-size:12.5px;font-weight:600;cursor:pointer;margin-bottom:6px}
+    .eyg-wa-banner b{color:#12592f} .eyg-wa-banner .go{margin-left:auto;color:#1E7D46;font-weight:800;white-space:nowrap}
     .eyg-nov{padding:9px 8px;border-radius:10px}
     .eyg-nov + .eyg-nov{border-top:1px solid #f0f3f2}
     .eyg-nov.unread{background:#f2fbfa}
@@ -412,20 +439,26 @@ window.EYG = (function(){
     .eyg-nov .mt{font-size:11px;color:#8A9A97;margin-top:6px;display:flex;justify-content:space-between;gap:8px;align-items:center}
     .eyg-nov .mk{background:#04635F;color:#fff;border:0;border-radius:7px;padding:4px 10px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit}
     .eyg-bell-empty{padding:22px 12px;text-align:center;color:#8A9A97;font-size:13px}
-    .eyg-bell-alta{background:#fbe4e3;color:#b0322f;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;border-radius:20px;padding:1px 7px}`;
+    .eyg-bell-alta{background:#fbe4e3;color:#b0322f;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;border-radius:20px;padding:1px 7px}
+    @keyframes eygWaFlash{0%{box-shadow:0 0 0 0 rgba(30,125,70,.55)}100%{box-shadow:0 0 0 10px rgba(30,125,70,0)}}
+    .eyg-wa-flash{animation:eygWaFlash 1.2s ease-out 1;border-radius:16px}`;
     document.head.appendChild(s);
   }
   function comCerrarBells(){ if(typeof document==="undefined") return; document.querySelectorAll(".eyg-bell-dd").forEach(d=>d.style.display="none"); _bellOpen=null; }
   if(typeof document!=="undefined"){ document.addEventListener("click",e=>{ if(!(e.target.closest && e.target.closest(".eyg-bell-wrap"))) comCerrarBells(); }); }
 
-  /* Monta/re-pinta la campana en el elemento `mountId`. Idempotente: llamala cada vez. */
-  async function bellComunicaciones(mountId, perfil){
+  /* Monta/re-pinta la campana en el elemento `mountId`. Idempotente: llamala cada vez.
+     opts.wa=true agrega el aviso de mensajes de WhatsApp para enviar; opts.waTarget = id del
+     bloque de la sección WhatsApp al que hace scroll el botón "Ver". */
+  async function bellComunicaciones(mountId, perfil, opts){
     const mount=document.getElementById(mountId); if(!mount||!perfil) return;
-    comBellStyles(); COM_CTX[mountId]=perfil;
+    opts=opts||{}; comBellStyles(); COM_CTX[mountId]={perfil, opts};
     let arr; try{ arr=await comsLeer(); }catch(e){ arr=[]; }
     const email=(perfil.email||"").toLowerCase();
     const mine=comsParaMi(perfil,arr).sort((a,b)=>{ const la=comLeida(a,email),lb=comLeida(b,email); if(la!==lb) return la?1:-1; return ((b.prioridad==="alta")-(a.prioridad==="alta"))||String(b.ts||"").localeCompare(String(a.ts||"")); });
     const nUnread=mine.filter(c=>!comLeida(c,email)).length;
+    const waNuevos = opts.wa ? wasParaComercial(perfil,arr).filter(c=>!comVistoWA(c,email)) : [];
+    const nBadge = nUnread + waNuevos.length;
     const fD=s=>s?(String(s).slice(8,10)+"/"+String(s).slice(5,7)):"";
     const abierto=_bellOpen===mountId;
     const item=c=>{ const leida=comLeida(c,email);
@@ -435,9 +468,11 @@ window.EYG = (function(){
         <div class="mt"><span>${esc(c.autor||"")}${c.ts?" · "+fD(c.ts.slice(0,10)):""}</span>${leida?'<span>✓ leído</span>':`<button class="mk" onclick="EYG.comMarcarYRepintar('${mountId}','${c.id}')">Leído</button>`}</div>
       </div>`;
     };
+    const waBanner = waNuevos.length ? `<div class="eyg-wa-banner" onclick="EYG.comVerWA('${mountId}')">📱 <span><b>${waNuevos.length}</b> mensaje${waNuevos.length>1?'s':''} de WhatsApp para enviar a tus clientes</span><span class="go">Ver ↓</span></div>` : '';
     mount.innerHTML=`<div class="eyg-bell-wrap">
-      <button class="eyg-bell-btn" title="Novedades" onclick="EYG.comToggleBell(event,'${mountId}')">🔔${nUnread?`<span class="eyg-bell-badge">${nUnread>9?'9+':nUnread}</span>`:''}</button>
+      <button class="eyg-bell-btn" title="Novedades" onclick="EYG.comToggleBell(event,'${mountId}')">🔔${nBadge?`<span class="eyg-bell-badge">${nBadge>9?'9+':nBadge}</span>`:''}</button>
       <div class="eyg-bell-dd" style="display:${abierto?'block':'none'}">
+        ${waBanner}
         <div class="hd"><b>📣 Novedades</b>${nUnread?`<button class="allread" onclick="EYG.comMarcarTodas('${mountId}')">Marcar todas leídas</button>`:''}</div>
         ${mine.length?mine.map(item).join(""):'<div class="eyg-bell-empty">No tenés novedades por ahora.</div>'}
       </div>
@@ -450,16 +485,27 @@ window.EYG = (function(){
     comCerrarBells();
     if(abrir){ dd.style.display="block"; _bellOpen=mountId; }
   }
-  async function comMarcarYRepintar(mountId, id){ const p=COM_CTX[mountId]; if(!p) return; _bellOpen=mountId; await comMarcarLeido(p,id); await bellComunicaciones(mountId,p); }
+  async function comMarcarYRepintar(mountId, id){ const cx=COM_CTX[mountId]; if(!cx) return; _bellOpen=mountId; await comMarcarLeido(cx.perfil,id); await bellComunicaciones(mountId,cx.perfil,cx.opts); }
   async function comMarcarTodas(mountId){
-    const p=COM_CTX[mountId]; if(!p) return; _bellOpen=mountId;
+    const cx=COM_CTX[mountId]; if(!cx) return; const p=cx.perfil; _bellOpen=mountId;
     const arr=await comsLeer(); const email=(p.email||"").toLowerCase(); let ch=false;
     comsParaMi(p,arr).forEach(c=>{ if(!comLeida(c,email)){ (c.leidoPor=c.leidoPor||[]).push({email,nombre:p.nombre||email,ts:new Date().toISOString()}); ch=true; } });
     if(ch) await comsGuardar(arr);
-    await bellComunicaciones(mountId,p);
+    await bellComunicaciones(mountId,p,cx.opts);
+  }
+  /* "Ver" del aviso WA: marca los mensajes como vistos, cierra la campana y hace scroll a la sección. */
+  async function comVerWA(mountId){
+    const cx=COM_CTX[mountId]; if(!cx) return; const p=cx.perfil, opts=cx.opts||{};
+    const arr=await comsLeer(); const email=(p.email||"").toLowerCase();
+    const nuevos=wasParaComercial(p,arr).filter(c=>!comVistoWA(c,email)).map(c=>c.id);
+    await comMarcarVistoWA(p, nuevos);
+    comCerrarBells();
+    if(opts.waTarget && typeof document!=="undefined"){ const t=document.getElementById(opts.waTarget); if(t){ t.scrollIntoView({behavior:"smooth",block:"start"}); t.classList.add("eyg-wa-flash"); setTimeout(()=>t.classList.remove("eyg-wa-flash"),1300); } }
+    await bellComunicaciones(mountId,p,opts);
   }
 
   return { supa, rpc, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, comsParaMi, comLeida, comMarcarLeido,
-    bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas };
+    wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
+    bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA };
 })();
