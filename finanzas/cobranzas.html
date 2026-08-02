@@ -276,15 +276,15 @@ async function cargar(silent){
     const draft=await rpc("account.payment","search_read",
       [[["partner_type","=","customer"],["payment_type","=","inbound"],["state","=","draft"]]],
       {fields:["name","partner_id","amount","date"],limit:0});
-    // 3) Evolución: saldo de la cuenta corriente al cierre de cada mes = suma acumulada del receivable
+    // 3) Evolución DÍA A DÍA: saldo de la cuenta corriente = suma acumulada del receivable por día
     const evoRaw=await rpc("account.move.line","read_group",
-      [[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"]],["balance:sum"],["date:month"]],
+      [[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"]],["balance:sum"],["date:day"]],
       {lazy:false,orderby:"date asc"});
     EVO=[]; let acc=0;
     for(const g of evoRaw){
-      const from=g.__range&&g.__range["date:month"]?g.__range["date:month"].from:null;
-      acc+=g.balance||0;
-      if(from && from>="2025-03-01") EVO.push({ym:from.slice(0,7), val:acc});
+      const from=g.__range&&g.__range["date:day"]?g.__range["date:day"].from:null;
+      acc+=g.balance||0;   // acumula desde el principio (aunque solo mostremos desde 2025-03)
+      if(from && from>="2025-03-01") EVO.push({ymd:from, val:acc});
     }
 
     // --- Agregar por cliente ---
@@ -465,14 +465,14 @@ function evoSVG(){
   let dLine=""; EVO.forEach((p,i)=>{ dLine+=(i?"L":"M")+X(i).toFixed(1)+" "+Y(p.val).toFixed(1)+" "; });
   const dArea=dLine+`L ${X(n-1).toFixed(1)} ${Y(0).toFixed(1)} L ${X(0).toFixed(1)} ${Y(0).toFixed(1)} Z`;
   let dots="",xlab=""; const step=Math.max(1,Math.ceil(n/7));
-  EVO.forEach((p,i)=>{ const x=X(i),y=Y(p.val),last=i===n-1,[yy,mm]=p.ym.split("-");
+  EVO.forEach((p,i)=>{ const x=X(i),y=Y(p.val),last=i===n-1,[yy,mm]=p.ymd.split("-");
     if(last) dots+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4.5" fill="#04635F"/>`;
     if(i%step===0||last) xlab+=`<text x="${x.toFixed(1)}" y="${H-8}" text-anchor="${last?'end':'middle'}" font-size="12" fill="#8A9A97">${MESAB[+mm]} '${yy.slice(2)}</text>`;
   });
   const n1=EVO[n-1],lx=X(n-1),ly=Y(n1.val);
   const lbl=`<text x="${(lx-6).toFixed(1)}" y="${(ly-10).toFixed(1)}" text-anchor="end" font-size="14" font-weight="800" fill="#04635F">${money(n1.val)}</text>`;
   // puntos para el tooltip interactivo (fecha + monto al pasar el mouse)
-  EVOCHART={ W, H, pts: EVO.map((p,i)=>{ const [yy,mm]=p.ym.split("-"); return {x:+X(i).toFixed(1), y:+Y(p.val).toFixed(1), val:p.val, label:MESAB[+mm]+" '"+yy.slice(2)}; }) };
+  EVOCHART={ W, H, pts: EVO.map((p,i)=>({x:+X(i).toFixed(1), y:+Y(p.val).toFixed(1), val:p.val, label:fmtFecha(p.ymd)})) };
   return `<svg class="evosvg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Evolución de la deuda">
     <defs><linearGradient id="evg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#0AA89F" stop-opacity=".26"/><stop offset="1" stop-color="#0AA89F" stop-opacity="0"/></linearGradient></defs>
@@ -480,24 +480,22 @@ function evoSVG(){
     <path d="${dLine}" fill="none" stroke="#048782" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
     ${dots}${lbl}${xlab}
     <line id="evoxh" x1="0" y1="${pt}" x2="0" y2="${H-pb}" stroke="#04635F" stroke-width="1" stroke-dasharray="3 3" opacity="0" pointer-events="none"/>
-    <circle id="evodot" r="5" fill="#EC8B5E" stroke="#fff" stroke-width="1.5" opacity="0" pointer-events="none"/>
-    <rect x="${pl}" y="${pt}" width="${(W-pl-pr).toFixed(1)}" height="${(H-pt-pb).toFixed(1)}" fill="transparent" style="cursor:crosshair" onmousemove="evoHover(event)" onmouseleave="evoHoverOut()"/></svg>`;
+    <circle id="evodot" r="5" fill="#EC8B5E" stroke="#fff" stroke-width="1.5" opacity="0" pointer-events="none"/></svg>`;
 }
 let EVOCHART=null;
 function evoHover(e){
   if(!EVOCHART) return;
-  const svg=e.target.ownerSVGElement; if(!svg) return;
-  const r=svg.getBoundingClientRect();
+  const svg=e.currentTarget.querySelector(".evosvg"); if(!svg) return;
+  const r=svg.getBoundingClientRect(); if(!r.width) return;
   const sx=(e.clientX-r.left)/r.width*EVOCHART.W;
   let best=EVOCHART.pts[0];
   for(const p of EVOCHART.pts) if(Math.abs(p.x-sx)<Math.abs(best.x-sx)) best=p;
-  const xh=document.getElementById("evoxh"), dot=document.getElementById("evodot");
+  const xh=document.getElementById("evoxh"), dot=document.getElementById("evodot"), tip=document.getElementById("evotip");
   if(xh){ xh.setAttribute("x1",best.x); xh.setAttribute("x2",best.x); xh.setAttribute("opacity","1"); }
   if(dot){ dot.setAttribute("cx",best.x); dot.setAttribute("cy",best.y); dot.setAttribute("opacity","1"); }
-  const tip=document.getElementById("evotip");
   if(tip){ tip.innerHTML=`<b>${best.label}</b> · ${money(best.val)}`;
-    const px=Math.max(34, Math.min(best.x/EVOCHART.W*r.width, r.width-34));
-    tip.style.left=px+"px"; tip.style.top=(best.y/EVOCHART.H*r.height)+"px"; tip.style.opacity="1"; }
+    tip.style.left=Math.max(40, Math.min(best.x/EVOCHART.W*r.width, r.width-40))+"px";
+    tip.style.top=(best.y/EVOCHART.H*r.height)+"px"; tip.style.opacity="1"; }
 }
 function evoHoverOut(){
   ["evoxh","evodot"].forEach(id=>{const el=document.getElementById(id); if(el) el.setAttribute("opacity","0");});
@@ -632,7 +630,7 @@ function render(){
   const rubCards=RUBROS7.filter(r=>rubMap[r]).sort((a,b)=>rubMap[b].m-rubMap[a].m).map(r=>
       `<div class="kpi rub ${filtro.rubro===r?'on':''}" onclick="setRubro('${r.replace(/'/g,"\\'")}')"><div class="n">${rubMap[r].n}</div><div class="money">${money(rubMap[r].m)}</div><div class="l">🏷️ ${esc(r)}</div></div>`).join("");
 
-  const evoCap=(EVO.length>=2)?(()=>{const a=EVO[0],b=EVO[EVO.length-1],[ay,am]=a.ym.split("-");const dif=b.val-a.val;
+  const evoCap=(EVO.length>=2)?(()=>{const a=EVO[0],b=EVO[EVO.length-1],[ay,am]=a.ymd.split("-");const dif=b.val-a.val;
     return `Pasó de <b>${money(a.val)}</b> (${MESAB[+am]} '${ay.slice(2)}) a <b>${money(b.val)}</b> hoy <span class="up">▲ ${money(dif)}</span>`;})():"";
 
   app.innerHTML=`
@@ -645,7 +643,7 @@ function render(){
 
     ${EVO.length>=2?`<div class="panorama">
       <div class="ptop"><h3>📈 Evolución de la deuda</h3><div class="cap">${evoCap}</div></div>
-      <div class="evowrap">${evoSVG()}<div class="evotip" id="evotip"></div></div>
+      <div class="evowrap" style="cursor:crosshair" onmousemove="evoHover(event)" onmouseleave="evoHoverOut()">${evoSVG()}<div class="evotip" id="evotip"></div></div>
       ${compoHTML(porTramo,totalReal)}
     </div>`:''}
 
