@@ -218,6 +218,7 @@ window.EYG = (function(){
 
   /* ---- registro de módulos + navegación sidebar ---- */
   const DEPTS = [
+    {key:"comunicacion", nom:"Comunicación"},
     {key:"comercial", nom:"Comercial"},
     {key:"finanzas",  nom:"Finanzas"},
     {key:"inventario",nom:"Inventario"},
@@ -226,6 +227,12 @@ window.EYG = (function(){
     {key:"admin",     nom:"Sistema"},
   ];
   const MODULOS = [
+    {key:"comunicaciones", dept:"comunicacion", cat:"Comunicación", ico:"📣",
+      titulo:p=>(p.rol==="admin"||p.rol==="direccion"||p.rol==="lider")?"Comunicaciones":"Novedades",
+      desc:p=>(p.rol==="admin"||p.rol==="direccion")?"Bajá novedades a toda la empresa o a un área y seguí quién las leyó."
+             :(p.rol==="lider"?"Novedades para tu equipo y las bajadas de Gerencia, con acuse de lectura.":"Las novedades y bajadas que te llegan de Gerencia y de tu líder."),
+      roles:["comercial","lider","finanzas","inventario","cobranzas","maestro"], ready:true,
+      path:()=>"comunicaciones/comunicaciones.html"},
     {key:"panel", dept:"comercial", cat:"Comercial", ico:"⚡",
       titulo:p=>(p.rol==="admin"||p.rol==="direccion")?"Panel comerciales":"Mi Panel",
       desc:p=>(p.rol==="admin"||p.rol==="direccion")?"El equipo: métricas resumidas de cada comercial + acceso a su panel individual y al panel del líder.":(p.rol==="lider"?"Tu panel de líder: el equipo, cumplimiento y alertas.":"Tu sesión de venta: objetivos, comisión, salud y tu cartera a mano."),
@@ -326,5 +333,92 @@ window.EYG = (function(){
     </div>`;
   }
 
-  return { supa, rpc, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS };
+  /* ===== Comunicaciones · novedades internas (parámetro eyg.comunicaciones) =====
+     Molde igual al de las ofertas: un array JSON en ir.config_parameter que escribe
+     el módulo "Comunicaciones" y leen las tarjetas de los paneles. Cada novedad se
+     dirige por `alcance`: 'todos' (empresa), 'departamento' (áreas elegidas) o
+     'equipo' (los comerciales de un líder, guardados como `destinatarios`). El acuse
+     de lectura vive en `leidoPor` (para el reporte al emisor). */
+  const COM_KEY = "eyg.comunicaciones";
+  const COM_DEPTS = [
+    {key:"comercial", nom:"Comercial"},
+    {key:"finanzas",  nom:"Finanzas"},
+    {key:"inventario",nom:"Inventario"},
+    {key:"direccion", nom:"Dirección"},
+  ];
+  /* Departamento al que pertenece cada rol (para saber qué bajadas le tocan). */
+  function comDeptDeRol(rol){
+    return ({comercial:"comercial", lider:"comercial", finanzas:"finanzas", cobranzas:"finanzas",
+             inventario:"inventario", maestro:"inventario", direccion:"direccion", admin:"direccion"})[rol] || rol;
+  }
+  async function comsLeer(){
+    try{ return JSON.parse(await rpc("ir.config_parameter","get_param",[COM_KEY])||"[]")||[]; }catch(e){ return []; }
+  }
+  async function comsGuardar(arr){ return rpc("ir.config_parameter","set_param",[COM_KEY, JSON.stringify(arr)]); }
+
+  /* Novedades vigentes dirigidas a este perfil. admin/dirección ven todas (supervisión). */
+  function comsParaMi(perfil, arr){
+    const hoy = argToday(), dept = comDeptDeRol(perfil.rol), ref = perfil.comercial_ref || "";
+    const manda = perfil.rol==="admin" || perfil.rol==="direccion";
+    return (arr||[]).filter(c=>{
+      if(!c || c.activo===false) return false;
+      if(c.clase && c.clase!=="novedad") return false;           // fase 1: sólo novedades
+      if(c.desde && c.desde>hoy) return false;
+      if(c.hasta && c.hasta<hoy) return false;
+      if(manda) return true;
+      if(c.alcance==="todos") return true;
+      if(c.alcance==="departamento") return (c.departamentos||[]).includes(dept);
+      if(c.alcance==="equipo") return (c.destinatarios||[]).includes(ref);
+      return false;
+    });
+  }
+  function comLeida(c, email){ return (c.leidoPor||[]).some(x=>x.email===(email||"").toLowerCase()); }
+
+  /* Marca una novedad como leída (read-modify-write; relee justo antes para no pisar
+     acuses de otros). El reporte del emisor se arma con estos leidoPor. */
+  async function comMarcarLeido(perfil, id){
+    const email=(perfil.email||"").toLowerCase();
+    const arr=await comsLeer(); const c=arr.find(x=>x.id===id); if(!c) return;
+    c.leidoPor=c.leidoPor||[];
+    if(c.leidoPor.some(x=>x.email===email)) return;
+    c.leidoPor.push({email, nombre:perfil.nombre||email, ts:new Date().toISOString()});
+    await comsGuardar(arr);
+  }
+
+  /* Tarjeta de novedades para embeber en los paneles. Resalta las no leídas y deja
+     marcarlas sin salir del panel. COM_CTX guarda el perfil por elId para el onclick. */
+  const COM_CTX = {};
+  async function comMarcarYRepintar(elId, id){ const p=COM_CTX[elId]; if(!p) return; await comMarcarLeido(p,id); await cardComunicaciones(elId,p); }
+  async function cardComunicaciones(elId, perfil){
+    const el=document.getElementById(elId); if(!el||!perfil) return;
+    COM_CTX[elId]=perfil;
+    let arr; try{ arr=await comsLeer(); }catch(e){ return; }
+    const email=(perfil.email||"").toLowerCase();
+    const mine=comsParaMi(perfil,arr).sort((a,b)=>((b.prioridad==="alta")-(a.prioridad==="alta")) || String(b.ts||"").localeCompare(String(a.ts||"")));
+    if(!mine.length){ el.innerHTML=""; return; }
+    const noLeidas=mine.filter(c=>!comLeida(c,email)).length;
+    const fD=s=>s?(s.slice(8,10)+"/"+s.slice(5,7)):"";
+    const item=c=>{
+      const leida=comLeida(c,email), alta=c.prioridad==="alta";
+      return `<div style="background:#fff;border-radius:12px;padding:11px 13px;box-shadow:0 2px 10px rgba(0,0,0,.08);${leida?'opacity:.72':''}">
+        <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+          ${alta?'<span style="background:#fbe4e3;color:#b0322f;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;border-radius:20px;padding:2px 8px">Importante</span>':''}
+          ${!leida?'<span style="width:8px;height:8px;border-radius:50%;background:#5FC8BF;display:inline-block;flex:none"></span>':''}
+          <span style="font-weight:800;font-size:14px;color:#0E1F1D">${esc(c.titulo||"")}</span>
+        </div>
+        <div style="font-size:13px;color:#3a4a47;margin-top:4px;white-space:pre-wrap;line-height:1.42">${esc(c.cuerpo||"")}</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;gap:8px">
+          <span style="font-size:11px;color:#8A9A97">${esc(c.autor||"")}${c.ts?" · "+fD(c.ts.slice(0,10)):""}</span>
+          ${leida?'<span style="font-size:11px;color:#8A9A97">✓ leído</span>':`<button onclick="EYG.comMarcarYRepintar('${elId}','${c.id}')" style="background:#04635F;color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Marcar leído</button>`}
+        </div>
+      </div>`;
+    };
+    el.innerHTML = `<div style="background:linear-gradient(135deg,#0E4B47,#048782);border-radius:16px;padding:15px 16px;margin:14px 0">
+      <div style="color:#fff;font-weight:800;font-size:16px;margin-bottom:11px">📣 Novedades ${noLeidas?`<span style="background:#EC8B5E;color:#3a1d10;font-weight:800;font-size:12px;border-radius:20px;padding:1px 9px">${noLeidas} sin leer</span>`:'<span style="opacity:.8;font-weight:600;font-size:12px">· al día</span>'}</div>
+      <div style="display:flex;flex-direction:column;gap:10px">${mine.map(item).join("")}</div>
+    </div>`;
+  }
+
+  return { supa, rpc, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS,
+    COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, comsParaMi, comLeida, comMarcarLeido, comMarcarYRepintar, cardComunicaciones };
 })();
