@@ -517,8 +517,16 @@ window.EYG = (function(){
      ir.config_parameter `eyg.presencia.<uid>` (solo él escribe su clave → sin carreras).
      El panel del líder lo lee para ver quién está en línea y cuánto se conecta.
      bandas = [[inicioISO, finISO], ...] del día; un hueco > 5 min abre una banda nueva. */
-  async function presenciaPing(uid){
+  let _presTimer=null, _lastPing=0, _lastAct=Date.now();
+  // Se considera "activo" si la pestaña está en primer plano O si hubo interacción real
+  // (mouse/clic/teclado/scroll) en los últimos 5 min. Un fondo quieto NO cuenta.
+  function _presActivo(){
+    if(typeof document==="undefined") return true;
+    return document.visibilityState==="visible" || (Date.now()-_lastAct < 5*60000);
+  }
+  async function presenciaPing(uid, force){
     if(!uid) return;
+    if(!force && !_presActivo()) return;   // fondo quieto: no cuenta ni escribe (menos carga)
     try{
       const key="eyg.presencia."+uid;
       const raw=await rpc("ir.config_parameter","get_param",[key]).catch(()=>null);
@@ -526,20 +534,26 @@ window.EYG = (function(){
       const now=new Date(), nowISO=now.toISOString(), hoy=argToday();
       if(st.dia!==hoy){ st.dia=hoy; st.bandas=[]; }
       const b=Array.isArray(st.bandas)?st.bandas:[]; const last=b[b.length-1];
-      // hueco < 10 min → sigue la misma banda (tolera throttle de pestaña en segundo plano)
-      if(last && (now-new Date(last[1]))<10*60000){ last[1]=nowISO; } else { b.push([nowISO,nowISO]); }
+      // hueco < 6 min → sigue la misma banda; si no, abre una nueva (marca un corte real).
+      if(last && (now-new Date(last[1]))<6*60000){ last[1]=nowISO; } else { b.push([nowISO,nowISO]); }
       st.bandas=b; st.online=nowISO;
+      if(Date.now()-_lastAct < 90000) st.lastAct=nowISO;   // última interacción (mouse/clic/teclado)
       await rpc("ir.config_parameter","set_param",[key, JSON.stringify(st)]);
     }catch(e){}
   }
-  let _presTimer=null;
   function startPresencia(uid){
     if(!uid || _presTimer) return;
-    presenciaPing(uid);
-    // Late incluso con la pestaña en segundo plano (el navegador lo throttlea a ~1/min, pero
-    // así cuenta el tiempo que tienen el panel abierto aunque estén en WhatsApp/Odoo).
-    _presTimer=setInterval(()=>presenciaPing(uid), 120000);
-    if(typeof document!=="undefined") document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") presenciaPing(uid); });
+    const ping=(force)=>{ _lastPing=Date.now(); presenciaPing(uid, force); };
+    ping(true);
+    _presTimer=setInterval(()=>ping(false), 60000);   // cada 1 min (más fino que antes)
+    if(typeof document==="undefined") return;
+    document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") ping(true); });
+    // Interacción real → marca actividad y, si pasó >25s del último ping, refresca ya.
+    const onAct=()=>{ _lastAct=Date.now(); if(Date.now()-_lastPing>25000) ping(true); };
+    ["mousemove","mousedown","keydown","scroll","touchstart","wheel"].forEach(ev=>document.addEventListener(ev,onAct,{passive:true}));
+    // Al cerrar/ocultar la ventana → cierra la banda en el horario EXACTO del cierre.
+    window.addEventListener("pagehide",()=>{ try{ ping(true); }catch(e){} });
+    document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="hidden") ping(true); });
   }
 
   return { supa, rpc, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
