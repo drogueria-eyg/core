@@ -371,7 +371,7 @@ const OF_PTS_ENV=8,  OF_META_ENV=30;   // ofertas ENVIADAS este mes → 8 pts
 const OF_PTS_VEN=17, OF_META_VEN=10;   // ofertas VENDIDAS este mes (cliente×oferta) → 17 pts (fuerte)
 let OFERTAS=[], OFPIDS=[];   // OFPIDS = ids de variante de todas las ofertas vigentes
 
-let ST={userId:null, contactos:[], catFiscal:[], catId:[], catProv:[], fact:{sem:0,mes:0,semPed:0,semNC:0,mesPed:0,mesNC:0}, cc:{porP:{},porCobrar:0,vencido:0,cobradoMes:0,aFacturar:0,aParcial:0,nDeud:0}, nuevos:0, contactadosHoy:new Set(), msgs:[], orders:{}, ofertas:{}, ofEnviadas:0, ofVendidas:0, userPartner:null, base:null, act:{ped:0,cli:0}, diag:{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}, alFondo:new Set(), filtro:"pend", q:"", waMsgs:[]};
+let ST={userId:null, contactos:[], catFiscal:[], catId:[], catProv:[], fact:{sem:0,mes:0,semPed:0,semNC:0,mesPed:0,mesNC:0}, cc:{porP:{},porCobrar:0,vencido:0,cobradoMes:0,aFacturar:0,aParcial:0,nDeud:0}, nuevos:0, contactadosHoy:new Set(), msgs:[], orders:{}, ofertas:{}, ofEnviadas:0, ofVendidas:0, ofMsgs:[], userPartner:null, base:null, act:{ped:0,cli:0}, diag:{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}, alFondo:new Set(), filtro:"pend", q:"", waMsgs:[]};
 let WA_PICK=null, BELL_OPTS=null;
 
 const PFIELDS=["id","name","company_type","is_company","street","street2","city","zip","state_id","phone","mobile","email","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","customer_rank"];
@@ -563,6 +563,11 @@ function render(){
   const _mH=(ST.msgs||[]).filter(m=>m.date===_t);
   const envH={total:_mH.length, nuevo:_mH.filter(m=>m.ng==="nuevo").length, seg:_mH.filter(m=>m.ng!=="nuevo").length};
   const envS=(ST.msgs||[]).filter(m=>m.date>=_s7).length;
+  // Ofertas compartidas (broadcast, sin cliente puntual) cuentan como MENSAJES enviados,
+  // no como contacto distinto (eso ya puntúa aparte en la dimensión Ofertas).
+  const ofH=(ST.ofMsgs||[]).filter(m=>m.date===_t).length;
+  const ofS=(ST.ofMsgs||[]).filter(m=>m.date>=_s7).length;
+  const msgHoy=envH.total+ofH, msgSem=envS+ofS;
   const pDia=Math.min(100,Math.round(dHoy/dObj*100)), pNue=Math.min(100,Math.round(ST.nuevos/OBJ.mensualNuevos*100)), pFac=Math.min(100,Math.round(ST.fact.sem/OBJ.semanalFact*100));
   const externo=esExterno();
   const nv=nivel(); const completas=ST.contactos.filter(c=>completar(c).pct>=100).length; const incompletas=ST.contactos.length-completas;
@@ -599,7 +604,7 @@ function render(){
     </div>`}
     <div class="secrow"><h2 class="sec">🎯 Tus objetivos</h2></div>
     <div class="goals">
-      <div class="goal ${pDia>=100?'done':''}"><span class="chk">✅</span>${ring(pDia,dHoy,dObj,'var(--teal)')}<div><div class="gt">Hoy · contactos</div><div class="gn">${dHoy}/${dObj}</div><div class="gs">${dHoy>=dObj?'¡Meta cumplida! 🎉':(dObj-dHoy)+' para tu meta'}${envH.total?` · 📤 ${envH.total} msg`:''}</div></div></div>
+      <div class="goal ${pDia>=100?'done':''}"><span class="chk">✅</span>${ring(pDia,dHoy,dObj,'var(--teal)')}<div><div class="gt">Hoy · contactos</div><div class="gn">${dHoy}/${dObj}</div><div class="gs">${dHoy>=dObj?'¡Meta cumplida! 🎉':(dObj-dHoy)+' para tu meta'}${msgHoy?` · 📤 ${msgHoy} msg`:''}</div></div></div>
       <div class="goal ${pNue>=100?'done':''}"><span class="chk">✅</span>${ring(pNue,ST.nuevos,OBJ.mensualNuevos,'var(--coral)')}<div><div class="gt">Mes · nuevos</div><div class="gn">${ST.nuevos}/${OBJ.mensualNuevos}</div><div class="gs">clientes nuevos</div></div></div>
       <div class="goal ${pFac>=100?'done':''}"><span class="chk">✅</span>${ring(pFac,pFac+'%','','var(--gold)')}<div><div class="gt">Semana · ventas</div><div class="gn">${money(ST.fact.sem)}</div><div class="gs">meta ${money(OBJ.semanalFact)} · neto</div></div></div>
     </div>
@@ -611,8 +616,8 @@ function render(){
         <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">☀️</span><div class="kmeta"><div class="kl">Hoy</div><div class="kv">${ST.diag.ventasHoy>0?money(ST.diag.ventasHoy):ST.diag.pedHoy+' ped.'}</div><div class="ks">${ST.diag.pedHoy} pedidos · ${dHoy}/${dObj} contactos</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
           <div class="prow"><div class="pl"><span>Contactos trabajados hoy · meta ${dObj}</span><b>${dHoy}/${dObj}</b></div><div class="pbar"><i style="width:${Math.min(100,pDia)}%;background:var(--teal)"></i></div></div>
-          <div class="drow"><span>📤 Mensajes enviados hoy</span><b>${envH.total} <span style="font-weight:600;color:var(--gris2);font-size:11px">${envH.nuevo} nuevos · ${envH.seg} seguim.</span></b></div>
-          <div class="drow"><span>📤 Mensajes esta semana</span><b>${envS}</b></div>
+          <div class="drow"><span>📤 Mensajes enviados hoy</span><b>${msgHoy} <span style="font-weight:600;color:var(--gris2);font-size:11px">${envH.nuevo} nuevos · ${envH.seg} seguim.${ofH?` · ${ofH} oferta${ofH===1?'':'s'}`:''}</span></b></div>
+          <div class="drow"><span>📤 Mensajes esta semana</span><b>${msgSem}</b></div>
           <div class="drow"><span>🧾 Ventas facturadas hoy</span><b>${money(ST.diag.ventasHoy)}</b></div>
           <div class="drow"><span>📦 Pedidos hoy</span><b>${ST.diag.pedHoy}</b></div>
         </div></div></div>
@@ -767,6 +772,9 @@ function ofertasHTML(){
     const meta=ofMeta(o);
     const pct=col==null?0:Math.min(100,Math.round(col/meta*100));
     const off=ofDesc(o), items=ofItems(o), tit=o.titulo||items;
+    // Veces que ESTE comercial compartió esta oferta este mes (notas [EyGOFENV] cuyo cuerpo
+    // incluye el título con el que se registró el envío). Es la "actividad" de la tarjeta.
+    const envN=(ST.ofMsgs||[]).filter(m=>m.body&&tit&&m.body.includes(tit)).length;
     // días enteros de calendario: con la resta de timestamps, una oferta que cierra hoy
     // daba "vence mañana" y una a 5 días daba 6.
     const dl=o.hasta?Math.round((new Date(o.hasta+"T00:00:00")-new Date(hoyStr+"T00:00:00"))/86400000):null;
@@ -783,7 +791,8 @@ function ofertasHTML(){
       ${o._info?'':`<div class="of-price">${o.precioAntes>o.precio?`<span class="of-old">${money(o.precioAntes)}</span>`:''}<span class="of-new">${money(o.precio)}</span></div>`}
       ${(o.stock>0||o.nota)?`<div class="of-extra">${o.stock>0?'📦 '+o.stock+' disponibles':''}${(o.stock>0&&o.nota)?' · ':''}${o.nota?'📝 '+esc(o.nota):''}</div>`:''}
       ${o._info?'':`<div class="of-bar"><i style="width:${pct}%"></i></div>
-      <div class="of-foot" title="Clientes de tu cartera que la compraron desde que se publicó la oferta (meta ${meta})"><span>${col==null?'…':(col>=meta?col+' clientes ✓':col+' / '+meta+' clientes')}</span>${(st&&st.monto>0)?`<span class="p">${money(st.monto)}</span>`:''}</div>`}
+      <div class="of-foot" title="Clientes de tu cartera que la compraron desde que se publicó la oferta (meta ${meta})"><span>${col==null?'…':(col>=meta?col+' compraron ✓':col+' / '+meta+' compraron')}</span>${(st&&st.monto>0)?`<span class="p">${money(st.monto)}</span>`:''}</div>`}
+      <div style="font-size:11.5px;font-weight:700;color:${envN?'#0E5C46':'#8A9A97'};margin:2px 0">${envN?('📤 la compartiste '+envN+(envN===1?' vez':' veces')+' este mes'):'📤 todavía no la compartiste'}</div>
       <span class="of-venc">⏳ ${venc}</span>
       <a class="of-wa" href="https://api.whatsapp.com/send?text=${encodeURIComponent(ofertaMsg(o))}" target="_blank" rel="noopener" onclick="confirmarCompartir('${(o.id||'').replace(/'/g,'')}')">Compartir por WhatsApp</a>
     </div>`;
@@ -896,8 +905,14 @@ async function cargarOfertas(ids){
     } else ST.ofVendidas=0;
   }catch(e){ ST.ofVendidas=0; }
   try{
-    if(ST.userPartner) ST.ofEnviadas=await rpc("mail.message","search_count",[[["model","=","res.partner"],["res_id","=",ST.userPartner],["date",">=",inicioMes+" 00:00:00"],["body","like","EyGOFENV"]]]);
-  }catch(e){ ST.ofEnviadas=0; }
+    if(ST.userPartner){
+      // Notas [EyGOFENV] del mes en el partner del propio comercial: sirven para el puntaje
+      // (ofEnviadas) Y para contar las ofertas como mensajes enviados hoy/semana (ofMsgs).
+      const ofn=await rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","=",ST.userPartner],["date",">=",inicioMes+" 00:00:00"],["body","like","EyGOFENV"]]],{fields:["date","body"],limit:0});
+      ST.ofMsgs=ofn.map(n=>({date:(n.date||"").slice(0,10), body:(n.body||"").replace(/<[^>]+>/g,"")}));
+      ST.ofEnviadas=ST.ofMsgs.length;
+    }
+  }catch(e){ ST.ofEnviadas=0; ST.ofMsgs=[]; }
 }
 
 // ===== Drawer =====
