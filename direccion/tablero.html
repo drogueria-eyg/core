@@ -524,6 +524,7 @@ function initMapa(){
   capa = L.layerGroup().addTo(map);
   capaLbl = L.layerGroup().addTo(map);
   map.on("zoomend moveend", refrescarEtiquetas);
+  map.on("moveend", redibujarSiHaceFalta);
   // el tamaño y la forma de los puntos dependen del zoom → redibujar al cambiar de tramo
   map.on("zoomend", ()=>{
     const b=tramoZoom(map.getZoom());
@@ -566,7 +567,16 @@ function visibles(){
 function dibujarMarcadores(encuadrar){
   capa.clearLayers(); capaLbl.clearLayers(); MARCAS=[];
   const vis=visibles(), pts=[], z=map?map.getZoom():10;
+  /* De cerca cada punto es un elemento del navegador (para poder darle forma).
+     Dibujar los ~830 a la vez pone la pantalla lenta, así que estando acercados
+     sólo dibujamos los de la vista (con margen, para que al arrastrar ya estén). */
+  let recorte=null;
+  if(z>=11 && map){
+    const b=map.getBounds(), dLat=(b.getNorth()-b.getSouth())*0.6, dLon=(b.getEast()-b.getWest())*0.6;
+    recorte={s:b.getSouth()-dLat, n:b.getNorth()+dLat, w:b.getWest()-dLon, e:b.getEast()+dLon};
+  }
   vis.forEach(c=>{
+    if(recorte && (c.ll[0]<recorte.s||c.ll[0]>recorte.n||c.ll[1]<recorte.w||c.ll[1]>recorte.e)) return;
     const col=COLOR[c.estado];
     const r=radio(c.nped,z);
     const m = (z>=11)
@@ -705,7 +715,7 @@ function pintarUniverso(){
     if(!dentro.size) return;
     let n=0;
     for(const e of UNI.est){
-      if(n>=700) break;
+      if(n>=600) break;
       if(!dentro.has(e[1])) continue;
       const L0=UNI.locs[e[1]];
       // e[4]/e[5] = ubicación EXACTA (calle y altura). Si no la tenemos, va
@@ -713,13 +723,24 @@ function pintarUniverso(){
       const exacta = !!e[4];
       const ll = exacta ? [e[4],e[5]] : disperso(e[0]+e[3], [L0[2],L0[3]]);
       if(!exacta && !STATE.aprox) continue;
+      // con coordenada propia, filtramos por el punto y no por su localidad:
+      // más exacto y muchísimo más liviano de dibujar
+      if(ll[0]<s||ll[0]>n2||ll[1]<w||ll[1]>e2) continue;
       const esCli=!!e[6];
-      const rr = z>=15 ? 2.8 : z>=13 ? 2.2 : 1.8;
+      /* A conquistar = ROJO y bien visible (antes iban gris y translúcidos: la
+         leyenda decía rojo y no se veían). Se dibujan como ANILLO —relleno casi
+         vacío— así se distinguen de nuestros clientes, que son puntos llenos y
+         van en una capa por encima, sin quedar tapados. */
+      const rr = z>=15 ? 3.4 : z>=13 ? 2.9 : 2.4;
+      const ROJO="#FF5A52";
       capaUni.addLayer(L.circleMarker(ll,{
-        radius:esCli?rr+0.6:rr, color:esCli?"#37D07A":"#7C8B88", weight:esCli?1.1:0.8,
-        fillColor:esCli?"#37D07A":"#46615c",
-        fillOpacity:exacta?(esCli?.55:.3):0.06, opacity:exacta?(esCli?.9:.45):0.28,
-        dashArray:exacta?null:"2 2"
+        radius: esCli ? rr : rr+0.5,
+        color: esCli ? "#37D07A" : ROJO,
+        weight: exacta ? 1.7 : 1.2,
+        fillColor: esCli ? "#37D07A" : ROJO,
+        fillOpacity: esCli ? .35 : (exacta ? .18 : .08),
+        opacity: exacta ? (esCli ? .8 : .95) : (esCli ? .5 : .6),
+        dashArray: exacta ? null : "2 2"
       }).bindPopup(`<div class="pop"><b class="pnm">${esc(e[0])}</b>
         <div class="prow"><span>Tipo</span><span>${e[2]===0?"💊 Farmacia":"🏥 Institución de salud"}</span></div>
         ${e[3]?`<div class="prow"><span>Domicilio</span><span>${esc(e[3])}${exacta?"":" (sin ubicar)"}</span></div>`:""}
@@ -736,7 +757,9 @@ function pintarUniverso(){
     const pct=Math.min(100, l.n/tot*100);
     capaUni.addLayer(L.circleMarker(l.ll,{
       radius: Math.max(3, Math.min(26, 2.5+Math.sqrt(tot)*(z<7?0.7:z<9?1.0:1.35))),
-      color: COB_COL(pct), weight:1.1, fillColor:COB_COL(pct), fillOpacity:.11, opacity:.5
+      // cuanto menos conquistado, más se nota (0% = rojo firme)
+      color: COB_COL(pct), weight:1.5, fillColor:COB_COL(pct),
+      fillOpacity: pct<=0 ? .2 : pct<25 ? .15 : .1, opacity: pct<=0 ? .9 : .7
     }).bindPopup(`<div class="pop"><b class="pnm">${esc(l.loc)}</b>
       <div class="prow"><span>Farmacias habilitadas</span><span>${l.f}</span></div>
       <div class="prow"><span>Instituciones de salud</span><span>${l.ins}</span></div>
@@ -757,6 +780,15 @@ function disperso(txt, base){
    Con debounce: zoomend y moveend llegan casi juntos y si no, se duplican. */
 let _lblT;
 function refrescarEtiquetas(){ clearTimeout(_lblT); _lblT=setTimeout(()=>{ pintarEtiquetas(); pintarUniverso(); },140); }
+/* Al desplazar/acercar con recorte activo hay que rehacer los puntos: los que
+   entraron a la vista todavía no están dibujados. Ojo con el bucle: dibujar
+   llama a refrescarEtiquetas, así que este redibujo NO puede colgarse de él. */
+let _redibT;
+function redibujarSiHaceFalta(){
+  if(!map || map.getZoom()<11) return;
+  clearTimeout(_redibT);
+  _redibT=setTimeout(()=>dibujarMarcadores(false),160);
+}
 function pintarEtiquetas(){
   if(!map) return;
   capaLbl.clearLayers();
@@ -936,9 +968,9 @@ function tickReloj(){
             <div class="lg"><span style="width:9px;height:9px;background:var(--tb-mut);border-radius:1px;flex:none;margin:1px"></span>Otros</div>
             <div class="lg"><span class="approx"></span>Ubicación aproximada</div>
             <div class="lg" style="margin-top:4px;padding-top:6px;border-top:1px solid var(--tb-line)">
-              <span style="width:11px;height:11px;border-radius:50%;border:1.5px solid #B0413E;background:rgba(176,65,62,.15);flex:none"></span>
-              Universo oficial · sin conquistar</div>
-            <div class="lg"><span style="width:11px;height:11px;border-radius:50%;border:1.5px solid #37D07A;background:rgba(55,208,122,.15);flex:none"></span>Universo · ya es nuestro</div>
+              <span style="width:11px;height:11px;border-radius:50%;border:1.7px solid #FF5A52;background:rgba(255,90,82,.18);flex:none"></span>
+              <b style="color:#FF8A84">A conquistar</b> · todavía no es cliente</div>
+            <div class="lg"><span style="width:11px;height:11px;border-radius:50%;border:1.7px solid #37D07A;background:rgba(55,208,122,.35);flex:none"></span>Del padrón · ya nos compra</div>
           </div>
         </div>
         <div class="rail"></div>
