@@ -353,6 +353,7 @@ function render(){
     <div class="tabs">
       <button class="tab ${VISTA==='rendimiento'?'on':''}" onclick="setVista('rendimiento')">📊 Rendimiento</button>
       <button class="tab ${VISTA==='historico'?'on':''}" onclick="setVista('historico')">📈 Histórico</button>
+      <button class="tab ${VISTA==='ofertas'?'on':''}" onclick="setVista('ofertas')">🎁 Ofertas</button>
       <button class="tab ${VISTA==='contactos'?'on':''}" onclick="setVista('contactos')">🗂️ Contactos del equipo</button>
     </div>
     <div id="vista"></div>`;
@@ -372,6 +373,9 @@ function pintarVista(){
   }else if(VISTA==="historico"){
     v.innerHTML=`<div id="hist"></div>`;
     cargarHistorico();
+  }else if(VISTA==="ofertas"){
+    v.innerHTML=`<div id="ofLider"></div>`;
+    renderOfertasLider(); cargarOfertasLider();
   }else{
     renderContactos();
   }
@@ -515,6 +519,80 @@ async function prepOfertasLider(){
     if(tmpls.length){ const tps=await EYG.rpc("product.template","read",[tmpls,["product_variant_id"]],{context:{lang:"es_AR"}}).catch(()=>[]); for(const t of tps) if(t.product_variant_id) pids.add(t.product_variant_id[0]); }
     OFPIDS_LIDER=[...pids];
   }catch(e){}
+}
+
+/* ===== Pieza 1: Ofertas/combos con estadísticas por comercial (solo lectura) =====
+   Por cada oferta vigente: cuántas ENVIÓ cada comercial (notas [EyGOFENV] en su partner)
+   y cuántas VENDIÓ (colocados en su cartera, con la ventana desde la publicación exacta). */
+let OF_LIDER=null;
+async function cargarOfertasLider(){
+  const box=document.getElementById("ofLider");
+  try{
+    const hoy=argToday(), inicioMes=hoy.slice(0,7)+"-01";
+    const [ofR,syncR,users,cart]=await Promise.all([
+      EYG.rpc("ir.config_parameter","get_param",["eyg.ofertas"]).catch(()=>"[]"),
+      EYG.rpc("ir.config_parameter","get_param",["eyg.sync_ofertas"]).catch(()=>"[]"),
+      EYG.rpc("res.users","read",[UIDS,["partner_id","name"]]).catch(()=>[]),
+      EYG.rpc("res.partner","search_read",[[["user_id","in",UIDS]]],{fields:["user_id"],limit:0}).catch(()=>[]),
+    ]);
+    const PART={}, uidName={}; users.forEach(u=>{ if(u.partner_id)PART[u.id]=u.partner_id[0]; uidName[u.id]=u.name; });
+    const P2UID={}; cart.forEach(p=>{ if(p.user_id)P2UID[p.id]=p.user_id[0]; });
+    const teamPart=cart.map(p=>p.id);
+    const ofItems=o=>(o.items||[]).map(i=>i.nombre).filter(Boolean).join(" + ");
+    const propias=(JSON.parse(ofR||"[]")||[]).filter(o=>o&&o.id&&(!o.hasta||o.hasta>=hoy));
+    const propiaPids=new Set(propias.flatMap(o=>(o.items||[]).map(i=>i.id)));
+    let sync=(JSON.parse(syncR||"[]")||[]).filter(o=>o&&o.id&&!o.pausada&&o.tipo==="p"&&(!o.hasta||o.hasta>=hoy)).filter(o=>{const m=/^opo_(\d+)$/.exec(o.id||"");return !(m&&propiaPids.has(+m[1]));});
+    let varOf={}; const tmpls=[...new Set(sync.map(o=>o.target))];
+    if(tmpls.length){ const tps=await EYG.rpc("product.template","read",[tmpls,["product_variant_id"]]).catch(()=>[]); tps.forEach(t=>{if(t.product_variant_id)varOf[t.id]=t.product_variant_id[0];}); }
+    const OF=[
+      ...propias.map(o=>({titulo:o.titulo||ofItems(o), tipo:o.tipo||"oferta", pv:(o.items||[])[0]&&o.items[0].id, desde:o.desde, hasta:o.hasta})),
+      ...sync.map(o=>{const mts=/^of(\d{13})$/.exec(o.id);return{titulo:o.targetName, tipo:"oferta", pv:varOf[o.target], desde:mts?new Date(+mts[1]).toISOString().slice(0,19).replace("T"," "):"", hasta:o.hasta};}),
+    ].filter(o=>o.pv&&o.titulo);
+    // enviadas del equipo este mes
+    const notes=await EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",Object.values(PART)],["date",">=",inicioMes+" 00:00:00"],["body","like","EyGOFENV"]]],{fields:["body"],limit:0}).catch(()=>[]);
+    const sent=notes.map(n=>(n.body||"").replace(/<[^>]+>/g,""));
+    // vendidas por oferta (concurrencia limitada)
+    await mapLimit(OF,3,async o=>{
+      const desdeTS=(o.desde&&o.desde.length>10)?o.desde:((o.desde||o.hasta||"2000-01-01").slice(0,10)+" 00:00:00");
+      const hasta=(o.hasta||hoy).slice(0,10);
+      o.sent={}; for(const b of sent) if(b.includes(o.titulo)){const m=b.match(/\[EyGOFENV\]\s*(.+?)\s*·/);const nom=m?m[1].trim():"?";o.sent[nom]=(o.sent[nom]||0)+1;}
+      o.sold={}; o.monto={};
+      try{ const g=await EYG.rpc("sale.order.line","read_group",[[["order_partner_id","in",teamPart],["product_id","=",o.pv],["state","in",["sale","done"]],["order_id.date_order",">=",desdeTS],["order_id.date_order","<=",hasta+" 23:59:59"]],["price_subtotal:sum"],["order_partner_id"]],{lazy:false});
+        g.forEach(x=>{const uid=P2UID[x.order_partner_id[0]];if(uid){o.sold[uid]=(o.sold[uid]||0)+1;o.monto[uid]=(o.monto[uid]||0)+(x.price_subtotal||0);}}); }catch(e){}
+    });
+    OF_LIDER={OF, uidName};
+    renderOfertasLider();
+  }catch(e){ if(box) box.innerHTML='<div class="scopenote">No pude cargar las ofertas. '+esc(e.message||"")+'</div>'; }
+}
+function renderOfertasLider(){
+  const box=document.getElementById("ofLider"); if(!box)return;
+  if(!OF_LIDER){ box.innerHTML='<div class="floading" style="padding:26px;text-align:center;color:var(--gris)"><span class="spin-sm"></span> cargando ofertas y estadísticas del equipo…</div>'; return; }
+  const {OF,uidName}=OF_LIDER; const fn=uid=>(uidName[uid]||"?").split(" ")[0];
+  if(!OF.length){ box.innerHTML='<div class="scopenote">No hay ofertas ni combos vigentes en este momento.</div>'; return; }
+  const sum=o=>Object.values(o).reduce((a,b)=>a+b,0);
+  const totEnv=OF.reduce((s,o)=>s+sum(o.sent),0), totVen=OF.reduce((s,o)=>s+sum(o.sold),0);
+  const row=(nm,c,extra)=>`<div style="display:flex;justify-content:space-between;gap:8px;font-size:12.5px;padding:2px 0"><span style="color:#3a4a47">${esc(nm)}</span><b style="color:var(--teal-deep)">${c}${extra||''}</b></div>`;
+  box.innerHTML=`
+    <div class="scopenote">🎁 Ofertas y combos vigentes (los publica el administrador desde Oportunidades). Vos ves <b>sólo estadísticas</b>: por cada una, cuántas <b>mandó</b> y cuántas <b>vendió</b> cada comercial.</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin:0 0 14px">
+      <div style="flex:1;min-width:130px;background:linear-gradient(135deg,#0E5C46,#12A366);color:#fff;border-radius:14px;padding:12px 15px"><div style="font-size:12px;opacity:.9">📤 Envíos del equipo (mes)</div><div style="font-size:26px;font-weight:800">${totEnv}</div></div>
+      <div style="flex:1;min-width:130px;background:linear-gradient(135deg,#8a4b0e,#c47a12);color:#fff;border-radius:14px;padding:12px 15px"><div style="font-size:12px;opacity:.9">🛒 Ventas del equipo</div><div style="font-size:26px;font-weight:800">${totVen}</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px">
+    ${OF.map(o=>{
+      const env=Object.entries(o.sent).sort((a,b)=>b[1]-a[1]);
+      const ven=Object.entries(o.sold).sort((a,b)=>b[1]-a[1]);
+      const te=sum(o.sent), tv=sum(o.sold);
+      return `<div style="background:#fff;border:1px solid #e8efee;border-radius:14px;padding:13px 14px;box-shadow:0 2px 10px rgba(0,0,0,.05)">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;margin-bottom:8px"><span style="font-weight:800;font-size:13.5px;color:#0E1F1D;line-height:1.25">${esc(o.titulo)}</span><span style="font-size:10.5px;font-weight:700;color:#12A366;background:#E3F3F0;border-radius:999px;padding:2px 7px;white-space:nowrap">${o.tipo==="combo"?"combo":"oferta"}</span></div>
+        <div style="display:flex;gap:10px;margin-bottom:9px"><span style="font-size:12px;font-weight:700;color:#0E5C46">📤 ${te} enviadas</span><span style="font-size:12px;font-weight:700;color:#8a4b0e">🛒 ${tv} vendidas</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><div style="font-size:11px;font-weight:800;color:var(--gris2);text-transform:uppercase;letter-spacing:.03em;margin-bottom:3px">Enviaron</div>${env.length?env.map(([n,c])=>row(n.split(" ")[0],c)).join(""):'<div style="font-size:12px;color:var(--gris2)">nadie aún</div>'}</div>
+          <div><div style="font-size:11px;font-weight:800;color:var(--gris2);text-transform:uppercase;letter-spacing:.03em;margin-bottom:3px">Vendieron</div>${ven.length?ven.map(([u,c])=>row(fn(u),c,o.monto[u]?` · ${M(o.monto[u])}`:'')).join(""):'<div style="font-size:12px;color:var(--gris2)">nadie aún</div>'}</div>
+        </div>
+      </div>`;
+    }).join("")}
+    </div>`;
 }
 
 /* Carga la ficha completa de cada comercial (nivel/salud/comisión/cartera) en paralelo,
