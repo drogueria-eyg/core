@@ -505,8 +505,9 @@ function nivel(){
   P.push({ic:"🎁",lab:"Ofertas vendidas",max:OF_PTS_VEN,pts:OF_PTS_VEN*rVen,det:ven+" de "+OF_META_VEN+" colocadas"});
   const rN=Math.min(ST.nuevos/3,1);
   P.push({ic:"🆕",lab:"Clientes nuevos (meta 3)",max:20,pts:20*rN,det:ST.nuevos+" este mes"});
-  const rCo=Math.min(ST.contactadosHoy.size/10,1);
-  P.push({ic:"🔥",lab:"Constancia (10 contactos/día)",max:5,pts:5*rCo,det:ST.contactadosHoy.size+" hoy"});
+  const actHoy=ST.contactadosHoy.size+ofHoy();   // contactos distintos + ofertas compartidas hoy
+  const rCo=Math.min(actHoy/10,1);
+  P.push({ic:"🔥",lab:"Constancia (10 contactos/día)",max:5,pts:5*rCo,det:actHoy+" hoy"});
   const pts=P.reduce((s,p)=>s+p.pts,0);
   const idx=pts<40?0:pts<60?1:pts<80?2:pts<95?3:4; // Bronce<40 · Plata40 · Oro60 · Platino80 · Diamante95
   return {lv:idx+1, idx, pts, mult:NIV[idx].m, nombre:NIV[idx].n, emoji:NIV[idx].e, params:P, perfil:sp.nom, base:b};
@@ -558,15 +559,14 @@ function saludCuenta(){
 
 function render(){
   const app=document.getElementById("app");
-  const dHoy=ST.contactadosHoy.size, dObj=OBJ.diarioContactos;
   const _t=hoyStr.slice(0,10), _s7=hace(7).slice(0,10);
   const _mH=(ST.msgs||[]).filter(m=>m.date===_t);
   const envH={total:_mH.length, nuevo:_mH.filter(m=>m.ng==="nuevo").length, seg:_mH.filter(m=>m.ng!=="nuevo").length};
   const envS=(ST.msgs||[]).filter(m=>m.date>=_s7).length;
-  // Ofertas compartidas (broadcast, sin cliente puntual) cuentan como MENSAJES enviados,
-  // no como contacto distinto (eso ya puntúa aparte en la dimensión Ofertas).
-  const ofH=(ST.ofMsgs||[]).filter(m=>m.date===_t).length;
-  const ofS=(ST.ofMsgs||[]).filter(m=>m.date>=_s7).length;
+  // Ofertas compartidas (broadcast) cuentan como actividad del día: se suman a la meta de
+  // "contactos" (dHoy) Y a los mensajes enviados (msgHoy/msgSem).
+  const ofH=ofHoy(), ofS=ofSem();
+  const dHoy=ST.contactadosHoy.size+ofH, dObj=OBJ.diarioContactos;
   const msgHoy=envH.total+ofH, msgSem=envS+ofS;
   const pDia=Math.min(100,Math.round(dHoy/dObj*100)), pNue=Math.min(100,Math.round(ST.nuevos/OBJ.mensualNuevos*100)), pFac=Math.min(100,Math.round(ST.fact.sem/OBJ.semanalFact*100));
   const externo=esExterno();
@@ -741,6 +741,10 @@ const ofDesde=o=>String(o.desde||o.creada||hace(OF_DIAS_DEF)).slice(0,10);
 // clientes DISTINTOS con al menos una oferta vigente colocada (es la unidad de la meta del nivel)
 // puntos de la dimensión ofertas = enviar (actividad) + vender (resultado)
 function ofPuntos(){ return Math.min((ST.ofEnviadas||0)/OF_META_ENV,1)*OF_PTS_ENV + Math.min((ST.ofVendidas||0)/OF_META_VEN,1)*OF_PTS_VEN; }
+/* Ofertas compartidas hoy / en la semana ([EyGOFENV] en el partner propio). Cuentan como
+   actividad de contacto del día (se suman a la meta de "contactos") y como mensajes enviados. */
+function ofHoy(){ const _t=hoyStr.slice(0,10); return (ST.ofMsgs||[]).filter(m=>m.date===_t).length; }
+function ofSem(){ const _s=hace(7).slice(0,10); return (ST.ofMsgs||[]).filter(m=>m.date>=_s).length; }
 
 /* Texto para compartir por WhatsApp. Formato de WhatsApp: *negrita*, ~tachado~.
    Sale del mismo dato que se publicó, así el comercial no reescribe nada. */
@@ -800,6 +804,10 @@ function ofertasHTML(){
   return `<div class="ofertas">
     <div class="of-head"><div><span class="of-ttl">🎁 Ofertas y combos</span><span class="of-sub">Publicadas por EyG · colocalas y sumás puntos</span></div>
       <span class="of-pts">+${Math.round(ofPuntos())} de ${OF_PTS_ENV+OF_PTS_VEN} pts</span></div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin:2px 0 12px;font-size:12.5px;font-weight:800;color:rgba(255,255,255,.9)">
+      <span>📤 ${ST.ofEnviadas||0} enviada${(ST.ofEnviadas||0)===1?'':'s'} este mes</span>
+      <span>🛒 ${ST.ofVendidas||0} vendida${(ST.ofVendidas||0)===1?'':'s'} este mes</span>
+    </div>
     <div class="of-grid">${cards}</div>
   </div>`;
 }
