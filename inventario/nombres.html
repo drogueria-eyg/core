@@ -673,9 +673,10 @@ window.asignarSub = async id => {
   try{
     await EYG.rpc("product.template","write",[[p.id],{categ_id:catId}], LANG);
     p.sub = c.name;
+    resyncProducto(p);   // nueva subcategoría = otra regla -> recalcular la escalera ya
     recomputarSubs();
     abiertos.add(c.name);   // deja visible la subcategoría a la que se movió
-    toast("Movido a "+c.name+" ✓ — el cron le arma la escalera");
+    toast("Movido a "+c.name+" ✓ — aplicando la escalera…");
     render();
   }catch(e){ if(btn){ btn.disabled=false; btn.textContent="Asignar"; } toast("Error: "+EYG.esc(e.message)); }
 };
@@ -704,6 +705,7 @@ window.guardarNombre = async id => {
   try{
     await escribir(id, val);
     p.nombre = val; p.aplicado=false; refrescarEd(p);
+    resyncProducto(p);   // el nombre define caja/unidad -> recalcular la escalera ya
     HISTORIAL.push({cambios:[{id,antes,despues:val}], desc:(p.sku||("#"+id))+" · nombre"});
     toast("Guardado ✓"); render();
   }catch(err){ toast("Error: "+EYG.esc(err.message)); el.value=p.nombre; }
@@ -738,9 +740,9 @@ window.guardarCampo = async (id, campo) => {
     const a = analizar(nuevo, p.sub);
     p.sugerido=a.sugerido; p.motivos=a.motivos; p.desg=a.desg; p.cuerpo=a.cuerpo; p.cambia=a.cambia;
     HISTORIAL.push({cambios:[{id,antes,despues:nuevo}], desc:(p.sku||("#"+id))+" · "+campo});
-    // unidad/bulto/caja cerrada cambian la escalera -> recalculá ese producto ya
-    if(campo==='unidad' || campo==='bulto') resyncProducto(p);
-    toast("Guardado ✓"); render();
+    // cualquier cambio (nombre/unidad/bulto/caja cerrada) puede cambiar la escalera -> recalculá ya
+    resyncProducto(p);
+    toast("Guardado ✓ — aplicando…"); render();
   }catch(err){ toast("Error: "+EYG.esc(err.message)); }
 };
 
@@ -751,6 +753,7 @@ window.usarSug = async id => {
   try{
     await escribir(id, p.sugerido);
     p.nombre = p.sugerido; p.aplicado=true; refrescarEd(p);
+    resyncProducto(p);   // el nombre define caja/unidad -> recalcular la escalera ya
     HISTORIAL.push({cambios:[{id,antes,despues:p.nombre}], desc:(p.sku||("#"+id))+" · sugerido"});
     toast("Aplicado ✓"); render();
   }catch(err){ toast("Error: "+EYG.esc(err.message)); }
@@ -768,7 +771,9 @@ window.guardarEmbalaje = async id => {
   try{
     if(p.embId){ await EYG.rpc("product.packaging","write",[[p.embId],{qty:n, name:nombre}], LANG); }
     else{ const nid = await EYG.rpc("product.packaging","create",[{product_id:p.varId, qty:n, name:nombre, sales:true, purchase:true}], LANG); p.embId=nid; }
-    p.embalaje=n; p.embNombre=nombre; toast("Embalaje guardado ✓"); render();
+    p.embalaje=n; p.embNombre=nombre;
+    resyncProducto(p);   // el embalaje define el tope de la escalera (cajas) -> recalcular ese producto ya
+    toast("Embalaje guardado ✓ — aplicando en la tienda…"); render();
   }catch(e){ if(btn){ btn.disabled=false; btn.textContent=p.embId?"Guardar":"+ caja"; } toast("Error: "+EYG.esc(e.message)); }
 };
 window.sincronizar = async () => {
@@ -787,7 +792,8 @@ window.aplicar = async id => {
   const antes = p.nombre;
   const btn = document.querySelector(`#row-${id} .btn-ap`); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
   try{ await escribir(id, p.sugerido); const despues=p.sugerido; p.nombre=despues; p.aplicado=true; p.cambia=false;
-       HISTORIAL.push({cambios:[{id,antes,despues}], desc:(p.sku||("#"+id))}); toast("Nombre actualizado ✓"); render(); }
+       resyncProducto(p);   // recalcular la escalera de ese producto ya
+       HISTORIAL.push({cambios:[{id,antes,despues}], desc:(p.sku||("#"+id))}); toast("Nombre actualizado ✓ — aplicando…"); render(); }
   catch(e){ if(btn){ btn.disabled=false; btn.textContent="Aplicar"; } toast("Error: "+e.message); }
 };
 window.aplicarTodos = async i => {
@@ -798,7 +804,7 @@ window.aplicarTodos = async i => {
   let ok=0, err=0; const cambios=[];
   for(const p of arr){
     const antes = p.nombre;
-    try{ await escribir(p.id, p.sugerido); cambios.push({id:p.id, antes, despues:p.sugerido}); p.nombre=p.sugerido; p.aplicado=true; p.cambia=false; ok++; }
+    try{ await escribir(p.id, p.sugerido); cambios.push({id:p.id, antes, despues:p.sugerido}); p.nombre=p.sugerido; p.aplicado=true; p.cambia=false; resyncProducto(p); ok++; }
     catch(e){ err++; }
     if((ok+err)%5===0) toast(`Aplicando… ${ok+err}/${arr.length}`);
   }
