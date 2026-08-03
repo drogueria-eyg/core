@@ -266,7 +266,9 @@ const ESTADO_LBL = {activo:"Activo",tibio:"Compra tibia",dormido:"Dormido",prosp
 const SEG_LBL = {farmacia:"Farmacia",institucion:"Institución",otro:"Otro"};
 
 let CLIENTES=[], PEDIDOS_MES=[], PEDIDOS=[], ESTRENOS=[], PROVINCIAS=[];
-let STATE={seg:"",estado:"",aprox:true,prov:"",universo:true};
+/* aprox:false → el mapa arranca mostrando SÓLO ubicaciones reales (calle y
+   altura). Los que no tenemos ubicados se prenden a mano con el chip. */
+let STATE={seg:"",estado:"",aprox:false,prov:"",universo:true};
 let map, capa, capaLbl, capaUni, MARCAS=[];
 
 /* Universo oficial: farmacias (REFAR) y establecimientos de salud (REFES) del
@@ -289,12 +291,11 @@ async function cargarUniverso(){
   }catch(e){ console.warn("universo:", e.message); UNI=null; }
 }
 
-function jitter(id, base){
-  const h1=Math.abs(Math.sin(id*12.9898)*43758.5453)%1;
-  const h2=Math.abs(Math.sin(id*78.233 )*43758.5453)%1;
-  const r=0.004+0.026*h1, a=2*Math.PI*h2;
-  return [base[0]+r*Math.cos(a), base[1]+r*Math.sin(a)*0.8];
-}
+/* Sin dirección ubicable, el punto va al CENTRO de su localidad y nada más.
+   Antes se lo desparramaba hasta 3 km al azar para que no se pisaran, y en
+   Rosario eso caía adentro del río: una posición inventada es peor que una
+   repetida. Estos puntos, además, están apagados por defecto. */
+function jitter(id, base){ return [base[0], base[1]]; }
 function segmento(cats){
   if(!cats||!cats.length) return "otro";
   for(const c of cats) if(CAT_FARM.has(c)) return "farmacia";
@@ -769,12 +770,9 @@ function pintarUniverso(){
       <div class="prow"><span>Cobertura</span><span style="color:${COB_COL(pct)}">${pct.toFixed(0)}%</span></div></div>`));
   }
 }
-/* dispersión determinística por texto (mismo establecimiento → siempre el mismo lugar) */
-function disperso(txt, base){
-  let h=0; for(let i=0;i<txt.length;i++){ h=(h*31+txt.charCodeAt(i))>>>0; }
-  const a=(h%3600)/3600*2*Math.PI, r=0.002+((h>>>12)%1000)/1000*0.020;
-  return [base[0]+r*Math.cos(a), base[1]+r*Math.sin(a)*0.8];
-}
+/* Mismo criterio que con los clientes: sin domicilio ubicable, al centro de la
+   localidad y sin desparramo (si no, aparecen puntos en medio del río). */
+function disperso(txt, base){ return [base[0], base[1]]; }
 
 /* Al acercarse, mostramos el NOMBRE de cada farmacia / institución.
    Con debounce: zoomend y moveend llegan casi juntos y si no, se duplican. */
@@ -942,7 +940,7 @@ function tickReloj(){
           <span class="chip fest" onclick="setEst('activo',this)">🟢 Activos</span>
           <span class="chip fest" onclick="setEst('dormido',this)">🟡 Dormidos</span>
           <span class="chip on" onclick="toggleUniverso(this)" title="Mostrar el padrón oficial de farmacias e instituciones">🏥 Universo</span>
-          <span class="chip on" onclick="toggleAprox(this)" title="Mostrar/ocultar los ubicados por ciudad">◌ Aprox.</span>
+          <span class="chip" onclick="toggleAprox(this)" title="Los que no tienen dirección ubicable: se muestran en el centro de su localidad, no en su domicilio">◌ Sin ubicar</span>
           <span class="chip tour on" id="chipTour" onclick="toggleTour(this)" title="Recorrido automático por el mapa">🎬 Recorrido</span>
         </div>
         <div style="text-align:right"><div class="clock" id="clock">--:--</div><div class="upd" id="updtxt">Actualizando…</div></div>
@@ -966,7 +964,7 @@ function tickReloj(){
               <span style="width:11px;height:11px;border-radius:50%;background:var(--tb-mut);flex:none"></span>Farmacia</div>
             <div class="lg"><span style="width:9px;height:9px;background:var(--tb-mut);transform:rotate(45deg);flex:none;margin:1px"></span>Institución de salud</div>
             <div class="lg"><span style="width:9px;height:9px;background:var(--tb-mut);border-radius:1px;flex:none;margin:1px"></span>Otros</div>
-            <div class="lg"><span class="approx"></span>Ubicación aproximada</div>
+            <div class="lg"><span class="approx"></span>Sin dirección ubicable (va al centro del pueblo)</div>
             <div class="lg" style="margin-top:4px;padding-top:6px;border-top:1px solid var(--tb-line)">
               <span style="width:11px;height:11px;border-radius:50%;border:1.7px solid #FF5A52;background:rgba(255,90,82,.18);flex:none"></span>
               <b style="color:#FF8A84">A conquistar</b> · todavía no es cliente</div>
