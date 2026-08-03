@@ -653,21 +653,29 @@ function renderActividadLider(){
   const box=document.getElementById("actLider"); if(!box) return;
   if(!ACT_LIDER){ box.innerHTML='<div class="floading" style="padding:26px;text-align:center;color:var(--gris)"><span class="spin-sm"></span> cargando presencia y actividad del equipo…</div>'; return; }
   const {uidName, ev}=ACT_LIDER; const presencia=PRES||{}; const nowMs=Date.now(), hoy=argToday();
+  const toMs=s=>{ if(s==null) return NaN; if(typeof s==="number") return s; return new Date(String(s).includes("T")?s:(String(s).replace(" ","T")+"Z")).getTime(); };
   const info=UIDS.map(uid=>{
     const p=presencia[uid]||{}; const bandas=(p.dia===hoy&&Array.isArray(p.bandas))?p.bandas:[];
     const online=!!p.online && p.dia===hoy && (nowMs-new Date(p.online).getTime())<4*60000;
-    // Sumar mergeando huecos < 30 min (tolera segundo plano / breves cierres): así "conectado
-    // hoy" refleja de la mañana a ahora, no solo los ratos con la pestaña en primer plano.
-    const sorted=bandas.slice().sort((a,b)=>new Date(a[0])-new Date(b[0])); const segs=[];
-    for(const bb of sorted){ const s=new Date(bb[0]).getTime(), e=new Date(bb[1]).getTime(); const L=segs[segs.length-1]; if(L && s-L[1]<30*60000){ L[1]=Math.max(L[1],e); } else segs.push([s,e]); }
+    const acts=ev[uid]||[];
+    // "Conectado hoy" se deriva de DOS fuentes: el latido (bandas de presencia) Y la actividad
+    // real en Odoo (cada contacto/oferta/alta prueba que estaba trabajando a esa hora). Así se
+    // recupera la mañana aunque el latido sea nuevo. Se mergean huecos < 30 min.
+    const ivs=[
+      ...bandas.map(b=>[toMs(b[0]),toMs(b[1])]),
+      ...acts.map(a=>{ const m=toMs(a.t); return [m,m]; }),
+    ].filter(x=>!isNaN(x[0])).sort((a,b)=>a[0]-b[0]);
+    const segs=[];
+    for(const iv of ivs){ const L=segs[segs.length-1]; if(L && iv[0]-L[1]<30*60000){ L[1]=Math.max(L[1],iv[1]); } else segs.push([iv[0],iv[1]]); }
     let mins=0; segs.forEach(([s,e])=>mins+=(e-s)/60000);
-    return {uid, name:uidName[uid]||("#"+uid), online, mins, first:segs.length?segs[0][0]:null, last:p.online?new Date(p.online).getTime():(segs.length?segs[segs.length-1][1]:null), segs, acts:ev[uid]||[]};
+    const lastMs=Math.max(p.online?toMs(p.online):0, segs.length?segs[segs.length-1][1]:0)||null;
+    return {uid, name:uidName[uid]||("#"+uid), online, mins, first:segs.length?segs[0][0]:null, last:lastMs, segs, acts};
   }).sort((a,b)=>(b.online-a.online)||(b.mins-a.mins));
   const enLinea=info.filter(x=>x.online);
   const cuenta=(list,ic)=>list.filter(a=>a.ic===ic).length;
   box.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
-      <div class="scopenote" style="margin:0;flex:1">🟢 Presencia y actividad de tu equipo <b>hoy</b>. La conexión se registra desde el panel de cada comercial (latido cada ~2 min); la actividad sale de Odoo con hora exacta.</div>
+      <div class="scopenote" style="margin:0;flex:1">🟢 Presencia y actividad de tu equipo <b>hoy</b>. El <b>tiempo conectado</b> combina el latido del panel con la <b>actividad real en Odoo</b> (cada contacto/oferta/alta prueba que estaban trabajando), así cuenta desde que arrancaron a la mañana. "En línea ahora" = latido de los últimos minutos.</div>
       <button onclick="cargarActividadLider()" style="background:#12A366;color:#fff;border:0;border-radius:9px;padding:8px 12px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">🔄 Actualizar</button>
     </div>
     <div style="background:linear-gradient(135deg,#0E5C46,#12A366);color:#fff;border-radius:14px;padding:13px 16px;margin-bottom:14px">
