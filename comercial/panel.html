@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=8"></script>
+<script src="../assets/core.js?v=9"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -477,11 +477,12 @@ async function cargar(){
       let ventasHoy=0; for(const x of facHist){ const dd=(x.invoice_date||"").slice(0,10); if(dd===hoy10)ventasHoy+=(x.move_type==="out_refund"?-1:1)*(x.amount_untaxed||0); }
       ST.diag={ ventasHoy, pedHoy, pedSem, cliSem:cliSemS.size };
     }catch(e){ ST.base=ST.base||{objetivoCobro:0,promPed:1,promCli:1,perfil:"farm"}; ST.act=ST.act||{ped:0,cli:0}; ST.diag=ST.diag||{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}; }
-    // Las ofertas se cargan ANTES de pintar: el nivel usa los combos colocados y, si el
-    // conteo llegara después, el panel mostraría un nivel (y una comisión) más bajos.
-    await cargarOfertas(ids);
-    await cargarWA();
+    // PRIMERA PINTURA con lo esencial (contactos + ventas): el comercial ya puede trabajar.
+    // Ofertas y WhatsApp llegan después y RE-pintan (el nivel se ajusta al instante cuando
+    // entran los combos colocados; mejor eso que dejar el panel en blanco 10s esperándolos).
     render();
+    cargarOfertas(ids).then(()=>render()).catch(()=>{});
+    cargarWA().then(()=>render()).catch(()=>{});
   }catch(e){ document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar el panel.</b><br>'+esc(e.message)+'</div>'; }
 }
 /* Mensajes de WhatsApp que este comercial puede enviar a su cartera (Comunicaciones). */
@@ -1111,6 +1112,9 @@ async function registrarEnvioOferta(ofId){
   if(!ST.userPartner){ toast("No pude registrar el envío"); return; }
   try{ await rpc("res.partner","message_post",[[ST.userPartner]],{body:"📤 [EyGOFENV] "+COMERCIAL+" · "+tit, message_type:"comment"}); }catch(e){}
   ST.ofEnviadas=(ST.ofEnviadas||0)+1;
+  // Reflejo en vivo (sin F5): sumo la nota a ofMsgs para que el conteo diario de mensajes
+  // (msgHoy) y el "la compartiste N veces" de la tarjeta se actualicen al instante.
+  (ST.ofMsgs=ST.ofMsgs||[]).push({date:hoyStr.slice(0,10), body:"📤 [EyGOFENV] "+COMERCIAL+" · "+tit});
   const meta=OF_META_ENV;
   if(ST.ofEnviadas===meta){ toast("🏆 ¡Meta de ofertas enviadas! "+meta+" este mes 🎉",true); confetti(); }
   else toast("Oferta enviada ✓ ("+ST.ofEnviadas+"/"+meta+" este mes)", true);

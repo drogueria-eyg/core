@@ -226,7 +226,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=8"></script>
+<script src="../assets/core.js?v=9"></script>
 <script src="../assets/metrics.js?v=4"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
@@ -618,7 +618,7 @@ function renderOfertasLider(){
    Presencia: lee eyg.presencia.<uid> (heartbeat del panel del comercial).
    Actividad de hoy: contactos [EyGWA], ofertas [EyGOFENV] y altas de contacto, con hora. */
 let ACT_LIDER=null;
-function horaAR(s){ if(!s) return ""; const iso=String(s).includes("T")?s:(s.replace(" ","T")+"Z"); return new Intl.DateTimeFormat("es-AR",{timeZone:"America/Argentina/Buenos_Aires",hour:"2-digit",minute:"2-digit",hour12:false}).format(new Date(iso)); }
+function horaAR(s){ if(s==null||s==="") return ""; const d=(typeof s==="number")?new Date(s):new Date(String(s).includes("T")?s:(String(s).replace(" ","T")+"Z")); return new Intl.DateTimeFormat("es-AR",{timeZone:"America/Argentina/Buenos_Aires",hour:"2-digit",minute:"2-digit",hour12:false}).format(d); }
 function durTxt(min){ min=Math.round(min); if(min<1) return "0 min"; const h=Math.floor(min/60), m=min%60; return h?(h+"h"+(m?" "+m+"m":"")):(m+" min"); }
 async function cargarActividadLider(){
   const box=document.getElementById("actLider");
@@ -656,8 +656,12 @@ function renderActividadLider(){
   const info=UIDS.map(uid=>{
     const p=presencia[uid]||{}; const bandas=(p.dia===hoy&&Array.isArray(p.bandas))?p.bandas:[];
     const online=!!p.online && p.dia===hoy && (nowMs-new Date(p.online).getTime())<4*60000;
-    let mins=0; bandas.forEach(b=>{ mins+=(new Date(b[1])-new Date(b[0]))/60000; });
-    return {uid, name:uidName[uid]||("#"+uid), online, mins, first:bandas.length?bandas[0][0]:null, last:p.online||null, bandas, acts:ev[uid]||[]};
+    // Sumar mergeando huecos < 30 min (tolera segundo plano / breves cierres): así "conectado
+    // hoy" refleja de la mañana a ahora, no solo los ratos con la pestaña en primer plano.
+    const sorted=bandas.slice().sort((a,b)=>new Date(a[0])-new Date(b[0])); const segs=[];
+    for(const bb of sorted){ const s=new Date(bb[0]).getTime(), e=new Date(bb[1]).getTime(); const L=segs[segs.length-1]; if(L && s-L[1]<30*60000){ L[1]=Math.max(L[1],e); } else segs.push([s,e]); }
+    let mins=0; segs.forEach(([s,e])=>mins+=(e-s)/60000);
+    return {uid, name:uidName[uid]||("#"+uid), online, mins, first:segs.length?segs[0][0]:null, last:p.online?new Date(p.online).getTime():(segs.length?segs[segs.length-1][1]:null), segs, acts:ev[uid]||[]};
   }).sort((a,b)=>(b.online-a.online)||(b.mins-a.mins));
   const enLinea=info.filter(x=>x.online);
   const cuenta=(list,ic)=>list.filter(a=>a.ic===ic).length;
@@ -672,13 +676,13 @@ function renderActividadLider(){
     </div>
     <div style="display:flex;flex-direction:column;gap:12px">
     ${info.map(x=>{
-      const bandTxt=x.bandas.map(b=>horaAR(b[0])+"–"+horaAR(b[1])).join(" · ");
+      const bandTxt=x.segs.map(b=>horaAR(b[0])+"–"+horaAR(b[1])).join(" · ");
       return `<div style="background:#fff;border:1px solid #e8efee;border-radius:14px;padding:13px 15px;box-shadow:0 2px 10px rgba(0,0,0,.05)">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
           <div style="display:flex;align-items:center;gap:8px"><span style="width:10px;height:10px;border-radius:50%;background:${x.online?'#22c55e':'#c9d3d1'};box-shadow:${x.online?'0 0 0 3px rgba(34,197,94,.2)':'none'};flex:none"></span><b style="font-size:15px;color:#0E1F1D">${esc(x.name)}</b><span style="font-size:11.5px;color:${x.online?'#12A366':'var(--gris2)'};font-weight:700">${x.online?'en línea':'desconectado'}</span></div>
           <div style="text-align:right"><div style="font-size:15px;font-weight:800;color:var(--teal-deep)">${durTxt(x.mins)}</div><div style="font-size:10.5px;color:var(--gris2)">conectado hoy</div></div>
         </div>
-        ${x.first?`<div style="font-size:11.5px;color:var(--gris2);margin-bottom:8px" title="${bandTxt}">🕐 ${horaAR(x.first)} → ${horaAR(x.last)} · ${x.bandas.length} tramo${x.bandas.length===1?'':'s'} de conexión</div>`:'<div style="font-size:11.5px;color:var(--gris2);margin-bottom:8px">Sin conexión registrada hoy</div>'}
+        ${x.first?`<div style="font-size:11.5px;color:var(--gris2);margin-bottom:8px" title="${bandTxt}">🕐 desde las ${horaAR(x.first)} → ${horaAR(x.last)}${x.segs.length>1?` · ${x.segs.length} tramos`:''}</div>`:'<div style="font-size:11.5px;color:var(--gris2);margin-bottom:8px">Sin conexión registrada hoy</div>'}
         <div style="display:flex;gap:14px;font-size:12px;font-weight:700;margin-bottom:8px;color:#3a4a47">
           <span>📤 ${cuenta(x.acts,"📤")} contactos</span><span>🎁 ${cuenta(x.acts,"🎁")} ofertas</span><span>➕ ${cuenta(x.acts,"➕")} altas</span>
         </div>

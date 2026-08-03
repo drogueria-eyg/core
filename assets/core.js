@@ -526,7 +526,8 @@ window.EYG = (function(){
       const now=new Date(), nowISO=now.toISOString(), hoy=argToday();
       if(st.dia!==hoy){ st.dia=hoy; st.bandas=[]; }
       const b=Array.isArray(st.bandas)?st.bandas:[]; const last=b[b.length-1];
-      if(last && (now-new Date(last[1]))<5*60000){ last[1]=nowISO; } else { b.push([nowISO,nowISO]); }
+      // hueco < 10 min → sigue la misma banda (tolera throttle de pestaña en segundo plano)
+      if(last && (now-new Date(last[1]))<10*60000){ last[1]=nowISO; } else { b.push([nowISO,nowISO]); }
       st.bandas=b; st.online=nowISO;
       await rpc("ir.config_parameter","set_param",[key, JSON.stringify(st)]);
     }catch(e){}
@@ -535,7 +536,9 @@ window.EYG = (function(){
   function startPresencia(uid){
     if(!uid || _presTimer) return;
     presenciaPing(uid);
-    _presTimer=setInterval(()=>{ if(typeof document==="undefined" || document.visibilityState!=="hidden") presenciaPing(uid); }, 120000);
+    // Late incluso con la pestaña en segundo plano (el navegador lo throttlea a ~1/min, pero
+    // así cuenta el tiempo que tienen el panel abierto aunque estén en WhatsApp/Odoo).
+    _presTimer=setInterval(()=>presenciaPing(uid), 120000);
     if(typeof document!=="undefined") document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") presenciaPing(uid); });
   }
 
