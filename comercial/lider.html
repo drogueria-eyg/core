@@ -226,7 +226,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=7"></script>
+<script src="../assets/core.js?v=8"></script>
 <script src="../assets/metrics.js?v=4"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
@@ -354,6 +354,7 @@ function render(){
       <button class="tab ${VISTA==='rendimiento'?'on':''}" onclick="setVista('rendimiento')">📊 Rendimiento</button>
       <button class="tab ${VISTA==='historico'?'on':''}" onclick="setVista('historico')">📈 Histórico</button>
       <button class="tab ${VISTA==='ofertas'?'on':''}" onclick="setVista('ofertas')">🎁 Ofertas</button>
+      <button class="tab ${VISTA==='actividad'?'on':''}" onclick="setVista('actividad')">🟢 Actividad</button>
       <button class="tab ${VISTA==='contactos'?'on':''}" onclick="setVista('contactos')">🗂️ Contactos del equipo</button>
     </div>
     <div id="vista"></div>`;
@@ -376,6 +377,9 @@ function pintarVista(){
   }else if(VISTA==="ofertas"){
     v.innerHTML=`<div id="ofLider"></div>`;
     renderOfertasLider(); cargarOfertasLider();
+  }else if(VISTA==="actividad"){
+    v.innerHTML=`<div id="actLider"></div>`;
+    renderActividadLider(); cargarActividadLider();
   }else{
     renderContactos();
   }
@@ -590,6 +594,82 @@ function renderOfertasLider(){
           <div><div style="font-size:11px;font-weight:800;color:var(--gris2);text-transform:uppercase;letter-spacing:.03em;margin-bottom:3px">Enviaron</div>${env.length?env.map(([n,c])=>row(n.split(" ")[0],c)).join(""):'<div style="font-size:12px;color:var(--gris2)">nadie aún</div>'}</div>
           <div><div style="font-size:11px;font-weight:800;color:var(--gris2);text-transform:uppercase;letter-spacing:.03em;margin-bottom:3px">Vendieron</div>${ven.length?ven.map(([u,c])=>row(fn(u),c,o.monto[u]?` · ${M(o.monto[u])}`:'')).join(""):'<div style="font-size:12px;color:var(--gris2)">nadie aún</div>'}</div>
         </div>
+      </div>`;
+    }).join("")}
+    </div>`;
+}
+
+/* ===== Pieza 2: Actividad y presencia del equipo =====
+   Presencia: lee eyg.presencia.<uid> (heartbeat del panel del comercial).
+   Actividad de hoy: contactos [EyGWA], ofertas [EyGOFENV] y altas de contacto, con hora. */
+let ACT_LIDER=null;
+function horaAR(s){ if(!s) return ""; const iso=String(s).includes("T")?s:(s.replace(" ","T")+"Z"); return new Intl.DateTimeFormat("es-AR",{timeZone:"America/Argentina/Buenos_Aires",hour:"2-digit",minute:"2-digit",hour12:false}).format(new Date(iso)); }
+function durTxt(min){ min=Math.round(min); if(min<1) return "0 min"; const h=Math.floor(min/60), m=min%60; return h?(h+"h"+(m?" "+m+"m":"")):(m+" min"); }
+async function cargarActividadLider(){
+  const box=document.getElementById("actLider");
+  try{
+    const hoy=argToday(), ini=hoy+" 00:00:00";
+    const [users,cart,...pres]=await Promise.all([
+      EYG.rpc("res.users","read",[UIDS,["partner_id","name"]]).catch(()=>[]),
+      EYG.rpc("res.partner","search_read",[[["user_id","in",UIDS]]],{fields:["user_id"],limit:0}).catch(()=>[]),
+      ...UIDS.map(uid=>EYG.rpc("ir.config_parameter","get_param",["eyg.presencia."+uid]).catch(()=>null)),
+    ]);
+    const uidName={}, PART={}, partUid={}, nameToUid={};
+    users.forEach(u=>{ uidName[u.id]=u.name; nameToUid[u.name]=u.id; if(u.partner_id)PART[u.id]=u.partner_id[0]; });
+    cart.forEach(p=>{ if(p.user_id) partUid[p.id]=p.user_id[0]; });
+    const presencia={}; UIDS.forEach((uid,i)=>{ try{ presencia[uid]=JSON.parse(pres[i]||"{}")||{}; }catch(e){ presencia[uid]={}; } });
+    const cartIds=cart.map(p=>p.id), partIds=Object.values(PART);
+    const [wa,ofe,altas]=await Promise.all([
+      cartIds.length?EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",cartIds],["date",">=",ini],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id","date","body"],limit:0}).catch(()=>[]):[],
+      partIds.length?EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",partIds],["date",">=",ini],["body","like","EyGOFENV"]]],{fields:["res_id","date","body"],limit:0}).catch(()=>[]):[],
+      EYG.rpc("res.partner","search_read",[[["user_id","in",UIDS],["create_date",">=",ini]]],{fields:["name","user_id","create_date"],limit:0}).catch(()=>[]),
+    ]);
+    const cliIds=[...new Set(wa.map(w=>w.res_id))]; let cliName={};
+    if(cliIds.length){ const cs=await EYG.rpc("res.partner","read",[cliIds,["name"]]).catch(()=>[]); cs.forEach(c=>cliName[c.id]=c.name); }
+    const ev={}; UIDS.forEach(u=>ev[u]=[]);
+    for(const w of wa){ const b=(w.body||"").replace(/<[^>]+>/g,""); const m=b.match(/por\s+(.+?)\s*$/); const uid=(m&&nameToUid[m[1].trim()])||partUid[w.res_id]; if(!uid||!ev[uid])continue; const camp=/campana/.test(b); ev[uid].push({t:w.date, ic:"📤", tx:(camp?"Mensaje WA a ":"Contactó a ")+(cliName[w.res_id]||"un cliente")}); }
+    for(const o of ofe){ const b=(o.body||"").replace(/<[^>]+>/g,""); const m=b.match(/\[EyGOFENV\]\s*(.+?)\s*·\s*(.+)$/); const uid=m&&nameToUid[m[1].trim()]; if(!uid||!ev[uid])continue; ev[uid].push({t:o.date, ic:"🎁", tx:"Compartió: "+String(m?m[2]:"oferta").slice(0,44)}); }
+    for(const a of altas){ const uid=a.user_id&&a.user_id[0]; if(!uid||!ev[uid])continue; ev[uid].push({t:a.create_date, ic:"➕", tx:"Creó contacto "+(a.name||"")}); }
+    Object.values(ev).forEach(list=>list.sort((x,y)=>String(x.t).localeCompare(String(y.t))));
+    ACT_LIDER={uidName, presencia, ev};
+    renderActividadLider();
+  }catch(e){ if(box) box.innerHTML='<div class="scopenote">No pude cargar la actividad. '+esc(e.message||"")+'</div>'; }
+}
+function renderActividadLider(){
+  const box=document.getElementById("actLider"); if(!box) return;
+  if(!ACT_LIDER){ box.innerHTML='<div class="floading" style="padding:26px;text-align:center;color:var(--gris)"><span class="spin-sm"></span> cargando presencia y actividad del equipo…</div>'; return; }
+  const {uidName, presencia, ev}=ACT_LIDER; const nowMs=Date.now(), hoy=argToday();
+  const info=UIDS.map(uid=>{
+    const p=presencia[uid]||{}; const bandas=(p.dia===hoy&&Array.isArray(p.bandas))?p.bandas:[];
+    const online=!!p.online && p.dia===hoy && (nowMs-new Date(p.online).getTime())<4*60000;
+    let mins=0; bandas.forEach(b=>{ mins+=(new Date(b[1])-new Date(b[0]))/60000; });
+    return {uid, name:uidName[uid]||("#"+uid), online, mins, first:bandas.length?bandas[0][0]:null, last:p.online||null, bandas, acts:ev[uid]||[]};
+  }).sort((a,b)=>(b.online-a.online)||(b.mins-a.mins));
+  const enLinea=info.filter(x=>x.online);
+  const cuenta=(list,ic)=>list.filter(a=>a.ic===ic).length;
+  box.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
+      <div class="scopenote" style="margin:0;flex:1">🟢 Presencia y actividad de tu equipo <b>hoy</b>. La conexión se registra desde el panel de cada comercial (latido cada ~2 min); la actividad sale de Odoo con hora exacta.</div>
+      <button onclick="cargarActividadLider()" style="background:#12A366;color:#fff;border:0;border-radius:9px;padding:8px 12px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">🔄 Actualizar</button>
+    </div>
+    <div style="background:linear-gradient(135deg,#0E5C46,#12A366);color:#fff;border-radius:14px;padding:13px 16px;margin-bottom:14px">
+      <div style="font-size:12.5px;opacity:.9">En línea ahora</div>
+      <div style="font-size:20px;font-weight:800">${enLinea.length} / ${UIDS.length}${enLinea.length?' · '+enLinea.map(x=>esc(x.name.split(" ")[0])).join(", "):''}</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px">
+    ${info.map(x=>{
+      const bandTxt=x.bandas.map(b=>horaAR(b[0])+"–"+horaAR(b[1])).join(" · ");
+      return `<div style="background:#fff;border:1px solid #e8efee;border-radius:14px;padding:13px 15px;box-shadow:0 2px 10px rgba(0,0,0,.05)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:10px;height:10px;border-radius:50%;background:${x.online?'#22c55e':'#c9d3d1'};box-shadow:${x.online?'0 0 0 3px rgba(34,197,94,.2)':'none'};flex:none"></span><b style="font-size:15px;color:#0E1F1D">${esc(x.name)}</b><span style="font-size:11.5px;color:${x.online?'#12A366':'var(--gris2)'};font-weight:700">${x.online?'en línea':'desconectado'}</span></div>
+          <div style="text-align:right"><div style="font-size:15px;font-weight:800;color:var(--teal-deep)">${durTxt(x.mins)}</div><div style="font-size:10.5px;color:var(--gris2)">conectado hoy</div></div>
+        </div>
+        ${x.first?`<div style="font-size:11.5px;color:var(--gris2);margin-bottom:8px" title="${bandTxt}">🕐 ${horaAR(x.first)} → ${horaAR(x.last)} · ${x.bandas.length} tramo${x.bandas.length===1?'':'s'} de conexión</div>`:'<div style="font-size:11.5px;color:var(--gris2);margin-bottom:8px">Sin conexión registrada hoy</div>'}
+        <div style="display:flex;gap:14px;font-size:12px;font-weight:700;margin-bottom:8px;color:#3a4a47">
+          <span>📤 ${cuenta(x.acts,"📤")} contactos</span><span>🎁 ${cuenta(x.acts,"🎁")} ofertas</span><span>➕ ${cuenta(x.acts,"➕")} altas</span>
+        </div>
+        ${x.acts.length?`<details><summary style="cursor:pointer;font-size:12px;color:var(--teal);font-weight:700">Ver registro por hora (${x.acts.length})</summary>
+          <div style="margin-top:6px;max-height:280px;overflow:auto">${x.acts.map(a=>`<div style="display:flex;gap:8px;font-size:12.5px;padding:3px 0;border-bottom:1px solid #f2f5f4"><span style="color:var(--gris2);font-variant-numeric:tabular-nums;min-width:42px">${horaAR(a.t)}</span><span style="flex:none">${a.ic}</span><span style="color:#3a4a47">${esc(a.tx)}</span></div>`).join("")}</div></details>`:'<div style="font-size:12px;color:var(--gris2)">Sin actividad registrada hoy.</div>'}
       </div>`;
     }).join("")}
     </div>`;

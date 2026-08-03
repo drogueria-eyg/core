@@ -512,7 +512,34 @@ window.EYG = (function(){
     await bellComunicaciones(mountId,p,opts);
   }
 
-  return { supa, rpc, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS,
+  /* ---- Presencia (heartbeat en el Core) ----
+     Cada comercial registra SU PROPIA franja de conexión del día en el parámetro
+     ir.config_parameter `eyg.presencia.<uid>` (solo él escribe su clave → sin carreras).
+     El panel del líder lo lee para ver quién está en línea y cuánto se conecta.
+     bandas = [[inicioISO, finISO], ...] del día; un hueco > 5 min abre una banda nueva. */
+  async function presenciaPing(uid){
+    if(!uid) return;
+    try{
+      const key="eyg.presencia."+uid;
+      const raw=await rpc("ir.config_parameter","get_param",[key]).catch(()=>null);
+      let st={}; try{ st=JSON.parse(raw||"{}")||{}; }catch(e){ st={}; }
+      const now=new Date(), nowISO=now.toISOString(), hoy=argToday();
+      if(st.dia!==hoy){ st.dia=hoy; st.bandas=[]; }
+      const b=Array.isArray(st.bandas)?st.bandas:[]; const last=b[b.length-1];
+      if(last && (now-new Date(last[1]))<5*60000){ last[1]=nowISO; } else { b.push([nowISO,nowISO]); }
+      st.bandas=b; st.online=nowISO;
+      await rpc("ir.config_parameter","set_param",[key, JSON.stringify(st)]);
+    }catch(e){}
+  }
+  let _presTimer=null;
+  function startPresencia(uid){
+    if(!uid || _presTimer) return;
+    presenciaPing(uid);
+    _presTimer=setInterval(()=>{ if(typeof document==="undefined" || document.visibilityState!=="hidden") presenciaPing(uid); }, 120000);
+    if(typeof document!=="undefined") document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") presenciaPing(uid); });
+  }
+
+  return { supa, rpc, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA };
