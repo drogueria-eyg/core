@@ -743,7 +743,10 @@ const fFecha=s=>{const p=String(s||"").slice(0,10).split("-"); return p.length==
 const ofItems=o=>(o.items||[]).map(i=>i.nombre).filter(Boolean).join(" + ");
 const ofDesc=o=>(o.precioAntes>0&&o.precioAntes>o.precio)?Math.round((1-o.precio/o.precioAntes)*100):0;
 const ofMeta=o=>o.metaClientes>0?o.metaClientes:OF_META_CLIENTES;
-const ofDesde=o=>String(o.desde||o.creada||hace(OF_DIAS_DEF)).slice(0,10);
+// Inicio de la ventana de conteo = timestamp EXACTO de publicación (no las 00:00 del día),
+// para no contar compras de rutina hechas antes de que la oferta existiera. Devuelve
+// "YYYY-MM-DD HH:MM:SS"; si sólo hay fecha, arranca a las 00:00.
+const ofDesde=o=>{ const d=String(o.desde||o.creada||(hace(OF_DIAS_DEF)+" 00:00:00")); return d.length<=10?(d+" 00:00:00"):d; };
 // clientes DISTINTOS con al menos una oferta vigente colocada (es la unidad de la meta del nivel)
 // puntos de la dimensión ofertas = enviar (actividad) + vender (resultado)
 function ofPuntos(){ return Math.min((ST.ofEnviadas||0)/OF_META_ENV,1)*OF_PTS_ENV + Math.min((ST.ofVendidas||0)/OF_META_VEN,1)*OF_PTS_VEN; }
@@ -849,7 +852,7 @@ async function normalizarSync(sync){
   return sync.map(o=>{
     // fecha de creación: el id de sync es "of<timestamp ms>" → así el conteo cuenta
     // clientes DESDE que se publicó la oferta, no de los últimos 30 días.
-    const mts=/^of(\d{13})$/.exec(o.id||""); const creada=mts?new Date(+mts[1]).toISOString().slice(0,10):"";
+    const mts=/^of(\d{13})$/.exec(o.id||""); const creada=mts?new Date(+mts[1]).toISOString().slice(0,19).replace("T"," "):"";
     const com={ id:"sync:"+o.id, tipo:"oferta", titulo:o.targetName||("#"+o.target),
       stock:o.stock||0, hasta:o.hasta||"", nota:"", creada, _off:ofTxtSync(o) };
     if(o.tipo!=="p") return {...com, items:[], precio:0, precioAntes:0, _info:true,
@@ -901,23 +904,18 @@ async function cargarOfertas(ids){
     try{
       const g=await rpc("sale.order.line","read_group",
         [[["order_partner_id","in",ids],["product_id","in",pids],["state","in",["sale","done"]],
-          ["order_id.date_order",">=",desde+" 00:00:00"],["order_id.date_order","<=",hasta+" 23:59:59"]],
+          ["order_id.date_order",">=",desde],["order_id.date_order","<=",hasta+" 23:59:59"]],
          ["price_subtotal:sum"],["order_partner_id"]],{lazy:false});
       ST.ofertas[o.id]={ colocados:g.length,
         cli:g.map(x=>x.order_partner_id&&x.order_partner_id[0]).filter(Boolean),
         monto:g.reduce((s,x)=>s+(x.price_subtotal||0),0) };
     }catch(e){ ST.ofertas[o.id]={colocados:0,cli:[],err:true}; }
   }));
-  // ---- Para el puntaje: ofertas VENDIDAS y ENVIADAS este mes ----
+  // ---- Puntaje/encabezado: VENDIDAS = suma de "colocados" por oferta (cliente × oferta).
+  // Cada colocados ya usa la ventana correcta [publicación exacta → cierre], así que NO
+  // cuenta compras de rutina previas a la oferta. Consistente con lo que muestra cada tarjeta. ----
   OFPIDS=[...new Set(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i.id)).filter(Boolean))];
-  try{
-    if(OFPIDS.length && ids.length){
-      const g=await rpc("sale.order.line","read_group",
-        [[["order_partner_id","in",ids],["product_id","in",OFPIDS],["state","in",["sale","done"]],["order_id.date_order",">=",inicioMes+" 00:00:00"]],
-         ["price_subtotal:sum"],["order_partner_id","product_id"]],{lazy:false});
-      ST.ofVendidas=g.length;   // colocaciones (cliente × oferta) del mes
-    } else ST.ofVendidas=0;
-  }catch(e){ ST.ofVendidas=0; }
+  ST.ofVendidas=OFERTAS.reduce((s,o)=>s+(((ST.ofertas[o.id]||{}).colocados)||0),0);
   try{
     if(ST.userPartner){
       // Notas [EyGOFENV] del mes en el partner del propio comercial: sirven para el puntaje
