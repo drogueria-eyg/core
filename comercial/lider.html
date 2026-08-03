@@ -319,7 +319,7 @@ async function init(){
   try{
     // COM y UIDS ya vienen resueltos por boot() con el equipo del líder (organigrama Odoo).
     const y=argToday().slice(0,4), m=argToday().slice(0,7);
-    const d=new Date(); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow); const inicioSem=lun.toISOString().slice(0,10);
+    const d=new Date(); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow); const _lun=lun.toISOString().slice(0,10); const inicioSem=_lun<(m+"-01")?(m+"-01"):_lun;   // semana calendario, acotada al mes
     const [aA,aM,aS]=await Promise.all([periodo(y+"-01-01"), periodo(m+"-01"), periodo(inicioSem)]);
     DATA=COM.map(c=>({...c, ano:aA[c.uid]||0, mes:aM[c.uid]||0, sem:aS[c.uid]||0, hoy:0, horas:new Array(24).fill(0)}));
     await refreshHoy();
@@ -445,7 +445,7 @@ async function cargarSerie(p){
   const bucket=(g,gran)=>{ const m={}; g.forEach(r=>{ const rg=r.__range&&r.__range["date_order:"+gran]; const f=rg?rg.from.slice(0,10):null; if(f) m[f]=(m[f]||0)+(r.amount_untaxed||0); }); return m; };
   if(p==="sem"){
     const d=new Date(t+"T00:00:00"); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow);
-    const ini=lun.toISOString().slice(0,10); const m=bucket(await dom(ini,"day"),"day"); const arr=[];
+    const _l=lun.toISOString().slice(0,10), _im=t.slice(0,7)+"-01"; const ini=_l<_im?_im:_l; const m=bucket(await dom(ini,"day"),"day"); const arr=[];
     for(let i=0;i<7;i++){ const dd=new Date(lun); dd.setDate(lun.getDate()+i); const k=dd.toISOString().slice(0,10); arr.push({label:DIASSEM[i], val:m[k]||0, cur:k===t}); }
     return SERIES.sem=arr;
   }
@@ -700,11 +700,11 @@ const FICHAS_INFLIGHT=new Set();
 /* Carga la ficha de UN comercial (si no está ya cargada ni en curso). Repinta las
    tarjetas y, si es el comercial abierto, su detalle. La usan tanto la carga de fondo
    como el clic (que la prioriza para no esperar a la cola). */
-async function loadFicha(c){
+async function loadFicha(c, carteraIn, pfIn){
   if(FICHAS[c.uid] || FICHAS_INFLIGHT.has(c.uid)) return FICHAS[c.uid]||null;
   FICHAS_INFLIGHT.add(c.uid);
   try{
-    const d=await fichaData(c.uid,c.name);
+    const d=await fichaData(c.uid,c.name,carteraIn,pfIn);
     if(d){ FICHAS[c.uid]=d; computeAGG(); renderEquipo(); if(SEL===c.uid) renderDetalle(); }
     return d;
   }catch(e){ return null; }
@@ -713,8 +713,17 @@ async function loadFicha(c){
 async function cargarFichas(){
   FICHAS_LOADING=true; renderEquipo();
   await prepOfertasLider();   // ids de ofertas + partners (para ofertas vendidas/enviadas)
+  // Una sola consulta de cartera del equipo (ids + datos de ficha), reutilizada por todas las
+  // fichas: reemplaza 2 consultas por comercial (search + search_read = 12) por 1 de equipo, y
+  // evita el fetch serial de cartera antes del Promise.all de cada ficha.
+  let cartByUid={}, pfByUid={};
+  try{
+    const parts=await EYG.rpc("res.partner","search_read",[[["user_id","in",UIDS]]],{fields:["user_id","vat","phone","mobile","email","street","create_date"],limit:0});
+    UIDS.forEach(u=>{ cartByUid[u]=[]; pfByUid[u]=[]; });
+    parts.forEach(p=>{ const u=p.user_id&&p.user_id[0]; if(!u||!cartByUid[u])return; cartByUid[u].push(p.id); pfByUid[u].push(p); });
+  }catch(e){ cartByUid={}; pfByUid={}; }
   // De a 2 comerciales por vez: fiable y sin trabar.
-  await mapLimit(COM, 2, c=>loadFicha(c));
+  await mapLimit(COM, 2, c=>loadFicha(c, cartByUid[c.uid], pfByUid[c.uid]));
   computeAGG(); FICHAS_LOADING=false; renderEquipo();
 }
 // métricas comparables de una ficha
@@ -900,9 +909,11 @@ function renderDetalle(){
 /* OPTIMIZADO: 8 consultas agregadas (antes 14, dos de ellas leían miles de registros).
    Como el edge function contiende en Odoo con consultas pesadas, menos y más livianas
    = mucho más rápido. Los buckets por mes salen del __range que devuelve read_group. */
-async function fichaData(uid, name){
+async function fichaData(uid, name, carteraIn, pfIn){
   const t=argToday(), y=t.slice(0,4), mo=t.slice(0,7), inicioMes=mo+"-01", inicioAno=y+"-01-01";
-  const cartera=await EYG.rpc("res.partner","search",[[["user_id","=",uid]]]);
+  // cartera (ids) y ficha (pf) pueden venir pre-cargadas a nivel equipo (1 consulta reutilizada);
+  // si no, se traen acá (camino de 1 comercial, ej. al seleccionar).
+  const cartera=carteraIn||await EYG.rpc("res.partner","search",[[["user_id","=",uid]]]);
   const [movG,payG,ml,ordG,estG,pf,mg,waMsgs,ofVenG,ofEnvC]=await Promise.all([
     // facturas+NC por mes y tipo (190d) → factMes, baseline y desglose de facturación
     EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",EYG.hace(190)]],["amount_untaxed:sum"],["invoice_date:month","move_type"]],{lazy:false}),
@@ -915,7 +926,7 @@ async function fichaData(uid, name){
     // órdenes del mes por estado → cancelados / presupuestos (desglose)
     EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["date_order",">=",inicioMes]],["amount_untaxed:sum"],["state"]],{lazy:false}),
     // cartera: datos de ficha + fecha de alta (para "nuevos" sin consulta aparte)
-    EYG.rpc("res.partner","search_read",[[["user_id","=",uid]]],{fields:["vat","phone","mobile","email","street","create_date"],limit:0}),
+    pfIn?Promise.resolve(pfIn):EYG.rpc("res.partner","search_read",[[["user_id","=",uid]]],{fields:["vat","phone","mobile","email","street","create_date"],limit:0}),
     // margen del año → rentabilidad
     EYG.rpc("sale.order.line","read_group",[[["order_id.user_id","=",uid],["order_id.state","in",["sale","done"]],["order_id.date_order",">=",inicioAno]],["margin:sum","price_subtotal:sum"],[]],{lazy:false}),
     // mensajes WA confirmados de la semana sobre su cartera
@@ -1011,7 +1022,7 @@ function ventasHTML(d, opts){
 function periodoRango(p){
   const t=argToday();
   if(p==="hoy") return {desde:t, lbl:"hoy"};
-  if(p==="sem"){ const d=new Date(t+"T00:00:00"); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow); return {desde:lun.toISOString().slice(0,10), lbl:"esta semana"}; }
+  if(p==="sem"){ const d=new Date(t+"T00:00:00"); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow); const _l=lun.toISOString().slice(0,10), _im=t.slice(0,7)+"-01"; return {desde:_l<_im?_im:_l, lbl:"esta semana"}; }
   if(p==="ano") return {desde:t.slice(0,4)+"-01-01", lbl:"este año"};
   return {desde:t.slice(0,7)+"-01", lbl:"este mes"};
 }

@@ -344,6 +344,9 @@ function waN(tel){let d=digits(tel);if(d.length<8)return"";if(d.startsWith("54")
 const now=new Date(); const pad=n=>String(n).padStart(2,"0");
 const hoyStr=`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
 const inicioMes=`${now.getFullYear()}-${pad(now.getMonth()+1)}-01`;
+// Semana CALENDARIO: lunes de la semana actual, pero nunca antes del 1º del mes (así "esta
+// semana" no arrastra ventas del mes pasado; ej. el lun 3/8 la semana arranca el 3, no el 27/7).
+const inicioSem=(()=>{ const d=new Date(now); const dow=(d.getDay()+6)%7; d.setDate(d.getDate()-dow); const lun=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; return lun<inicioMes?inicioMes:lun; })();
 const hace=d=>{const x=new Date(now);x.setDate(x.getDate()-d);return `${x.getFullYear()}-${pad(x.getMonth()+1)}-${pad(x.getDate())}`;};
 
 // ===== Ofertas y combos =====
@@ -419,10 +422,10 @@ async function cargar(){
       rpc("sale.order","read_group",[[["user_id","=",ST.userId],["state","in",["sale","done"]],["invoice_status","=","to invoice"]],["amount_to_invoice:sum"],[]],{lazy:false}),
       // VENTA = FACTURADO de la cartera (out_invoice neto). Atribuye por cliente, no por invoice_user_id (que a veces es la cuenta genérica)
       rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
-      rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",hace(7)]],["amount_untaxed:sum"],[]],{lazy:false}),
+      rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",inicioSem]],["amount_untaxed:sum"],[]],{lazy:false}),
       // NC de la cartera (se restan de la venta facturada)
       rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
-      rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",hace(7)]],["amount_untaxed:sum"],[]],{lazy:false})
+      rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioSem]],["amount_untaxed:sum"],[]],{lazy:false})
     ]);
     ST.orders={}; og.forEach(g=>{if(g.partner_id)ST.orders[g.partner_id[0]]={ultima:g.date_order,pedidos:g.__count,total:g.amount_total};});
     // Mensajes WA de la semana, parseados; contactados hoy = distintos con mensaje hoy
@@ -468,7 +471,7 @@ async function cargar(){
       ST.base={ objetivoCobro:(cobro3[0]?.amount||0)/3*1.1, promPed, promCli, perfil: avgTicket>=300000?"inst":"farm", avgTicket, factBaseline };
       ST.act={ ped: bk[curM]?bk[curM].ped:0, cli: bk[curM]?bk[curM].cli.size:0 };
       // métricas HOY / SEMANA (derivadas de lo ya traído, sin fetch extra)
-      const hoy10=hoyStr.slice(0,10), sem7=hace(7).slice(0,10);
+      const hoy10=hoyStr.slice(0,10), sem7=inicioSem;   // "semana" = semana calendario del mes
       let pedHoy=0,pedSem=0; const cliSemS=new Set();
       for(const o of ordHist){ const dd=(o.date_order||"").slice(0,10); if(dd===hoy10)pedHoy++; if(dd>=sem7){pedSem++; if(o.partner_id)cliSemS.add(o.partner_id[0]);} }
       let ventasHoy=0; for(const x of facHist){ const dd=(x.invoice_date||"").slice(0,10); if(dd===hoy10)ventasHoy+=(x.move_type==="out_refund"?-1:1)*(x.amount_untaxed||0); }
@@ -565,7 +568,7 @@ function saludCuenta(){
 
 function render(){
   const app=document.getElementById("app");
-  const _t=hoyStr.slice(0,10), _s7=hace(7).slice(0,10);
+  const _t=hoyStr.slice(0,10), _s7=inicioSem;   // ventana semanal = semana calendario del mes
   const _mH=(ST.msgs||[]).filter(m=>m.date===_t);
   const envH={total:_mH.length, nuevo:_mH.filter(m=>m.ng==="nuevo").length, seg:_mH.filter(m=>m.ng!=="nuevo").length};
   const envS=(ST.msgs||[]).filter(m=>m.date>=_s7).length;
@@ -632,8 +635,8 @@ function render(){
         <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">📅</span><div class="kmeta"><div class="kl">Semana</div><div class="kv">${money(ST.fact.sem)}</div><div class="ks">${pFac}% de la meta · ${ST.diag.pedSem} pedidos</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
           <div class="prow"><div class="pl"><span>Ventas semana · meta ${money(OBJ.semanalFact)}</span><b>${pFac}%</b></div><div class="pbar"><i style="width:${Math.min(100,pFac)}%;background:var(--gold)"></i></div></div>
-          <div class="drow"><span>📦 Pedidos (últimos 7 días)</span><b>${ST.diag.pedSem}</b></div>
-          <div class="drow"><span>👥 Clientes activos (7 días)</span><b>${ST.diag.cliSem}</b></div>
+          <div class="drow"><span>📦 Pedidos (esta semana)</span><b>${ST.diag.pedSem}</b></div>
+          <div class="drow"><span>👥 Clientes activos (esta semana)</span><b>${ST.diag.cliSem}</b></div>
           <div class="drow"><span>🆕 Nuevos del mes · meta ${OBJ.mensualNuevos}</span><b>${ST.nuevos}</b></div>
         </div></div></div>
       </div>
@@ -753,7 +756,7 @@ function ofPuntos(){ return Math.min((ST.ofEnviadas||0)/OF_META_ENV,1)*OF_PTS_EN
 /* Ofertas compartidas hoy / en la semana ([EyGOFENV] en el partner propio). Cuentan como
    actividad de contacto del día (se suman a la meta de "contactos") y como mensajes enviados. */
 function ofHoy(){ const _t=hoyStr.slice(0,10); return (ST.ofMsgs||[]).filter(m=>m.date===_t).length; }
-function ofSem(){ const _s=hace(7).slice(0,10); return (ST.ofMsgs||[]).filter(m=>m.date>=_s).length; }
+function ofSem(){ return (ST.ofMsgs||[]).filter(m=>m.date>=inicioSem).length; }
 
 /* Texto para compartir por WhatsApp. Formato de WhatsApp: *negrita*, ~tachado~.
    Sale del mismo dato que se publicó, así el comercial no reescribe nada. */
