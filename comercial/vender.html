@@ -102,7 +102,6 @@
     50%{box-shadow:0 0 0 1px var(--coral), 0 0 18px rgba(236,94,79,.55)}
   }
   @media(prefers-reduced-motion:reduce){ .prod.oferta{animation:none;box-shadow:0 0 0 1px var(--coral),0 0 12px rgba(236,94,79,.4)} }
-  .ofbadge{position:absolute;top:5px;left:5px;width:21px;height:21px;background:var(--coral);color:#fff;font-size:11px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 5px rgba(236,94,79,.6);z-index:2}
   /* en ofertas, textos secundarios un tono más oscuro para no perder contraste sobre el tinte */
   .prod.oferta .pm, .prod.oferta .esc{color:var(--gris)}
   .foot{margin-top:auto;display:flex;flex-direction:column;gap:5px}
@@ -116,6 +115,8 @@
   .prod .stk.low{color:var(--gold)}
   .prod .pr{font-size:16px;font-weight:800;color:var(--teal-deep);line-height:1}
   .prod .pr small{font-size:10.5px;color:var(--gris);font-weight:600}
+  .prod .pr.of{color:var(--coral)}
+  .prod .pr .pr-old{color:var(--gris2);text-decoration:line-through;font-size:12px;font-weight:600;margin-right:5px}
   /* escalera: tramos en una línea, limpia y con alto reservado (alinea todas las tarjetas) */
   .esc{min-height:16px;font-size:10.5px;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--gris2)}
   .esc .tg{margin-right:9px}
@@ -224,7 +225,7 @@ let ST = {
   amount:{untaxed:0, total:0},
   syncing:false, dirty:false,
   // catálogo
-  fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, cargandoCat:false,
+  fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, ofertaPids:new Set(), ofertaInfo:{}, cargandoCat:false,
   cartOpen:false,
 };
 
@@ -363,24 +364,39 @@ async function entrarVenta(){
 
 // Productos en oferta = ítems de las ofertas vigentes (mismas que ve el comercial en "Combos y ofertas").
 async function cargarOfertas(){
-  ST.ofertaPids=new Set();
+  ST.ofertaPids=new Set(); ST.ofertaInfo={};
   try{
     const raw=await rpc("ir.config_parameter","get_param",["eyg.ofertas"]);
     const arr=JSON.parse(raw||"[]")||[];
     const hoy=EYG.argToday();
-    arr.filter(o=>o && (!o.hasta || o.hasta>=hoy)).forEach(o=>(o.items||[]).forEach(i=>{ if(i&&i.id) ST.ofertaPids.add(i.id); }));
+    arr.filter(o=>o && (!o.hasta || o.hasta>=hoy)).forEach(o=>{
+      (o.items||[]).forEach(i=>{ if(i&&i.id){
+        ST.ofertaPids.add(i.id);
+        // "precio antes" solo para ofertas de UN producto (en combos el precio es del combo, no por ítem)
+        if((o.items||[]).length===1 && o.precioAntes>0) ST.ofertaInfo[i.id]={antes:o.precioAntes, precio:o.precio};
+      }});
+    });
   }catch(e){}
-  if(ST.view==="venta" && ST.prods.length) renderGrid();   // repinta para mostrar los badges
+  if(ST.view==="venta" && ST.prods.length) renderGrid();   // repinta para mostrar precios de oferta
 }
 
 /* ============================================================
    CATÁLOGO
    ============================================================ */
 async function cargarCatalogo(){
-  ST.cargandoCat=true; ST._catToken=(ST._catToken||0)+1; renderGrid();
+  const token=(ST._catToken=(ST._catToken||0)+1);
+  desconectarIO();
+  const q=(ST.qProd||"").trim();
+  const key = q ? null : ST.fam;                  // solo cacheamos las familias (no las búsquedas)
+  // Caché: volver a una familia ya vista es INSTANTÁNEO (no vuelve a pegarle a Odoo).
+  if(key && ST.catCache[key]){
+    const c=ST.catCache[key]; ST.prods=c.prods; ST.precios=c.precios; ST.tiers=c.tiers;
+    ST.cargandoCat=false; renderGrid();
+    return;
+  }
+  ST.cargandoCat=true; renderGrid();
   try{
     let dom;
-    const q=(ST.qProd||"").trim();
     if(q){
       // Búsqueda en TODO el catálogo vendible, con stock:
       //   qty>0  AND  (name ILIKE q OR code ILIKE q)  AND  (dentro de alguna familia vendible)
@@ -393,12 +409,15 @@ async function cargarCatalogo(){
       dom=[["categ_id","child_of",fam.id],["qty_available",">",0]];
     }
     const prods = await rpc("product.product","search_read",[dom],
-      {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","uom_id","list_price"], context:ES, order:"name", limit:200});
+      {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price"], context:ES, order:"name", limit:200});
+    if(token!==ST._catToken) return;              // el usuario cambió de familia/búsqueda: descartamos
     ST.prods=prods;
     await cargarPrecios(prods);
+    if(token!==ST._catToken) return;
+    if(key) ST.catCache[key]={prods:ST.prods, precios:ST.precios, tiers:ST.tiers};
   }catch(e){ ST.prods=[]; toast("No pude leer el catálogo"); }
+  if(token!==ST._catToken) return;
   ST.cargandoCat=false; renderGrid();
-  cargarImagenes(ST.prods);
 }
 
 // Escalera de precios de la lista del cliente por producto: ST.tiers[pid]=[{q,p}] (cantidad→precio).
@@ -433,6 +452,15 @@ function tramoDe(pid,q){ const t=ST.tiers[pid]||[]; let r=t[0]||null; for(const 
 function descPct(pid,tier){ const t=ST.tiers[pid]||[]; if(!t.length||!tier) return 0; const base=t[0].p; return base>0?Math.round((1-tier.p/base)*100):0; }
 // próximo tramo con mejor precio a partir de q → {need, tier, pct}
 function proxTramo(pid,q){ const t=ST.tiers[pid]||[]; const cur=tramoDe(pid,q); for(const x of t){ if(x.q>Math.max(1,q) && (!cur||x.p<cur.p)){ return {need:x.q-Math.max(0,q), tier:x, pct:descPct(pid,x)}; } } return null; }
+// precio de la tarjeta: si es oferta con "precio antes", lo muestra tachado + el precio actual en coral
+function precioHtml(pid, pr, oferta){
+  const oi=ST.ofertaInfo&&ST.ofertaInfo[pid];
+  const cur = pr!=null ? pr : (oi?oi.precio:null);
+  if(cur==null) return `<div class="pr">precio al agregar</div>`;
+  if(oferta && oi && oi.antes>cur)
+    return `<div class="pr of"><span class="pr-old">${money(oi.antes)}</span>${money(cur)}<small> c/u</small></div>`;
+  return `<div class="pr ${oferta?"of":""}">${money(cur)}<small> c/u</small></div>`;
+}
 // escalera: los tramos de descuento en una línea limpia (slot siempre presente para alinear)
 function escHtml(pid){
   const t=ST.tiers[pid]||[]; if(t.length<2) return '<div class="esc"></div>';
@@ -452,12 +480,13 @@ function renderGrid(){
   if(!ST.prods.length){ el.innerHTML='<div class="empty">'+(ST.qProd?"No encontré productos con ese nombre (y stock).":"No hay productos con stock en esta familia.")+'</div>'; return; }
   el.innerHTML='<div class="grid">'+ST.prods.map(cardProd).join("")+'</div>'+
     (ST.prods.length>=200?'<div style="text-align:center;color:var(--gris2);font-size:12px;padding:0 0 16px">Mostrando los primeros 200. Afiná con el buscador.</div>':"");
+  observarImagenes();   // carga perezosa de las fotos visibles
 }
 function thumbHtml(p){
   const img=ST.imgs[p.id];
   if(img) return `<img class="thumb" id="img-${p.id}" src="data:image/png;base64,${img}" alt="">`;
-  if(img===false) return `<div class="thumb ph" id="img-${p.id}">📦</div>`;   // sin imagen en Odoo
-  return `<div class="thumb ph" id="img-${p.id}">·</div>`;                     // pendiente de cargar
+  if(img===false) return `<div class="thumb ph" id="img-${p.id}">📦</div>`;              // sin imagen en Odoo
+  return `<div class="thumb ph" id="img-${p.id}" data-pid="${p.id}">·</div>`;            // pendiente (lazy)
 }
 function cardProd(p){
   const q=ST.want[p.id]||0;
@@ -465,7 +494,6 @@ function cardProd(p){
   const stk=p.qty_available||0;
   const oferta=ST.ofertaPids&&ST.ofertaPids.has(p.id);
   return `<div class="prod ${q>0?"incart":""} ${oferta?"oferta":""}" id="prod-${p.id}">
-    ${oferta?'<span class="ofbadge" title="Producto en oferta">🔥</span>':""}
     <div class="top">
       ${thumbHtml(p)}
       <div class="ti">
@@ -475,7 +503,7 @@ function cardProd(p){
       </div>
     </div>
     <div class="foot">
-      <div class="pr">${pr!=null?money(pr):'precio al agregar'}${pr!=null?'<small> c/u</small>':""}</div>
+      ${precioHtml(p.id, pr, oferta)}
       ${escHtml(p.id)}
       <div id="dyn-${p.id}">${dynHtml(p.id,q)}</div>
     </div>
@@ -494,25 +522,42 @@ function stepper(pid,q){
   </div>`;
 }
 
-// Carga diferida de imágenes: el grid aparece al toque y las fotos se van rellenando.
-async function cargarImagenes(prods){
-  const faltan=prods.filter(p=>ST.imgs[p.id]===undefined).map(p=>p.id);
-  if(!faltan.length) return;
-  const token=ST._catToken;                     // si el usuario cambió de familia/búsqueda, abortamos
-  for(let i=0;i<faltan.length;i+=40){
+/* Imágenes PEREZOSAS: solo se bajan las fotos de las tarjetas que entran en pantalla
+   (IntersectionObserver). El grid aparece al instante y no gastamos datos en productos
+   que el comercial ni ve. Las que ya se bajaron quedan cacheadas en ST.imgs. */
+let _io=null, _imgQ=new Set(), _imgT=null;
+function desconectarIO(){ if(_io){ _io.disconnect(); _io=null; } }
+function observarImagenes(){
+  desconectarIO();
+  const phs=document.querySelectorAll(".thumb.ph[data-pid]");
+  if(!phs.length) return;
+  if(!("IntersectionObserver" in window)){ encolarImagenes([...phs].map(el=>+el.dataset.pid)); return; }
+  _io=new IntersectionObserver((entries)=>{
+    const ids=[];
+    entries.forEach(e=>{ if(e.isIntersecting){ const id=+e.target.dataset.pid; if(id) ids.push(id); _io.unobserve(e.target); } });
+    if(ids.length) encolarImagenes(ids);
+  }, {rootMargin:"350px"});
+  phs.forEach(el=>{ if(ST.imgs[+el.dataset.pid]===undefined) _io.observe(el); });
+}
+function encolarImagenes(ids){ ids.forEach(i=>{ if(ST.imgs[i]===undefined) _imgQ.add(i); }); clearTimeout(_imgT); _imgT=setTimeout(flushImagenes,120); }
+async function flushImagenes(){
+  const ids=[..._imgQ]; _imgQ.clear();
+  if(!ids.length) return;
+  const token=ST._catToken;
+  for(let i=0;i<ids.length;i+=30){
     if(token!==ST._catToken) return;
-    const lote=faltan.slice(i,i+40);
+    const lote=ids.slice(i,i+30);
     let rows=[];
     try{ rows=await rpc("product.product","read",[lote],{fields:["id","image_128"]}); }catch(e){ continue; }
     const map={}; rows.forEach(r=>{ map[r.id]=r.image_128||false; });
-    lote.forEach(id=>{ ST.imgs[id]= (map[id]!==undefined?map[id]:false); });
-    if(token!==ST._catToken) return;
-    lote.forEach(id=>{ const el=document.getElementById("img-"+id); if(!el) return;
-      const val=ST.imgs[id];
-      if(val){ const im=document.createElement("img"); im.className="thumb"; im.id="img-"+id; im.src="data:image/png;base64,"+val; im.alt=""; el.replaceWith(im); }
-      else { el.textContent="📦"; }
-    });
+    lote.forEach(id=>{ ST.imgs[id]=(map[id]!==undefined?map[id]:false); pintarImagen(id); });
   }
+}
+function pintarImagen(id){
+  const el=document.getElementById("img-"+id); if(!el) return;
+  const val=ST.imgs[id];
+  if(val){ const im=document.createElement("img"); im.className="thumb"; im.id="img-"+id; im.src="data:image/png;base64,"+val; im.alt=""; el.replaceWith(im); }
+  else { el.textContent="📦"; }
 }
 
 /* ---------- alta/baja de cantidades (optimista + sync a Odoo) ---------- */
@@ -593,7 +638,7 @@ function vVenta(){
     <div class="cat-card">
       <div class="cat-tools">
         <div class="search2">🔎 <input id="prodSearch" placeholder="Buscar producto por nombre o código…" value="${esc(ST.qProd)}" oninput="buscarProd(this.value)"></div>
-        <div class="fams">${FAMILIAS.map(f=>`<button class="fam ${ST.fam===f.k&&!ST.qProd?"on":""}" onclick="setFam('${f.k}')">${esc(f.label)}</button>`).join("")}</div>
+        <div class="fams">${FAMILIAS.map(f=>`<button class="fam ${ST.fam===f.k&&!ST.qProd?"on":""}" data-fam="${f.k}" onclick="setFam('${f.k}')">${esc(f.label)}</button>`).join("")}</div>
       </div>
       <div id="gridWrap"></div>
     </div>
@@ -609,8 +654,10 @@ function vVenta(){
   </div>`;
 }
 
-window.buscarProd = EYG.buscador(v=>{ ST.qProd=v; cargarCatalogo(); }, 380);
-function setFam(k){ ST.fam=k; ST.qProd=""; const s=document.getElementById("prodSearch"); if(s) s.value=""; document.querySelectorAll(".fam").forEach(b=>b.classList.remove("on")); cargarCatalogo(); render(); }
+// marca visualmente la familia activa (o ninguna si hay búsqueda) sin repintar toda la vista
+function marcarFam(){ document.querySelectorAll(".fam").forEach(b=>b.classList.toggle("on", !ST.qProd && b.dataset.fam===ST.fam)); }
+window.buscarProd = EYG.buscador(v=>{ ST.qProd=v; marcarFam(); cargarCatalogo(); }, 380);
+function setFam(k){ ST.fam=k; ST.qProd=""; const s=document.getElementById("prodSearch"); if(s) s.value=""; marcarFam(); cargarCatalogo(); }
 function toggleCart(){ ST.cartOpen=!ST.cartOpen; const b=document.getElementById("cartBox"); if(b) b.classList.toggle("open",ST.cartOpen); }
 
 function renderCartBadge(){
