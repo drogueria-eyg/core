@@ -227,7 +227,7 @@ let ST = {
   amount:{untaxed:0, total:0},
   syncing:false, dirty:false,
   // catálogo
-  fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, ofertaPids:new Set(), ofertaTmpls:new Set(), ofertaInfo:{}, _ofLoaded:false, cargandoCat:false,
+  fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, ofertaPids:new Set(), ofertaTmpls:new Set(), ofertaInfo:{}, ofertaRule:{}, _ofLoaded:false, cargandoCat:false,
   cartOpen:false,
 };
 
@@ -366,7 +366,7 @@ async function entrarVenta(){
 
 // Productos en oferta = ítems de las ofertas vigentes (mismas que ve el comercial en "Combos y ofertas").
 async function cargarOfertas(){
-  ST.ofertaPids=new Set(); ST.ofertaTmpls=new Set(); ST.ofertaInfo={};
+  ST.ofertaPids=new Set(); ST.ofertaTmpls=new Set(); ST.ofertaInfo={}; ST.ofertaRule={};
   const hoy=EYG.argToday();
   try{
     // (1) eyg.ofertas: ofertas/combos confirmados. items[].id = producto (variante). Traen "precio antes".
@@ -382,7 +382,7 @@ async function cargarOfertas(){
     // (2) eyg.sync_ofertas: reglas del motor de precios. tipo 'p' → target = PLANTILLA (product.template).
     const raw2=await rpc("ir.config_parameter","get_param",["eyg.sync_ofertas"]);
     (JSON.parse(raw2||"[]")||[]).filter(o=>o && !o.pausada && (!o.hasta || o.hasta>=hoy)).forEach(o=>{
-      if(o.tipo==="p" && o.target) ST.ofertaTmpls.add(o.target);
+      if(o.tipo==="p" && o.target){ ST.ofertaTmpls.add(o.target); ST.ofertaRule[o.target]={modo:o.modo, valor:o.valor}; }
       // tipo 'c' (categoría entera) queda pendiente: marcar toda una familia sería demasiado amplio.
     });
   }catch(e){}
@@ -471,13 +471,27 @@ function tramoDe(pid,q){ const t=ST.tiers[pid]||[]; let r=t[0]||null; for(const 
 function descPct(pid,tier){ const t=ST.tiers[pid]||[]; if(!t.length||!tier) return 0; const base=t[0].p; return base>0?Math.round((1-tier.p/base)*100):0; }
 // próximo tramo con mejor precio a partir de q → {need, tier, pct}
 function proxTramo(pid,q){ const t=ST.tiers[pid]||[]; const cur=tramoDe(pid,q); for(const x of t){ if(x.q>Math.max(1,q) && (!cur||x.p<cur.p)){ return {need:x.q-Math.max(0,q), tier:x, pct:descPct(pid,x)}; } } return null; }
-// precio de la tarjeta: si es oferta con "precio antes", lo muestra tachado + el precio actual en coral
-function precioHtml(pid, pr, oferta){
-  const oi=ST.ofertaInfo&&ST.ofertaInfo[pid];
-  const cur = pr!=null ? pr : (oi?oi.precio:null);
+// precio normal (para tacharlo) de un producto en oferta. El precio ACTUAL (cur) es el de oferta.
+//  1) eyg.ofertas trae el "antes" explícito por variante (lo más fiable).
+//  2) motor de precios (sync) por plantilla: revertimos el descuento sobre el precio actual.
+function precioNormal(p, cur){
+  const oi=ST.ofertaInfo&&ST.ofertaInfo[p.id];
+  if(oi && oi.antes>cur) return oi.antes;
+  const r=p.product_tmpl_id && ST.ofertaRule[p.product_tmpl_id[0]];
+  if(r && cur>0){
+    if(r.modo==="pct"   && r.valor>0 && r.valor<1) return cur/(1-r.valor);  // −X% → normal = actual/(1−X)
+    if(r.modo==="monto" && r.valor>0)              return cur+r.valor;       // −$ fijo → normal = actual+$
+    // modo 'precio': el valor ES el precio de oferta; no tenemos el normal → sin tachado
+  }
+  return null;
+}
+// precio de la tarjeta: si es oferta, muestra el precio normal tachado + el actual en coral
+function precioHtml(p, pr, oferta){
+  const cur = pr!=null ? pr : ((ST.ofertaInfo[p.id]||{}).precio ?? null);
   if(cur==null) return `<div class="pr">precio al agregar</div>`;
-  if(oferta && oi && oi.antes>cur)
-    return `<div class="pr of"><span class="pr-old">${money(oi.antes)}</span>${money(cur)}<small> c/u</small></div>`;
+  const antes = oferta ? precioNormal(p, cur) : null;
+  if(antes && antes>cur)
+    return `<div class="pr of"><span class="pr-old">${money(antes)}</span>${money(cur)}<small> c/u</small></div>`;
   return `<div class="pr ${oferta?"of":""}">${money(cur)}<small> c/u</small></div>`;
 }
 // escalera: los tramos de descuento en una línea limpia (slot siempre presente para alinear)
@@ -522,7 +536,7 @@ function cardProd(p){
       </div>
     </div>
     <div class="foot">
-      ${precioHtml(p.id, pr, oferta)}
+      ${precioHtml(p, pr, oferta)}
       ${escHtml(p.id)}
       <div id="dyn-${p.id}">${dynHtml(p.id,q)}</div>
     </div>
