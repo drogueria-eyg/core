@@ -139,7 +139,7 @@ window.EYG = (function(){
     if(!s){ showLogin(); return; }
     const p = await perfil();
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso", accesoMsg(p,s), false); return; }
-    const ok = p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
+    const ok = esSuper(p._h) || p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return; }
     if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return; }
     document.body.innerHTML = "";
@@ -158,7 +158,7 @@ window.EYG = (function(){
       gateMsg("🚧","En preparación","Este módulo todavía se está construyendo. Va a estar disponible para todo el equipo cuando esté listo.",true);
       return new Promise(()=>{});
     }
-    const ok = p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
+    const ok = esSuper(p._h) || p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return new Promise(()=>{}); }
     if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return new Promise(()=>{}); }
     return p;
@@ -303,11 +303,15 @@ window.EYG = (function(){
   /* Super-admin(s): huella(email) del administrador principal (Diego Velázquez).
      SIEMPRE acceso total, incluso a módulos EN PRUEBAS. Así cualquier módulo nuevo
      que se deje con `pruebas` se le muestra automáticamente, sin sumarlo a cada lista. */
-  const SUPER = ["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"];
+  const SUPER = [
+    "a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122", // Diego Velázquez (d.velazquez@)
+    "53ab45c75c97fc80109dddf425c8343ca47287b95bcad8ee868cad8fd3d171bd", // German Banquero (g.banquero@)
+  ];
   const esSuper = h => !!h && SUPER.includes(h);
 
   function puedeVer(m, perfilORol){
     const p = (typeof perfilORol === "string") ? {rol:perfilORol} : (perfilORol||{});
+    if(esSuper(p._h)) return true;   // super-admins (German y Diego) ven todo
     if(m.pruebas && m.pruebas.length && !m.pruebas.includes(p._h) && !esSuper(p._h)) return false;
     return p.rol==="admin"||p.rol==="direccion" ? true : m.roles.includes(p.rol);
   }
