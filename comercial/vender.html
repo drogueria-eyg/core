@@ -91,6 +91,8 @@
   .fams{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}
   .fam{font-size:12.5px;font-weight:700;border:1.5px solid var(--line);background:var(--surface);color:var(--gris);border-radius:22px;padding:6px 13px;cursor:pointer;white-space:nowrap}
   .fam.on{background:var(--teal);border-color:var(--teal);color:#fff}
+  .fam.of{color:var(--coral);border-color:#f3c9c3}
+  .fam.of.on{background:var(--coral);border-color:var(--coral);color:#fff}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(174px,1fr));gap:10px;padding:12px}
   .prod{position:relative;border:1px solid var(--line);border-radius:12px;padding:9px;display:flex;flex-direction:column;gap:6px;background:var(--surface);transition:.12s}
   .prod.incart{border-color:var(--teal);box-shadow:inset 0 0 0 1.5px var(--teal)}
@@ -225,7 +227,7 @@ let ST = {
   amount:{untaxed:0, total:0},
   syncing:false, dirty:false,
   // catálogo
-  fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, ofertaPids:new Set(), ofertaInfo:{}, cargandoCat:false,
+  fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, ofertaPids:new Set(), ofertaTmpls:new Set(), ofertaInfo:{}, _ofLoaded:false, cargandoCat:false,
   cartOpen:false,
 };
 
@@ -364,21 +366,31 @@ async function entrarVenta(){
 
 // Productos en oferta = ítems de las ofertas vigentes (mismas que ve el comercial en "Combos y ofertas").
 async function cargarOfertas(){
-  ST.ofertaPids=new Set(); ST.ofertaInfo={};
+  ST.ofertaPids=new Set(); ST.ofertaTmpls=new Set(); ST.ofertaInfo={};
+  const hoy=EYG.argToday();
   try{
+    // (1) eyg.ofertas: ofertas/combos confirmados. items[].id = producto (variante). Traen "precio antes".
     const raw=await rpc("ir.config_parameter","get_param",["eyg.ofertas"]);
-    const arr=JSON.parse(raw||"[]")||[];
-    const hoy=EYG.argToday();
-    arr.filter(o=>o && (!o.hasta || o.hasta>=hoy)).forEach(o=>{
+    (JSON.parse(raw||"[]")||[]).filter(o=>o && (!o.hasta || o.hasta>=hoy)).forEach(o=>{
       (o.items||[]).forEach(i=>{ if(i&&i.id){
         ST.ofertaPids.add(i.id);
-        // "precio antes" solo para ofertas de UN producto (en combos el precio es del combo, no por ítem)
         if((o.items||[]).length===1 && o.precioAntes>0) ST.ofertaInfo[i.id]={antes:o.precioAntes, precio:o.precio};
       }});
     });
   }catch(e){}
-  if(ST.view==="venta" && ST.prods.length) renderGrid();   // repinta para mostrar precios de oferta
+  try{
+    // (2) eyg.sync_ofertas: reglas del motor de precios. tipo 'p' → target = PLANTILLA (product.template).
+    const raw2=await rpc("ir.config_parameter","get_param",["eyg.sync_ofertas"]);
+    (JSON.parse(raw2||"[]")||[]).filter(o=>o && !o.pausada && (!o.hasta || o.hasta>=hoy)).forEach(o=>{
+      if(o.tipo==="p" && o.target) ST.ofertaTmpls.add(o.target);
+      // tipo 'c' (categoría entera) queda pendiente: marcar toda una familia sería demasiado amplio.
+    });
+  }catch(e){}
+  ST._ofLoaded=true;
+  if(ST.view==="venta" && !ST.cargandoCat) renderGrid();   // repinta para mostrar las ofertas
 }
+// ¿este producto está en oferta? (por variante o por plantilla)
+function esOferta(p){ return (ST.ofertaPids&&ST.ofertaPids.has(p.id)) || (ST.ofertaTmpls&&p.product_tmpl_id&&ST.ofertaTmpls.has(p.product_tmpl_id[0])); }
 
 /* ============================================================
    CATÁLOGO
@@ -404,6 +416,13 @@ async function cargarCatalogo(){
       for(let i=0;i<CATALOG_ROOTS.length-1;i++) rootsOr.push("|");
       CATALOG_ROOTS.forEach(id=>rootsOr.push(["categ_id","child_of",id]));
       dom=["&","&",["qty_available",">",0],"|",["name","ilike",q],["default_code","ilike",q]].concat(rootsOr);
+    }else if(ST.fam==="OFERTAS"){
+      if(!ST._ofLoaded) await cargarOfertas();
+      const pids=[...ST.ofertaPids], tmpls=[...ST.ofertaTmpls];
+      if(!pids.length && !tmpls.length){ ST.prods=[]; ST.precios={}; ST.tiers={}; if(token===ST._catToken){ST.cargandoCat=false; renderGrid();} return; }
+      const orPart = (pids.length&&tmpls.length) ? ["|",["id","in",pids],["product_tmpl_id","in",tmpls]]
+                    : (pids.length ? [["id","in",pids]] : [["product_tmpl_id","in",tmpls]]);
+      dom=["&",["qty_available",">",0]].concat(orPart);
     }else{
       const fam=FAMILIAS.find(f=>f.k===ST.fam)||FAMILIAS[0];
       dom=[["categ_id","child_of",fam.id],["qty_available",">",0]];
@@ -477,7 +496,7 @@ function hintHtml(pid,q){
 function renderGrid(){
   const el=document.getElementById("gridWrap"); if(!el) return;
   if(ST.cargandoCat){ el.innerHTML='<div class="loading"><div class="spinner"></div>Leyendo catálogo…</div>'; return; }
-  if(!ST.prods.length){ el.innerHTML='<div class="empty">'+(ST.qProd?"No encontré productos con ese nombre (y stock).":"No hay productos con stock en esta familia.")+'</div>'; return; }
+  if(!ST.prods.length){ el.innerHTML='<div class="empty">'+(ST.qProd?"No encontré productos con ese nombre (y stock).":(ST.fam==="OFERTAS"?"No hay ofertas vigentes con stock por ahora.":"No hay productos con stock en esta familia."))+'</div>'; return; }
   el.innerHTML='<div class="grid">'+ST.prods.map(cardProd).join("")+'</div>'+
     (ST.prods.length>=200?'<div style="text-align:center;color:var(--gris2);font-size:12px;padding:0 0 16px">Mostrando los primeros 200. Afiná con el buscador.</div>':"");
   observarImagenes();   // carga perezosa de las fotos visibles
@@ -492,7 +511,7 @@ function cardProd(p){
   const q=ST.want[p.id]||0;
   const pr=ST.precios[p.id];
   const stk=p.qty_available||0;
-  const oferta=ST.ofertaPids&&ST.ofertaPids.has(p.id);
+  const oferta=esOferta(p);
   return `<div class="prod ${q>0?"incart":""} ${oferta?"oferta":""}" id="prod-${p.id}">
     <div class="top">
       ${thumbHtml(p)}
@@ -638,7 +657,7 @@ function vVenta(){
     <div class="cat-card">
       <div class="cat-tools">
         <div class="search2">🔎 <input id="prodSearch" placeholder="Buscar producto por nombre o código…" value="${esc(ST.qProd)}" oninput="buscarProd(this.value)"></div>
-        <div class="fams">${FAMILIAS.map(f=>`<button class="fam ${ST.fam===f.k&&!ST.qProd?"on":""}" data-fam="${f.k}" onclick="setFam('${f.k}')">${esc(f.label)}</button>`).join("")}</div>
+        <div class="fams"><button class="fam of ${ST.fam==='OFERTAS'&&!ST.qProd?'on':''}" data-fam="OFERTAS" onclick="setFam('OFERTAS')">🏷️ Ofertas</button>${FAMILIAS.map(f=>`<button class="fam ${ST.fam===f.k&&!ST.qProd?"on":""}" data-fam="${f.k}" onclick="setFam('${f.k}')">${esc(f.label)}</button>`).join("")}</div>
       </div>
       <div id="gridWrap"></div>
     </div>
