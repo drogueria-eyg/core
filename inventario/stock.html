@@ -104,6 +104,18 @@
   .fac .fv{color:var(--gris)} .fac .fr{font-variant-numeric:tabular-nums;font-weight:700;text-align:right}
   .msgbox{width:100%;font-family:inherit;font-size:13.5px;border:1px solid var(--line);border-radius:10px;padding:12px;min-height:110px;resize:vertical;color:var(--ink);line-height:1.5}
   .wa-send{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;background:var(--teal);color:#fff;border:0;border-radius:10px;padding:13px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer;margin-top:10px;text-decoration:none}
+  .cta-ofertar{background:var(--gold);color:#fff;border:0;border-radius:10px;padding:12px;width:100%;font-family:inherit;font-size:14.5px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:16px}
+  .cta-ofertar:hover{filter:brightness(1.05)}
+  .ofld{margin-bottom:12px} .ofld label{display:block;font-size:12px;font-weight:700;color:var(--gris);margin-bottom:4px}
+  .ofld input,.ofld textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:14px;font-family:inherit;color:var(--ink)}
+  .ofld .oval{padding:8px 0;font-weight:700;font-size:13.5px}
+  .orow{display:flex;gap:10px} .orow .ofld{flex:1}
+  .ohint{font-size:11px;color:var(--gris2);margin-top:3px}
+  .margen-box{border:1px solid var(--line);border-radius:9px;padding:10px 12px;font-size:13.5px;color:var(--gris)}
+  .margen-box b{font-size:18px} .margen-box .cst{color:var(--gris2);font-weight:500;font-size:12px}
+  .margen-box.ok{background:#e7f6ec;border-color:#bfe6cc;color:#1E7D46} .margen-box.bajo{background:#fdf1df;border-color:#f4d29a;color:#b45309} .margen-box.neg{background:#fbe4e3;border-color:#f2b8b5;color:#b0322f}
+  .stoast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:10px;font-size:14px;font-weight:600;box-shadow:0 8px 26px rgba(6,65,62,.28);z-index:80;opacity:0;transition:opacity .2s;pointer-events:none}
+  .stoast.show{opacity:1}
   .opogrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
   .opocard{border:1px solid var(--line);border-left:4px solid var(--gold);border-radius:10px;padding:11px 12px;background:#fff}
   .opocard .on{font-weight:800;font-size:13px;line-height:1.25;margin:6px 0 3px}
@@ -134,6 +146,9 @@ const prog=t=>{const e=document.getElementById("prog");if(e)e.textContent=t;};
 
 const HOY=new Date(); HOY.setHours(0,0,0,0);
 const iso=d=>d.toISOString().slice(0,10);
+const masDias=n=>{ const d=new Date(); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
+let tToastS=null;
+function toast(m){ let t=document.getElementById("stoast"); if(!t){ t=document.createElement("div"); t.id="stoast"; t.className="stoast"; document.body.appendChild(t); } t.textContent=m; t.classList.add("show"); clearTimeout(tToastS); tToastS=setTimeout(()=>t.classList.remove("show"),2800); }
 const MESES_ES=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
 // familia = 1er segmento útil de la categoría (la raíz de Odoo es "ALL", a veces duplicada)
 function familia(categ){ if(!categ) return "Sin categoría"; const p=categ[1].split("/").map(s=>s.trim()).filter(s=>s&&s.toUpperCase()!=="ALL"); return p[0]||"Sin categoría"; }
@@ -389,6 +404,7 @@ function abrir(id){
       </div>
     </div>
     <div class="dbody">
+      <button class="cta-ofertar" onclick="formOferta(${r.id})">🏷️ Crear oferta / liquidar este producto</button>
       <div class="dsec"><h4>Situación</h4>
         <div class="kv"><span class="k">Código</span><span class="v">${esc(r.code||"—")}</span></div>
         <div class="kv"><span class="k">Familia</span><span class="v">${esc(r.fam)}</span></div>
@@ -417,6 +433,83 @@ function sugerencia(r){
 }
 function cerrar(){document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");}
 document.addEventListener("keydown",e=>{if(e.key==="Escape")cerrar();});
+
+/* ====== Crear oferta / liquidación manual desde un producto ====== */
+let OFERTA={};
+async function formOferta(id){
+  const r=DATA.find(x=>x.id===id); if(!r) return;
+  OFERTA={id:r.id, costo:r.costoU};   // costo provisorio (se refresca abajo con el standard_price actual)
+  const d=document.getElementById("drawer");
+  d.innerHTML=`
+    <div class="dhead"><span class="x" onclick="cerrar()">✕</span>
+      <h2>🏷️ Nueva oferta</h2>
+      <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${esc(cleanName(r.name))}</span></div>
+    </div>
+    <div class="dbody">
+      <div class="ofld"><label>Producto</label><div class="oval">${esc(cleanName(r.name))} <span style="color:var(--gris2);font-weight:500">${esc(r.code||"")}</span></div></div>
+      <div class="ofld"><label>Título de la oferta</label><input id="of-tit" value="${esc(cleanName(r.name))}"></div>
+      <div class="orow">
+        <div class="ofld"><label>Precio de oferta</label><input id="of-precio" type="number" step="0.01" oninput="margenOfertaStock()" placeholder="—"></div>
+        <div class="ofld"><label>Precio de lista (antes)</label><input id="of-antes" type="number" step="0.01" value="${Math.round(r.pvp)||''}"></div>
+      </div>
+      <div class="ofld"><label>Margen con esta oferta</label><div id="of-margen" class="margen-box">calculando…</div>
+        <div class="ohint">Sobre el costo actual del producto en Odoo (neto, sin IVA). En rojo = perdés plata.</div></div>
+      <div class="orow">
+        <div class="ofld"><label>Stock a ofertar</label><input id="of-stock" type="number" value="${r.qty||''}"></div>
+        <div class="ofld"><label>Vigencia hasta</label><input id="of-hasta" type="date" value="${masDias(7)}"></div>
+      </div>
+      <div class="ofld"><label>Nota (opcional)</label><textarea id="of-nota" rows="2" placeholder="Condiciones, aclaraciones…"></textarea></div>
+      <div style="display:flex;gap:9px;margin-top:4px">
+        <button class="mini-btn" style="flex:1" onclick="abrir(${r.id})">← Volver</button>
+        <button class="wa-send" id="of-guardar" style="flex:2;margin-top:0;background:var(--gold)" onclick="guardarOfertaStock(${r.id})">Guardar oferta</button>
+      </div>
+    </div>`;
+  d.classList.add("on"); document.getElementById("scrim").classList.add("on");
+  // costo fresco (standard_price, lo sincroniza Odoo) + precio base de la lista para el "antes" y el sugerido
+  try{
+    const [pr, pit] = await Promise.all([
+      rpc("product.product","read",[[r.id],["standard_price"]]),
+      r.tmpl ? rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["applied_on","=","1_product"],["product_tmpl_id","=",r.tmpl]]],{fields:["min_quantity","fixed_price"],limit:200}) : Promise.resolve([])
+    ]);
+    OFERTA.costo=(pr[0]&&pr[0].standard_price)||r.costoU;
+    let base=r.pvp;
+    if(pit&&pit.length){ base=pit.sort((a,b)=>a.min_quantity-b.min_quantity)[0].fixed_price; }
+    const antes=document.getElementById("of-antes"); if(antes && base) antes.value=Math.round(base);
+    const pin=document.getElementById("of-precio");
+    if(pin && !pin.value){ const sug=Math.max(Math.round(base*0.85), Math.round(OFERTA.costo*1.05)); pin.value=sug; } // sugerencia −15% con piso costo+5%
+  }catch(e){}
+  margenOfertaStock();
+}
+function margenOfertaStock(){
+  const box=document.getElementById("of-margen"); if(!box) return;
+  const precio=parseFloat((document.getElementById("of-precio")||{}).value)||0;
+  const costo=OFERTA.costo;
+  if(!costo){ box.textContent="No hay costo cargado en Odoo para calcular el margen."; box.className="margen-box"; return; }
+  if(!(precio>0)){ box.textContent="Poné el precio de oferta para ver el margen."; box.className="margen-box"; return; }
+  const abs=Math.round(precio-costo), pct=Math.round((precio-costo)/precio*100);
+  box.className="margen-box "+(pct<0?"neg":pct<15?"bajo":"ok");
+  box.innerHTML=`<b>${pct<0?'':'+'}${pct}%</b> · ${money(abs)}/u <span class="cst">(costo ${money(costo)})</span>${pct<0?' ⚠️ perdés plata':(pct<15?' · margen ajustado':'')}`;
+}
+async function guardarOfertaStock(id){
+  const r=DATA.find(x=>x.id===id); if(!r) return;
+  const g=x=>document.getElementById(x);
+  const precio=parseFloat(g("of-precio").value)||0;
+  if(!(precio>0)){ toast("Poné el precio de oferta"); return; }
+  const btn=g("of-guardar"); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
+  const oferta={ id:"of"+Date.now(), tipo:"oferta",
+    titulo:(g("of-tit").value.trim())||cleanName(r.name),
+    items:[{id:r.id, sku:r.code, nombre:cleanName(r.name)}],
+    precio, precioAntes:parseFloat(g("of-antes").value)||0,
+    stock:parseFloat(g("of-stock").value)||0, hasta:g("of-hasta").value||"",
+    nota:g("of-nota").value.trim(),
+    creada:new Date().toISOString().slice(0,19).replace("T"," ") };
+  try{
+    let ofertas=[]; try{ ofertas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas"])||"[]"); }catch(e){}
+    ofertas.push(oferta);
+    await rpc("ir.config_parameter","set_param",["eyg.ofertas",JSON.stringify(ofertas)]);
+    cerrar(); toast("Oferta creada ✓ — ya está en el panel de comerciales");
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent="Guardar oferta"; } toast("Error: "+e.message); }
+}
 
 function textoResumen(){
   const hoyStr=HOY.toLocaleDateString("es-AR",{day:"2-digit",month:"long",year:"numeric"});
