@@ -214,22 +214,34 @@ async function cargar(){
   }catch(e){ document.getElementById("ov").innerHTML='<div class="errbox">No pude leer los comerciales: '+EYG.esc(e.message)+'</div>'; return; }
   const inicioMes = new Date().toISOString().slice(0,8)+"01";
   const hoy = new Date().toISOString().slice(0,10);
-  const cards=[];
-  render(cards,false);
-  for(const s of sellers){
-    try{
-      const cartera = await EYG.rpc("res.partner","search",[[["user_id","=",s.uid]]]);
-      const [fac,nc,cob,ml] = await Promise.all([
-        EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
-        EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
-        EYG.rpc("account.payment","read_group",[[["partner_id","in",cartera],["payment_type","=","inbound"],["state","=","posted"],["date",">=",inicioMes]],["amount:sum"],[]],{lazy:false}),
-        EYG.rpc("account.move.line","search_read",[[["partner_id","in",cartera],["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false]]],{fields:["amount_residual","date_maturity"],limit:0}),
-      ]);
-      let deuda=0,venc=0; for(const l of ml){const r=l.amount_residual||0; if(r>0){deuda+=r; if(l.date_maturity&&l.date_maturity<hoy)venc+=r;}}
-      cards.push({name:s.name, cartera:cartera.length, factMes:(fac[0]?.amount_untaxed||0)-(nc[0]?.amount_untaxed||0), cobMes:cob[0]?.amount||0, deuda, venc, vencPct: deuda>0?Math.round(venc/deuda*100):0});
-    }catch(e){ cards.push({name:s.name, err:true}); }
-    render(cards,false);
-  }
+  let cards=[];
+  render([],false);
+  // De-loop: antes era 1 search de cartera + 4 agregados POR vendedor (5×N queries, serial).
+  // Ahora ~5 queries TOTALES agrupadas por partner_id, con un mapa partner->vendedor. Mismos
+  // números por tarjeta. Ver [[eyg-odoo-carga-performance]].
+  try{
+    const uids = sellers.map(s=>s.uid);
+    // 1) todas las carteras de una: partner -> vendedor (por user_id) + conteo de clientes.
+    const parts = await EYG.rpc("res.partner","search_read",[[["user_id","in",uids]]],{fields:["id","user_id"]});
+    const sellerOf={}, carteraCount={}, allIds=[];
+    uids.forEach(u=>carteraCount[u]=0);
+    for(const p of parts){ const u=p.user_id&&p.user_id[0]; if(u==null||!(u in carteraCount)) continue; sellerOf[p.id]=u; carteraCount[u]++; allIds.push(p.id); }
+    // 2-4) métricas del mes agrupadas por partner_id (1 query c/u en vez de 4 por vendedor).
+    const [facG,ncG,cobG,mlAll] = allIds.length ? await Promise.all([
+      EYG.rpc("account.move","read_group",[[["partner_id","in",allIds],["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],["partner_id"]],{lazy:false}),
+      EYG.rpc("account.move","read_group",[[["partner_id","in",allIds],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],["partner_id"]],{lazy:false}),
+      EYG.rpc("account.payment","read_group",[[["partner_id","in",allIds],["payment_type","=","inbound"],["state","=","posted"],["date",">=",inicioMes]],["amount:sum"],["partner_id"]],{lazy:false}),
+      EYG.rpc("account.move.line","search_read",[[["partner_id","in",allIds],["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false]]],{fields:["partner_id","amount_residual","date_maturity"],limit:0}),
+    ]) : [[],[],[],[]];
+    const fac={},nc={},cob={},deuda={},venc={};
+    uids.forEach(u=>{fac[u]=0;nc[u]=0;cob[u]=0;deuda[u]=0;venc[u]=0;});
+    const pidOf=g=>g.partner_id&&g.partner_id[0];
+    for(const g of facG){ const u=sellerOf[pidOf(g)]; if(u!=null) fac[u]+=g.amount_untaxed||0; }
+    for(const g of ncG){  const u=sellerOf[pidOf(g)]; if(u!=null) nc[u]+=g.amount_untaxed||0; }
+    for(const g of cobG){ const u=sellerOf[pidOf(g)]; if(u!=null) cob[u]+=g.amount||0; }
+    for(const l of mlAll){ const u=sellerOf[l.partner_id&&l.partner_id[0]]; if(u==null) continue; const r=l.amount_residual||0; if(r>0){ deuda[u]+=r; if(l.date_maturity&&l.date_maturity<hoy) venc[u]+=r; } }
+    cards = sellers.map(s=>({ name:s.name, cartera:carteraCount[s.uid]||0, factMes:(fac[s.uid]||0)-(nc[s.uid]||0), cobMes:cob[s.uid]||0, deuda:deuda[s.uid]||0, venc:venc[s.uid]||0, vencPct:(deuda[s.uid]>0)?Math.round(venc[s.uid]/deuda[s.uid]*100):0 }));
+  }catch(e){ cards = sellers.map(s=>({name:s.name, err:true})); }
   render(cards,true);
 }
 function render(cards, done){
