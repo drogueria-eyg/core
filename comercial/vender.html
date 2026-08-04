@@ -210,7 +210,7 @@ let ST = {
   amount:{untaxed:0, total:0},
   syncing:false, dirty:false,
   // catálogo
-  fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, cargandoCat:false,
+  fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, cargandoCat:false,
   cartOpen:false,
 };
 
@@ -350,7 +350,7 @@ async function entrarVenta(){
    CATÁLOGO
    ============================================================ */
 async function cargarCatalogo(){
-  ST.cargandoCat=true; renderGrid();
+  ST.cargandoCat=true; ST._catToken=(ST._catToken||0)+1; renderGrid();
   try{
     let dom;
     const q=(ST.qProd||"").trim();
@@ -371,13 +371,14 @@ async function cargarCatalogo(){
     await cargarPrecios(prods);
   }catch(e){ ST.prods=[]; toast("No pude leer el catálogo"); }
   ST.cargandoCat=false; renderGrid();
+  cargarImagenes(ST.prods);
 }
 
-// Precio de referencia por producto = escalera de la lista del cliente (tramo de menor cantidad).
+// Escalera de precios de la lista del cliente por producto: ST.tiers[pid]=[{q,p}] (cantidad→precio).
 // El precio EXACTO lo pone Odoo al agregar la línea (fuente de verdad, se ve en el carrito).
 async function cargarPrecios(prods){
-  ST.precios={};
-  if(!ST.order.pricelistId || !prods.length) { prods.forEach(p=>{ ST.precios[p.id]=(p.list_price>1?p.list_price:null); }); return; }
+  ST.precios={}; ST.tiers={};
+  if(!ST.order.pricelistId || !prods.length){ prods.forEach(p=>{ ST.precios[p.id]=(p.list_price>1?p.list_price:null); }); return; }
   const tmpls=[...new Set(prods.map(p=>p.product_tmpl_id&&p.product_tmpl_id[0]).filter(Boolean))];
   let items=[];
   try{
@@ -389,9 +390,36 @@ async function cargarPrecios(prods){
   items.forEach(it=>{ if(!it.product_tmpl_id) return; const t=it.product_tmpl_id[0]; (porT[t]=porT[t]||[]).push(it); });
   prods.forEach(p=>{
     const t=p.product_tmpl_id&&p.product_tmpl_id[0];
-    const arr=(porT[t]||[]).filter(i=>i.compute_price==="fixed"&&i.fixed_price>0).sort((a,b)=>(a.min_quantity||0)-(b.min_quantity||0));
-    ST.precios[p.id] = arr.length ? arr[0].fixed_price : (p.list_price>1?p.list_price:null);
+    let arr=(porT[t]||[]).filter(i=>i.compute_price==="fixed"&&i.fixed_price>0)
+      .map(i=>({q:i.min_quantity||1, p:i.fixed_price})).sort((a,b)=>a.q-b.q);
+    // Quirk EyG: el 1er tramo (min≤1) que DUPLICA el precio del 2do es el "precio general" oculto → se fusiona.
+    if(arr.length>=2 && arr[0].q<=1 && Math.round(arr[0].p)===Math.round(arr[1].p)){ arr=arr.slice(1); arr[0]={...arr[0], q:1}; }
+    if(arr.length && arr[0].q<1) arr[0]={...arr[0], q:1};
+    ST.tiers[p.id]=arr;
+    ST.precios[p.id] = arr.length ? arr[0].p : (p.list_price>1?p.list_price:null);
   });
+}
+
+// ---- helpers de escalera ----
+// tramo que aplica a la cantidad q (el de mayor min_quantity <= q)
+function tramoDe(pid,q){ const t=ST.tiers[pid]||[]; let r=t[0]||null; for(const x of t){ if(x.q<=Math.max(1,q)) r=x; } return r; }
+function descPct(pid,tier){ const t=ST.tiers[pid]||[]; if(!t.length||!tier) return 0; const base=t[0].p; return base>0?Math.round((1-tier.p/base)*100):0; }
+// próximo tramo con mejor precio a partir de q → {need, tier, pct}
+function proxTramo(pid,q){ const t=ST.tiers[pid]||[]; const cur=tramoDe(pid,q); for(const x of t){ if(x.q>Math.max(1,q) && (!cur||x.p<cur.p)){ return {need:x.q-Math.max(0,q), tier:x, pct:descPct(pid,x)}; } } return null; }
+// chips de la escalera (solo si hay más de un tramo)
+function ladderHtml(pid,q){
+  const t=ST.tiers[pid]||[]; if(t.length<2) return "";
+  const act=tramoDe(pid,q);
+  return '<div class="ladder">'+t.slice(0,4).map(x=>{
+    const d=descPct(pid,x); const on=act&&x.q===act.q&&q>0;
+    return `<span class="tchip ${on?"act":""}" title="${x.q}+ unidades: ${money(x.p)} c/u">${x.q}+ <b>${money(x.p)}</b>${d>0?` −${d}%`:""}</span>`;
+  }).join("")+'</div>';
+}
+// aviso de salto de tramo
+function hintHtml(pid,q){
+  if(!(q>0)) return "";
+  const nx=proxTramo(pid,q); if(!nx) return "";
+  return `<div class="nextd">＋${nx.need} u → ${money(nx.tier.p)} c/u${nx.pct>0?` (−${nx.pct}%)`:""}</div>`;
 }
 
 function renderGrid(){
@@ -401,17 +429,33 @@ function renderGrid(){
   el.innerHTML='<div class="grid">'+ST.prods.map(cardProd).join("")+'</div>'+
     (ST.prods.length>=200?'<div style="text-align:center;color:var(--gris2);font-size:12px;padding:0 0 16px">Mostrando los primeros 200. Afiná con el buscador.</div>':"");
 }
+function thumbHtml(p){
+  const img=ST.imgs[p.id];
+  if(img) return `<img class="thumb" id="img-${p.id}" src="data:image/png;base64,${img}" alt="">`;
+  if(img===false) return `<div class="thumb ph" id="img-${p.id}">📦</div>`;   // sin imagen en Odoo
+  return `<div class="thumb ph" id="img-${p.id}">·</div>`;                     // pendiente de cargar
+}
 function cardProd(p){
   const q=ST.want[p.id]||0;
   const pr=ST.precios[p.id];
   const stk=p.qty_available||0;
   return `<div class="prod ${q>0?"incart":""}" id="prod-${p.id}">
-    <div class="pn">${esc(p.name)}</div>
-    <div class="pm">${p.default_code?("["+esc(p.default_code)+"] "):""}${esc(catCorta(p.categ_id&&p.categ_id[1]))}</div>
-    <div class="stk ${stk<10?"low":""}">${stk<10?"⚠ ":"✓ "}${Math.round(stk)} en stock</div>
-    <div class="pr">${pr!=null?money(pr):'<small>precio al agregar</small>'}<small>${pr!=null?" c/u":""}</small></div>
-    <div class="add" id="add-${p.id}">${q>0?stepper(p.id,q):`<button class="plus" onclick="addProd(${p.id})">＋ Agregar</button>`}</div>
+    <div class="top">
+      ${thumbHtml(p)}
+      <div class="ti">
+        <div class="pn">${esc(p.name)}</div>
+        <div class="pm">${p.default_code?("["+esc(p.default_code)+"] "):""}${esc(catCorta(p.categ_id&&p.categ_id[1]))}</div>
+        <div class="stk ${stk<10?"low":""}">${stk<10?"⚠ ":"✓ "}${Math.round(stk)} en stock</div>
+      </div>
+    </div>
+    <div class="pr">${pr!=null?money(pr):'precio al agregar'}${pr!=null?'<small> c/u</small>':""}</div>
+    <div id="dyn-${p.id}">${dynHtml(p.id,q)}</div>
   </div>`;
+}
+// parte dinámica de la tarjeta (escalera + aviso + botón/stepper), depende de la cantidad
+function dynHtml(pid,q){
+  return ladderHtml(pid,q)+hintHtml(pid,q)+
+    `<div class="add">${q>0?stepper(pid,q):`<button class="plus" onclick="addProd(${pid})">＋ Agregar</button>`}</div>`;
 }
 function stepper(pid,q){
   return `<div class="stepper">
@@ -421,15 +465,36 @@ function stepper(pid,q){
   </div>`;
 }
 
+// Carga diferida de imágenes: el grid aparece al toque y las fotos se van rellenando.
+async function cargarImagenes(prods){
+  const faltan=prods.filter(p=>ST.imgs[p.id]===undefined).map(p=>p.id);
+  if(!faltan.length) return;
+  const token=ST._catToken;                     // si el usuario cambió de familia/búsqueda, abortamos
+  for(let i=0;i<faltan.length;i+=40){
+    if(token!==ST._catToken) return;
+    const lote=faltan.slice(i,i+40);
+    let rows=[];
+    try{ rows=await rpc("product.product","read",[lote],{fields:["id","image_128"]}); }catch(e){ continue; }
+    const map={}; rows.forEach(r=>{ map[r.id]=r.image_128||false; });
+    lote.forEach(id=>{ ST.imgs[id]= (map[id]!==undefined?map[id]:false); });
+    if(token!==ST._catToken) return;
+    lote.forEach(id=>{ const el=document.getElementById("img-"+id); if(!el) return;
+      const val=ST.imgs[id];
+      if(val){ const im=document.createElement("img"); im.className="thumb"; im.id="img-"+id; im.src="data:image/png;base64,"+val; im.alt=""; el.replaceWith(im); }
+      else { el.textContent="📦"; }
+    });
+  }
+}
+
 /* ---------- alta/baja de cantidades (optimista + sync a Odoo) ---------- */
 function addProd(pid){ ST.want[pid]=(ST.want[pid]||0)+1; refrescarCelda(pid); marcarDirty(); }
 function chgQty(pid,d){ ST.want[pid]=Math.max(0,(ST.want[pid]||0)+d); if(ST.want[pid]===0) delete ST.want[pid]; refrescarCelda(pid); marcarDirty(); }
 function setQty(pid,v){ let n=Math.max(0,Math.floor(+v||0)); if(n===0) delete ST.want[pid]; else ST.want[pid]=n; refrescarCelda(pid); marcarDirty(); }
 
 function refrescarCelda(pid){
-  const add=document.getElementById("add-"+pid); const card=document.getElementById("prod-"+pid);
+  const dyn=document.getElementById("dyn-"+pid); const card=document.getElementById("prod-"+pid);
   const q=ST.want[pid]||0;
-  if(add) add.innerHTML = q>0?stepper(pid,q):`<button class="plus" onclick="addProd(${pid})">＋ Agregar</button>`;
+  if(dyn) dyn.innerHTML = dynHtml(pid,q);
   if(card) card.classList.toggle("incart",q>0);
   renderCartBadge();
 }
@@ -533,10 +598,12 @@ function renderCart(){
     const nombre = (l&&l.name) || (ST.prods.find(p=>p.id==pid)||{}).name || "Producto";
     const sub = l? l.subtotal : null;
     const unit = l? l.price_unit*(1-(l.discount||0)/100) : ST.precios[pid];
+    const nx=proxTramo(pid,q);
     return `<div class="citem">
-      <div>
+      <div style="min-width:0;flex:1">
         <div class="ci-nm">${esc(nombre)}</div>
         <div class="ci-m">${unit!=null?money(unit)+" c/u"+((l&&l.discount)?(" · −"+Math.round(l.discount)+"%"):""):"calculando…"}</div>
+        ${nx?`<div class="nextd" style="margin-top:5px;display:inline-block">＋${nx.need} u → ${money(nx.tier.p)} c/u${nx.pct>0?` (−${nx.pct}%)`:""}</div>`:""}
         <div class="ministep">
           <button onclick="chgQty(${pid},-1)">−</button>
           <span class="q">${q}</span>
@@ -612,6 +679,12 @@ async function volverInicio(){
 function modal(html){ document.getElementById("modalHost").innerHTML=`<div class="scrim" onclick="if(event.target===this)cerrarModal()"><div class="modal">${html}</div></div>`; }
 function cerrarModal(){ document.getElementById("modalHost").innerHTML=""; }
 
+/* Alto real de la topbar → variable CSS --topH, para que el catálogo y el carrito
+   (position:sticky) queden justo debajo y no tapen la primera fila de productos. */
+function setTopH(){ const tb=document.querySelector(".topbar"); const h=tb?tb.offsetHeight:56; document.documentElement.style.setProperty("--topH", h+"px"); }
+window.addEventListener("resize", setTopH);
+window.addEventListener("orientationchange", setTopH);
+
 /* ============================================================
    LOGIN + identidad
    ============================================================ */
@@ -625,6 +698,7 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
   } else {
     COMERCIAL = q || perfil.comercial_ref || "Natividad Sanchez";
   }
+  setTopH();
   cargar();
 });
 </script>
