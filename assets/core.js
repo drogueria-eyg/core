@@ -14,10 +14,30 @@ window.EYG = (function(){
   let sb = null;
   function supa(){ if(!sb){ if(!window.supabase) throw new Error("supabase-js no cargó"); sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON); } return sb; }
 
+  /* ---- Límite de concurrencia hacia Odoo --------------------------------
+     Odoo Online (SaaS) tiene pocos workers: mandarle ~15 requests en paralelo
+     (ráfagas de .map/Promise.all) lo satura y TODAS tardan ~20 s (medido en los
+     logs de la edge function). Con ~4 en vuelo cada una vuelve en ~0.6-1 s. Este
+     gate encola el resto. Lo comparten EYG.rpc y los wrappers locales de cada
+     módulo (panel/precios/cobranzas/egresos) vía EYG.gate. Solo limita el fetch;
+     los reintentos con backoff sueltan el turno mientras esperan. */
+  const RPC_MAX = 4;
+  let _rpcActive = 0; const _rpcQ = [];
+  function _rpcRun(fn){
+    return Promise.resolve().then(fn).finally(()=>{
+      _rpcActive--;
+      if(_rpcQ.length){ _rpcActive++; _rpcQ.shift()(); }
+    });
+  }
+  function gate(fn){
+    if(_rpcActive < RPC_MAX){ _rpcActive++; return _rpcRun(fn); }
+    return new Promise(res=>_rpcQ.push(()=>res(_rpcRun(fn))));
+  }
+
   /* ---- Odoo (edge function odoo-rpc) ---- */
   async function rpc(model,method,args=[],kwargs={}){
     for(let i=0;i<4;i++){ try{
-      const r = await fetch(RPC_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model,method,args,kwargs})});
+      const r = await gate(()=>fetch(RPC_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model,method,args,kwargs})}));
       const j = await r.json(); if(j.error) throw new Error(typeof j.error==="string"?j.error:JSON.stringify(j.error));
       return j.result ?? j;
     }catch(e){ if(i===3) throw e; await new Promise(res=>setTimeout(res,900*(i+1))); } }
@@ -568,7 +588,7 @@ window.EYG = (function(){
     document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="hidden") ping(true); });
   }
 
-  return { supa, rpc, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
+  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA };

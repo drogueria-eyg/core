@@ -209,7 +209,7 @@ async function rpc(model,method,args,kwargs={}){
   let last;
   for(let i=0;i<3;i++){
     try{
-      const r=await fetch(RPC,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model,method,args,kwargs})});
+      const r=await EYG.gate(()=>fetch(RPC,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model,method,args,kwargs})}));
       const j=await r.json();
       if(!j.ok)throw new Error(j.error||"Error Odoo");
       return j.result;
@@ -332,34 +332,33 @@ async function cargar(silent){
     const ids=raw.map(p=>p.id);
     const parts=ids.length?await rpc("res.partner","read",[ids],{fields:PFIELDS_COB,context:{lang:"es_AR"}}):[];
     const byId={}; parts.forEach(p=>byId[p.id]=p);
-    // Bóveda: marcador [BOVEDA] en el chatter del contacto (último por cliente manda)
-    BOVEDA={};
+    // Marcadores del chatter (bóveda / contacto / nota) en UNA sola query en vez de 3.
+    // Cada mail.message body-like es un full-scan de la tabla más grande de Odoo; con
+    // res_id acotado por la cartera igual conviene un solo round-trip (Odoo Online tarda
+    // ~2-4s por query). Traemos los 3 marcadores en OR y partimos en el cliente por cuál
+    // marcador contiene el cuerpo. Ver [[eyg-odoo-carga-performance]].
+    BOVEDA={}; CONTACTOS={}; NOTAS={};
     if(ids.length){
-      const bov=await rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["body","like","[BOVEDA]"]]],{fields:["res_id","body","date"],limit:0});
-      bov.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
-      const vistos=new Set();
-      for(const msg of bov){
-        if(vistos.has(msg.res_id)) continue; vistos.add(msg.res_id);
+      const msgs=await rpc("mail.message","search_read",
+        [[["model","=","res.partner"],["res_id","in",ids],
+          "|","|",["body","like","[BOVEDA]"],["body","like","[COBRO-CONTACTO]"],["body","like","[COBRO-NOTA]"]]],
+        {fields:["res_id","body","date"],limit:0});
+      msgs.sort((a,b)=>(b.date||"").localeCompare(a.date||""));   // más nuevo primero
+      const vbov=new Set();
+      for(const msg of msgs){
         const body=(msg.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," ");
-        if(/salir/i.test(body)) continue;                       // salió de la bóveda
-        const tipo=/incobrable/i.test(body)?"incobrable":"acuerdo";
-        const nota=(body.split("|").slice(1).join("|")||"").trim();
-        BOVEDA[msg.res_id]={tipo,nota};
+        if(body.includes("[BOVEDA]")){
+          if(vbov.has(msg.res_id)) continue; vbov.add(msg.res_id);   // solo el último [BOVEDA] manda
+          if(/salir/i.test(body)) continue;                          // salió de la bóveda
+          const tipo=/incobrable/i.test(body)?"incobrable":"acuerdo";
+          const nota=(body.split("|").slice(1).join("|")||"").trim();
+          BOVEDA[msg.res_id]={tipo,nota};
+        }else if(body.includes("[COBRO-CONTACTO]")){
+          if(!(msg.res_id in CONTACTOS)) CONTACTOS[msg.res_id]=msg.date;   // último contacto
+        }else if(body.includes("[COBRO-NOTA]")){
+          if(!(msg.res_id in NOTAS)){ const texto=(body.split("]").slice(1).join("]")||"").trim(); NOTAS[msg.res_id]={texto,fecha:msg.date}; }  // última nota
+        }
       }
-    }
-    // Contactado por cobranzas: marcador [COBRO-CONTACTO] en el chatter → último = fecha/hora del último contacto
-    CONTACTOS={};
-    if(ids.length){
-      const cm=await rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["body","like","[COBRO-CONTACTO]"]]],{fields:["res_id","date"],limit:0});
-      cm.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
-      for(const msg of cm){ if(!(msg.res_id in CONTACTOS)) CONTACTOS[msg.res_id]=msg.date; }
-    }
-    // Notas / acuerdos: marcador [COBRO-NOTA] en el chatter → última por cliente
-    NOTAS={};
-    if(ids.length){
-      const nm=await rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["body","like","[COBRO-NOTA]"]]],{fields:["res_id","body","date"],limit:0});
-      nm.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
-      for(const msg of nm){ if(!(msg.res_id in NOTAS)){ const body=(msg.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," "); const texto=(body.split("]").slice(1).join("]")||"").trim(); NOTAS[msg.res_id]={texto,fecha:msg.date}; } }
     }
     // Catálogos para el formulario de edición (dropdowns), 1 sola vez
     if(!CAT.prov.length){ try{
