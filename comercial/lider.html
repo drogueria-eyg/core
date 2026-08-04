@@ -324,7 +324,7 @@ async function init(){
     DATA=COM.map(c=>({...c, ano:aA[c.uid]||0, mes:aM[c.uid]||0, sem:aS[c.uid]||0, hoy:0, horas:new Array(24).fill(0)}));
     await refreshHoy();
     render();
-    chartTimer=setInterval(tick, 60000);
+    chartTimer=setInterval(tick, 180000);   // 180s (era 60s): menos carga recurrente sobre Odoo
     cargarVentasEq();     // ventas del equipo con consultas propias (rápido, no espera a las fichas)
     cargarFichas();       // análisis por comercial (nivel/salud/comparativas) en segundo plano
     cargarProductos();
@@ -339,7 +339,8 @@ async function refreshHoy(){
   const byU={}; DATA.forEach(d=>{d.hoy=0; d.horas=new Array(24).fill(0); byU[d.uid]=d;});
   for(const o of TODAY){ const d=byU[o.uid]; if(d){ d.hoy+=o.amt; d.horas[o.hour]+=o.amt; } }
 }
-function tick(){ refreshHoy().then(()=>{ renderKpis(); renderChart(); renderEquipo(); }).catch(()=>{}); cargarPresencia(); }
+function tick(){ if(typeof document!=="undefined" && document.hidden) return;   // pestaña oculta: no consultar
+  refreshHoy().then(()=>{ renderKpis(); renderChart(); renderEquipo(); }).catch(()=>{}); cargarPresencia(); }
 
 /* Presencia del equipo (heartbeat eyg.presencia.<uid>). Se carga async, no bloquea el panel.
    La usa la vista principal (conectados X/X) y la pestaña Actividad. */
@@ -348,8 +349,12 @@ function presOnline(){ if(!PRES) return null; const now=Date.now(), hoy=argToday
   return UIDS.filter(uid=>{ const p=PRES[uid]||{}; return p.online && p.dia===hoy && (now-new Date(p.online).getTime())<4*60000; }); }
 async function cargarPresencia(){
   try{
-    const arr=await Promise.all(UIDS.map(uid=>EYG.rpc("ir.config_parameter","get_param",["eyg.presencia."+uid]).catch(()=>null)));
-    const m={}; UIDS.forEach((uid,i)=>{ try{ m[uid]=JSON.parse(arr[i]||"{}")||{}; }catch(e){ m[uid]={}; } }); PRES=m;
+    // 1 sola query (era 1 get_param por integrante, y se repetía cada tick). search_read
+    // de ir.config_parameter con key in [...] y mapeo por clave. Ver [[eyg-odoo-carga-performance]].
+    const keys=UIDS.map(uid=>"eyg.presencia."+uid);
+    const rows=await EYG.rpc("ir.config_parameter","search_read",[[["key","in",keys]]],{fields:["key","value"]});
+    const byKey={}; rows.forEach(r=>{ byKey[r.key]=r.value; });
+    const m={}; UIDS.forEach(uid=>{ try{ m[uid]=JSON.parse(byKey["eyg.presencia."+uid]||"{}")||{}; }catch(e){ m[uid]={}; } }); PRES=m;
     renderKpis(); if(VISTA==="actividad" && ACT_LIDER) renderActividadLider();
   }catch(e){}
 }

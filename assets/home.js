@@ -267,7 +267,7 @@ window.EYGHome = (function(){
     if(V.propio && !SC.uid){ sinAmbito(); return; }
     if(V.ventas){
       ola1();
-      timers.push(setInterval(()=>{ ola1({silencioso:true}); }, 60000));
+      timers.push(setInterval(()=>{ if(typeof document!=="undefined" && document.hidden) return; ola1({silencioso:true}); }, 180000));  // 180s + pausa si oculta (era 60s)
     }else if(_r1){ _r1(); _r1=null; }   // sin ola 1 nadie debe quedar esperándola
     ola2(); ola3();
     /* El lienzo del gráfico se elige según el ancho: si rotan el celular o
