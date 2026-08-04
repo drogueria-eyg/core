@@ -278,6 +278,11 @@ window.EYG = (function(){
     {key:"egresos", dept:"finanzas", cat:"Finanzas", ico:"💸", titulo:"Egresos", desc:"Todo lo que sale: compras de mercadería, gastos operativos, financieros, impuestos y pagos a proveedores. El panorama del egreso, por naturaleza y por proveedor.", roles:["finanzas","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/egresos.html"},
+    /* EN PRUEBAS: herramienta para cargar préstamos bancarios (comprobantes OC-X) en Odoo.
+       Gateada al super-admin hasta terminarla. */
+    {key:"creditos-banc", dept:"finanzas", cat:"Finanzas", ico:"🏦", titulo:"Cargar crédito bancario", desc:"Cargá los préstamos que pedís a los bancos: pegás el PDF del banco y el neto acreditado, y genera el comprobante OC-X en Odoo con capital, interés, sellados, IVA y todas las cuotas.", roles:["finanzas","direccion"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"finanzas/creditos-bancarios.html"},
     {key:"stock",     dept:"inventario", cat:"Inventario", ico:"📦", titulo:"Stock y Sobrestock", desc:"Plata inmovilizada, rotación por producto y vencimientos. Qué frenar y qué liquidar.", roles:["finanzas","inventario"], ready:true, path:()=>"inventario/stock.html"},
     {key:"nombres",   dept:"inventario", cat:"Inventario", ico:"🏷️", titulo:"Maestro de productos", desc:"Ordená el dato maestro de cada producto: nombre, unidades, embalaje y subcategoría. Detecta errores y completa lo que falta, con un clic.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/nombres.html"},
     {key:"oportunidades", dept:"inventario", cat:"Inventario", ico:"💡", titulo:"Oportunidades y Ofertas", desc:"Cuando un costo baja, el sistema detecta una oportunidad de oferta. Confirmala (precio, stock, vigencia) o armá combos, y van a la tarjeta de los comerciales.", roles:["inventario"], ready:true, path:()=>"inventario/oportunidades.html"},
