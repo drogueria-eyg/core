@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Egresos · EyG Core</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/core.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../assets/core.js?v=7"></script>
+<style>
+  :root{
+    --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
+    --agua:#E2F1EF; --coral:#EC8B5E; --ink:#0E1F1D; --gris:#5F716E; --gris2:#8A9A97;
+    --surface:#fff; --bg:#F4F8F7; --line:#DCE8E6; --radius:12px;
+    --shadow:0 1px 2px rgba(6,65,62,.05), 0 6px 24px rgba(6,65,62,.06);
+    /* Colores por NATURALEZA del egreso (paleta estable del módulo) */
+    --n-merca:#04635F;   /* mercadería (reventa) */
+    --n-logis:#0AA89F;   /* depósito / logística */
+    --n-comer:#2E8B7A;   /* gastos comerciales */
+    --n-admin:#5B8DEF;   /* administración */
+    --n-imp:#B7791F;     /* impuestos */
+    --n-fin:#C4602A;     /* financieros */
+    --n-capex:#7A5AF8;   /* bienes de uso */
+    --n-otros:#8A9A97;   /* otros / técnicos */
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Archivo',system-ui,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+  .topbar{background:var(--teal-deep);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:13px;position:sticky;top:0;z-index:30}
+  .mono{font-family:Georgia,serif;font-weight:700;font-size:23px;letter-spacing:.5px;line-height:1}
+  .mono .y{color:var(--aqua)}
+  .topbar .tag{font-weight:700;font-size:11px;letter-spacing:2px;text-transform:uppercase;background:rgba(255,255,255,.14);padding:3px 9px;border-radius:20px}
+  .topbar .title{font-weight:700;font-size:15px;margin-left:4px}
+  .topbar .back{margin-left:auto;color:#fff;text-decoration:none;font-size:13px;font-weight:600;opacity:.85}
+  .topbar .back:hover{opacity:1}
+  .wrap{max-width:1240px;margin:0 auto;padding:20px 22px 90px}
+
+  /* Aviso "en construcción" */
+  .wip{background:#FBF3D9;border:1px solid #EAD9A0;color:#8A6D1A;border-radius:10px;padding:10px 14px;font-size:12.5px;line-height:1.5;margin-bottom:16px;display:flex;gap:9px;align-items:flex-start}
+  .wip b{color:#6B5410}
+
+  /* Tabs de navegación del módulo */
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;border-bottom:1px solid var(--line)}
+  .tab{font-family:inherit;font-size:13.5px;font-weight:700;color:var(--gris);background:none;border:0;border-bottom:2.5px solid transparent;padding:9px 13px 11px;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap}
+  .tab:hover{color:var(--teal-deep)}
+  .tab.on{color:var(--teal-deep);border-bottom-color:var(--teal)}
+  .tab .soon{font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;background:var(--agua);color:var(--teal-deep);border-radius:20px;padding:1px 6px}
+
+  /* KPIs */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:11px;margin-bottom:16px}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 15px;box-shadow:var(--shadow)}
+  .kpi .l{font-size:11px;color:var(--gris);font-weight:700;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:6px}
+  .kpi .n{font-size:23px;font-weight:800;line-height:1.15;margin-top:6px}
+  .kpi .s{font-size:11.5px;color:var(--gris2);font-weight:600;margin-top:3px}
+  .kpi .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+
+  /* Composición por naturaleza */
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 18px;margin-bottom:16px}
+  .panel h3{font-size:14px;font-weight:800;color:var(--ink);margin-bottom:3px}
+  .panel .cap{font-size:12px;color:var(--gris);margin-bottom:13px}
+  .cbar{display:flex;height:20px;border-radius:7px;overflow:hidden;background:var(--bg)}
+  .cbar > span{height:100%;transition:width .3s}
+  .cleg{display:flex;flex-wrap:wrap;gap:9px 20px;margin-top:13px}
+  .cleg .it{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--gris)}
+  .cleg .it .dot{width:11px;height:11px;border-radius:3px;flex-shrink:0}
+  .cleg .it b{color:var(--ink);font-weight:800}
+  .cleg .it .pct{color:var(--gris2);font-weight:600;font-size:11.5px}
+
+  /* Evolución mensual (barras simples) */
+  .bars{display:flex;align-items:flex-end;gap:6px;height:150px;margin-top:8px}
+  .bars .b{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;min-width:0}
+  .bars .b .col{width:100%;max-width:34px;background:linear-gradient(180deg,var(--teal-med),var(--teal-deep));border-radius:5px 5px 0 0;transition:height .3s;min-height:2px}
+  .bars .b .mlbl{font-size:10px;color:var(--gris2);font-weight:600;white-space:nowrap}
+  .bars .b .mv{font-size:9.5px;color:var(--gris);font-weight:700}
+
+  /* Tabla top proveedores */
+  .tablecard{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+  .thead,.row{display:grid;grid-template-columns:2.4fr 1fr 1fr;gap:12px;align-items:center;padding:11px 16px}
+  .thead{background:#F0F6F5;border-bottom:1px solid var(--line);font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--gris)}
+  .row{border-bottom:1px solid var(--line)}
+  .row:last-child{border-bottom:0}
+  .row .pn{font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .rt{text-align:right;font-weight:700}
+  .thead .rt{text-align:right}
+  .num{font-variant-numeric:tabular-nums}
+
+  /* Placeholder de pestañas futuras */
+  .ph{background:var(--surface);border:1px dashed var(--line);border-radius:var(--radius);padding:34px 22px;text-align:center;color:var(--gris)}
+  .ph .ico{font-size:34px;margin-bottom:8px}
+  .ph h4{font-size:16px;color:var(--ink);margin-bottom:6px}
+  .ph p{font-size:13px;line-height:1.6;max-width:560px;margin:0 auto 4px}
+  .ph .plan{text-align:left;max-width:560px;margin:14px auto 0;font-size:12.5px;color:var(--gris);line-height:1.7}
+  .ph .plan li{margin-left:18px}
+
+  /* Tramos de vencimiento (cuentas por pagar) */
+  .t-vencer{--tc:#1E7D46;--tb:#E4F5E9} .t-d30{--tc:#B7791F;--tb:#FBE9CF}
+  .t-d60{--tc:#C4602A;--tb:#FBE3D4} .t-d90{--tc:#B0413E;--tb:#FBE0DF}
+  .t-mas{--tc:#8A1F1C;--tb:#F7D2D0} .t-favor{--tc:#5B3FA6;--tb:#ECE6F6}
+  .agtiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:11px;margin-bottom:16px}
+  .agtile{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--tc,var(--line));border-radius:var(--radius);padding:13px 15px;box-shadow:var(--shadow)}
+  .agtile .l{font-size:11px;color:var(--gris);font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+  .agtile .n{font-size:20px;font-weight:800;margin-top:5px;color:var(--tc,var(--ink))}
+  .agtile .s{font-size:11px;color:var(--gris2);font-weight:600;margin-top:2px}
+  .pchip{display:inline-block;font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:20px;background:var(--tb,var(--bg));color:var(--tc,var(--gris));white-space:nowrap}
+  .prov-tbl .thead,.prov-tbl .row{grid-template-columns:2.4fr 1.1fr 1.1fr 90px}
+  .jour{display:flex;flex-direction:column;gap:9px;margin-top:4px}
+  .jrow{display:grid;grid-template-columns:1.5fr 3fr 1.1fr;gap:12px;align-items:center}
+  .jrow .jn{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .jrow .jbar{height:13px;background:var(--bg);border-radius:6px;overflow:hidden}
+  .jrow .jbar>span{display:block;height:100%;background:linear-gradient(90deg,var(--teal-med),var(--teal-deep));border-radius:6px}
+  .jrow .jv{text-align:right;font-weight:700;font-size:13px}
+  .loading{display:flex;align-items:center;justify-content:center;gap:11px;padding:60px 20px;color:var(--gris)}
+  .spinner{width:22px;height:22px;border:3px solid var(--line);border-top-color:var(--teal);border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .err{background:#FBE0DF;border:1px solid #E9B7B4;color:#8A1F1C;border-radius:10px;padding:12px 15px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="mono">E<span class="y">y</span>G</span><span class="tag">Core</span>
+  <span class="title">Egresos</span>
+  <a class="back" href="../index.html">← Inicio</a>
+</div>
+<div class="wrap">
+  <div class="wip">💡 <div><b>Módulo en construcción.</b> Esta es la primera estructura de Egresos — el espejo de Cobranzas para todo lo que sale de la droguería. El <b>Panorama</b> ya lee datos en vivo de Odoo; las demás pestañas están esbozadas para irlas completando.</div></div>
+  <div class="tabs" id="tabs"></div>
+  <div id="view"></div>
+</div>
+
+<script>
+const RPC="https://yxotopoklgjowcudveoj.supabase.co/functions/v1/odoo-rpc";
+const ODOO="https://drogueriaeyg.odoo.com";
+const money=n=>"$"+Math.round(n||0).toLocaleString("es-AR");
+// Monto compacto para KPIs grandes: $1,7 MM / $850 mil
+function moneyK(n){ n=Math.abs(n||0); if(n>=1e9) return "$"+(n/1e9).toLocaleString("es-AR",{maximumFractionDigits:2})+" MM MM";
+  if(n>=1e6) return "$"+(n/1e6).toLocaleString("es-AR",{maximumFractionDigits:1})+" MM";
+  if(n>=1e3) return "$"+Math.round(n/1e3).toLocaleString("es-AR")+" mil"; return money(n); }
+const esc=s=>(s==null?"":String(s)).replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+
+async function rpc(model,method,args,kwargs={}){
+  let last;
+  for(let i=0;i<3;i++){
+    try{
+      const r=await fetch(RPC,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model,method,args,kwargs})});
+      const j=await r.json();
+      if(!j.ok)throw new Error(j.error||"Error Odoo");
+      return j.result;
+    }catch(e){ last=e; if(i<2) await new Promise(r=>setTimeout(r,600*(i+1))); }
+  }
+  throw last;
+}
+
+/* ===== Naturaleza del egreso — clasificación por prefijo de cuenta contable =====
+   El plan de EyG (localización AR) tiene el gasto en la clase 5. Bucketizamos por
+   prefijo del código de cuenta. Es la columna vertebral del módulo: TODO egreso
+   cae en una de estas naturalezas. Se refina agregando/moviendo prefijos. */
+const NAT=[
+  {k:"merca", nom:"Mercadería (reventa)", col:"var(--n-merca)", pref:["5.1.1"]},
+  {k:"logis", nom:"Depósito y logística", col:"var(--n-logis)", pref:["5.1.2"]},
+  {k:"comer", nom:"Gastos comerciales",   col:"var(--n-comer)", pref:["5.2"]},
+  {k:"admin", nom:"Administración",        col:"var(--n-admin)", pref:["5.3"]},
+  {k:"imp",   nom:"Impuestos",             col:"var(--n-imp)",   pref:["5.4","5.5"]},
+  {k:"fin",   nom:"Financieros",           col:"var(--n-fin)",   pref:["5.6"]},
+  {k:"capex", nom:"Bienes de uso",         col:"var(--n-capex)", pref:["1.2"]},
+  {k:"otros", nom:"Otros / a clasificar",  col:"var(--n-otros)", pref:[]},
+];
+function natDe(code){
+  const c=String(code||"").trim();
+  for(const n of NAT){ if(n.pref.some(p=>c.startsWith(p))) return n.k; }
+  return "otros";
+}
+
+const HOY=new Date();
+const desde12m=(()=>{ const d=new Date(HOY); d.setFullYear(d.getFullYear()-1); d.setDate(1); return d.toISOString().slice(0,10); })();
+
+let ST={ tab:"panorama", data:null };
+
+const TABS=[
+  {k:"panorama",  ico:"📊", nom:"Panorama",        ready:true},
+  {k:"compras",   ico:"🧾", nom:"Compras",         ready:false},
+  {k:"gastos",    ico:"💡", nom:"Gastos operativos",ready:false},
+  {k:"financ",    ico:"🏦", nom:"Financieros",     ready:false},
+  {k:"impuestos", ico:"🧮", nom:"Impuestos",       ready:false},
+  {k:"pagos",     ico:"💸", nom:"Pagos y por pagar",ready:true},
+  {k:"prov",      ico:"🏭", nom:"Proveedores",     ready:false},
+];
+
+function renderTabs(){
+  document.getElementById("tabs").innerHTML = TABS.map(t=>
+    `<button class="tab ${ST.tab===t.k?'on':''}" onclick="irTab('${t.k}')">${t.ico} ${esc(t.nom)}${t.ready?'':'<span class="soon">pronto</span>'}</button>`
+  ).join("");
+}
+function irTab(k){ ST.tab=k; renderTabs(); renderView(); }
+
+/* ===== Carga del Panorama (una sola pasada de consultas agregadas) ===== */
+async function cargarPanorama(){
+  // 1) Composición por cuenta: líneas de factura de proveedor posteadas (12m).
+  const porCuenta = await rpc("account.move.line","read_group",
+    [[["move_id.move_type","in",["in_invoice","in_refund"]],["move_id.state","=","posted"],
+      ["date",">=",desde12m],["display_type","=","product"]],
+     ["balance:sum"],["account_id"]],
+    {lazy:false,limit:400});
+
+  // 2) Órdenes de compra abiertas (compromiso a futuro).
+  const oc = await rpc("purchase.order","read_group",
+    [[["state","in",["purchase","done"]]],["amount_total:sum"],["state"]],{lazy:false});
+
+  // 3) Pagos salientes posteados (12m) — la tesorería real.
+  const pagos = await rpc("account.payment","read_group",
+    [[["payment_type","=","outbound"],["state","=","posted"],["date",">=",desde12m]],
+     ["amount:sum"],["date:month"]],{lazy:false,orderby:"date asc"});
+
+  // 4) Cuentas por pagar HOY (deuda con proveedores sin conciliar).
+  const cxp = await rpc("account.move.line","read_group",
+    [[["account_id.account_type","=","liability_payable"],["parent_state","=","posted"],
+      ["full_reconcile_id","=",false],["amount_residual","!=",0]],
+     ["amount_residual:sum"],[]],{lazy:false});
+
+  // 5) Evolución mensual de compras (facturas proveedor posteadas, 12m).
+  const compMes = await rpc("account.move","read_group",
+    [[["move_type","=","in_invoice"],["state","=","posted"],["invoice_date",">=",desde12m]],
+     ["amount_total_signed:sum"],["invoice_date:month"]],{lazy:false,orderby:"invoice_date asc"});
+
+  // 6) Top proveedores por compras (12m).
+  const topProv = await rpc("account.move","read_group",
+    [[["move_type","=","in_invoice"],["state","=","posted"],["invoice_date",">=",desde12m]],
+     ["amount_total_signed:sum"],["partner_id"]],
+    {lazy:false,limit:12,orderby:"amount_total_signed asc"});  // signed es negativo → asc = mayor gasto
+
+  // --- Bucketizar composición por naturaleza ---
+  const comp={}; NAT.forEach(n=>comp[n.k]=0);
+  let totalGasto=0;
+  for(const g of porCuenta){
+    const code = g.account_id ? String(g.account_id[1]).split(" ")[0] : "";
+    const bal = g.balance||0;
+    if(bal<=0) continue;                 // sólo el gasto (débitos); ignora ajustes/NC negativas
+    const k=natDe(code);
+    // Cuentas puente/activo (1.1.x) que aparecen en líneas de factura: fuera del gasto real.
+    if(code.startsWith("1.1")) continue;
+    comp[k]+=bal; totalGasto+=bal;
+  }
+
+  const ocTotal=(oc||[]).reduce((a,g)=>a+(g.amount_total||0),0);
+  const cxpTotal=(cxp&&cxp[0]&&cxp[0].amount_residual)||0;
+  const pagosTotal=(pagos||[]).reduce((a,g)=>a+(g.amount||0),0);
+
+  return { comp, totalGasto, ocTotal, cxpTotal, pagosTotal,
+           compMes:(compMes||[]).map(g=>({ym:g.__range&&g.__range["invoice_date:month"]?g.__range["invoice_date:month"].from:"", v:Math.abs(g.amount_total_signed||0)})),
+           topProv:(topProv||[]).filter(g=>g.partner_id).map(g=>({nom:g.partner_id[1], v:Math.abs(g.amount_total_signed||0), n:g.__count})).sort((a,b)=>b.v-a.v) };
+}
+
+/* ===== Pagos y por pagar — aging por proveedor + salida de tesorería ===== */
+const hoyStr=new Date(HOY.getTime()-HOY.getTimezoneOffset()*60000).toISOString().slice(0,10);
+const AGT=[
+  {k:"vencer", l:"Por vencer / al día", t:"t-vencer", test:d=>d<=0},
+  {k:"d30",    l:"Vencido 1–30",        t:"t-d30",    test:d=>d>0&&d<=30},
+  {k:"d60",    l:"Vencido 31–60",       t:"t-d60",    test:d=>d>30&&d<=60},
+  {k:"d90",    l:"Vencido 61–90",       t:"t-d90",    test:d=>d>60&&d<=90},
+  {k:"mas",    l:"Vencido +90",         t:"t-mas",    test:d=>d>90},
+];
+function agDe(dias){ return AGT.find(t=>t.test(dias))||AGT[0]; }
+
+async function cargarPagos(){
+  // Líneas payable abiertas (deuda con proveedores). residual<0 = debemos; residual>0 = adelanto/saldo a favor.
+  const ml=await rpc("account.move.line","search_read",
+    [[["account_id.account_type","=","liability_payable"],["parent_state","=","posted"],
+      ["full_reconcile_id","=",false],["amount_residual","!=",0]]],
+    {fields:["partner_id","move_name","date","date_maturity","amount_residual"],limit:0});
+  // Salida de tesorería por diario (12m).
+  const jour=await rpc("account.payment","read_group",
+    [[["payment_type","=","outbound"],["state","=","posted"],["date",">=",desde12m]],
+     ["amount:sum"],["journal_id"]],{lazy:false,limit:40,orderby:"amount desc"});
+
+  const P={}; const tramo={}; AGT.forEach(t=>tramo[t.k]=0); let favor=0;
+  for(const l of ml){
+    if(!l.partner_id) continue;
+    const id=l.partner_id[0], r=l.amount_residual||0;
+    if(Math.abs(r)<0.5) continue;
+    const p=P[id]||(P[id]={id,nombre:l.partner_id[1],deuda:0,adelanto:0,vencido:0,peorDias:-1e9,venc:null});
+    if(r<0){                                   // le debemos
+      const debe=-r;
+      p.deuda+=debe;
+      const venc=l.date_maturity||l.date||null;
+      const dias=venc?Math.floor((new Date(hoyStr)-new Date(venc+"T00:00:00"))/86400000):0;
+      const g=agDe(dias); tramo[g.k]+=debe;
+      if(dias>0) p.vencido+=debe;
+      if(dias>p.peorDias){ p.peorDias=dias; p.venc=venc; }
+    }else{                                     // adelanto / saldo a favor nuestro
+      p.adelanto+=r; favor+=r;
+    }
+  }
+  const provs=Object.values(P).map(p=>({...p, neto:p.deuda-p.adelanto}))
+    .filter(p=>p.deuda>0.5).sort((a,b)=>b.deuda-a.deuda);
+  const totalDeuda=provs.reduce((a,p)=>a+p.deuda,0);
+  const totalVencido=provs.reduce((a,p)=>a+p.vencido,0);
+  const jours=(jour||[]).filter(g=>g.journal_id).map(g=>({nom:g.journal_id[1],v:g.amount||0,n:g.__count}));
+  const jTot=jours.reduce((a,j)=>a+j.v,0);
+  return {provs,tramo,favor,totalDeuda,totalVencido,nProv:provs.length,jours,jTot};
+}
+
+function renderPagos(){
+  const v=document.getElementById("view");
+  if(!ST.dataPagos){ v.innerHTML=`<div class="loading"><div class="spinner"></div>Cargando cuentas por pagar…</div>`;
+    cargarPagos().then(d=>{ ST.dataPagos=d; renderPagos(); }).catch(e=>{ v.innerHTML=`<div class="err">No se pudieron cargar los pagos: ${esc(e.message||e)}</div>`; });
+    return;
+  }
+  const d=ST.dataPagos;
+  const fVenc=f=> f? f.split("-").reverse().join("/") : "—";
+  const tot=d.totalDeuda||1;
+  const jmax=Math.max(1,...d.jours.map(j=>j.v));
+  const tramoTile=t=>{ const val=d.tramo[t.k]||0; return `<div class="agtile ${t.t}"><div class="l">${esc(t.l)}</div><div class="n num">${moneyK(val)}</div><div class="s">${(val/tot*100).toFixed(1)}% de la deuda</div></div>`; };
+
+  v.innerHTML=`
+    <div class="kpis">
+      <div class="kpi"><div class="l">⏳ Total por pagar</div><div class="n num">${moneyK(d.totalDeuda)}</div><div class="s">${d.nProv} proveedores con saldo</div></div>
+      <div class="kpi"><div class="l">🔴 Vencido</div><div class="n num" style="color:#B0413E">${moneyK(d.totalVencido)}</div><div class="s">${(d.totalVencido/tot*100).toFixed(0)}% del total</div></div>
+      <div class="kpi"><div class="l">🟣 Saldo a favor</div><div class="n num" style="color:#5B3FA6">${moneyK(d.favor)}</div><div class="s">adelantos / notas de crédito</div></div>
+      <div class="kpi"><div class="l">💸 Pagado 12m</div><div class="n num">${moneyK(d.jTot)}</div><div class="s">salida total de tesorería</div></div>
+    </div>
+
+    <div class="agtiles">${AGT.map(tramoTile).join("")}</div>
+
+    <div class="panel" style="padding-bottom:6px">
+      <h3>Deuda por proveedor</h3>
+      <div class="cap">Saldo pendiente sin conciliar · ordenado por monto</div>
+    </div>
+    <div class="tablecard prov-tbl" style="margin-top:-8px">
+      <div class="thead"><div>Proveedor</div><div class="rt">Deuda</div><div class="rt">Vencido</div><div class="rt">Venc.</div></div>
+      ${d.provs.slice(0,40).map(p=>{ const g=agDe(p.peorDias);
+        return `<div class="row"><div class="pn">${esc(p.nombre)}${p.adelanto>0.5?` <span class="pchip t-favor">a favor ${moneyK(p.adelanto)}</span>`:''}</div>`+
+        `<div class="rt num">${moneyK(p.deuda)}</div>`+
+        `<div class="rt num">${p.vencido>0.5?`<span class="pchip ${g.t}">${moneyK(p.vencido)}</span>`:'<span style="color:var(--gris2)">—</span>'}</div>`+
+        `<div class="rt num" style="font-size:12px;color:var(--gris)">${fVenc(p.venc)}</div></div>`;
+      }).join("")}
+    </div>
+    ${d.provs.length>40?`<div class="cap" style="text-align:center;margin-top:10px">Mostrando los 40 proveedores con mayor deuda de ${d.nProv}.</div>`:''}
+
+    <div class="panel" style="margin-top:16px">
+      <h3>Salida de tesorería por medio de pago</h3>
+      <div class="cap">Pagos posteados · últimos 12 meses · total ${money(d.jTot)}</div>
+      <div class="jour">${d.jours.slice(0,12).map(j=>`<div class="jrow"><div class="jn" title="${esc(j.nom)}">${esc(j.nom)}</div><div class="jbar"><span style="width:${(j.v/jmax*100).toFixed(1)}%"></span></div><div class="jv num">${moneyK(j.v)}</div></div>`).join("")}</div>
+    </div>
+  `;
+}
+
+function renderView(){
+  const v=document.getElementById("view");
+  if(ST.tab==="pagos"){ renderPagos(); return; }
+  if(ST.tab!=="panorama"){ v.innerHTML=placeholder(ST.tab); return; }
+  if(!ST.data){ v.innerHTML=`<div class="loading"><div class="spinner"></div>Cargando egresos de los últimos 12 meses…</div>`;
+    cargarPanorama().then(d=>{ ST.data=d; renderView(); }).catch(e=>{ v.innerHTML=`<div class="err">No se pudo cargar el panorama: ${esc(e.message||e)}</div>`; });
+    return;
+  }
+  const d=ST.data;
+  const mesLbl=ym=>{ if(!ym) return ""; const [y,m]=ym.split("-"); return ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"][(+m)-1]+" "+y.slice(2); };
+  const maxMes=Math.max(1,...d.compMes.map(x=>x.v));
+
+  // Leyenda de composición ordenada por monto desc
+  const segs=NAT.map(n=>({...n, v:d.comp[n.k]||0})).filter(s=>s.v>0).sort((a,b)=>b.v-a.v);
+  const tot=d.totalGasto||1;
+
+  v.innerHTML=`
+    <div class="kpis">
+      <div class="kpi"><div class="l">🧾 Compras 12m</div><div class="n num">${moneyK(d.totalGasto)}</div><div class="s">gasto imputado en facturas de proveedor</div></div>
+      <div class="kpi"><div class="l">📦 OC abiertas</div><div class="n num">${moneyK(d.ocTotal)}</div><div class="s">órdenes confirmadas comprometidas</div></div>
+      <div class="kpi"><div class="l">💸 Pagos 12m</div><div class="n num">${moneyK(d.pagosTotal)}</div><div class="s">salida de tesorería posteada</div></div>
+      <div class="kpi"><div class="l">⏳ Por pagar hoy</div><div class="n num" style="color:var(--n-fin)">${moneyK(d.cxpTotal)}</div><div class="s">deuda con proveedores sin conciliar</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>Composición del egreso por naturaleza</h3>
+      <div class="cap">Facturas de proveedor posteadas · últimos 12 meses · total ${money(d.totalGasto)}</div>
+      <div class="cbar">${segs.map(s=>`<span title="${esc(s.nom)}: ${money(s.v)}" style="width:${(s.v/tot*100).toFixed(2)}%;background:${s.col}"></span>`).join("")}</div>
+      <div class="cleg">${segs.map(s=>`<div class="it"><span class="dot" style="background:${s.col}"></span>${esc(s.nom)} <b>${moneyK(s.v)}</b> <span class="pct">${(s.v/tot*100).toFixed(1)}%</span></div>`).join("")}</div>
+    </div>
+
+    <div class="panel">
+      <h3>Evolución mensual de compras</h3>
+      <div class="cap">Facturas de proveedor posteadas por mes</div>
+      <div class="bars">${d.compMes.map(m=>`<div class="b"><div class="mv">${m.v>=1e6?(m.v/1e6).toFixed(0)+'M':Math.round(m.v/1e3)+'k'}</div><div class="col" style="height:${Math.max(2,m.v/maxMes*115)}px"></div><div class="mlbl">${mesLbl(m.ym)}</div></div>`).join("")}</div>
+    </div>
+
+    <div class="panel" style="padding-bottom:6px">
+      <h3>Top proveedores</h3>
+      <div class="cap">Por monto comprado · últimos 12 meses</div>
+    </div>
+    <div class="tablecard" style="margin-top:-8px">
+      <div class="thead"><div>Proveedor</div><div class="rt">Comprado</div><div class="rt">Facturas</div></div>
+      ${d.topProv.map(p=>`<div class="row"><div class="pn">${esc(p.nom)}</div><div class="rt num">${moneyK(p.v)}</div><div class="rt num">${p.n}</div></div>`).join("")||'<div class="row"><div class="pn" style="color:var(--gris)">Sin datos en el período</div><div></div><div></div></div>'}
+    </div>
+  `;
+}
+
+/* Placeholders con el plan de cada pestaña (guía para irlas construyendo). */
+function placeholder(k){
+  const P={
+    compras:{ico:"🧾",t:"Compras",p:"Órdenes de compra y facturas de proveedor: qué compramos, a quién, en qué estado (borrador → confirmada → facturada → pagada) y cómo se conecta con Inventario y Oportunidades.",
+      plan:["Órdenes de compra abiertas vs. facturadas (1.696 OC activas hoy)","Facturas de proveedor por estado y por laboratorio","Enlace con Oportunidades: costo que baja → oferta","Alertas: OC sin recibir, factura sin OC, diferencias de precio"]},
+    gastos:{ico:"💡",t:"Gastos operativos",p:"El gasto que NO es mercadería, abierto por naturaleza (comercial / administración / depósito) y por cuenta, con evolución y desvíos contra el mes anterior.",
+      plan:["Detalle por cuenta dentro de cada naturaleza","Evolución y variación mes a mes","Detección de gastos atípicos o duplicados","Presupuesto vs. real (cuando se cargue el presupuesto)"]},
+    financ:{ico:"🏦",t:"Financieros",p:"El costo de financiarse: intereses de préstamos, descubierto, comisiones bancarias, descuento de cheques y planes de pago. En EyG es una masa grande y hay que vigilarla.",
+      plan:["Intereses por préstamo y por banco","Comisiones y gastos bancarios por cuenta","Descuento de cheques: costo efectivo","Planes de pago (AFIP / proveedores) vigentes"]},
+    impuestos:{ico:"🧮",t:"Impuestos",p:"Calendario y monto de la carga impositiva: IVA, IIBB (multi-jurisdicción), SICORE, percepciones y retenciones sufridas y practicadas.",
+      plan:["Liquidaciones por diario fiscal (IVA / IIBB / SICORE)","Percepciones y retenciones sufridas (a favor)","Retenciones practicadas a proveedores","Próximos vencimientos fiscales"]},
+    prov:{ico:"🏭",t:"Proveedores",p:"La ficha del proveedor: concentración de compra, saldo, plazo, historial y condiciones. Con quién nos jugamos la plata.",
+      plan:["Ranking y concentración (curva ABC)","Saldo y plazo promedio de pago por proveedor","Historial de compras y de precios","Condiciones y datos fiscales del proveedor"]},
+  };
+  const x=P[k]; if(!x) return `<div class="ph"><h4>En preparación</h4></div>`;
+  return `<div class="ph"><div class="ico">${x.ico}</div><h4>${esc(x.t)}</h4><p>${esc(x.p)}</p>
+    <ul class="plan">${x.plan.map(li=>`<li>${esc(li)}</li>`).join("")}</ul></div>`;
+}
+
+/* Módulo EN PRUEBAS: sólo para la huella del dueño mientras se construye.
+   Para liberarlo al equipo: quitar {pruebas:…} de acá y la línea `pruebas` del core.js. */
+EYG.guard(["finanzas","direccion","admin"],{pruebas:["2fd80bd89a259082dadfe1c6a96e79f1452b6ad7e9e4589acd9355cb71f01025"]}).then(()=>{
+  renderTabs(); renderView();
+});
+</script>
+</body>
+</html>

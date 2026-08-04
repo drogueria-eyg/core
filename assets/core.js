@@ -252,6 +252,12 @@ window.EYG = (function(){
     /* PROVISORIO: simulador de escalera de éticos A/B para revisar antes de definir. Sacar (esta línea + comercial/simulador-eticos.html) cuando se cierre. */
     {key:"sim-eticos", dept:"comercial", cat:"Precios", ico:"🧪", titulo:"Simulador Éticos (provisorio)", desc:"Prueba de la escalera A/B por laboratorio: márgenes por tramo (x1/x5/x10), filtrable por escala de margen. Módulo temporal para revisión.", roles:["direccion","finanzas","inventario"], ready:true, path:()=>"comercial/simulador-eticos.html"},
     {key:"cobranzas", dept:"finanzas", cat:"Finanzas", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","cobranzas"], ready:true, path:()=>"finanzas/cobranzas.html"},
+    /* EN PRUEBAS: módulo de Egresos (espejo de Cobranzas). Oculto para todo el equipo
+       hasta terminarlo — sólo la huella del dueño. Para liberarlo: borrar la línea
+       `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/egresos.html. */
+    {key:"egresos", dept:"finanzas", cat:"Finanzas", ico:"💸", titulo:"Egresos", desc:"Todo lo que sale: compras de mercadería, gastos operativos, financieros, impuestos y pagos a proveedores. El panorama del egreso, por naturaleza y por proveedor.", roles:["finanzas","direccion"], ready:true,
+      pruebas:["2fd80bd89a259082dadfe1c6a96e79f1452b6ad7e9e4589acd9355cb71f01025"],
+      path:()=>"finanzas/egresos.html"},
     {key:"stock",     dept:"inventario", cat:"Inventario", ico:"📦", titulo:"Stock y Sobrestock", desc:"Plata inmovilizada, rotación por producto y vencimientos. Qué frenar y qué liquidar.", roles:["finanzas","inventario"], ready:true, path:()=>"inventario/stock.html"},
     {key:"nombres",   dept:"inventario", cat:"Inventario", ico:"🏷️", titulo:"Maestro de productos", desc:"Ordená el dato maestro de cada producto: nombre, unidades, embalaje y subcategoría. Detecta errores y completa lo que falta, con un clic.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/nombres.html"},
     {key:"oportunidades", dept:"inventario", cat:"Inventario", ico:"💡", titulo:"Oportunidades y Ofertas", desc:"Cuando un costo baja, el sistema detecta una oportunidad de oferta. Confirmala (precio, stock, vigencia) o armá combos, y van a la tarjeta de los comerciales.", roles:["inventario"], ready:true, path:()=>"inventario/oportunidades.html"},
