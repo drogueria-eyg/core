@@ -134,7 +134,7 @@ window.EYG = (function(){
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso", accesoMsg(p,s), false); return new Promise(()=>{}); }
     // Módulo EN PRUEBAS: sólo para las huellas de email listadas (ver puedeVer)
     const pr = opts && opts.pruebas;
-    if(pr && pr.length && !pr.includes(p._h)){
+    if(pr && pr.length && !pr.includes(p._h) && !esSuper(p._h)){
       gateMsg("🚧","En preparación","Este módulo todavía se está construyendo. Va a estar disponible para todo el equipo cuando esté listo.",true);
       return new Promise(()=>{});
     }
@@ -256,7 +256,7 @@ window.EYG = (function(){
        hasta terminarlo — sólo la huella del dueño. Para liberarlo: borrar la línea
        `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/egresos.html. */
     {key:"egresos", dept:"finanzas", cat:"Finanzas", ico:"💸", titulo:"Egresos", desc:"Todo lo que sale: compras de mercadería, gastos operativos, financieros, impuestos y pagos a proveedores. El panorama del egreso, por naturaleza y por proveedor.", roles:["finanzas","direccion"], ready:true,
-      pruebas:["2fd80bd89a259082dadfe1c6a96e79f1452b6ad7e9e4589acd9355cb71f01025"],
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/egresos.html"},
     {key:"stock",     dept:"inventario", cat:"Inventario", ico:"📦", titulo:"Stock y Sobrestock", desc:"Plata inmovilizada, rotación por producto y vencimientos. Qué frenar y qué liquidar.", roles:["finanzas","inventario"], ready:true, path:()=>"inventario/stock.html"},
     {key:"nombres",   dept:"inventario", cat:"Inventario", ico:"🏷️", titulo:"Maestro de productos", desc:"Ordená el dato maestro de cada producto: nombre, unidades, embalaje y subcategoría. Detecta errores y completa lo que falta, con un clic.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/nombres.html"},
@@ -275,9 +275,15 @@ window.EYG = (function(){
   /* Acepta el perfil entero (o sólo el rol, por compatibilidad).
      `pruebas` = lista de huellas de email: mientras esté puesta, el módulo NO
      aparece para nadie más, ni siquiera para admin/dirección. */
+  /* Super-admin(s): huella(email) del administrador principal (Diego Velázquez).
+     SIEMPRE acceso total, incluso a módulos EN PRUEBAS. Así cualquier módulo nuevo
+     que se deje con `pruebas` se le muestra automáticamente, sin sumarlo a cada lista. */
+  const SUPER = ["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"];
+  const esSuper = h => !!h && SUPER.includes(h);
+
   function puedeVer(m, perfilORol){
     const p = (typeof perfilORol === "string") ? {rol:perfilORol} : (perfilORol||{});
-    if(m.pruebas && m.pruebas.length && !m.pruebas.includes(p._h)) return false;
+    if(m.pruebas && m.pruebas.length && !m.pruebas.includes(p._h) && !esSuper(p._h)) return false;
     return p.rol==="admin"||p.rol==="direccion" ? true : m.roles.includes(p.rol);
   }
   function T(v,p){ return typeof v==="function" ? v(p) : v; }  // título/desc pueden depender del rol
