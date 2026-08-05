@@ -50,6 +50,10 @@
   .activos{display:inline-flex;align-items:center;gap:6px;margin-top:14px;font-size:12px;color:#eafaf8;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);border-radius:8px;padding:6px 10px}
   .activos .dot{width:8px;height:8px;border-radius:50%;background:var(--gold);box-shadow:0 0 8px var(--gold)}
   .activos b{color:#fff}
+  .lidcard.vacio{cursor:default;opacity:.92;box-shadow:0 8px 22px rgba(6,65,62,.14)}
+  .lidcard.vacio:hover{transform:none;box-shadow:0 8px 22px rgba(6,65,62,.14)}
+  .lidcard .vaciobox{font-size:12.5px;line-height:1.5;color:#eafaf8;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);border-radius:10px;padding:12px 14px;margin-top:4px}
+  .lidcard .vaciobox b{color:#fff}
   .lidnote{font-size:13px;color:var(--gris2);background:var(--surface);border:1px dashed var(--line);border-radius:14px;padding:16px 18px;margin-bottom:24px}
   /* ===== 3 · grilla comerciales ===== */
   .ovgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:15px;margin-bottom:34px}
@@ -172,25 +176,35 @@ async function cargar(){
   const hoy = new Date().toISOString().slice(0,10);
   const meses = last12();
   const desde12 = meses[0].key+"-01";
-  let EMPS=[];
+  let EMPS=[], TEAMS=[];
   try{
-    EMPS = await EYG.rpc("hr.employee","search_read",[[["user_id","!=",false]]],{fields:["id","name","user_id","parent_id"]});
+    [EMPS, TEAMS] = await Promise.all([
+      EYG.rpc("hr.employee","search_read",[[["user_id","!=",false]]],{fields:["id","name","user_id","parent_id","department_id"]}),
+      EYG.rpc("crm.team","search_read",[[["active","=",true]]],{fields:["id","name","member_ids"]}),
+    ]);
   }catch(e){ document.getElementById("lideres").innerHTML='<div class="errbox">No pude leer el organigrama: '+esc(e.message)+'</div>'; return; }
 
-  // Líderes = empleados (con usuario) que son jefe de alguien. El equipo de cada uno = sus
-  // subordinados directos que también tienen usuario. Nada hardcodeado: sale del parent_id de Odoo.
-  const referenced=new Set(); EMPS.forEach(e=>{ if(e.parent_id) referenced.add(e.parent_id[0]); });
-  const leaderIds=new Set(EMPS.filter(e=>referenced.has(e.id)).map(e=>e.id));
+  // Comercial = empleado del departamento VENTAS. Líder = empleado de Ventas que es jefe de otros
+  // de Ventas (Marcela), más su propio jefe hacia arriba (Germán: dirección, hoy sin comerciales).
+  // El chip de cada comercial sale de su EQUIPO CRM real (Instituciones / Comercial General).
+  // Así queda coherente con Odoo: no toma admin/finanzas ni ex-comerciales por colgar del organigrama.
+  const empById={}; EMPS.forEach(e=>empById[e.id]=e);
+  const teamOfUid={}; (TEAMS||[]).forEach(t=>{ (t.member_ids||[]).forEach(uid=>{ if(!teamOfUid[uid]) teamOfUid[uid]=t.name; }); });
+  const isVentas=e=>e.department_id && /ventas/i.test(e.department_id[1]);
+  const ventasEmps=EMPS.filter(isVentas);
+  const ventasParents=new Set(); ventasEmps.forEach(e=>{ if(e.parent_id) ventasParents.add(e.parent_id[0]); });
+  const leaderIds=new Set(ventasEmps.filter(e=>ventasParents.has(e.id)).map(e=>e.id));       // Marcela
+  [...leaderIds].forEach(id=>{ const L=empById[id]; if(L&&L.parent_id){ const p=empById[L.parent_id[0]]; if(p) leaderIds.add(p.id); } });  // + Germán (jefe del líder)
   const leaders=EMPS.filter(e=>leaderIds.has(e.id)).sort((a,b)=>a.name.localeCompare(b.name));
-  // comerciales = subordinados directos de un líder, que no son líderes ellos mismos
-  const comEmps=EMPS.filter(e=>e.parent_id && leaderIds.has(e.parent_id[0]) && !leaderIds.has(e.id));
-  const uidLeaderName={};   // uid del comercial -> nombre del líder
-  comEmps.forEach(e=>{ const L=EMPS.find(x=>x.id===e.parent_id[0]); if(L) uidLeaderName[e.user_id[0]]=L.user_id[1]; });
+  const comEmps=ventasEmps.filter(e=>!leaderIds.has(e.id));   // comerciales = Ventas que no son líderes
+  const uidLeaderName={};   // uid del comercial -> nombre del líder (jerarquía hr)
+  comEmps.forEach(e=>{ const L=e.parent_id&&empById[e.parent_id[0]]; if(L) uidLeaderName[e.user_id[0]]=L.user_id[1]; });
   const comUids=[...new Set(comEmps.map(e=>e.user_id[0]))];
   const nameOfUid={}; EMPS.forEach(e=>{ nameOfUid[e.user_id[0]]=e.user_id[1]; });
+  STATE.leaderEmps=leaders; STATE.comEmps=comEmps; STATE.empById=empById; STATE.teamOfUid=teamOfUid;  // para la herramienta de asignar
 
   if(!comUids.length){
-    document.getElementById("lideres").innerHTML='<div class="lidnote">Todavía no hay comerciales asignados a ningún líder en el organigrama de Odoo. Asignálos desde <b>Gestión del equipo → Asignar comerciales a líderes</b>, abajo.</div>';
+    document.getElementById("lideres").innerHTML='<div class="lidnote">No hay comerciales en el departamento de <b>Ventas</b> de Odoo todavía.</div>';
     return;
   }
 
@@ -208,7 +222,7 @@ async function cargar(){
       allIds.length?EYG.rpc("account.payment","read_group",[[["partner_id","in",allIds],["payment_type","=","inbound"],["state","=","posted"],["date",">=",inicioMes]],["amount:sum"],["partner_id"]],{lazy:false}):[],
       allIds.length?EYG.rpc("account.move.line","search_read",[[["partner_id","in",allIds],["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false]]],{fields:["partner_id","amount_residual","date_maturity"],limit:0}):[],
       EYG.rpc("sale.order","read_group",[[["user_id","in",comUids],["state","in",["sale","done"]],["date_order",">=",hoy+" 00:00:00"]],["amount_untaxed:sum"],["user_id"]],{lazy:false}),
-      ...leaders.map(L=>{ const tu=comEmps.filter(e=>e.parent_id[0]===L.id).map(e=>e.user_id[0]);
+      ...leaders.map(L=>{ const tu=comEmps.filter(e=>e.parent_id&&e.parent_id[0]===L.id).map(e=>e.user_id[0]);
         return tu.length?EYG.rpc("sale.order","read_group",[[["user_id","in",tu],["state","in",["sale","done"]],["date_order",">=",desde12+" 00:00:00"]],["amount_untaxed:sum"],["date_order:month"]],{lazy:false}):Promise.resolve([]); }),
     ]);
     const pidOf=g=>g.partner_id&&g.partner_id[0];
@@ -223,14 +237,14 @@ async function cargar(){
   }catch(e){ /* seguimos con lo que haya; las tarjetas muestran lo disponible */ STATE._serieByLeader=STATE._serieByLeader||{}; }
 
   // arma comerciales
-  const coms=comUids.map(u=>({ uid:u, name:nameOfUid[u]||("#"+u), leader:uidLeaderName[u]||"",
+  const coms=comUids.map(u=>({ uid:u, name:nameOfUid[u]||("#"+u), leader:uidLeaderName[u]||"", team:teamOfUid[u]||"",
     cartera:cartera[u]||0, factMes:(fac[u]||0)-(nc[u]||0), cobMes:cob[u]||0, deuda:deuda[u]||0, venc:venc[u]||0,
     vencPct:(deuda[u]>0)?Math.round(venc[u]/deuda[u]*100):0 }))
     .sort((a,b)=>b.factMes-a.factMes);
 
   // arma líderes (agregado del equipo)
   const lcards=leaders.map(L=>{
-    const tu=comEmps.filter(e=>e.parent_id[0]===L.id).map(e=>e.user_id[0]);
+    const tu=comEmps.filter(e=>e.parent_id&&e.parent_id[0]===L.id).map(e=>e.user_id[0]);
     const s=k=>tu.reduce((a,u)=>a+(({fac:fac,cob:cob,deuda:deuda,venc:venc}[k])[u]||0),0);
     const factMes=tu.reduce((a,u)=>a+((fac[u]||0)-(nc[u]||0)),0);
     const deu=s("deuda"), ven=s("venc");
@@ -243,6 +257,7 @@ async function cargar(){
       serie, trend:(prev>0)?Math.round((cur-prev)/prev*100):null };
   });
 
+  lcards.sort((a,b)=>((b.teamN>0)-(a.teamN>0))||(b.factMes-a.factMes));   // primero los líderes con equipo
   STATE.leaders=lcards; STATE.coms=coms;
   const dTot=coms.reduce((a,c)=>a+c.deuda,0), vTot=coms.reduce((a,c)=>a+c.venc,0);
   STATE.resumen={ factMes:coms.reduce((a,c)=>a+c.factMes,0), cobMes:coms.reduce((a,c)=>a+c.cobMes,0),
@@ -271,6 +286,16 @@ function renderLideres(){
   if(!STATE.leaders.length){ box.innerHTML='<div class="lidnote">No hay líderes definidos en el organigrama de Odoo todavía. Los comerciales aparecen abajo.</div>'; return; }
   box.innerHTML=`<div class="lidgrid">${STATE.leaders.map(l=>{
     const ini=(l.name||"?").trim().charAt(0).toUpperCase();
+    // Líder sin comerciales a cargo (ej. Germán, dirección): tarjeta apagada, sin link ni gráfico.
+    if(!l.teamN){
+      return `<div class="lidcard vacio">
+        <div class="accent"></div>
+        <div class="lhead"><div class="av">${esc(ini)}</div>
+          <div class="who"><div class="role">Líder</div><div class="nm">${esc(l.name.split(" ")[0])}</div>
+            <div class="team">Dirección · sin comerciales a cargo hoy</div></div></div>
+        <div class="vaciobox">Todavía no tiene comerciales asignados. Cuando le asignes gente desde <b>Gestión → Asignar comerciales</b>, va a aparecer acá su equipo y sus métricas.</div>
+      </div>`;
+    }
     const vcol=l.vencPct>=40?'#FFB49A':l.vencPct>=25?'var(--gold)':'#fff';
     const trend=l.trend==null?'':`<span class="trend ${l.trend>=0?'up':'down'}">${l.trend>=0?'▲':'▼'} ${Math.abs(l.trend)}%</span>`;
     return `<a class="lidcard" href="lider.html?lider=${encodeURIComponent(l.name)}">
@@ -299,7 +324,8 @@ function renderComerciales(){
   if(hint) hint.textContent=`${STATE.coms.length} en total · ordenados por facturado`;
   ov.innerHTML=`<div class="ovgrid">${STATE.coms.map(c=>{
     const vcol=c.vencPct>=40?'var(--coral)':c.vencPct>=25?'var(--gold)':'var(--teal)';
-    const chip=c.leader?`<span class="equipochip">${esc(c.leader.split(" ")[0])}</span>`:`<span class="equipochip sin">sin equipo</span>`;
+    const chipTxt=c.team||(c.leader?c.leader.split(" ")[0]:"");
+    const chip=chipTxt?`<span class="equipochip" title="Equipo de venta">${esc(chipTxt)}</span>`:`<span class="equipochip sin">sin equipo</span>`;
     return `<a class="ovcard" href="panel.html?c=${encodeURIComponent(c.name)}">
       <div class="ct"><h3>${esc(c.name)}</h3>${chip}</div>
       <div class="mrow"><span>Facturado del mes</span><b>${M(c.factMes)}</b></div>
@@ -313,27 +339,25 @@ function renderComerciales(){
 /* ===== Organigrama: asignar/quitar comerciales a un líder (hr.employee.parent_id) =====
    Es la fuente que lee el Panel del Líder. Mover un comercial acá cambia su jefe en Odoo
    y, en el acto, de qué equipo forma parte. Sólo admin/dirección. */
-let ORG={ emps:[], liderEmp:null };
+let ORG={ liderEmp:null };
 async function montarOrg(){
   const box=document.getElementById("org"); if(!box)return;
-  box.innerHTML='<div class="org"><div class="floading" style="padding:12px 0;color:var(--gris)"><span class="spin-sm"></span> Leyendo el organigrama…</div></div>';
-  try{
-    ORG.emps = await EYG.rpc("hr.employee","search_read",[[["user_id","!=",false]]],{fields:["id","name","user_id","parent_id"]});
-    const conHijos = ORG.emps.map(e=>({e, n:ORG.emps.filter(x=>x.parent_id&&x.parent_id[0]===e.id).length})).filter(x=>x.n>0).sort((a,b)=>b.n-a.n);
-    ORG.liderEmp = conHijos.length?conHijos[0].e.id:ORG.emps[0].id;
-    renderOrg();
-  }catch(e){ box.innerHTML='<div class="org"><div class="empty">No pude leer el organigrama: '+esc(e.message)+'</div></div>'; }
+  if(!STATE.leaderEmps||!STATE.leaderEmps.length){
+    box.innerHTML='<div class="org"><div class="empty">Todavía no cargaron los líderes y comerciales de arriba. Recargá la página si no aparecen.</div></div>'; return;
+  }
+  ORG.liderEmp = STATE.leaderEmps[0].id;   // Marcela por defecto
+  renderOrg();
 }
 function renderOrg(){
   const box=document.getElementById("org"); if(!box)return;
-  const emps=ORG.emps.slice().sort((a,b)=>a.name.localeCompare(b.name));
-  const miembros=emps.filter(e=>e.parent_id&&e.parent_id[0]===ORG.liderEmp);
-  const candidatos=emps.filter(e=>e.id!==ORG.liderEmp && !(e.parent_id&&e.parent_id[0]===ORG.liderEmp));
+  const leaders=STATE.leaderEmps||[], coms=STATE.comEmps||[];
+  const miembros=coms.filter(e=>e.parent_id&&e.parent_id[0]===ORG.liderEmp).sort((a,b)=>a.name.localeCompare(b.name));
+  const candidatos=coms.filter(e=>!(e.parent_id&&e.parent_id[0]===ORG.liderEmp)).sort((a,b)=>a.name.localeCompare(b.name));
   box.innerHTML=`<div class="org">
     <div class="sub">Asigná o quitá comerciales a un líder. Es lo que ve cada líder en su panel. Se guarda en Odoo al instante.</div>
     <div class="pick"><span class="lbl">Líder:</span>
       <select onchange="ORG.liderEmp=parseInt(this.value,10);renderOrg()">
-        ${emps.map(e=>`<option value="${e.id}" ${e.id===ORG.liderEmp?'selected':''}>${esc(e.name)}</option>`).join("")}
+        ${leaders.map(e=>`<option value="${e.id}" ${e.id===ORG.liderEmp?'selected':''}>${esc(e.name)}</option>`).join("")}
       </select>
       <span class="lbl">${miembros.length} comercial${miembros.length===1?"":"es"} en el equipo</span>
     </div>
@@ -342,16 +366,16 @@ function renderOrg(){
         :'<div class="empty">Este líder todavía no tiene comerciales asignados.</div>'}
     </div>
     <div class="add"><span class="lbl">Agregar:</span>
-      <select id="org_add">${candidatos.map(e=>`<option value="${e.id}">${esc(e.name)}${e.parent_id?' · hoy con '+esc(e.parent_id[1]):' · sin líder'}</option>`).join("")}</select>
+      <select id="org_add">${candidatos.length?candidatos.map(e=>`<option value="${e.id}">${esc(e.name)}${e.parent_id?' · hoy con '+esc(e.parent_id[1]):' · sin líder'}</option>`).join(""):'<option value="">— no hay comerciales para agregar —</option>'}</select>
       <button onclick="addMiembro()" ${candidatos.length?'':'disabled'}>＋ Agregar al equipo</button>
     </div>
-    <div class="note">Agregar mueve al comercial desde su líder actual (si tenía). Quitar lo deja sin líder hasta reasignarlo. Al cambiar equipos, recargá la página para ver los totales actualizados.</div>
+    <div class="note">Solo aparecen los <b>comerciales de Ventas</b> y los <b>líderes</b>. Agregar mueve al comercial de un líder a otro. Al cambiar equipos, recargá la página para ver los totales actualizados.</div>
   </div>`;
 }
 async function addMiembro(){
   const sel=document.getElementById("org_add"); if(!sel||!sel.value)return;
-  const empId=parseInt(sel.value,10); const emp=ORG.emps.find(e=>e.id===empId);
-  const lider=ORG.emps.find(e=>e.id===ORG.liderEmp);
+  const empId=parseInt(sel.value,10); const emp=(STATE.comEmps||[]).find(e=>e.id===empId);
+  const lider=STATE.empById?STATE.empById[ORG.liderEmp]:null;
   try{
     await EYG.rpc("hr.employee","write",[[empId],{parent_id:ORG.liderEmp}]);
     if(emp) emp.parent_id=[ORG.liderEmp, lider?lider.name:""];
@@ -360,7 +384,7 @@ async function addMiembro(){
   }catch(e){ otoast("No se pudo asignar: "+e.message); }
 }
 async function quitarMiembro(empId){
-  const emp=ORG.emps.find(e=>e.id===empId); if(!emp)return;
+  const emp=(STATE.comEmps||[]).find(e=>e.id===empId); if(!emp)return;
   try{
     await EYG.rpc("hr.employee","write",[[empId],{parent_id:false}]);
     emp.parent_id=false;
