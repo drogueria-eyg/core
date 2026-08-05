@@ -53,14 +53,18 @@
   .hero h1{font-size:26px;font-weight:800;letter-spacing:-.5px}
   .hero p{color:var(--gris);font-size:14px;margin-top:3px}
   .sect-t{font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--gris);margin:22px 2px 10px}
-  .draft-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
-  .draft{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:15px 16px;box-shadow:var(--shadow);cursor:pointer;text-align:left;display:flex;flex-direction:column;gap:4px;transition:.12s}
-  .draft:hover{border-color:var(--teal-med);transform:translateY(-1px)}
-  .draft .n{font-size:11px;color:var(--gris2);font-weight:700;letter-spacing:.5px}
-  .draft .cli{font-size:16px;font-weight:800;line-height:1.2}
-  .draft .meta{font-size:12.5px;color:var(--gris);margin-top:2px}
-  .draft .tot{font-size:19px;font-weight:800;color:var(--teal-deep);margin-top:6px}
-  .draft .re{margin-top:9px;font-size:12.5px;font-weight:800;color:var(--teal)}
+  .draft-list{display:flex;flex-direction:column;gap:8px}
+  .draft{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:11px 14px;box-shadow:var(--shadow);transition:.12s}
+  .draft:hover{border-color:var(--teal-med)}
+  .draft .di{min-width:0;flex:1;cursor:pointer}
+  .draft .cli{font-size:15.5px;font-weight:800;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .draft .meta{font-size:12px;color:var(--gris);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .draft .tot{font-size:17px;font-weight:800;color:var(--teal-deep);white-space:nowrap;flex-shrink:0}
+  .draft .acts{display:flex;gap:8px;flex-shrink:0}
+  .draft .acts .btn{padding:9px 14px;font-size:13.5px}
+  .dbtn{background:#fff;color:var(--bad);border:1.5px solid #f0c4c2;border-radius:10px;font-size:16px;width:42px;height:40px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .dbtn:active{transform:scale(.95)}
+  @media(max-width:560px){ .draft{flex-wrap:wrap} .draft .di{flex:1 1 100%} .draft .acts{margin-left:auto} }
 
   /* ===== selector de cliente ===== */
   .picker{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;max-width:640px;margin:0 auto}
@@ -276,22 +280,42 @@ function render(){
 
 /* ---------- INICIO: presupuestos en curso + nueva venta ---------- */
 function vInicio(){
-  const d = ST.drafts||[];
-  const cards = d.map(o=>{
+  // Más nuevo → más antiguo (la consulta ya ordena por write_date desc; reforzamos por las dudas)
+  const d = (ST.drafts||[]).slice().sort((a,b)=>String(b.write_date||"").localeCompare(String(a.write_date||"")));
+  const rows = d.map(o=>{
     const cli = o.partner_id ? o.partner_id[1] : "Sin cliente";
     const n = (o.order_line||[]).length;
-    return `<button class="draft" onclick="reanudar(${o.id})">
-      <span class="n">${esc(o.name||"")}</span>
-      <span class="cli">${esc(cli)}</span>
-      <span class="meta">${n} producto${n===1?"":"s"} · ${o.write_date?esc(o.write_date.slice(8,10)+"/"+o.write_date.slice(5,7)):""}</span>
-      <span class="tot">${money(o.amount_total)}</span>
-      <span class="re">Retomar →</span>
-    </button>`;
+    let f=""; if(o.write_date){ const ap=EYG.argParts(o.write_date); f=ap.date.slice(8,10)+"/"+ap.date.slice(5,7)+" "+ap.hm; }
+    return `<div class="draft">
+      <div class="di" onclick="reanudar(${o.id})">
+        <div class="cli">${esc(cli)}</div>
+        <div class="meta">${esc(o.name||"")} · ${n} producto${n===1?"":"s"}${f?" · "+f:""}</div>
+      </div>
+      <div class="tot">${money(o.amount_total)}</div>
+      <div class="acts">
+        <button class="btn teal" onclick="reanudar(${o.id})">Retomar</button>
+        <button class="dbtn" title="Eliminar presupuesto" onclick="eliminarDraft(${o.id},event)">🗑</button>
+      </div>
+    </div>`;
   }).join("");
   return `<div class="hero"><h1>Cargar venta 🛒</h1><p>Elegí el cliente y armá el pedido desde el catálogo. Se guarda solo como presupuesto en Odoo hasta que lo confirmes.</p></div>
     <button class="btn teal big" onclick="abrirPicker()">＋ Nueva venta</button>
-    ${d.length?`<div class="sect-t">Presupuestos en curso (${d.length})</div><div class="draft-grid">${cards}</div>`
+    ${d.length?`<div class="sect-t">Presupuestos en curso (${d.length})</div><div class="draft-list">${rows}</div>`
       :`<div class="empty" style="padding:34px 0">No tenés presupuestos en curso.</div>`}`;
+}
+/* Eliminar un presupuesto rápido, sin entrar. */
+function eliminarDraft(id, ev){
+  if(ev){ ev.stopPropagation(); }
+  const o=(ST.drafts||[]).find(x=>x.id===id);
+  const cli=(o&&o.partner_id)?o.partner_id[1]:"este presupuesto";
+  modal(`<h3>Eliminar presupuesto</h3><p>¿Eliminar el presupuesto de <b>${esc(cli)}</b>? No se puede deshacer.</p>
+    <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cancelar</button><button class="btn red" onclick="doEliminarDraft(${id})">Sí, eliminar</button></div>`);
+}
+async function doEliminarDraft(id){
+  cerrarModal();
+  try{ await rpc("sale.order","unlink",[[id]]); ST.drafts=(ST.drafts||[]).filter(x=>x.id!==id); toast("Presupuesto eliminado"); }
+  catch(e){ toast("No pude eliminar"); }
+  render();
 }
 
 /* ---------- PICKER de cliente ---------- */
@@ -669,7 +693,10 @@ function vVenta(){
           ${o.plazo?`<span class="bdg plazo">🕐 ${esc(o.plazo)}</span>`:""}
         </div>
       </div>
-      <button class="btn ghost" onclick="volverInicio()">← Volver</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn ghost" onclick="volverInicio()">← Presupuestos</button>
+        <button class="btn ghost" onclick="irAlPanel()">🏠 Panel</button>
+      </div>
     </div>
 
     <div class="cat-card">
@@ -785,13 +812,20 @@ function vSuccess(){
 }
 
 /* ---------- navegación / modal ---------- */
-async function volverInicio(){
-  // Si el borrador quedó sin nada cargado, lo borramos para no dejar presupuestos vacíos.
+// URL del panel del comercial (con ?c= si lo abre un líder/admin)
+function panelHref(){ const q=(ST.perfil && ST.perfil.rol!=="comercial") ? ("?c="+encodeURIComponent(COMERCIAL)) : ""; return "panel.html"+q; }
+// borra el borrador si quedó vacío (para no dejar presupuestos en blanco)
+async function limpiarSiVacio(){
   if(ST.view==="venta" && ST.order && ST.order.id && nItems()===0 && !Object.keys(ST.lines).length){
     try{ await rpc("sale.order","unlink",[[ST.order.id]]); }catch(e){}
   }
-  ST.view="inicio"; ST.order=null; ST.want={}; ST.lines={}; cargar();
 }
+// volver a la lista de presupuestos en curso (pantalla anterior dentro del módulo)
+async function volverInicio(){ await limpiarSiVacio(); ST.view="inicio"; ST.order=null; ST.want={}; ST.lines={}; cargar(); }
+// salir al panel del comercial
+async function irAlPanel(){ await limpiarSiVacio(); location.href = panelHref(); }
+function modal(html){ document.getElementById("modalHost").innerHTML=`<div class="scrim" onclick="if(event.target===this)cerrarModal()"><div class="modal">${html}</div></div>`; }
+function cerrarModal(){ document.getElementById("modalHost").innerHTML=""; }
 function modal(html){ document.getElementById("modalHost").innerHTML=`<div class="scrim" onclick="if(event.target===this)cerrarModal()"><div class="modal">${html}</div></div>`; }
 function cerrarModal(){ document.getElementById("modalHost").innerHTML=""; }
 
@@ -809,11 +843,12 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
   const q=new URLSearchParams(location.search).get("c");
   if(perfil.rol==="comercial"){
     COMERCIAL = perfil.comercial_ref || perfil.nombre || perfil.email;
-    const nb=document.getElementById("navBack");
-    if(nb){ nb.textContent="Salir"; nb.href="#"; nb.title="Cerrar sesión"; nb.onclick=(e)=>{e.preventDefault();EYG.logout();}; }
   } else {
     COMERCIAL = q || perfil.comercial_ref || "Natividad Sanchez";
   }
+  // El botón atrás vuelve al panel del comercial (la pantalla anterior).
+  const nb=document.getElementById("navBack");
+  if(nb){ nb.textContent="← Panel"; nb.href="#"; nb.title="Volver al panel del comercial"; nb.onclick=(e)=>{e.preventDefault();irAlPanel();}; }
   setTopH();
   cargar();
 });
