@@ -925,15 +925,17 @@ function ofTxtSync(o){
      tarjeta informativa (_info): descuento y vigencia, sin barra de progreso. */
 async function normalizarSync(sync){
   const tmpls=[...new Set(sync.filter(o=>o.tipo==="p"&&o.target).map(o=>o.target))];
-  const variante={}, base={};
+  const variante={}, base={}, pvpEtico={};
   if(tmpls.length){
     const [tps,pit]=await Promise.all([
-      rpc("product.template","read",[tmpls,["product_variant_id"]],{context:{lang:"es_AR"}}).catch(()=>[]),
+      rpc("product.template","read",[tmpls,["product_variant_id","list_price","categ_id"]],{context:{lang:"es_AR"}}).catch(()=>[]),
       rpc("product.pricelist.item","search_read",
         [[["pricelist_id","=",LISTA],["applied_on","=","1_product"],["product_tmpl_id","in",tmpls]]],
         {fields:["product_tmpl_id","min_quantity","fixed_price"],limit:20000}).catch(()=>[])
     ]);
-    for(const t of tps) if(t.product_variant_id) variante[t.id]=t.product_variant_id[0];
+    for(const t of tps){ if(t.product_variant_id) variante[t.id]=t.product_variant_id[0];
+      // éticos: guardamos el PVP (list_price) para mostrar el descuento contra el PVP, no la escalera
+      if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) pvpEtico[t.id]=Math.round(t.list_price||0); }
     // precio base = el tramo de la escalera con menor cantidad mínima
     for(const it of pit){ const t=it.product_tmpl_id[0];
       if(!base[t]||it.min_quantity<base[t].q) base[t]={q:it.min_quantity,p:it.fixed_price}; }
@@ -955,9 +957,13 @@ async function normalizarSync(sync){
     // volver a aplicarle el descuento lo dejaba al cuadrado (un -20% daba -36%).
     // El "antes" es lo unico que se calcula, revirtiendo el descuento.
     const v=o.valor||0;
-    const antes = o.modo==="pct"   ? (v>0&&v<1 ? precio/(1-v) : 0)
-                : o.modo==="monto" ? (v>0 ? precio+v : 0)
-                :                    0;   // precio fijo: no hay "antes" que reconstruir
+    let antes = o.modo==="pct"   ? (v>0&&v<1 ? precio/(1-v) : 0)
+              : o.modo==="monto" ? (v>0 ? precio+v : 0)
+              :                    0;   // precio fijo: no hay "antes" que reconstruir
+    // ÉTICOS: el "antes" es el PVP de Alfabeta (list_price), no la escalera ya rebajada.
+    // Así el descuento que ve el cliente se calcula sobre el PVP y es mayor (oferta más tentadora).
+    const pvp=pvpEtico[o.target]||0;
+    if(pvp>precio) antes=pvp;
     return {...com, items:[{id:pv, nombre:o.targetName||("#"+o.target)}],
       precio, precioAntes: antes>precio ? antes : 0};
   });

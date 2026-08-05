@@ -106,6 +106,7 @@ const DEF={genera:false, recargo:0.80, piso:0.30, modo:"fijo", cortes:[1,10,20,4
 let CATS=[], byId={}, CFG={v:1,reglas:{}}, editId=null, abiertos={}, dirty=false;
 let OFERTAS=[], vista="reglas", ofDraft=null, ofBusq=[], ofBusqQ="";
 let ofCosto=null, ofTramos=null, ofTramosBase=null, ofAppliedOffer=null;   // costo, escalera actual, escalera BASE (sin la oferta ya aplicada), y la oferta aplicada al editar
+let OFPVP={}, ofPvp=0;   // éticos: PVP+precio actual por producto ofertado (para mostrar el descuento contra el PVP); ofPvp = PVP del producto en edición
 const KEY_ESC="eyg.eticos_escala";       // {subcatId:'A'|'B'} clasificación de labs éticos
 let ESCALA={}, escFiltro="todos", editEsc=null, editLab=null;   // clasificación, filtro, regla de escala en edición, regla de lab en edición
 const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
@@ -134,7 +135,29 @@ async function cargar(){
     const rawOf=await rpc("ir.config_parameter","get_param",[KEY_OF]);
     OFERTAS = rawOf ? (JSON.parse(rawOf)||[]) : [];
     render();
+    precargarPvpOfertas().then(()=>{ if(vista==='ofertas') render(); });   // asíncrono: al llegar el PVP, refresca la lista de ofertas
   }catch(e){ cont.innerHTML='<div class="empty">No pude cargar: '+esc(e.message)+'</div>'; }
+}
+/* ÉTICOS: para cada oferta de UN producto ético, guarda {pvp, precio actual} para poder mostrar
+   el descuento contra el PVP de Alfabeta (no contra la escalera ya rebajada). Solo display. */
+async function precargarPvpOfertas(){
+  OFPVP={};
+  const tgts=[...new Set(OFERTAS.filter(o=>o.tipo==='p'&&o.target).map(o=>o.target))];
+  if(!tgts.length) return;
+  try{
+    const [tps,pit]=await Promise.all([
+      rpc("product.template","read",[tgts,["list_price","categ_id"]],{context:{lang:"es_AR"}}),
+      rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["applied_on","=","1_product"],["product_tmpl_id","in",tgts]]],{fields:["product_tmpl_id","min_quantity","fixed_price"],limit:20000})
+    ]);
+    const base={};
+    for(const it of pit){ const t=it.product_tmpl_id[0]; if(!base[t]||it.min_quantity<base[t].q) base[t]={q:it.min_quantity,p:it.fixed_price}; }
+    for(const t of tps){
+      if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")){
+        const pvp=Math.round(t.list_price||0), precio=base[t.id]?Math.round(base[t.id].p):0;
+        if(pvp>0 && precio>0) OFPVP[t.id]={pvp,precio};
+      }
+    }
+  }catch(e){}
 }
 
 // resuelve la regla efectiva de una categoría: propia, o heredada del ancestro más cercano
@@ -319,7 +342,9 @@ function renderOfertas(){
     lista = OFERTAS.map(o=>{
       const st=ofEstado(o);
       const tgt = o.tipo==='p' ? ("🔖 "+esc(o.targetName||("#"+o.target))) : ("📂 "+esc(o.targetName||("cat #"+o.target)));
-      return `<div class="ofrow"><div class="ofmain"><div class="oftgt">${tgt}</div><div class="ofdet">${esc(ofDesc(o))}${o.hasta?(" · hasta "+esc(o.hasta)):" · sin vencimiento"}${o.stock?(" · stock "+esc(String(o.stock))):""}</div></div>
+      const et = (o.tipo==='p' && OFPVP[o.target]) ? OFPVP[o.target] : null;
+      const etTxt = (et && et.pvp>et.precio) ? ` · <b style="color:#0E5C46">el cliente ve −${Math.round((1-et.precio/et.pvp)*100)}% (PVP ${EYG.money(et.pvp)} → ${EYG.money(et.precio)})</b>` : "";
+      return `<div class="ofrow"><div class="ofmain"><div class="oftgt">${tgt}</div><div class="ofdet">${esc(ofDesc(o))}${etTxt}${o.hasta?(" · hasta "+esc(o.hasta)):" · sin vencimiento"}${o.stock?(" · stock "+esc(String(o.stock))):""}</div></div>
         <span class="ofbadge ${st.c}">${st.t}</span>
         <button class="btn-mini" onclick="editarOferta('${esc(o.id)}')">✎ Editar</button>
         <button class="btn-mini" onclick="pausarOferta('${esc(o.id)}')">${o.pausada?"▶ Reanudar":"⏸ Pausar"}</button>
@@ -490,8 +515,12 @@ window.elegirTarget = async (k,id,name) => {
 };
 // costo (misma recencia que el motor: manual > última compra > estándar) + escalera del producto
 async function cargarRentProducto(tmplId){
+  ofPvp=0;
   try{
-    const t=await rpc("product.template","read",[[tmplId],["product_variant_id"]],{context:{lang:"es_AR"}});
+    const t=await rpc("product.template","read",[[tmplId],["product_variant_id","list_price","categ_id"]],{context:{lang:"es_AR"}});
+    const th=(t&&t[0])||{};
+    // éticos: guardamos el PVP para mostrar en vivo el descuento que verá el cliente (sobre PVP)
+    if(/[EÉ]TICO/i.test((th.categ_id&&th.categ_id[1])||"")) ofPvp=Math.round(th.list_price||0);
     const vid=t&&t[0]&&t[0].product_variant_id&&t[0].product_variant_id[0];
     let costo=0;
     if(vid){
@@ -550,6 +579,14 @@ function actualizarRent(){
     box.className="rentbox "+cls(mN);
     const rango = ofTramosBase.length>1 ? `de <b>${m1}%</b> (${t1.q}u → ${M(p1)}) a <b>${mN}%</b> (${tN.q}u → ${M(pN)})` : `<b>${m1}%</b> (${M(p1)})`;
     box.innerHTML=`Sobre la escalera · Rentabilidad ${rango} <span class="sub2">· costo ${M(costo)}</span>${mN<0?' ⚠️ el último tramo pierde plata':(mN<15?' · último tramo ajustado':'')}`;
+  }
+  // ÉTICOS: descuento que verá el cliente (sobre el PVP de Alfabeta, no sobre la escalera)
+  if(ofPvp>0){
+    const b1=(ofTramosBase&&ofTramosBase.length)?ofTramosBase[0].p:null;
+    const pCli = modo==='precio' ? valRaw : (b1!=null ? finalDe(b1) : null);
+    if(pCli>0 && ofPvp>pCli){
+      box.innerHTML += `<div style="margin-top:6px;font-weight:800;color:#0E5C46">🏷️ El cliente lo ve como −${Math.round((1-pCli/ofPvp)*100)}% (PVP ${M(ofPvp)} → ${M(pCli)})</div>`;
+    }
   }
 }
 window.guardarOferta = async () => {

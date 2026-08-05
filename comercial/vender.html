@@ -397,7 +397,7 @@ async function entrarVenta(){
 
 // Productos en oferta = ítems de las ofertas vigentes (mismas que ve el comercial en "Combos y ofertas").
 async function cargarOfertas(){
-  ST.ofertaPids=new Set(); ST.ofertaTmpls=new Set(); ST.ofertaInfo={}; ST.ofertaRule={};
+  ST.ofertaPids=new Set(); ST.ofertaTmpls=new Set(); ST.ofertaInfo={}; ST.ofertaRule={}; ST.ofertaPvp={};
   const hoy=EYG.argToday();
   try{
     // (1) eyg.ofertas: ofertas/combos confirmados. items[].id = producto (variante). Traen "precio antes".
@@ -417,6 +417,14 @@ async function cargarOfertas(){
       // tipo 'c' (categoría entera) queda pendiente: marcar toda una familia sería demasiado amplio.
     });
   }catch(e){}
+  // éticos: PVP de Alfabeta por plantilla → el "antes" tachado se muestra contra el PVP (oferta más tentadora)
+  const synTmpls=[...ST.ofertaTmpls];
+  if(synTmpls.length){
+    try{
+      const tps=await rpc("product.template","read",[synTmpls,["list_price","categ_id"]],{context:{lang:"es_AR"}});
+      tps.forEach(t=>{ if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) ST.ofertaPvp[t.id]=Math.round(t.list_price||0); });
+    }catch(e){}
+  }
   ST._ofLoaded=true;
   if(ST.view==="venta" && !ST.cargandoCat) renderGrid();   // repinta para mostrar las ofertas
 }
@@ -508,7 +516,11 @@ function proxTramo(pid,q){ const t=ST.tiers[pid]||[]; const cur=tramoDe(pid,q); 
 function precioNormal(p, cur){
   const oi=ST.ofertaInfo&&ST.ofertaInfo[p.id];
   if(oi && oi.antes>cur) return oi.antes;
-  const r=p.product_tmpl_id && ST.ofertaRule[p.product_tmpl_id[0]];
+  const tmpl=p.product_tmpl_id && p.product_tmpl_id[0];
+  // éticos: el "antes" es el PVP de Alfabeta (más tentador que revertir la escalera)
+  const pvp=tmpl && ST.ofertaPvp && ST.ofertaPvp[tmpl];
+  if(pvp>cur) return pvp;
+  const r=tmpl && ST.ofertaRule[tmpl];
   if(r && cur>0){
     if(r.modo==="pct"   && r.valor>0 && r.valor<1) return cur/(1-r.valor);  // −X% → normal = actual/(1−X)
     if(r.modo==="monto" && r.valor>0)              return cur+r.valor;       // −$ fijo → normal = actual+$

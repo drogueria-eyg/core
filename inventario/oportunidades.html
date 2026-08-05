@@ -176,7 +176,10 @@ async function cargar(){
       try{
         const its=await EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",prodOf.map(o=>o.target)],["min_quantity","=",1]]],{fields:["product_tmpl_id","fixed_price"], limit:5000});
         const byT={}; its.forEach(i=>{ byT[i.product_tmpl_id[0]]=Math.round(i.fixed_price); });
-        prodOf.forEach(o=>{ o._precio=byT[o.target]; });
+        // éticos: PVP (list_price) para mostrar el descuento contra el PVP, no contra la escalera
+        const tps=await EYG.rpc("product.template","read",[prodOf.map(o=>o.target),["list_price","categ_id"]],LANG);
+        const pvpT={}; tps.forEach(t=>{ if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) pvpT[t.id]=Math.round(t.list_price||0); });
+        prodOf.forEach(o=>{ o._precio=byT[o.target]; o._pvp=pvpT[o.target]||0; });
       }catch(e){}
     }
     // estado de oportunidades por stock (ignorados / archivadas). Las oportunidades se calculan en vivo (refrescarStockOpo).
@@ -303,10 +306,12 @@ function cardOfertaSync(o){
   // precio final (con la oferta) + "antes" calculado cuando se puede
   let drop;
   if(o._precio){
-    let antes=null;
+    let antes=null, pc=descPc;
     if(o.modo==='pct' && o.valor<1) antes=Math.round(o._precio/(1-o.valor));
     else if(o.modo==='monto') antes=o._precio+Math.round(o.valor);
-    drop=`<div class="drop">${antes?`<span class="a">${money(antes)}</span> → `:''}<span class="b">${money(o._precio)}</span> <span class="pc">${esc(descPc)}</span></div>`;
+    // éticos: el "antes" es el PVP → el descuento se muestra contra el PVP y es mayor
+    if(o._pvp>o._precio){ antes=o._pvp; pc='−'+Math.round((1-o._precio/o._pvp)*100)+'% (PVP)'; }
+    drop=`<div class="drop">${antes?`<span class="a">${money(antes)}</span> → `:''}<span class="b">${money(o._precio)}</span> <span class="pc">${esc(pc)}</span></div>`;
   } else {
     // categoría: no hay un precio único (varía por producto) -> solo el descuento
     drop=`<div class="drop"><span class="b">${esc(descPc)}</span> <span class="meta" style="opacity:.7">· el precio varía por producto</span></div>`;
