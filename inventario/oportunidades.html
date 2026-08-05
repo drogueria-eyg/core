@@ -387,7 +387,7 @@ function ofertarDesde(pid){
   modalOferta();
 }
 function abrirOferta(oid){
-  if(oid){ const o=OFERTAS.find(x=>x.id===oid); FORM=JSON.parse(JSON.stringify(o)); }
+  if(oid){ const o=OFERTAS.find(x=>x.id===oid); FORM=JSON.parse(JSON.stringify(o)); FORM._antesEdit=true; }
   else { FORM={ id:null, tipo:"oferta", titulo:"", items:[], precio:0, precioAntes:0, stock:0, hasta:masDias(7), nota:"" }; }
   modalOferta();
 }
@@ -412,9 +412,12 @@ function modalOferta(){
         ${f.items.length?`<div class="chosen">${chosen}</div>`:`<input id="f-buscar" placeholder="Buscar por nombre o SKU…" oninput="buscarProd(this.value)"><div class="prodpick" id="f-pick" style="display:none"></div>`}
       </div>`}
       <div class="fld"><div class="row2">
-        <div><label>Precio de oferta</label><input id="f-precio" type="number" step="0.01" value="${f.precio||''}" oninput="actualizarMargen()"></div>
-        <div><label>Precio de lista (antes)</label><input id="f-antes" type="number" step="0.01" value="${f.precioAntes||''}"></div>
-      </div><div class="hint">El “antes” se muestra tachado para resaltar el ahorro.</div></div>
+        <div><label>Precio de oferta</label><input id="f-precio" type="number" step="0.01" value="${f.precio||''}" oninput="actualizarMargen();actualizarDescuento()"></div>
+        <div><label>Precio de lista (antes)</label><input id="f-antes" type="number" step="0.01" value="${f.precioAntes||''}" oninput="FORM._antesEdit=true;actualizarDescuento()"></div>
+      </div>
+      <div class="hint" id="f-desc"></div>
+      <div class="hint" id="f-etico" style="display:none;color:var(--teal-deep);font-weight:600"></div>
+      <div class="hint">El “antes” se muestra tachado para resaltar el ahorro.</div></div>
       <div class="fld"><label>Margen con esta oferta</label><div id="f-margen" class="margen-box">calculando…</div>
         <div class="hint">Sobre el costo actual del producto en Odoo (neto, sin IVA). En rojo = perdés plata.</div></div>
       <div class="fld"><div class="row2">
@@ -427,14 +430,46 @@ function modalOferta(){
   </div></div>`;
   cargarCostoForm();   // trae el costo actual de Odoo y pinta el margen (se actualiza al editar el precio)
 }
-/* Costo actual (más reciente, lo sincroniza Odoo) de los productos de la oferta → margen en vivo */
+/* Costo actual (más reciente, lo sincroniza Odoo) de los productos de la oferta → margen en vivo.
+   Además: si la oferta es de UN producto ÉTICO (categoría contiene "ETICO"), el "antes" pasa a ser
+   el PVP de Alfabeta (list_price), no la escalera ya rebajada (PVP−31%), para que el descuento
+   mostrado se calcule sobre el PVP y sea mayor. Ver [[eyg-eticos-pvp-tarifa]]. */
 async function cargarCostoForm(){
   const box=document.getElementById("f-margen"); if(!box) return;
   const ids=(FORM.items||[]).map(i=>i.id);
-  if(!ids.length){ FORM._costoTotal=null; actualizarMargen(); return; }
-  try{ const rows=await EYG.rpc("product.product","read",[ids,["standard_price"]],LANG); FORM._costoTotal=rows.reduce((a,r)=>a+(r.standard_price||0),0); }
-  catch(e){ FORM._costoTotal=null; }
+  if(!ids.length){ FORM._costoTotal=null; FORM._esEtico=false; FORM._pvp=null; actualizarMargen(); aplicarEtico(); return; }
+  try{
+    const rows=await EYG.rpc("product.product","read",[ids,["standard_price","list_price","categ_id"]],LANG);
+    FORM._costoTotal=rows.reduce((a,r)=>a+(r.standard_price||0),0);
+    // ético sólo aplica a oferta de 1 producto; categ_id[1] es el complete_name ("ALL / ETICOS / …")
+    const etico = FORM.tipo==='oferta' && rows.length===1 && /[EÉ]TICO/i.test((rows[0].categ_id&&rows[0].categ_id[1])||"");
+    FORM._pvp = etico ? Math.round(rows[0].list_price||0) : null;
+    FORM._esEtico = etico && FORM._pvp>0;
+  }
+  catch(e){ FORM._costoTotal=null; FORM._esEtico=false; FORM._pvp=null; }
   actualizarMargen();
+  aplicarEtico();
+}
+/* Para éticos: el "antes" es el PVP (list_price). Se autocompleta sólo si el usuario no editó el campo
+   y el PVP está por encima del precio de oferta (si no, dejamos la escalera como referencia segura). */
+function aplicarEtico(){
+  const antes=document.getElementById("f-antes"), et=document.getElementById("f-etico");
+  const precio=parseFloat((document.getElementById("f-precio")||{}).value)||FORM.precio||0;
+  const ok = FORM._esEtico && FORM._pvp>0 && FORM._pvp>precio;
+  if(ok){
+    if(antes && !FORM._antesEdit){ antes.value=FORM._pvp; FORM.precioAntes=FORM._pvp; }
+    if(et){ et.style.display="block"; et.innerHTML=`💊 Producto <b>ético</b>: el “antes” es el <b>PVP</b> de Alfabeta (${money(FORM._pvp)}). El descuento se calcula sobre el PVP, no sobre el precio ya rebajado.`; }
+  } else if(et){ et.style.display="none"; et.innerHTML=""; }
+  actualizarDescuento();
+}
+/* Descuento en vivo (lo que verá el comercial): (antes − precio) / antes. */
+function actualizarDescuento(){
+  const el=document.getElementById("f-desc"); if(!el) return;
+  const precio=parseFloat((document.getElementById("f-precio")||{}).value)||0;
+  const antes=parseFloat((document.getElementById("f-antes")||{}).value)||0;
+  el.innerHTML=(antes>0&&precio>0&&antes>precio)
+    ? `Descuento que verá el comercial: <b style="color:#1E7D46">−${Math.round((1-precio/antes)*100)}%</b>`
+    : "";
 }
 function actualizarMargen(){
   const box=document.getElementById("f-margen"); if(!box) return;
