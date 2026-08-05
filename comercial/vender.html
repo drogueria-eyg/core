@@ -202,6 +202,8 @@ const rpc = EYG.rpc;
 const money = EYG.money;
 const esc = EYG.esc;
 const ES = {lang:"es_AR"};
+// Base pública de Odoo para servir imágenes de producto por <img src> (fuera del canal RPC).
+const ODOO_BASE = "https://drogueriaeyg.odoo.com";
 
 // Familias del catálogo (mismas raíces que usa el módulo de Precios)
 const FAMILIAS = [
@@ -513,14 +515,16 @@ function renderGrid(){
   if(!ST.prods.length){ el.innerHTML='<div class="empty">'+(ST.qProd?"No encontré productos con ese nombre (y stock).":(ST.fam==="OFERTAS"?"No hay ofertas vigentes con stock por ahora.":"No hay productos con stock en esta familia."))+'</div>'; return; }
   el.innerHTML='<div class="grid">'+ST.prods.map(cardProd).join("")+'</div>'+
     (ST.prods.length>=200?'<div style="text-align:center;color:var(--gris2);font-size:12px;padding:0 0 16px">Mostrando los primeros 200. Afiná con el buscador.</div>':"");
-  observarImagenes();   // carga perezosa de las fotos visibles
+  // imágenes: <img loading="lazy" src="/web/image/..."> directo (ver thumbHtml), fuera del canal RPC
 }
 function thumbHtml(p){
-  const img=ST.imgs[p.id];
-  if(img) return `<img class="thumb" id="img-${p.id}" src="data:image/png;base64,${img}" alt="">`;
-  if(img===false) return `<div class="thumb ph" id="img-${p.id}">📦</div>`;              // sin imagen en Odoo
-  return `<div class="thumb ph" id="img-${p.id}" data-pid="${p.id}">·</div>`;            // pendiente (lazy)
+  // Imagen DIRECTA del controlador de Odoo (/web/image): NO pasa por el canal RPC/edge, así que
+  // no gasta los turnos del límite global ni compite con las consultas de datos; la cachea el
+  // navegador (ETag/304). loading="lazy" baja solo las visibles. Si falla, cae a 📦.
+  // Ver [[eyg-odoo-carga-performance]].
+  return `<img class="thumb" loading="lazy" decoding="async" alt="" src="${ODOO_BASE}/web/image/product.product/${p.id}/image_128" onerror="imgFallback(this)">`;
 }
+function imgFallback(im){ const d=document.createElement("div"); d.className="thumb ph"; d.textContent="📦"; try{ im.replaceWith(d); }catch(e){} }
 function cardProd(p){
   const q=ST.want[p.id]||0;
   const pr=ST.precios[p.id];
