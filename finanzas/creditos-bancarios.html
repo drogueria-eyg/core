@@ -9,6 +9,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="../assets/core.js?v=13"></script>
 <style>
   :root{
@@ -37,12 +39,26 @@
   .card .cap{font-size:12px;color:var(--gris);margin-bottom:15px}
   .step{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--teal);color:#fff;font-size:12px;font-weight:800;margin-right:8px}
 
+  /* Dropzone */
+  .drop{border:2px dashed var(--teal-med);border-radius:14px;padding:30px 20px;text-align:center;cursor:pointer;transition:background .12s,border-color .12s;background:#F7FCFB}
+  .drop:hover,.drop.over{background:var(--agua);border-color:var(--teal)}
+  .drop .big{font-size:34px;margin-bottom:8px}
+  .drop .t{font-size:15px;font-weight:800;color:var(--teal-deep)}
+  .drop .s{font-size:12.5px;color:var(--gris);margin-top:4px}
+  .drop input{display:none}
+  .filechip{display:inline-flex;align-items:center;gap:8px;background:var(--agua);color:var(--teal-deep);border-radius:20px;padding:6px 14px;font-size:13px;font-weight:700;margin-top:4px}
+  details.raw{margin-top:12px}
+  details.raw summary{font-size:12px;font-weight:700;color:var(--teal-deep);cursor:pointer}
+  details.raw textarea{margin-top:8px}
+
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
   label{display:block;font-size:11.5px;font-weight:700;color:var(--gris);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px}
   .req::after{content:" *";color:var(--err)}
   input,select,textarea{font-family:inherit;font-size:14px;width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--ink);background:var(--surface);outline:none}
   input:focus,select:focus,textarea:focus{border-color:var(--teal-med);box-shadow:0 0 0 2px rgba(4,135,130,.13)}
-  textarea{min-height:120px;resize:vertical;font-size:12.5px;line-height:1.5;font-family:ui-monospace,Menlo,Consolas,monospace}
+  input.auto{background:#F4FBFA;border-color:#BDE4E0}
+  input.manual{background:#FFFDF3;border-color:#EAD9A0}
+  textarea{min-height:120px;resize:vertical;font-size:12px;line-height:1.5;font-family:ui-monospace,Menlo,Consolas,monospace}
   .hint{font-size:11px;color:var(--gris2);margin-top:4px;line-height:1.4}
   .btn{font-family:inherit;font-size:14px;font-weight:700;border:0;border-radius:10px;padding:11px 20px;cursor:pointer;background:var(--teal);color:#fff}
   .btn:hover{background:var(--teal-deep)}
@@ -51,7 +67,6 @@
   .btn.big{padding:13px 26px;font-size:15px}
   .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
 
-  /* Vista previa */
   .pv-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:11px;margin-bottom:14px}
   .pv-tile{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
   .pv-tile .l{font-size:10.5px;color:var(--gris);font-weight:700;text-transform:uppercase;letter-spacing:.4px}
@@ -74,10 +89,12 @@
   .banner{border-radius:10px;padding:12px 15px;font-size:13px;line-height:1.5;margin-bottom:14px}
   .banner.err{background:var(--errbg);border:1px solid #E9B7B4;color:var(--err)}
   .banner.ok{background:var(--okbg);border:1px solid #B7E0C4;color:var(--ok)}
+  .banner.info{background:var(--agua);border:1px solid #BDE4E0;color:var(--teal-deep)}
   .banner b{font-weight:800}
   .banner a{color:var(--teal-deep);font-weight:700}
 
   .spinner{width:16px;height:16px;border:2.5px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block;vertical-align:middle;margin-right:7px}
+  .spinner.dark{border-color:rgba(4,135,130,.25);border-top-color:var(--teal)}
   @keyframes spin{to{transform:rotate(360deg)}}
   .hidden{display:none}
 </style>
@@ -89,12 +106,14 @@
   <a class="back" href="egresos.html">← Egresos</a>
 </div>
 <div class="wrap">
-  <div class="wip">🏦 <div><b>Carga de préstamos bancarios en Odoo.</b> Pegá el detalle del PDF del banco y el neto que se acreditó en la cuenta; la herramienta arma el comprobante <b>OC-X</b> con capital, interés, sellados, IVA y todas las cuotas, y lo deja <b>en borrador</b> para que lo revises antes de confirmarlo.</div></div>
+  <div class="wip">🏦 <div><b>Carga de préstamos bancarios en Odoo.</b> Subí el archivo del banco (PDF, Excel o texto) — la herramienta lee capital, cuotas, interés e IVA sola. Revisás, completás lo que falte, y genera el comprobante <b>OC-X</b> en <b>borrador</b> para confirmarlo vos.</div></div>
 
   <div id="app"><div class="card">Cargando…</div></div>
 </div>
 
 <script>
+if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+
 /* ===== Constantes del comprobante OC-X de préstamo (ver análisis en memoria) ===== */
 const JOURNAL   = 10;                    // Vendor Bills
 const DOCTYPE   = 73;                    // (99) Other vouchers
@@ -103,81 +122,161 @@ const ACC = { neto:350, interes:260, sellados:233 };   // Recibos pend. / Intere
 const TAX = { exento:57, iva105:63 };    // 0% NT / IVA 10,5%
 const ODOO = "https://drogueriaeyg.odoo.com";
 
-/* Bancos que dan préstamos → su partner en Odoo (subcuenta "…- Préstamo/PRESTAMOS"). */
+/* Bancos que dan préstamos → su partner en Odoo (subcuenta "…- Préstamo/PRESTAMOS").
+   `det` = palabras para autodetectar el banco desde el texto del archivo. */
 const BANKS = [
-  {k:"santafe", nom:"Banco Santa Fe",  partner:3947},
-  {k:"bbva",    nom:"Banco BBVA",      partner:3782},
-  {k:"macro",   nom:"Banco Macro",     partner:2422},
+  {k:"santafe", nom:"Banco Santa Fe",  partner:3947, det:[/santa\s*fe/i]},
+  {k:"bbva",    nom:"Banco BBVA",      partner:3782, det:[/bbva/i]},
+  {k:"macro",   nom:"Banco Macro",     partner:2422, det:[/macro/i]},
 ];
 
 const money2 = n => "$"+Number(n||0).toLocaleString("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2});
 const esc = EYG.esc;
-const parseNum = s => parseFloat(String(s).replace(/\./g,"").replace(",","."));
+const parseNum = s => parseFloat(String(s).replace(/[^\d,.-]/g,"").replace(/\./g,"").replace(",","."));
 const round2 = n => Math.round(n*100)/100;
 
 let ST = { form:{banco:"santafe", fecha:EYG.argToday(), numero:"", capital:"", neto:"", nro:"", texto:""},
-           termByCount:{}, parsed:null, error:null, generating:false, result:null };
+           fileName:"", extracting:false, autodet:{}, termByCount:{}, parsed:null, error:null, generating:false, result:null };
 
-/* ---- Parseo del texto del PDF del banco ---- */
-// Cuadro de cuotas: cada fila trae 7 importes (capital, interés, cargos, comp, punit, IVA, total) + fecha.
+/* =========================================================================
+   LECTURA DE ARCHIVOS
+   ========================================================================= */
+// PDF → texto, reconstruyendo las filas por su posición vertical (cada fila del
+// cuadro de cuotas queda en una línea, aunque el PDF la guarde en pedazos).
+async function pdfToText(arrayBuffer){
+  if(!window.pdfjsLib) throw new Error("El lector de PDF no cargó (revisá la conexión).");
+  const pdf = await pdfjsLib.getDocument({data:arrayBuffer}).promise;
+  const out=[];
+  for(let pg=1; pg<=pdf.numPages; pg++){
+    const page = await pdf.getPage(pg);
+    const tc = await page.getTextContent();
+    const items = tc.items.map(it=>({x:it.transform[4], y:it.transform[5], s:it.str}))
+                          .filter(it=>String(it.s).trim()!=="");
+    items.sort((a,b)=> (b.y - a.y) || (a.x - b.x));   // de arriba hacia abajo, izq→der
+    let cur=[], cy=null;
+    for(const it of items){
+      if(cy===null || (cy - it.y) <= 3){ cur.push(it); if(cy===null) cy=it.y; }
+      else { out.push(cur.sort((a,b)=>a.x-b.x).map(p=>p.s).join(" ")); cur=[it]; cy=it.y; }
+    }
+    if(cur.length) out.push(cur.sort((a,b)=>a.x-b.x).map(p=>p.s).join(" "));
+  }
+  return out.map(l=>l.replace(/\s+/g," ").trim()).join("\n");
+}
+// Excel/CSV → texto (cada fila una línea, celdas separadas por espacio).
+async function sheetToText(arrayBuffer){
+  if(!window.XLSX) throw new Error("El lector de Excel no cargó.");
+  const wb = XLSX.read(arrayBuffer, {type:"array"});
+  const out=[];
+  wb.SheetNames.forEach(nm=>{
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[nm], {header:1, raw:false});
+    rows.forEach(r=> out.push((r||[]).join(" ")));
+  });
+  return out.join("\n");
+}
+
+async function onFile(file){
+  if(!file) return;
+  ST.fileName=file.name; ST.extracting=true; ST.error=null; ST.result=null; render();
+  try{
+    const buf = await file.arrayBuffer();
+    let text="";
+    if(/\.pdf$/i.test(file.name) || file.type==="application/pdf") text = await pdfToText(buf);
+    else if(/\.(xlsx|xls|csv)$/i.test(file.name)) text = await sheetToText(buf);
+    else if(/\.(txt|text)$/i.test(file.name) || /^text\//.test(file.type||"")) text = new TextDecoder().decode(buf);
+    else throw new Error("Formato no reconocido. Subí PDF, Excel o texto — o pegá el contenido abajo.");
+    ST.form.texto = text;
+    autodetectar(text);
+    ST.extracting=false;
+    analizar();                 // parsea cuotas + valida + render
+  }catch(e){
+    ST.extracting=false; ST.error="No pude leer el archivo: "+(e.message||e); render();
+  }
+}
+
+/* =========================================================================
+   AUTODETECCIÓN (robusta a distintos bancos: varios patrones por dato)
+   ========================================================================= */
+function detectarBanco(text){ const b=BANKS.find(b=>b.det.some(rx=>rx.test(text))); return b?b.k:null; }
+function buscarImporte(text, patrones){
+  for(const p of patrones){
+    const rx = new RegExp(p+"[^0-9]{0,40}?(\\d{1,3}(?:\\.\\d{3})*(?:,\\d{2})?)","i");
+    const m = text.match(rx); if(m) return parseNum(m[1]);
+  }
+  return null;
+}
+function buscarTexto(text, patrones){
+  for(const p of patrones){ const m=text.match(new RegExp(p+"[^0-9A-Za-z]{0,10}([A-Za-z0-9\\-]{4,})","i")); if(m) return m[1]; }
+  return null;
+}
+function autodetectar(text){
+  const a={};
+  const b=detectarBanco(text); if(b){ ST.form.banco=b; a.banco=true; }
+  const cap=buscarImporte(text,["SALDO\\s+CAPITAL\\s+AJUSTADO","CAPITAL\\s+OTORGADO","CAPITAL\\s+SOLICITADO","IMPORTE\\s+(?:SOLICITADO|OTORGADO|ACREDITADO)","MONTO\\s+(?:SOLICITADO|OTORGADO|DEL\\s+PR[ÉE]STAMO)","CAPITAL"]);
+  if(cap){ ST.form.capital=String(cap); a.capital=true; }
+  const nro=buscarTexto(text,["N[ÚU]MERO\\s+DE\\s+PR[ÉE]STAMO","NRO\\.?\\s+DE\\s+PR[ÉE]STAMO","N[°º]?\\s+OPERACI[ÓO]N","PR[ÉE]STAMO\\s+N[°º]?"]);
+  if(nro){ ST.form.nro=nro; a.nro=true; }
+  ST.autodet=a;
+}
+
+/* =========================================================================
+   PARSEO DEL CUADRO DE CUOTAS
+   Una fila válida tiene una fecha (venc.) y al menos 5 importes. Tomamos por
+   posición: interés = 2º importe, IVA = penúltimo, total = último.
+   (En los PDF de Santa Fe: capital, interés, cargos, comp, punit, IVA, total.)
+   ========================================================================= */
 function parseCuadro(text){
   const rows=[];
   for(const ln of String(text).split(/\r?\n/)){
     const dm = ln.match(/(\d{2})\/(\d{2})\/(\d{4})/);
-    const nums = ln.match(/\d{1,3}(?:\.\d{3})*,\d{2}/g);
-    if(!dm || !nums || nums.length<7) continue;
+    const nums = (ln.match(/\d{1,3}(?:\.\d{3})*,\d{2}/g)||[]);
+    if(!dm || nums.length<5) continue;
     const v = nums.map(parseNum);
-    rows.push({ venc:`${dm[3]}-${dm[2]}-${dm[1]}`, capital:v[0], interes:v[1], iva:v[5], total:v[6] });
+    rows.push({ venc:`${dm[3]}-${dm[2]}-${dm[1]}`, interes:v[1], iva:v[v.length-2], total:v[v.length-1] });
   }
-  return rows;
+  // ordenar por vencimiento y descartar duplicados exactos
+  const seen=new Set();
+  return rows.filter(r=>{ const k=r.venc+"|"+r.total; if(seen.has(k))return false; seen.add(k); return true; })
+             .sort((a,b)=>a.venc.localeCompare(b.venc));
 }
-function extraerCapital(text){ const m=String(text).match(/SALDO\s+CAPITAL\s+AJUSTADO\s*[\r\n]*\s*\$?\s*([\d.]+,\d{2})/i); return m?parseNum(m[1]):null; }
-function extraerNro(text){ const m=String(text).match(/N[ÚU]MERO\s+DE\s+PR[ÉE]STAMO\s*[\r\n]*\s*(\d{4,})/i); return m?m[1]:null; }
 
 function analizar(){
   ST.error=null; ST.result=null;
   const f=ST.form;
   const cuotas=parseCuadro(f.texto);
-  const capParsed=extraerCapital(f.texto), nroParsed=extraerNro(f.texto);
-  const capital = round2(parseNum(String(f.capital))|| capParsed || 0);
-  const neto    = round2(parseNum(String(f.neto)) || 0);
-  const nro     = f.nro || nroParsed || "";
-  if(f.capital==="" && capParsed) f.capital=String(capParsed).replace(".",",");   // autocompleta si vino del PDF
-  if(!f.nro && nroParsed) f.nro=nroParsed;
+  const capital=round2(parseNum(f.capital)||0);
+  const neto=round2(parseNum(f.neto)||0);
 
   const errs=[];
-  if(!cuotas.length) errs.push("No pude leer el cuadro de cuotas del texto pegado. Copiá la tabla completa del PDF (con importes y vencimientos).");
-  if(!capital) errs.push("Falta el capital solicitado (Saldo capital ajustado).");
+  if(!cuotas.length) errs.push("No pude leer el cuadro de cuotas. Revisá el archivo o pegá el texto.");
+  if(!capital) errs.push("Falta el capital solicitado.");
   if(!neto) errs.push("Falta el neto acreditado (lo que entró a la cuenta, del extracto).");
-  if(neto>capital) errs.push("El neto acreditado no puede ser mayor que el capital.");
+  if(neto>capital && capital) errs.push("El neto acreditado no puede ser mayor que el capital.");
 
-  const interes = round2(cuotas.reduce((a,c)=>a+c.interes,0));
-  const iva     = round2(cuotas.reduce((a,c)=>a+c.iva,0));
-  const totalCuotas = round2(cuotas.reduce((a,c)=>a+c.total,0));
-  const sellados = round2(capital - neto);
-  const totalDoc = round2(neto + interes + sellados + iva);
-  const ivaTeorico = round2(interes*0.105);
-
-  // Validaciones de consistencia
-  const okBalance = Math.abs(totalDoc - totalCuotas) < 0.05;   // débitos == créditos
-  const okIdentPDF = Math.abs(round2(capital+interes+iva) - totalCuotas) < 0.05;  // el PDF cierra
-  const termId = ST.termByCount[cuotas.length];
+  const interes=round2(cuotas.reduce((a,c)=>a+c.interes,0));
+  const iva=round2(cuotas.reduce((a,c)=>a+c.iva,0));
+  const totalCuotas=round2(cuotas.reduce((a,c)=>a+c.total,0));
+  const sellados=round2(capital-neto);
+  const totalDoc=round2(neto+interes+sellados+iva);
+  const ivaTeorico=round2(interes*0.105);
+  const okBalance=Math.abs(totalDoc-totalCuotas)<0.05;
+  const okIdentPDF=Math.abs(round2(capital+interes+iva)-totalCuotas)<0.05;
+  const termId=ST.termByCount[cuotas.length];
   if(cuotas.length && !termId) errs.push(`No hay un plazo de pago de ${cuotas.length} cuotas configurado en Odoo. Avisá para crear uno.`);
 
   ST.parsed = errs.length ? null :
-    { capital, neto, nro, cuotas, interes, iva, sellados, totalCuotas, totalDoc, ivaTeorico, okBalance, okIdentPDF, termId };
-  if(errs.length) ST.error = errs.join(" ");
+    { capital, neto, nro:f.nro, cuotas, interes, iva, sellados, totalCuotas, totalDoc, ivaTeorico, okBalance, okIdentPDF, termId };
+  if(errs.length) ST.error=errs.join(" ");
   render();
 }
 
-/* ---- Generación en Odoo (receta probada) ---- */
+/* =========================================================================
+   GENERACIÓN EN ODOO (receta probada)
+   ========================================================================= */
 async function generar(){
   if(!ST.parsed || ST.generating) return;
   ST.generating=true; ST.result=null; ST.error=null; render();
-  const f=ST.form, p=ST.parsed;
-  const bank=BANKS.find(b=>b.k===f.banco);
+  const f=ST.form, p=ST.parsed, bank=BANKS.find(b=>b.k===f.banco);
   try{
-    // 1) Crear con las 3 líneas de concepto (Odoo calcula IVA y la contrapartida)
     const vals={ move_type:"in_invoice", journal_id:JOURNAL, partner_id:bank.partner,
       invoice_date:f.fecha, date:f.fecha, l10n_latam_document_type_id:DOCTYPE,
       l10n_latam_document_number:f.numero, ref:(p.nro?("Prestamo "+p.nro):"Prestamo bancario"),
@@ -187,33 +286,20 @@ async function generar(){
         [0,0,{name:"Sellados",                          account_id:ACC.sellados,quantity:1, price_unit:p.sellados,tax_ids:[[6,0,[TAX.exento]]]}]
       ]};
     const moveId = await EYG.rpc("account.move","create",[vals]);
-
-    // 2) Plazo de pago con la cantidad de cuotas correcta → Odoo genera N líneas
     await EYG.rpc("account.move","write",[[moveId],{invoice_payment_term_id:p.termId}]);
-
-    // 3) Ubicar la línea de IVA y confirmar que se generaron N cuotas
     let lines = await EYG.rpc("account.move.line","search_read",[[["move_id","=",moveId]]],{fields:["id","display_type"]});
     const taxLine = lines.find(l=>l.display_type==="tax");
     const nGen = lines.filter(l=>l.display_type==="payment_term").length;
-    if(nGen!==p.cuotas.length) throw new Error(`El plazo generó ${nGen} cuotas y esperaba ${p.cuotas.length}. Documento ${moveId} quedó en borrador para revisar.`);
-
-    // 4) Forzar el IVA al valor exacto del banco (ajuste de redondeo). Esto recalcula las cuotas.
-    if(taxLine && Math.abs(p.iva - p.ivaTeorico) >= 0.005)
+    if(nGen!==p.cuotas.length) throw new Error(`El plazo generó ${nGen} cuotas y esperaba ${p.cuotas.length}. Documento ${moveId} quedó en borrador.`);
+    if(taxLine && Math.abs(p.iva-p.ivaTeorico)>=0.005)
       await EYG.rpc("account.move","write",[[moveId],{line_ids:[[1,taxLine.id,{debit:p.iva, credit:0}]]}]);
-
-    // 5) Releer ids de cuotas (por si el recálculo los cambió) y 6) sobrescribir SIEMPRE al final
     const cuotaLines = await EYG.rpc("account.move.line","search_read",
       [[["move_id","=",moveId],["display_type","=","payment_term"]]],{fields:["id"],order:"id"});
     const cmds = cuotaLines.map((l,i)=>[1,l.id,{name:"cuota #"+(i+1), date_maturity:p.cuotas[i].venc, credit:p.cuotas[i].total, debit:0}]);
     await EYG.rpc("account.move","write",[[moveId],{line_ids:cmds}]);
-
-    // 7) Verificar
     const hdr = await EYG.rpc("account.move","read",[[moveId],["name","amount_total"]]);
-    ST.result = { moveId, name:hdr[0].name, total:hdr[0].amount_total,
-                  balanceada: Math.abs(round2(hdr[0].amount_total) - p.totalCuotas) < 0.05 };
-  }catch(e){
-    ST.error = "No se pudo generar: "+(e.message||e);
-  }
+    ST.result = { moveId, name:hdr[0].name, total:hdr[0].amount_total, balanceada:Math.abs(round2(hdr[0].amount_total)-p.totalCuotas)<0.05 };
+  }catch(e){ ST.error="No se pudo generar: "+(e.message||e); }
   ST.generating=false; render();
 }
 
@@ -222,62 +308,74 @@ async function proximoNumero(){
     const r = await EYG.rpc("account.move","search_read",[[["name","like","OC-X "+POS+"-"]]],
       {fields:["l10n_latam_document_number"], order:"l10n_latam_document_number desc", limit:1});
     let next=1;
-    if(r && r[0] && r[0].l10n_latam_document_number){
-      const n=parseInt(String(r[0].l10n_latam_document_number).split("-")[1],10); if(!isNaN(n)) next=n+1;
-    }
+    if(r && r[0] && r[0].l10n_latam_document_number){ const n=parseInt(String(r[0].l10n_latam_document_number).split("-")[1],10); if(!isNaN(n)) next=n+1; }
     return POS+"-"+String(next).padStart(8,"0");
   }catch(e){ return POS+"-00000001"; }
 }
-
 async function cargarTerms(){
   try{
     const terms = await EYG.rpc("account.payment.term","search_read",[[]],{fields:["id","name","line_ids"]});
     const map={};
     for(const t of terms){ const c=(t.line_ids||[]).length; if(!c) continue;
-      // preferir plazos "Prestamo" cuando hay varios con la misma cantidad
       if(map[c]===undefined || /prestamo|préstamo/i.test(t.name||"")) map[c]=t.id; }
     ST.termByCount=map;
   }catch(e){ ST.termByCount={}; }
 }
 
-/* ---- Render ---- */
+/* =========================================================================
+   RENDER
+   ========================================================================= */
 function setF(k,v){ ST.form[k]=v; }
+function onDrop(e){ e.preventDefault(); const el=document.getElementById("drop"); if(el)el.classList.remove("over"); const fl=e.dataTransfer&&e.dataTransfer.files; if(fl&&fl[0]) onFile(fl[0]); }
+function onOver(e){ e.preventDefault(); const el=document.getElementById("drop"); if(el)el.classList.add("over"); }
+function onLeave(e){ const el=document.getElementById("drop"); if(el)el.classList.remove("over"); }
+
 function render(){
-  const f=ST.form, p=ST.parsed;
+  const f=ST.form, p=ST.parsed, a=ST.autodet||{};
   const bankOpts = BANKS.map(b=>`<option value="${b.k}" ${f.banco===b.k?"selected":""}>${esc(b.nom)}</option>`).join("");
-  let html = `
-  <div class="card">
-    <h3><span class="step">1</span>Datos del préstamo</h3>
-    <div class="cap">Del PDF del banco y del extracto de la cuenta.</div>
+
+  // Card 1: subir archivo
+  let html = `<div class="card">
+    <h3><span class="step">1</span>Subir el archivo del banco</h3>
+    <div class="cap">PDF, Excel o texto. Leo capital, N° de préstamo y el cuadro de cuotas automáticamente.</div>
+    <div id="drop" class="drop" ondragover="onOver(event)" ondragleave="onLeave(event)" ondrop="onDrop(event)" onclick="document.getElementById('file').click()">
+      ${ST.extracting
+        ? `<div class="big">⏳</div><div class="t">Leyendo ${esc(ST.fileName)}…</div><div class="s"><span class="spinner dark"></span>extrayendo datos</div>`
+        : `<div class="big">📄⬆️</div><div class="t">Arrastrá el archivo acá o hacé clic para elegirlo</div><div class="s">PDF · Excel (.xlsx/.csv) · texto</div>`}
+      <input id="file" type="file" accept=".pdf,.xlsx,.xls,.csv,.txt" onchange="onFile(this.files[0])">
+    </div>
+    ${ST.fileName && !ST.extracting ? `<div style="margin-top:10px"><span class="filechip">📎 ${esc(ST.fileName)}</span></div>`:""}
+    <details class="raw"><summary>Ver / editar el texto leído</summary>
+      <textarea oninput="setF('texto',this.value)" placeholder="Acá aparece lo que leí del archivo. También podés pegar el texto a mano.">${esc(f.texto)}</textarea>
+      <div class="actions"><button class="btn ghost" onclick="autodetectar(ST.form.texto);analizar()">Volver a analizar el texto</button></div>
+    </details>
+  </div>`;
+
+  // Card 2: datos (autocompletados, editables)
+  const flag=(k)=> a[k]?'<span style="color:var(--ok);font-weight:700"> ✓ leído</span>':'';
+  html += `<div class="card">
+    <h3><span class="step">2</span>Datos del comprobante</h3>
+    <div class="cap">Lo que leí del archivo (fondo celeste) y lo que cargás a mano (fondo amarillo). Revisá y corregí si hace falta.</div>
     <div class="grid">
-      <div><label class="req">Banco</label><select onchange="setF('banco',this.value)">${bankOpts}</select></div>
+      <div><label class="req">Banco${flag('banco')}</label><select class="${a.banco?'auto':''}" onchange="setF('banco',this.value)">${bankOpts}</select></div>
       <div><label class="req">Fecha del préstamo</label><input type="date" value="${esc(f.fecha)}" onchange="setF('fecha',this.value)"></div>
       <div><label class="req">N° de comprobante</label><input value="${esc(f.numero)}" oninput="setF('numero',this.value)" placeholder="${POS}-00000014"><div class="hint">Serie ${POS} (préstamos). Sugerido: el próximo libre.</div></div>
-      <div><label>N° de préstamo (banco)</label><input id="f-nro" value="${esc(f.nro)}" oninput="setF('nro',this.value)" placeholder="se lee del PDF"></div>
-      <div><label class="req">Capital solicitado</label><input id="f-cap" value="${esc(f.capital)}" oninput="setF('capital',this.value)" placeholder="se lee del PDF"><div class="hint">"Saldo capital ajustado".</div></div>
-      <div><label class="req">Neto acreditado (extracto)</label><input id="f-neto" value="${esc(f.neto)}" oninput="setF('neto',this.value)" placeholder="lo que entró a la cuenta"><div class="hint">Manual, del extracto. Sellados = capital − neto.</div></div>
+      <div><label>N° de préstamo (banco)${flag('nro')}</label><input class="${a.nro?'auto':''}" value="${esc(f.nro)}" oninput="setF('nro',this.value)" placeholder="del archivo"></div>
+      <div><label class="req">Capital solicitado${flag('capital')}</label><input class="${a.capital?'auto':''}" value="${esc(f.capital)}" oninput="setF('capital',this.value)" placeholder="del archivo"></div>
+      <div><label class="req">Neto acreditado (extracto)</label><input class="manual" value="${esc(f.neto)}" oninput="setF('neto',this.value)" placeholder="lo que entró a la cuenta"><div class="hint">Del extracto. Sellados = capital − neto.</div></div>
     </div>
-  </div>
-
-  <div class="card">
-    <h3><span class="step">2</span>Cuadro de cuotas del PDF</h3>
-    <div class="cap">Copiá y pegá el detalle del PDF (o toda la página). Leo capital, N° de préstamo y las cuotas.</div>
-    <textarea oninput="setF('texto',this.value)" placeholder="Pegá acá el texto del PDF del banco…">${esc(f.texto)}</textarea>
-    <div class="actions">
-      <button class="btn" onclick="analizar()">Analizar</button>
-      ${p?'<span style="color:var(--ok);font-weight:700;font-size:13px">✓ '+p.cuotas.length+' cuotas leídas</span>':''}
-    </div>
+    <div class="actions"><button class="btn" onclick="analizar()">Analizar</button>${p?`<span style="color:var(--ok);font-weight:700;font-size:13px">✓ ${p.cuotas.length} cuotas leídas</span>`:""}</div>
   </div>`;
 
   if(ST.error) html += `<div class="banner err"><b>Revisá:</b> ${esc(ST.error)}</div>`;
 
+  // Card 3: vista previa
   if(p){
-    const cuotasRows = p.cuotas.map((c,i)=>`<tr><td>${i+1}</td><td>${c.venc.split("-").reverse().join("/")}</td><td class="r">${money2(c.interes)}</td><td class="r">${money2(c.iva)}</td><td class="r">${money2(c.total)}</td></tr>`).join("");
-    const ivaDif = Math.abs(p.iva - p.ivaTeorico) >= 0.005;
-    html += `
-    <div class="card">
+    const rows = p.cuotas.map((c,i)=>`<tr><td>${i+1}</td><td>${c.venc.split("-").reverse().join("/")}</td><td class="r">${money2(c.interes)}</td><td class="r">${money2(c.iva)}</td><td class="r">${money2(c.total)}</td></tr>`).join("");
+    const ivaDif = Math.abs(p.iva-p.ivaTeorico)>=0.005;
+    html += `<div class="card">
       <h3><span class="step">3</span>Vista previa del comprobante</h3>
-      <div class="cap">Así va a quedar en Odoo. Revisá antes de generar.</div>
+      <div class="cap">Así queda en Odoo. Revisá antes de generar.</div>
       <div class="pv-tiles">
         <div class="pv-tile"><div class="l">Neto acreditado</div><div class="v">${money2(p.neto)}</div></div>
         <div class="pv-tile"><div class="l">Interés</div><div class="v">${money2(p.interes)}</div></div>
@@ -286,11 +384,11 @@ function render(){
         <div class="pv-tile tot"><div class="l">Total (${p.cuotas.length} cuotas)</div><div class="v">${money2(p.totalDoc)}</div></div>
       </div>
       <div class="check ${p.okBalance?'ok':'bad'}"><span class="ic">${p.okBalance?'✓':'✕'}</span> Débitos = créditos: ${money2(p.totalDoc)} vs ${money2(p.totalCuotas)} ${p.okBalance?'(cuadra)':'(NO cuadra)'}</div>
-      <div class="check ${p.okIdentPDF?'ok':'bad'}"><span class="ic">${p.okIdentPDF?'✓':'✕'}</span> Capital + Interés + IVA = suma de cuotas ${p.okIdentPDF?'(el PDF cierra)':'(revisá los números)'}</div>
-      ${ivaDif?`<div class="check ok"><span class="ic">ℹ️</span> El IVA del banco (${money2(p.iva)}) difiere ${money2(Math.abs(p.iva-p.ivaTeorico))} del 10,5% teórico (${money2(p.ivaTeorico)}) por redondeo. Se fuerza al del banco.</div>`:''}
+      <div class="check ${p.okIdentPDF?'ok':'bad'}"><span class="ic">${p.okIdentPDF?'✓':'✕'}</span> Capital + Interés + IVA = suma de cuotas ${p.okIdentPDF?'(el archivo cierra)':'(revisá los números)'}</div>
+      ${ivaDif?`<div class="check ok"><span class="ic">ℹ️</span> El IVA del banco (${money2(p.iva)}) difiere ${money2(Math.abs(p.iva-p.ivaTeorico))} del 10,5% teórico por redondeo. Se fuerza al del banco.</div>`:""}
       <table class="cuotas">
         <thead><tr><th>#</th><th>Vencimiento</th><th class="r">Interés</th><th class="r">IVA</th><th class="r">Total cuota</th></tr></thead>
-        <tbody>${cuotasRows}</tbody>
+        <tbody>${rows}</tbody>
         <tfoot class="foot"><tr><td colspan="2">Totales</td><td class="r">${money2(p.interes)}</td><td class="r">${money2(p.iva)}</td><td class="r">${money2(p.totalCuotas)}</td></tr></tfoot>
       </table>
       <div class="actions">
@@ -303,13 +401,13 @@ function render(){
   if(ST.result){
     const r=ST.result;
     html += `<div class="banner ok">✅ <b>Borrador creado:</b> ${esc(r.name)} · Total ${money2(r.total)} ${r.balanceada?'(balanceado)':'<b style="color:var(--err)">(revisar balance)</b>'}.
-      Abrilo en Odoo para revisar y confirmar: <a href="${ODOO}/web#id=${r.moveId}&model=account.move&view_type=form" target="_blank">ver documento ↗</a>
-      &nbsp;·&nbsp; <a href="#" onclick="nuevo();return false">cargar otro préstamo</a></div>`;
+      <a href="${ODOO}/web#id=${r.moveId}&model=account.move&view_type=form" target="_blank">ver en Odoo ↗</a>
+      &nbsp;·&nbsp; <a href="#" onclick="nuevo();return false">cargar otro</a></div>`;
   }
 
   document.getElementById("app").innerHTML = html;
 }
-function nuevo(){ proximoNumero().then(n=>{ ST.form={banco:ST.form.banco, fecha:EYG.argToday(), numero:n, capital:"", neto:"", nro:"", texto:""}; ST.parsed=null; ST.error=null; ST.result=null; render(); }); }
+function nuevo(){ proximoNumero().then(n=>{ ST.form={banco:ST.form.banco, fecha:EYG.argToday(), numero:n, capital:"", neto:"", nro:"", texto:""}; ST.fileName=""; ST.autodet={}; ST.parsed=null; ST.error=null; ST.result=null; render(); }); }
 
 /* EN PRUEBAS: gateado al super-admin (Diego). Ver core.js SUPER. */
 EYG.guard(["finanzas","direccion","admin"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(async ()=>{
