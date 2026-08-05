@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Configuración de precios · EyG Core</title>
+<title>Motor de precios · EyG Core</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -97,16 +97,14 @@
 <script>
 const KEY="eyg.sync_precios_config";      // JSON (para este editor)
 const KEY_FLAT="eyg.sync_precios_flat";    // texto plano que lee el cron (una regla por linea)
-const KEY_OF="eyg.sync_ofertas";           // JSON de ofertas temporales (editor)
-const KEY_OF_FLAT="eyg.sync_ofertas_flat"; // texto plano de ofertas que lee el cron
+// Las ofertas/descuentos temporales (eyg.sync_ofertas) se crean y gestionan en
+// "Oportunidades y Ofertas" (inventario/oportunidades.html). Este módulo define
+// SOLO las reglas del motor. Ver [[eyg-core-ofertas-arquitectura]].
 const ROOTS=[24,10,51,11,369,370];         // Hospitalarios, Farmacopea, Descartables, Perfumeria, Equipos, Ortopedia
 const esc=EYG.esc, rpc=EYG.rpc;
 const MODOS=[["embalaje","Por embalaje (fracciona de la caja real a la caja del nombre)"],["fijo","Fijo (venta por unidad/caja, sin fraccionar)"]];
 const DEF={genera:false, recargo:0.80, piso:0.30, modo:"fijo", cortes:[1,10,20,40], desc:[0,0.07,0.14,0.20], unidad:"unidades", ivaCosto:0};
 let CATS=[], byId={}, CFG={v:1,reglas:{}}, editId=null, abiertos={}, dirty=false;
-let OFERTAS=[], vista="reglas", ofDraft=null, ofBusq=[], ofBusqQ="";
-let ofCosto=null, ofTramos=null, ofTramosBase=null, ofAppliedOffer=null;   // costo, escalera actual, escalera BASE (sin la oferta ya aplicada), y la oferta aplicada al editar
-let OFPVP={}, ofPvp=0;   // éticos: PVP+precio actual por producto ofertado (para mostrar el descuento contra el PVP); ofPvp = PVP del producto en edición
 const KEY_ESC="eyg.eticos_escala";       // {subcatId:'A'|'B'} clasificación de labs éticos
 let ESCALA={}, escFiltro="todos", editEsc=null, editLab=null;   // clasificación, filtro, regla de escala en edición, regla de lab en edición
 const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
@@ -132,32 +130,8 @@ async function cargar(){
     if(!CFG.escala) CFG.escala={A:null,B:null};    // dos reglas por escala (base PVP)
     const rawEsc=await rpc("ir.config_parameter","get_param",[KEY_ESC]);
     ESCALA = rawEsc ? (JSON.parse(rawEsc)||{}) : {};
-    const rawOf=await rpc("ir.config_parameter","get_param",[KEY_OF]);
-    OFERTAS = rawOf ? (JSON.parse(rawOf)||[]) : [];
     render();
-    precargarPvpOfertas().then(()=>{ if(vista==='ofertas') render(); });   // asíncrono: al llegar el PVP, refresca la lista de ofertas
   }catch(e){ cont.innerHTML='<div class="empty">No pude cargar: '+esc(e.message)+'</div>'; }
-}
-/* ÉTICOS: para cada oferta de UN producto ético, guarda {pvp, precio actual} para poder mostrar
-   el descuento contra el PVP de Alfabeta (no contra la escalera ya rebajada). Solo display. */
-async function precargarPvpOfertas(){
-  OFPVP={};
-  const tgts=[...new Set(OFERTAS.filter(o=>o.tipo==='p'&&o.target).map(o=>o.target))];
-  if(!tgts.length) return;
-  try{
-    const [tps,pit]=await Promise.all([
-      rpc("product.template","read",[tgts,["list_price","categ_id"]],{context:{lang:"es_AR"}}),
-      rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["applied_on","=","1_product"],["product_tmpl_id","in",tgts]]],{fields:["product_tmpl_id","min_quantity","fixed_price"],limit:20000})
-    ]);
-    const base={};
-    for(const it of pit){ const t=it.product_tmpl_id[0]; if(!base[t]||it.min_quantity<base[t].q) base[t]={q:it.min_quantity,p:it.fixed_price}; }
-    for(const t of tps){
-      if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")){
-        const pvp=Math.round(t.list_price||0), precio=base[t.id]?Math.round(base[t.id].p):0;
-        if(pvp>0 && precio>0) OFPVP[t.id]={pvp,precio};
-      }
-    }
-  }catch(e){}
 }
 
 // resuelve la regla efectiva de una categoría: propia, o heredada del ancestro más cercano
@@ -201,14 +175,11 @@ window.consolidar = rootId => {
   cand.ids.forEach(id=>{ delete CFG.reglas[id]; });                // saca las repetidas -> heredan
   dirty=true; editId=null; render();
 };
-window.setVista = v => { vista=v; ofDraft=null; ofBusq=[]; ofBusqQ=""; render(); };
 function render(){
   const cont=document.getElementById("cont");
-  const tabs=`<div class="cptabs"><button class="cptab ${vista==='reglas'?'on':''}" onclick="setVista('reglas')">📊 Reglas de precio</button><button class="cptab ${vista==='ofertas'?'on':''}" onclick="setVista('ofertas')">🏷️ Ofertas temporales${OFERTAS.length?' · '+OFERTAS.length:''}</button></div>`;
-  if(vista==='ofertas'){ cont.innerHTML=tabs+renderOfertas(); if(ofDraft&&ofDraft.tipo==='p') setTimeout(actualizarRent,0); return; }
   const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA","ETICOS"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
   const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardarTodo()">💾 Guardar cambios</button><button class="btn-recalc" onclick="recalcularAhora()">⚡ Recalcular precios ahora</button>${dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>'}</div>`;
-  const intro=`<div class="intro"><b>Reglas del motor de precios.</b> Definí por categoría (y subcategoría) cómo se arma la escalera: <b>recargo</b> sobre el costo, <b>piso</b> de margen, <b>modo</b> de cortes (embalaje / fijo), <b>cortes</b> y <b>descuento por tramo</b>, <b>unidad</b> e <b>IVA al costo</b>. <b>La subcategoría pisa a la categoría</b>; si no tiene regla propia, hereda del padre. <b>Al guardar, el motor recalcula todos los precios al instante.</b> El costo lo toma solo (más reciente entre manual, compra y estándar); la caja cerrada se maneja por producto en el Maestro.</div>`;
+  const intro=`<div class="intro"><b>Reglas del motor de precios.</b> Definí por categoría (y subcategoría) cómo se arma la escalera: <b>recargo</b> sobre el costo, <b>piso</b> de margen, <b>modo</b> de cortes (embalaje / fijo), <b>cortes</b> y <b>descuento por tramo</b>, <b>unidad</b> e <b>IVA al costo</b>. <b>La subcategoría pisa a la categoría</b>; si no tiene regla propia, hereda del padre. <b>Al guardar, el motor recalcula todos los precios al instante.</b> El costo lo toma solo (más reciente entre manual, compra y estándar); la caja cerrada se maneja por producto en el Maestro.<br><span style="color:var(--gris2)">Las ofertas y descuentos temporales se crean en <b>Oportunidades y Ofertas</b>.</span></div>`;
   const grupos=tops.map(top=>{
     const cats=CATS.filter(c=>c.top===top);
     const open=!!abiertos[top];
@@ -225,7 +196,7 @@ function render(){
     const hb = (rr&&rr.own)?`<span class="badge gen" style="margin-left:8px">regla general</span>`:`<span class="badge no" style="margin-left:8px">sin regla general</span>`;
     return `<div class="grp"><div class="grphead" onclick="toggleGrp('${esc(top)}')"><span>${open?"▾":"▸"}</span> ${esc(top)} ${hb} <span class="cnt">${subs.length} subcat.</span></div>${body}</div>`;
   }).join("");
-  cont.innerHTML=tabs+savebar+intro+grupos;
+  cont.innerHTML=savebar+intro+grupos;
 }
 
 /* =================== ETICOS · REGLAS POR ESCALA (base PVP) =================== */
@@ -320,68 +291,6 @@ window.quitarLabEtico = id => { if(!confirm("¿Quitar la regla propia de este la
 window.guardarLabEtico = id => { CFG.reglas[id]=leerFormPvp('fl'); dirty=true; editLab=null; render(); };
 window.cicloEscala = id => { const cur=ESCALA[id]||null; ESCALA[id] = cur==='A'?'B':(cur==='B'?null:'A'); dirty=true; render(); };
 
-/* =================== OFERTAS TEMPORALES =================== */
-function ofEstado(o){
-  if(o.pausada) return {t:"Pausada", c:"pau"};
-  if(o.hasta && o.hasta < hoyStr()) return {t:"Vencida", c:"ven"};
-  return {t:"Activa", c:"act"};
-}
-function ofDesc(o){
-  const v = o.modo==='pct' ? (pct(o.valor)+"%") : (o.modo==='monto' ? ("$"+Math.round(o.valor)) : ("$"+Math.round(o.valor)));
-  const t = o.modo==='pct'?("−"+v):(o.modo==='monto'?("−"+v):("precio fijo "+v));
-  const como = (o.reemplaza||o.modo==='precio') ? "reemplaza (precio único desde 1)" : "pisa la escalera";
-  return `${t} · ${como}`;
-}
-function renderOfertas(){
-  const intro=`<div class="intro"><b>Ofertas y descuentos temporales.</b> Aplican <b>por encima</b> de la escalera del motor y <b>se caen solas</b> al vencer (o al pausar/eliminar). Elegí una <b>categoría, subcategoría o un producto</b>, el descuento (%, monto o precio fijo), si <b>reemplaza</b> la escalera (precio único desde 1) o la <b>pisa</b> (descuenta cada tramo), y hasta cuándo. Pueden bajar del piso de margen.</div>`;
-  const nueva = `<div style="margin:0 0 14px"><button class="btn-recalc" onclick="nuevaOferta()">+ Nueva oferta</button> <button class="btn-recalc" style="background:var(--teal)" onclick="recalcularAhora()">⚡ Recalcular precios ahora</button></div>`;
-  const form = ofDraft ? ofFormHTML() : "";
-  let lista;
-  if(!OFERTAS.length){ lista=`<div class="empty">No hay ofertas cargadas. Tocá <b>+ Nueva oferta</b>.</div>`; }
-  else {
-    lista = OFERTAS.map(o=>{
-      const st=ofEstado(o);
-      const tgt = o.tipo==='p' ? ("🔖 "+esc(o.targetName||("#"+o.target))) : ("📂 "+esc(o.targetName||("cat #"+o.target)));
-      const et = (o.tipo==='p' && OFPVP[o.target]) ? OFPVP[o.target] : null;
-      const etTxt = (et && et.pvp>et.precio) ? ` · <b style="color:#0E5C46">el cliente ve −${Math.round((1-et.precio/et.pvp)*100)}% (PVP ${EYG.money(et.pvp)} → ${EYG.money(et.precio)})</b>` : "";
-      return `<div class="ofrow"><div class="ofmain"><div class="oftgt">${tgt}</div><div class="ofdet">${esc(ofDesc(o))}${etTxt}${o.hasta?(" · hasta "+esc(o.hasta)):" · sin vencimiento"}${o.stock?(" · stock "+esc(String(o.stock))):""}</div></div>
-        <span class="ofbadge ${st.c}">${st.t}</span>
-        <button class="btn-mini" onclick="editarOferta('${esc(o.id)}')">✎ Editar</button>
-        <button class="btn-mini" onclick="pausarOferta('${esc(o.id)}')">${o.pausada?"▶ Reanudar":"⏸ Pausar"}</button>
-        <button class="btn-mini del" onclick="eliminarOferta('${esc(o.id)}')">🗑 Eliminar</button></div>`;
-    }).join("");
-  }
-  return intro+nueva+form+`<div class="oflist">${lista}</div>`;
-}
-function ofFormHTML(){
-  const d=ofDraft;
-  const tgtTxt = d.target ? (d.tipo==='p'?"🔖 ":"📂 ")+esc(d.targetName) : "";
-  const results = (!d.target && ofBusq.length) ? `<div class="ofbusq">${ofBusq.map(r=>`<div class="ofbitem" onclick="elegirTarget('${r.k}',${r.id},'${esc((r.name||'').replace(/'/g,''))}')">${r.k==='p'?"🔖":"📂"} ${esc(r.name)}${r.sku?(" · "+esc(r.sku)):""}</div>`).join("")}</div>` : "";
-  const rent = d.tipo==='p' ? `<div class="fld2" style="margin-bottom:2px"><label>Rentabilidad final en vivo</label><div id="of-rent" class="rentbox">Calculando el costo del producto…</div><div class="hint">se actualiza al mover el descuento · sobre el costo actual (neto, sin IVA)</div></div>` : "";
-  return `<div class="form" onclick="event.stopPropagation()" style="margin-top:0">
-    <div class="fld2" style="margin-bottom:12px"><label>Aplicar a (categoría, subcategoría o producto)</label>
-      ${d.target ? `<div class="oftgtsel">${tgtTxt} <button class="btn-mini" onclick="ofDraft.target=null;ofDraft.targetName='';ofBusq=[];ofBusqQ='';ofCosto=null;ofTramos=null;ofTramosBase=null;ofAppliedOffer=null;render()">cambiar</button></div>`
-                 : `<input type="text" id="of-busq" placeholder="Escribí nombre o SKU…" value="${esc(ofBusqQ)}" oninput="buscarTarget(this.value)" autocomplete="off">${results}`}
-    </div>
-    <div class="grid" style="grid-template-columns:repeat(4,1fr)">
-      <div class="fld2"><label>Tipo de descuento</label><select id="of-modo" onchange="ofDraft.modo=this.value;ofDraft.valor='';render()">
-        <option value="pct" ${d.modo==='pct'?'selected':''}>Porcentaje (%)</option>
-        <option value="monto" ${d.modo==='monto'?'selected':''}>Monto fijo ($ off)</option>
-        <option value="precio" ${d.modo==='precio'?'selected':''}>Precio fijo ($)</option>
-      </select><div class="hint">precio fijo = reemplaza siempre</div></div>
-      <div class="fld2"><label>Valor</label><div class="inpu"><input type="number" id="of-valor" step="0.01" value="${d.valor?(d.modo==='pct'?pct(d.valor):d.valor):''}" oninput="ofDraft.valor=(this.value===''?'':(ofDraft.modo==='pct'?parseFloat(this.value)/100:parseFloat(this.value)));actualizarRent()"><span class="suf">${d.modo==='pct'?'%':'$'}</span></div><div class="hint">${d.modo==='pct'?'ej: 20':'ej: 1500'}</div></div>
-      <div class="fld2"><label>Cómo aplica</label><select id="of-reemplaza" ${d.modo==='precio'?'disabled':''} onchange="ofDraft.reemplaza=this.value==='1';actualizarRent()">
-        <option value="1" ${(d.reemplaza||d.modo==='precio')?'selected':''}>Reemplaza (precio único desde 1)</option>
-        <option value="0" ${(!d.reemplaza&&d.modo!=='precio')?'selected':''}>Pisa la escalera (descuenta cada tramo)</option>
-      </select><div class="hint">reemplaza = un solo precio</div></div>
-      <div class="fld2"><label>Vigencia hasta</label><input type="date" id="of-hasta" value="${esc(d.hasta||'')}"><div class="hint">vacío = sin vencimiento</div></div>
-      <div class="fld2"><label>Stock a ofertar (informativo)</label><input type="number" id="of-stock" min="0" value="${d.stock||''}"><div class="hint">no se descuenta con ventas · lo controlás vos</div></div>
-    </div>
-    ${rent}
-    <div class="acts"><button class="cancel" onclick="ofDraft=null;render()">Cancelar</button><button class="ok" onclick="guardarOferta()">Guardar oferta</button></div>
-  </div>`;
-}
-
 // Regla de TODA la categoría (el nodo raíz). La toman todas las subcategorías que no tengan la suya.
 function filaRoot(c){
   const res=resolver(c.id);
@@ -468,149 +377,6 @@ function construirFlat(){
   });
   return out.join("\n");
 }
-// ---- acciones de ofertas ----
-function ofFlat(){ return OFERTAS.map(o=>[o.id,o.tipo,o.target,o.modo,o.valor,(o.reemplaza||o.modo==='precio')?1:0,o.hasta||'',o.pausada?1:0,o.stock||0].join("~")).join("\n"); }
-// recalcTmpl: id de plantilla si la oferta es de UN producto -> recalcula solo ese (instantáneo).
-// null -> recálculo completo (oferta de categoría; toca muchos productos, tarda unos segundos).
-async function guardarOfertasParams(recalcTmpl){
-  await rpc("ir.config_parameter","set_param",[KEY_OF, JSON.stringify(OFERTAS)]);
-  await rpc("ir.config_parameter","set_param",[KEY_OF_FLAT, ofFlat()]);
-  try{
-    if(recalcTmpl){
-      const t=await rpc("product.template","read",[[recalcTmpl],["product_variant_id"]],{context:{lang:"es_AR"}});
-      const vid=t&&t[0]&&t[0].product_variant_id&&t[0].product_variant_id[0];
-      if(vid) await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR",eyg_solo_producto:vid}});
-      else await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
-    } else {
-      await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
-    }
-  }catch(e){}
-}
-window.nuevaOferta = () => { ofDraft={id:"of"+Date.now(), tipo:null, target:null, targetName:"", modo:"pct", valor:"", reemplaza:true, hasta:"", stock:"", pausada:false}; ofBusq=[]; ofBusqQ=""; ofCosto=null; ofTramos=null; ofTramosBase=null; ofAppliedOffer=null; render(); };
-window.editarOferta = async id => { const o=OFERTAS.find(x=>x.id===id); if(!o) return; ofDraft=JSON.parse(JSON.stringify(o)); ofBusq=[]; if(typeof ofBusqQ!=='undefined') ofBusqQ=""; ofCosto=null; ofTramos=null; ofTramosBase=null;
-  // la oferta guardada YA está aplicada al pricelist -> guardo sus datos para deshacerla y recuperar la base
-  ofAppliedOffer = o.tipo==='p' ? {modo:o.modo, valor:o.valor, reemplaza:o.reemplaza, pausada:o.pausada, hasta:o.hasta} : null;
-  render(); const el=document.querySelector('.form'); if(el) el.scrollIntoView({behavior:'smooth',block:'center'}); if(o.tipo==='p'&&o.target){ await cargarRentProducto(o.target); actualizarRent(); } };
-/* Antes pegaba a Odoo en cada tecla y después de cada respuesta re-renderizaba y
-   reescribía el input a mano (el.value=q), lo que mandaba el cursor al final.
-   Ahora: se espera a que dejes de tipear, el template conserva lo escrito con
-   value="${esc(ofBusqQ)}", y EYG.repintar devuelve foco y cursor. */
-window.buscarTarget = EYG.debounce(async q => {
-  q=(q||"").trim(); ofBusqQ=q;
-  if(q.length<2){ ofBusq=[]; EYG.repintar(render); return; }
-  const ql=q.toLowerCase();
-  const cats=CATS.filter(c=>c.full.toLowerCase().includes(ql)).slice(0,6).map(c=>({k:'c',id:c.id,name:c.full}));
-  let prods=[];
-  try{ const ps=await rpc("product.template","search_read",[["|",["name","ilike",q],["default_code","ilike",q]],["name","default_code"]],{limit:8,context:{lang:"es_AR"}}); prods=ps.map(p=>({k:'p',id:p.id,name:p.name,sku:p.default_code})); }catch(e){}
-  if(ofBusqQ!==q) return;            // llegó tarde: ya hay una búsqueda más nueva
-  ofBusq=cats.concat(prods);
-  EYG.repintar(render);
-}, 350);
-window.elegirTarget = async (k,id,name) => {
-  if(!ofDraft) return;
-  ofDraft.tipo=k; ofDraft.target=id; ofDraft.targetName=name; ofBusq=[]; ofBusqQ="";
-  ofCosto=null; ofTramos=null; ofTramosBase=null; ofAppliedOffer=null;   // producto recién elegido: ninguna oferta de ESTE draft está aplicada
-  render();
-  if(k==='p'){ await cargarRentProducto(id); actualizarRent(); }
-};
-// costo (misma recencia que el motor: manual > última compra > estándar) + escalera del producto
-async function cargarRentProducto(tmplId){
-  ofPvp=0;
-  try{
-    const t=await rpc("product.template","read",[[tmplId],["product_variant_id","list_price","categ_id"]],{context:{lang:"es_AR"}});
-    const th=(t&&t[0])||{};
-    // éticos: guardamos el PVP para mostrar en vivo el descuento que verá el cliente (sobre PVP)
-    if(/[EÉ]TICO/i.test((th.categ_id&&th.categ_id[1])||"")) ofPvp=Math.round(th.list_price||0);
-    const vid=t&&t[0]&&t[0].product_variant_id&&t[0].product_variant_id[0];
-    let costo=0;
-    if(vid){
-      const pv=await rpc("product.product","read",[[vid],["x_costo_manual","x_costo_manual_date","standard_price"]],{context:{lang:"es_AR"}});
-      const p=(pv&&pv[0])||{};
-      const m=p.x_costo_manual||0, md=p.x_costo_manual_date||null;
-      let uc=0, uf=null;
-      try{
-        const pol=await rpc("purchase.order.line","search_read",[[["product_id","=",vid],["state","in",["purchase","done"]],["product_qty",">",0]],["price_subtotal","product_qty","date_order"]],{limit:1, order:"date_order desc", context:{lang:"es_AR"}});
-        if(pol&&pol[0]&&pol[0].price_subtotal>0){ uc=pol[0].price_subtotal/(pol[0].product_qty||1); uf=pol[0].date_order||null; }
-      }catch(e){}
-      if(m>0 && ((!uf)||(md&&md>=uf))) costo=m;
-      else if(uc>0) costo=uc;
-      else if((p.standard_price||0)>0) costo=p.standard_price;
-    }
-    ofCosto=costo>0?costo:null;
-    const its=await rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","=",tmplId],["compute_price","=","fixed"]],["min_quantity","fixed_price"]],{limit:50,context:{lang:"es_AR"}});
-    its.sort((a,b)=>a.min_quantity-b.min_quantity);
-    ofTramos=its.map(i=>({q:i.min_quantity,p:i.fixed_price}));
-    ofTramosBase=tramosBaseFrom(ofTramos, ofAppliedOffer);   // deshace la oferta ya aplicada para no descontar dos veces
-  }catch(e){ ofCosto=null; ofTramos=null; ofTramosBase=null; }
-}
-// Recupera la escalera BASE (sin oferta) deshaciendo la oferta que YA está aplicada al pricelist (al editar).
-function tramosBaseFrom(tramos, applied){
-  if(!tramos) return null;
-  if(!applied) return tramos;                                  // oferta nueva: el pricelist ya es la base
-  if(applied.pausada || (applied.hasta && applied.hasta < hoyStr())) return tramos;  // no está aplicada
-  const v=applied.valor||0;
-  if(applied.modo==='pct' && v>0 && v<1) return tramos.map(t=>({q:t.q, p:t.p/(1-v)}));
-  if(applied.modo==='monto' && v>0)      return tramos.map(t=>({q:t.q, p:t.p+v}));
-  return null;   // 'precio' fijo: la escalera base se perdió (colapsó a un precio único), no se puede recuperar
-}
-function actualizarRent(){
-  const box=document.getElementById("of-rent"); if(!box||!ofDraft) return;
-  const modo=(document.getElementById("of-modo")||{}).value||ofDraft.modo;
-  const valRaw=parseFloat((document.getElementById("of-valor")||{}).value);
-  const rem = modo==='precio' ? true : ((document.getElementById("of-reemplaza")||{}).value==='1');
-  const costo=ofCosto;
-  const M=n=>"$"+Math.round(n).toLocaleString("es-AR");
-  if(costo==null){ box.className="rentbox"; box.innerHTML="No hay costo cargado en Odoo para este producto."; return; }
-  if(!(valRaw>0)){ box.className="rentbox"; box.innerHTML=`Cargá el valor para ver la rentabilidad. <span class="sub2">costo ${M(costo)}</span>`; return; }
-  const base=(ofTramosBase&&ofTramosBase.length)?ofTramosBase[0].p:null;   // tramo 1 de la escalera BASE (sin oferta)
-  const mrg=pr=>pr>0?Math.round((pr-costo)/pr*100):-999;
-  const cls=mm=>mm<0?"neg":(mm<15?"low":"ok");
-  const finalDe=pr=>modo==='precio'?valRaw:(modo==='monto'?pr-valRaw:pr*(1-valRaw/100));
-  if(modo!=='precio' && base==null){ box.className="rentbox"; box.innerHTML="No puedo estimar la escalera base de este producto (la oferta actual es precio fijo o no tiene escalera). Usá <b>Precio fijo</b> para ver la rentabilidad."; return; }
-  if(rem || modo==='precio'){
-    const pf=modo==='precio'?valRaw:finalDe(base);
-    const mm=mrg(pf);
-    box.className="rentbox "+cls(mm);
-    box.innerHTML=`Precio único <b>${M(pf)}</b> · Rentabilidad <b>${mm}%</b> <span class="sub2">(${M(pf-costo)}/u · costo ${M(costo)})</span>${mm<0?' ⚠️ perdés plata':(mm<15?' · margen ajustado':'')}`;
-  } else {
-    const t1=ofTramosBase[0], tN=ofTramosBase[ofTramosBase.length-1];
-    const p1=finalDe(t1.p), pN=finalDe(tN.p);
-    const m1=mrg(p1), mN=mrg(pN);
-    box.className="rentbox "+cls(mN);
-    const rango = ofTramosBase.length>1 ? `de <b>${m1}%</b> (${t1.q}u → ${M(p1)}) a <b>${mN}%</b> (${tN.q}u → ${M(pN)})` : `<b>${m1}%</b> (${M(p1)})`;
-    box.innerHTML=`Sobre la escalera · Rentabilidad ${rango} <span class="sub2">· costo ${M(costo)}</span>${mN<0?' ⚠️ el último tramo pierde plata':(mN<15?' · último tramo ajustado':'')}`;
-  }
-  // ÉTICOS: descuento que verá el cliente (sobre el PVP de Alfabeta, no sobre la escalera)
-  if(ofPvp>0){
-    const b1=(ofTramosBase&&ofTramosBase.length)?ofTramosBase[0].p:null;
-    const pCli = modo==='precio' ? valRaw : (b1!=null ? finalDe(b1) : null);
-    if(pCli>0 && ofPvp>pCli){
-      box.innerHTML += `<div style="margin-top:6px;font-weight:800;color:#0E5C46">🏷️ El cliente lo ve como −${Math.round((1-pCli/ofPvp)*100)}% (PVP ${M(ofPvp)} → ${M(pCli)})</div>`;
-    }
-  }
-}
-window.guardarOferta = async () => {
-  const d=ofDraft; if(!d) return;
-  if(!d.target){ alert("Elegí a qué aplica: categoría, subcategoría o producto."); return; }
-  d.modo=document.getElementById("of-modo").value;
-  const valorRaw=parseFloat(document.getElementById("of-valor").value);
-  if(!(valorRaw>0)){ alert("Cargá un valor válido (mayor a 0)."); return; }
-  d.valor = d.modo==='pct' ? valorRaw/100 : valorRaw;
-  const remEl=document.getElementById("of-reemplaza");
-  d.reemplaza = d.modo==='precio' ? true : (remEl && remEl.value==='1');
-  d.hasta=document.getElementById("of-hasta").value||"";
-  d.stock=document.getElementById("of-stock").value||"";
-  const i=OFERTAS.findIndex(o=>o.id===d.id);
-  if(i>=0) OFERTAS[i]=d; else OFERTAS.push(d);
-  ofDraft=null;
-  const esProd = d.tipo==='p';
-  if(!esProd) toast("Oferta guardada · aplicando a la categoría (unos segundos)…");
-  await guardarOfertasParams(esProd ? d.target : null);
-  render(); toast("Oferta guardada y aplicada ✓");
-};
-window.pausarOferta = async id => { const o=OFERTAS.find(x=>x.id===id); if(!o)return; o.pausada=!o.pausada; await guardarOfertasParams(o.tipo==='p'?o.target:null); render(); toast(o.pausada?"Oferta pausada ✓":"Oferta reanudada ✓"); };
-window.eliminarOferta = async id => { const o=OFERTAS.find(x=>x.id===id); if(!o) return; if(!confirm("¿Eliminar esta oferta? Vuelve la escalera normal.")) return; const tgt=o.tipo==='p'?o.target:null; OFERTAS=OFERTAS.filter(x=>x.id!==id); await guardarOfertasParams(tgt); render(); toast("Oferta eliminada ✓"); };
-
 window.guardarTodo = async () => {
   const btn=document.querySelector(".btn-save"); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
   try{
@@ -635,7 +401,7 @@ window.recalcularAhora = async () => {
 let tT; function toast(m){ let t=document.getElementById("cptoast"); if(!t){ t=document.createElement("div"); t.id="cptoast"; t.style.cssText="position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0E1F1D;color:#fff;padding:11px 20px;border-radius:10px;font-weight:600;z-index:9999;box-shadow:0 8px 26px rgba(0,0,0,.25)"; document.body.appendChild(t);} t.textContent=m; t.style.opacity="1"; clearTimeout(tT); tT=setTimeout(()=>t.style.opacity="0",2600); }
 
 EYG.requireAuth(["comercial","lider","finanzas"], perfil=>{
-  document.body.innerHTML = EYG.layout(perfil, "config-precios", '<div id="cont"></div>', "Configuración de precios");
+  document.body.innerHTML = EYG.layout(perfil, "config-precios", '<div id="cont"></div>', "Motor de precios");
   cargar();
 });
 </script>

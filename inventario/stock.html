@@ -404,7 +404,7 @@ function abrir(id){
       </div>
     </div>
     <div class="dbody">
-      <button class="cta-ofertar" onclick="formOferta(${r.id})">🏷️ Crear oferta / liquidar este producto</button>
+      <button class="cta-ofertar" onclick="enviarAOportunidades(${r.id})">🏷️ Enviar a Oportunidades y Ofertas</button>
       <div class="dsec"><h4>Situación</h4>
         <div class="kv"><span class="k">Código</span><span class="v">${esc(r.code||"—")}</span></div>
         <div class="kv"><span class="k">Familia</span><span class="v">${esc(r.fam)}</span></div>
@@ -434,81 +434,19 @@ function sugerencia(r){
 function cerrar(){document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");}
 document.addEventListener("keydown",e=>{if(e.key==="Escape")cerrar();});
 
-/* ====== Crear oferta / liquidación manual desde un producto ====== */
-let OFERTA={};
-async function formOferta(id){
+/* ====== Enviar a Oportunidades y Ofertas ======
+   Stock/Sobrestock SOLO analiza el inventario. Cuando encontrás un producto que
+   conviene ofertar, lo mandás al módulo "Oportunidades y Ofertas" (lo marca como
+   oportunidad, x_oportunidad=true). La oferta/descuento se CREA allá, que es la
+   única casa de ofertas. Ver [[eyg-core-ofertas-arquitectura]]. */
+async function enviarAOportunidades(id){
   const r=DATA.find(x=>x.id===id); if(!r) return;
-  OFERTA={id:r.id, costo:r.costoU};   // costo provisorio (se refresca abajo con el standard_price actual)
-  const d=document.getElementById("drawer");
-  d.innerHTML=`
-    <div class="dhead"><span class="x" onclick="cerrar()">✕</span>
-      <h2>🏷️ Nueva oferta</h2>
-      <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${esc(cleanName(r.name))}</span></div>
-    </div>
-    <div class="dbody">
-      <div class="ofld"><label>Producto</label><div class="oval">${esc(cleanName(r.name))} <span style="color:var(--gris2);font-weight:500">${esc(r.code||"")}</span></div></div>
-      <div class="ofld"><label>Título de la oferta</label><input id="of-tit" value="${esc(cleanName(r.name))}"></div>
-      <div class="orow">
-        <div class="ofld"><label>Precio de oferta</label><input id="of-precio" type="number" step="0.01" oninput="margenOfertaStock()" placeholder="—"></div>
-        <div class="ofld"><label>Precio de lista (antes)</label><input id="of-antes" type="number" step="0.01" value="${Math.round(r.pvp)||''}"></div>
-      </div>
-      <div class="ofld"><label>Margen con esta oferta</label><div id="of-margen" class="margen-box">calculando…</div>
-        <div class="ohint">Sobre el costo actual del producto en Odoo (neto, sin IVA). En rojo = perdés plata.</div></div>
-      <div class="orow">
-        <div class="ofld"><label>Stock a ofertar</label><input id="of-stock" type="number" value="${r.qty||''}"></div>
-        <div class="ofld"><label>Vigencia hasta</label><input id="of-hasta" type="date" value="${masDias(7)}"></div>
-      </div>
-      <div class="ofld"><label>Nota (opcional)</label><textarea id="of-nota" rows="2" placeholder="Condiciones, aclaraciones…"></textarea></div>
-      <div style="display:flex;gap:9px;margin-top:4px">
-        <button class="mini-btn" style="flex:1" onclick="abrir(${r.id})">← Volver</button>
-        <button class="wa-send" id="of-guardar" style="flex:2;margin-top:0;background:var(--gold)" onclick="guardarOfertaStock(${r.id})">Guardar oferta</button>
-      </div>
-    </div>`;
-  d.classList.add("on"); document.getElementById("scrim").classList.add("on");
-  // costo fresco (standard_price, lo sincroniza Odoo) + precio base de la lista para el "antes" y el sugerido
+  const btn=document.querySelector(".cta-ofertar"); if(btn){ btn.disabled=true; btn.textContent="Enviando…"; }
   try{
-    const [pr, pit] = await Promise.all([
-      rpc("product.product","read",[[r.id],["standard_price"]]),
-      r.tmpl ? rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["applied_on","=","1_product"],["product_tmpl_id","=",r.tmpl]]],{fields:["min_quantity","fixed_price"],limit:200}) : Promise.resolve([])
-    ]);
-    OFERTA.costo=(pr[0]&&pr[0].standard_price)||r.costoU;
-    let base=r.pvp;
-    if(pit&&pit.length){ base=pit.sort((a,b)=>a.min_quantity-b.min_quantity)[0].fixed_price; }
-    const antes=document.getElementById("of-antes"); if(antes && base) antes.value=Math.round(base);
-    const pin=document.getElementById("of-precio");
-    if(pin && !pin.value){ const sug=Math.max(Math.round(base*0.85), Math.round(OFERTA.costo*1.05)); pin.value=sug; } // sugerencia −15% con piso costo+5%
-  }catch(e){}
-  margenOfertaStock();
-}
-function margenOfertaStock(){
-  const box=document.getElementById("of-margen"); if(!box) return;
-  const precio=parseFloat((document.getElementById("of-precio")||{}).value)||0;
-  const costo=OFERTA.costo;
-  if(!costo){ box.textContent="No hay costo cargado en Odoo para calcular el margen."; box.className="margen-box"; return; }
-  if(!(precio>0)){ box.textContent="Poné el precio de oferta para ver el margen."; box.className="margen-box"; return; }
-  const abs=Math.round(precio-costo), pct=Math.round((precio-costo)/precio*100);
-  box.className="margen-box "+(pct<0?"neg":pct<15?"bajo":"ok");
-  box.innerHTML=`<b>${pct<0?'':'+'}${pct}%</b> · ${money(abs)}/u <span class="cst">(costo ${money(costo)})</span>${pct<0?' ⚠️ perdés plata':(pct<15?' · margen ajustado':'')}`;
-}
-async function guardarOfertaStock(id){
-  const r=DATA.find(x=>x.id===id); if(!r) return;
-  const g=x=>document.getElementById(x);
-  const precio=parseFloat(g("of-precio").value)||0;
-  if(!(precio>0)){ toast("Poné el precio de oferta"); return; }
-  const btn=g("of-guardar"); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
-  const oferta={ id:"of"+Date.now(), tipo:"oferta",
-    titulo:(g("of-tit").value.trim())||cleanName(r.name),
-    items:[{id:r.id, sku:r.code, nombre:cleanName(r.name)}],
-    precio, precioAntes:parseFloat(g("of-antes").value)||0,
-    stock:parseFloat(g("of-stock").value)||0, hasta:g("of-hasta").value||"",
-    nota:g("of-nota").value.trim(),
-    creada:new Date().toISOString().slice(0,19).replace("T"," ") };
-  try{
-    let ofertas=[]; try{ ofertas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas"])||"[]"); }catch(e){}
-    ofertas.push(oferta);
-    await rpc("ir.config_parameter","set_param",["eyg.ofertas",JSON.stringify(ofertas)]);
-    cerrar(); toast("Oferta creada ✓ — ya está en el panel de comerciales");
-  }catch(e){ if(btn){ btn.disabled=false; btn.textContent="Guardar oferta"; } toast("Error: "+e.message); }
+    await rpc("product.product","write",[[r.id],{x_oportunidad:true, x_oportunidad_archivada:false}]);
+    if(btn){ btn.textContent="✓ En Oportunidades"; btn.style.background="var(--verde,#1E7D46)"; }
+    toast("Enviado a Oportunidades y Ofertas ✓ — creá la oferta desde ahí");
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent="🏷️ Enviar a Oportunidades y Ofertas"; } toast("Error: "+e.message); }
 }
 
 function textoResumen(){
