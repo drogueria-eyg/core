@@ -165,7 +165,10 @@ const TILDES={ANALISIS:"Análisis",CLINICO:"Clínico",CLINICA:"Clínica",CLINICO
 function titulo(s){let t=(s||"").toString().replace(/\s+/g," ").trim();if(!t)return"";return t.split(" ").map((w,i)=>{const u=w.toUpperCase().replace(/[^A-ZÁÉÍÓÚÑ0-9]/g,"");if(SIGLAS.has(u))return w.toUpperCase();if(TILDES[u])return TILDES[u];if(/^\d/.test(w))return w;if(w.length<=1)return w.toUpperCase();const low=w.toLowerCase();if(i>0&&ENLACES.has(u))return low;return low.charAt(0).toUpperCase()+low.slice(1);}).join(" ");}
 
 /* --- Cruce con el padrón oficial (mismo criterio conservador del Tablero) --- */
-const LOC_ALIAS={"ROSARIO SUD":"ROSARIO","ROSARIO NORTE":"ROSARIO","ROSARIOS":"ROSARIO","RSOARIO":"ROSARIO","BARRIO FISHERTON":"ROSARIO","BARRIO PARQUE":"ROSARIO","ROSARIO SANTA FE":"ROSARIO","V GOBERNADOR GALVEZ":"VILLA GOBERNADOR GALVEZ","CABA":"CIUDAD AUTONOMA DE BUENOS AIRES","CIUDAD DE BUENOS AIRES":"CIUDAD AUTONOMA DE BUENOS AIRES","BARRIO NUEVA CORDOBA":"CORDOBA","EMPALME":"EMPALME VILLA CONSTITUCION","SAN JERONIMO":"SAN JERONIMO SUD"};
+const LOC_ALIAS={"ROSARIO SUD":"ROSARIO","ROSARIO NORTE":"ROSARIO","ROSARIOS":"ROSARIO","RSOARIO":"ROSARIO","BARRIO FISHERTON":"ROSARIO","BARRIO PARQUE":"ROSARIO","ROSARIO SANTA FE":"ROSARIO","V GOBERNADOR GALVEZ":"VILLA GOBERNADOR GALVEZ","CABA":"CIUDAD AUTONOMA DE BUENOS AIRES","CIUDAD DE BUENOS AIRES":"CIUDAD AUTONOMA DE BUENOS AIRES","BARRIO NUEVA CORDOBA":"CORDOBA","EMPALME":"EMPALME VILLA CONSTITUCION","SAN JERONIMO":"SAN JERONIMO SUD","VILLA CONSTITUC":"VILLA CONSTITUCION"};
+/* Normaliza la ciudad de un contacto a la clave de localidad del padrón: saca puntos
+   ("V.Gobernador Galvez"), corta en la coma ("Rosario, Santa Fe" → "Rosario") y aplica alias. */
+function locKey(city){ let loc=NORM(city).replace(/\./g," ").split(",")[0].replace(/\s+/g," ").trim(); return LOC_ALIAS[loc]||loc; }
 const RUIDO=/\b(FARMACIA|FARMACIAS|FCIA|SRL|S R L|SA|S A|SAS|S A S|SH|S H|DE|DEL|LA|EL|LOS|LAS|Y|E|HIJOS|HNOS|HERMANOS|SOCIEDAD|ANONIMA|LTDA|LIMITADA|CIA)\b/g;
 const GENERICO=new Set(["PARQUE","CENTRO","NORTE","SUR","ESTE","OESTE","NUEVA","NUEVO","SAN","SANTA","CENTRAL","MODELO","ESPANOL","ESPANOLA","ITALIANO","ITALIANA","MUNICIPAL","PROVINCIAL","REGIONAL","GENERAL","MEDICA","MEDICO","SALUD","VIDA","CRUZ","PLAZA","MITRE","BELGRANO","SARMIENTO","MORENO","URQUIZA","ALBERDI","RIVADAVIA"]);
 const clave = s => NORM(s).replace(/[^A-Z0-9 ]/g," ").replace(RUIDO," ").replace(/\s+/g," ").trim();
@@ -173,7 +176,9 @@ const _tk = s => s.split(" ").filter(x=>x.length>2);
 function _coincide(a,b){
   if(!a||!b) return false;
   const ta=_tk(a), tb=_tk(b); if(!ta.length||!tb.length) return false;
-  if(a===b){ if(ta.length===1) return ta[0].length>=6 && !GENERICO.has(ta[0]); return true; }
+  // núcleo idéntico. Si es una sola palabra, exigimos ≥4 letras y que no sea genérica:
+  // dentro de la MISMA localidad, un apellido corto igual (Amat, Vega, Azar…) es un match real.
+  if(a===b){ if(ta.length===1) return ta[0].length>=4 && !GENERICO.has(ta[0]); return true; }
   if(ta.length>=2 && tb.length>=2){ const A=new Set(ta),B=new Set(tb); let i=0; for(const x of A) if(B.has(x)) i++; if(i/(A.size+B.size-i)>=0.67) return true; }
   const corto=a.length<=b.length?a:b, largo=a.length<=b.length?b:a;
   if(corto.length>=8 && _tk(corto).length>=2 && largo.includes(corto)) return true;
@@ -290,7 +295,7 @@ function cruzar(){
   UNI.locs.forEach((l,i)=>pos.set(NORM(l[1])+"|"+NORM(l[0]),i));
   // nuestros contactos por localidad
   const mios=new Map();
-  DATA.forEach(c=>{ c.enPadron=false; c.nombreOficial=""; let loc=NORM(c.ciudad); loc=LOC_ALIAS[loc]||loc; if(!loc) return; const i=pos.get(NORM(c.prov)+"|"+loc); if(i===undefined) return; if(!mios.has(i)) mios.set(i,[]); mios.get(i).push({c,k:clave(c.nombre)}); });
+  DATA.forEach(c=>{ c.enPadron=false; c.nombreOficial=""; const loc=locKey(c.ciudad); if(!loc) return; const i=pos.get(NORM(c.prov)+"|"+loc); if(i===undefined) return; if(!mios.has(i)) mios.set(i,[]); mios.get(i).push({c,k:clave(c.nombre)}); });
   UNI.est.forEach(e=>{ e[6]=0; });
   for(const e of UNI.est){
     const cands=mios.get(e[1]); if(!cands) continue;
