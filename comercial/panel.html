@@ -826,6 +826,8 @@ function ctrlPanel(which){
 // ===== Ofertas y combos =====
 const OF_DIAS_DEF=30;                       // ventana de conteo cuando la oferta no trae 'desde' ni 'creada'
 const fFecha=s=>{const p=String(s||"").slice(0,10).split("-"); return p.length===3?p[2]+"/"+p[1]:"";};
+// Vencimiento de producto: se muestra MM/AAAA (los lotes de farma usan mes/año; el día es 01).
+const fVenc=s=>{const p=String(s||"").slice(0,10).split("-"); return p.length===3?p[1]+"/"+p[0]:"";};
 const ofItems=o=>(o.items||[]).map(i=>i.nombre).filter(Boolean).join(" + ");
 const ofDesc=o=>(o.precioAntes>0&&o.precioAntes>o.precio)?Math.round((1-o.precio/o.precioAntes)*100):0;
 const ofMeta=o=>o.metaClientes>0?o.metaClientes:OF_META_CLIENTES;
@@ -857,6 +859,7 @@ function ofertaMsg(o){
       : "*"+money(o.precio)+"*");
   }
   if(o.stock>0) L.push("📦 "+o.stock+" disponibles");
+  if(o.venc)    L.push("📅 Vencimiento del producto"+(o.vencMulti?" (más próximo)":"")+": "+fVenc(o.venc));
   if(o.nota)    L.push("📝 "+o.nota);
   if(o.hasta)   L.push("⏳ Válido hasta el "+fFecha(o.hasta));
   L.push("");
@@ -1001,6 +1004,16 @@ async function cargarOfertas(ids){
   // Cada colocados ya usa la ventana correcta [publicación exacta → cierre], así que NO
   // cuenta compras de rutina previas a la oferta. Consistente con lo que muestra cada tarjeta. ----
   OFPIDS=[...new Set(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i.id)).filter(Boolean))];
+  // Vencimiento del producto para el mensaje de WhatsApp. gg_lot_expiration_date = fecha del
+  // lote MÁS PRÓXIMO con stock (verificado: coincide con el vencimiento a despachar por FEFO).
+  // 1 sola consulta para todas las variantes; se guarda o.venc (el más próximo del combo).
+  try{
+    if(OFPIDS.length){
+      const pr=await rpc("product.product","read",[OFPIDS,["gg_lot_expiration_date"]]);
+      const vm={}; pr.forEach(p=>{ if(p.gg_lot_expiration_date) vm[p.id]=String(p.gg_lot_expiration_date).slice(0,10); });
+      OFERTAS.forEach(o=>{ const vs=(o.items||[]).map(i=>vm[i.id]).filter(Boolean).sort(); o.venc=vs[0]||null; o.vencMulti=(new Set(vs).size>1); });
+    }
+  }catch(e){}
   ST.ofVendidas=OFERTAS.reduce((s,o)=>s+(((ST.ofertas[o.id]||{}).colocados)||0),0);
   try{
     if(ST.userPartner){
