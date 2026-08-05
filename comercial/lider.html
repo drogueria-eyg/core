@@ -252,9 +252,10 @@ EYG.requireAuth(["lider","admin","direccion"], perfil=>{
 let toastT;
 function toast(msg, ok){ const t=document.getElementById("toast"); if(!t)return; t.textContent=msg; t.className="toast on"+(ok?" ok":""); clearTimeout(toastT); toastT=setTimeout(()=>t.className="toast",2600); }
 
-/* El equipo de un líder sale del ORGANIGRAMA de Odoo (hr.employee.parent_id): el líder
-   es un empleado y sus comerciales son sus subordinados directos. No se hardcodea nada;
-   el panel superior (admin) mueve ese parent_id y acá se refleja solo. */
+/* El equipo de un líder sale del ORGANIGRAMA de Odoo (hr.employee.parent_id), pero SÓLO cuenta
+   como comercial a los subordinados del departamento VENTAS que no son a su vez líderes (sin
+   subordinados propios). Así el jefe de un área (ej. Germán) no toma a Facturación/Cobranzas/
+   Finanzas ni a otro líder como "comerciales". Mismo criterio que el Panel comerciales. */
 async function resolverLider(name){
   const u = await EYG.rpc("res.users","search_read",[[["name","=",name]]],{fields:["id","name"]});
   if(!u.length) throw new Error('No encontré al líder "'+name+'" en Odoo.');
@@ -263,9 +264,9 @@ async function resolverLider(name){
   const childIds = emp[0].child_ids||[];
   let team=[];
   if(childIds.length){
-    const subs = await EYG.rpc("hr.employee","read",[childIds,["name","user_id"]]);
-    // sólo subordinados que son usuarios del sistema (tienen cuenta de vendedor)
-    team = subs.filter(s=>s.user_id).map(s=>({uid:s.user_id[0], name:s.user_id[1]}));
+    const subs = await EYG.rpc("hr.employee","read",[childIds,["name","user_id","department_id","child_ids"]]);
+    team = subs.filter(s=>s.user_id && s.department_id && /ventas/i.test(s.department_id[1]) && !(s.child_ids||[]).length)
+               .map(s=>({uid:s.user_id[0], name:s.user_id[1]}));
   }
   return {uid:u[0].id, name:u[0].name, empId:emp[0].id, team};
 }
