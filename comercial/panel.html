@@ -281,6 +281,28 @@
   .fbtn{border:1px solid var(--line);background:var(--surface);color:var(--gris);border-radius:8px;padding:4px 9px;font-size:11.5px;font-weight:700;cursor:pointer;line-height:1;white-space:nowrap}
   .fbtn:hover{border-color:var(--teal);color:var(--teal);background:var(--agua)}
   .cc.alfondo{opacity:.5} .cc.alfondo:hover{opacity:.85}
+  /* ===== Gráfico de evolución (modo dirección) ===== */
+  .ldkpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+  @media(max-width:640px){.ldkpis{grid-template-columns:1fr 1fr}}
+  .ldkpi{background:var(--surface);border:1px solid var(--line);border-radius:13px;padding:12px 14px;box-shadow:var(--shadow);cursor:pointer;transition:transform .12s,box-shadow .12s,border-color .12s}
+  .ldkpi:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(6,65,62,.12);border-color:var(--teal-med)}
+  .ldkpi.sel{background:linear-gradient(145deg,var(--teal),var(--teal-deep));border-color:var(--teal)}
+  .ldkpi.sel .ldk-l,.ldkpi.sel .ldk-s{color:#d9f1ee} .ldkpi.sel .ldk-v{color:#fff}
+  .ldk-l{font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--gris);font-weight:700}
+  .ldk-v{font-size:19px;font-weight:900;letter-spacing:-.4px;margin-top:2px}
+  .ldk-s{font-size:11px;color:var(--gris2);margin-top:1px}
+  .chartbox{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px 18px 12px;box-shadow:var(--shadow);margin-bottom:22px}
+  .chartbox .ch-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px}
+  .chartbox .ch-head h3{font-size:15px;font-weight:800}
+  .chartbox .ch-tot{font-size:21px;font-weight:900;color:var(--teal-deep);margin-bottom:2px}
+  .chartbox .ch-totl{font-size:12px;color:var(--gris2);font-weight:600}
+  .chartbox .live{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--teal-med)}
+  .chartbox .live .dot{width:8px;height:8px;border-radius:50%;background:#22e0c6;box-shadow:0 0 8px #22e0c6;animation:ldblink 1.4s ease-in-out infinite}
+  @keyframes ldblink{0%,100%{opacity:1}50%{opacity:.4}}
+  svg .ldneon{animation:ldneon 1.3s ease-in-out infinite}
+  @keyframes ldneon{0%,100%{r:5;opacity:1}50%{r:8;opacity:.75}}
+  .floading{padding:14px;text-align:center;color:var(--gris);font-size:13px}
+  .spin-sm{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--teal);border-radius:50%;display:inline-block;animation:spin 1s linear infinite;vertical-align:-2px}
 </style>
 </head>
 <body>
@@ -336,6 +358,7 @@ function comisionDesglose(fact){const c=corteObjetivo(),r=ratesConSalud(),t=[];t
 const NIV=[{n:"Bronce",e:"🥉",m:1.00},{n:"Plata",e:"🥈",m:1.05},{n:"Oro",e:"🥇",m:1.10},{n:"Platino",e:"💎",m:1.15},{n:"Diamante",e:"👑",m:1.20}];
 const params=new URLSearchParams(location.search);
 let COMERCIAL="";  // se define en el arranque según la cuenta logueada (o ?c= para líder/admin)
+let MODO_LIDER=false;  // ?modo=lider (solo no-comercial): panel de cartera SIN gamificación + gráfico de evolución
 const REQ=[{k:"name",l:"Nombre"},{k:"tel",l:"Teléfono"},{k:"email",l:"Email"},{k:"street",l:"Dirección"},{k:"zip",l:"CP"},{k:"city",l:"Localidad"},{k:"state",l:"Provincia"},{k:"idtype",l:"Tipo doc"},{k:"vat",l:"Nº doc"},{k:"fiscal",l:"Cond. fiscal"}];
 // Rubro (vive en category_id / etiquetas de Odoo). Mapa tag->valor canónico
 const RUBROS=[{v:30,l:"Farmacia"},{v:32,l:"Sanatorio / Clínica"},{v:37,l:"Empresa de salud"},{v:33,l:"Institución / Mutual"},{v:34,l:"Distribuidora / Droguería"},{v:35,l:"Veterinaria"},{v:62,l:"SAMCO"}];
@@ -508,6 +531,7 @@ async function cargar(){
     // Ofertas y WhatsApp llegan después y RE-pintan (el nivel se ajusta al instante cuando
     // entran los combos colocados; mejor eso que dejar el panel en blanco 10s esperándolos).
     render();
+    if(MODO_LIDER) ldInit();   // gráfico de evolución (período + hoy minuto a minuto) para su propia cartera
     cargarOfertas(ids).then(()=>render()).catch(()=>{});
     cargarWA().then(()=>render()).catch(()=>{});
   }catch(e){ document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar el panel.</b><br>'+esc(e.message)+'</div>'; }
@@ -623,7 +647,7 @@ function render(){
       </div>
       <a class="cta-venta big" href="vender.html${(window.__perfil&&window.__perfil.rol!=='comercial')?('?c='+encodeURIComponent(COMERCIAL)):''}">🛒 Cargar una venta</a>
     </div>
-    <div class="secrow"><h2 class="sec">🎯 Tus objetivos</h2></div>
+    ${MODO_LIDER?'<div id="ldchartbox"></div>':`<div class="secrow"><h2 class="sec">🎯 Tus objetivos</h2></div>
     <div class="goals">
       <div class="goal ${pDia>=100?'done':''}"><span class="chk">✅</span>${ring(pDia,dHoy,dObj,'var(--teal)')}<div><div class="gt">Hoy · contactos</div><div class="gn">${dHoy}/${dObj}</div><div class="gs">${dHoy>=dObj?'¡Meta cumplida! 🎉':(dObj-dHoy)+' para tu meta'}${msgHoy?` · 📤 ${msgHoy} msg`:''}</div></div></div>
       <div class="goal ${pNue>=100?'done':''}"><span class="chk">✅</span>${ring(pNue,ST.nuevos,OBJ.mensualNuevos,'var(--coral)')}<div><div class="gt">Mes · nuevos</div><div class="gn">${ST.nuevos}/${OBJ.mensualNuevos}</div><div class="gs">clientes nuevos</div></div></div>
@@ -671,7 +695,7 @@ function render(){
           <div class="drow tot"><span>Tu comisión</span><b>${money(cTot)}</b></div>
         </div></div></div>
       </div>
-    </div>
+    </div>`}
     <div class="secrow"><h2 class="sec">💵 Estado de cobranza <span style="font-size:11px;color:var(--gris2);font-weight:600;letter-spacing:0;text-transform:none">· para tu seguimiento</span></h2></div>
     <div class="kpis">
       <div class="kpi ${(ST.cc.porCobrar>0&&ST.cc.vencido/ST.cc.porCobrar>0.25)?'warn':''}">
@@ -679,15 +703,15 @@ function render(){
         <div class="acc"><div class="accw"><div class="accin">
           <div class="drow"><span>🔴 Vencido · reclamar ya</span><b style="color:var(--coral)">${money(ST.cc.vencido)}</b></div>
           <div class="drow"><span>📦 Sin facturar (no entregado)</span><b>${money(ST.cc.aFacturar)}</b></div>
-          ${externo?'':`<div style="font-size:11px;color:var(--gris2);margin-top:7px">Bajar el vencido sube tu Salud (y recuperás tasa de comisión).</div>`}
+          ${(externo||MODO_LIDER)?'':`<div style="font-size:11px;color:var(--gris2);margin-top:7px">Bajar el vencido sube tu Salud (y recuperás tasa de comisión).</div>`}
           <div style="margin-top:9px"><a onclick="verOdoo('action=321&view_type=list&search_default_late=1&search_default_myinvoices=1')" style="color:var(--teal);font-weight:700;cursor:pointer;font-size:12.5px">Ver vencidos en Odoo →</a></div>
         </div></div></div>
       </div>
       <div class="kpi">
-        <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">💚</span><div class="kmeta"><div class="kl">Cobrado este mes</div><div class="kv">${money(ST.cc.cobradoMes)}</div><div class="ks">${externo?'pagos entrantes del mes':'🏆 sube tu nivel y tu salud'}</div></div><span class="kchev">▾</span></div>
+        <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">💚</span><div class="kmeta"><div class="kl">Cobrado este mes</div><div class="kv">${money(ST.cc.cobradoMes)}</div><div class="ks">${(externo||MODO_LIDER)?'pagos entrantes del mes':'🏆 sube tu nivel y tu salud'}</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
           <div class="drow"><span>Pagos entrantes del mes</span><b>${money(ST.cc.cobradoMes)}</b></div>
-          ${externo?'':`<div class="drow"><span>Objetivo de cobro</span><b>${money(ST.base?.objetivoCobro||0)}</b></div>`}
+          ${(externo||MODO_LIDER)?'':`<div class="drow"><span>Objetivo de cobro</span><b>${money(ST.base?.objetivoCobro||0)}</b></div>`}
           <div style="margin-top:9px"><a onclick="verOdoo('action=297&view_type=list')" style="color:var(--teal);font-weight:700;cursor:pointer;font-size:12.5px">Ver mis cobros en Odoo →</a></div>
         </div></div></div>
       </div>
@@ -716,6 +740,7 @@ function render(){
     <div id="lista" class="clist"></div>`;
   actualizarControlCenter(nv, sd, externo);
   lista();
+  if(MODO_LIDER) ldRender();   // re-dibuja el gráfico tras cada repintado (usa el estado LD ya cargado)
 }
 
 /* lista() rearma toda la cartera. Sin debounce eso corría en cada tecla y en
@@ -781,6 +806,7 @@ function salDetHTML(sd){
 }
 function actualizarControlCenter(nv, sd, externo){
   const slot=document.getElementById("ctrlSlot"); if(!slot) return;
+  if(MODO_LIDER){ slot.innerHTML=""; return; }   // dirección/líder: sin nivel ni salud (no gamificado)
   if(externo){ slot.innerHTML=`<button class="ctrlchip">🔵 Externo · 3/4%</button><button class="ctrlchip q" onclick="ctrlPanel('ayuda')" title="Ayuda">?</button>`; _ctrlHTML={ayuda:(typeof ayudaHTML==="function"?ayudaHTML():"")}; return; }
   const s=Math.round(sd.salud);
   slot.innerHTML=`
@@ -1259,6 +1285,81 @@ function toast(msg,win){const t=document.getElementById("toast");t.textContent=m
 function confetti(){const box=document.getElementById("confetti");const cols=["#048782","#EC8B5E","#E5A93B","#5FC8BF","#1E7D46"];
   for(let i=0;i<80;i++){const dv=document.createElement("div");dv.className="conf";dv.style.left=Math.random()*100+"vw";dv.style.top="-20px";dv.style.background=cols[i%cols.length];dv.style.transform="rotate("+Math.random()*360+"deg)";dv.style.animation="fall "+(1.6+Math.random()*1.4)+"s "+(Math.random()*0.4)+"s ease-in forwards";box.appendChild(dv);setTimeout(()=>dv.remove(),3600);}}
 // ---- Arranque con login: cada comercial ve SU cuenta; líder/admin/dirección pueden ver cualquiera con ?c= ----
+/* ===== Gráfico de evolución (modo dirección) — período año/mes/semana/hoy, con "hoy" minuto a
+   minuto en vivo. Portado del Panel del Líder, acá para la cartera propia (ST.userId). ===== */
+const LD_TZ="America/Argentina/Buenos_Aires";
+const LD_MESES=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+const LD_DIAS=["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
+let LD={per:"hoy", tot:{hoy:0,sem:0,mes:0,ano:0}, series:{}, today:[], timer:null, _iniSem:null};
+function ldToday(){ return new Intl.DateTimeFormat("en-CA",{timeZone:LD_TZ}).format(new Date()); }
+function ldParts(s){ const d=new Date(String(s).replace(" ","T")+"Z"); const p=new Intl.DateTimeFormat("en-CA",{timeZone:LD_TZ,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(d); const g={};p.forEach(x=>g[x.type]=x.value); const hh=(+g.hour)%24; return {date:`${g.year}-${g.month}-${g.day}`,hour:hh,frac:hh+(+g.minute)/60}; }
+function ldNowFrac(){ const p=new Intl.DateTimeFormat("en-CA",{timeZone:LD_TZ,hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(new Date()); const g={};p.forEach(x=>g[x.type]=x.value); return ((+g.hour)%24)+(+g.minute)/60; }
+async function ldPerTot(desde){ const g=await rpc("sale.order","read_group",[[["user_id","=",ST.userId],["state","in",["sale","done"]],["date_order",">=",desde]],["amount_untaxed:sum"],[]],{lazy:false}); return (g[0]&&g[0].amount_untaxed)||0; }
+async function ldInit(){
+  try{
+    const t=ldToday(), y=t.slice(0,4), mo=t.slice(0,7);
+    const d=new Date(t+"T00:00:00"); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow); const _l=lun.toISOString().slice(0,10); LD._iniSem=_l<(mo+"-01")?(mo+"-01"):_l;
+    const [aA,aM,aS]=await Promise.all([ldPerTot(y+"-01-01"),ldPerTot(mo+"-01"),ldPerTot(LD._iniSem)]);
+    LD.tot.ano=aA; LD.tot.mes=aM; LD.tot.sem=aS;
+    await ldRefreshHoy();
+    ldRender();
+    LD.timer=setInterval(()=>{ if(!document.hidden){ ldRefreshHoy().then(()=>{ if(LD.per==="hoy") ldRender(); }).catch(()=>{}); } },180000);
+  }catch(e){ const b=document.getElementById("ldchartbox"); if(b) b.innerHTML='<div class="errbox">No pude cargar el gráfico: '+esc(e.message)+'</div>'; }
+}
+async function ldRefreshHoy(){
+  const desde=new Date(Date.now()-30*3600*1000).toISOString().slice(0,10)+" 00:00:00";
+  const ord=await rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["sale","done"]],["date_order",">=",desde]]],{fields:["date_order","amount_untaxed"],limit:0});
+  const t=ldToday();
+  LD.today=ord.map(o=>({amt:o.amount_untaxed||0, ...ldParts(o.date_order)})).filter(o=>o.date===t);
+  LD.tot.hoy=LD.today.reduce((a,o)=>a+o.amt,0);
+}
+async function ldSetPer(p){ if(p===LD.per)return; LD.per=p; ldRender(); if(p!=="hoy" && !LD.series[p]){ try{ await ldSerie(p); }catch(e){} ldRender(); } }
+async function ldSerie(p){
+  if(LD.series[p]) return LD.series[p];
+  const t=ldToday(), y=t.slice(0,4), mo=t.slice(0,7);
+  const dom=(desde,gran)=>rpc("sale.order","read_group",[[["user_id","=",ST.userId],["state","in",["sale","done"]],["date_order",">=",desde+" 00:00:00"]],["amount_untaxed:sum"],["date_order:"+gran]],{lazy:false});
+  const bucket=(g,gran)=>{ const m={}; g.forEach(r=>{ const rg=r.__range&&r.__range["date_order:"+gran]; const f=rg?rg.from.slice(0,10):null; if(f)m[f]=(m[f]||0)+(r.amount_untaxed||0); }); return m; };
+  if(p==="sem"){ const ini=LD._iniSem; const lun=new Date(t+"T00:00:00"); const dow=(lun.getDay()+6)%7; lun.setDate(lun.getDate()-dow); const m=bucket(await dom(ini,"day"),"day"); const arr=[]; for(let i=0;i<7;i++){ const dd=new Date(lun); dd.setDate(lun.getDate()+i); const k=dd.toISOString().slice(0,10); arr.push({label:LD_DIAS[i], val:m[k]||0, cur:k===t}); } return LD.series.sem=arr; }
+  if(p==="mes"){ const ini=mo+"-01"; const m=bucket(await dom(ini,"day"),"day"); const [yy,mm]=mo.split("-").map(Number); const dim=new Date(yy,mm,0).getDate(); const arr=[]; for(let dd=1;dd<=dim;dd++){ const k=`${mo}-${String(dd).padStart(2,"0")}`; arr.push({label:String(dd), val:m[k]||0, cur:k===t}); } return LD.series.mes=arr; }
+  if(p==="ano"){ const m=bucket(await dom(y+"-01-01","month"),"month"); const arr=[]; for(let mm=1;mm<=12;mm++){ const k=`${y}-${String(mm).padStart(2,"0")}`; arr.push({label:LD_MESES[mm-1], val:m[k+"-01"]||0, cur:k===mo}); } return LD.series.ano=arr; }
+}
+function ldChartHoy(){
+  const orders=LD.today.slice().sort((a,b)=>a.frac-b.frac);
+  const x0=7,x1=21,W=1000,H=210,PADB=22;
+  let cum=0; const pts=[[x0,0]];
+  for(const o of orders){ cum+=o.amt; pts.push([Math.max(x0,Math.min(x1,o.frac)),cum]); }
+  const nf=Math.max(x0,Math.min(x1,ldNowFrac())); pts.push([nf,cum]);
+  const maxY=Math.max(cum,1);
+  const X=f=>((f-x0)/(x1-x0))*W, Y=v=>H-PADB-(v/maxY)*(H-PADB-8);
+  const line=pts.map((p,i)=>(i?"L":"M")+X(p[0]).toFixed(1)+" "+Y(p[1]).toFixed(1)).join(" ");
+  const area=line+` L ${X(nf).toFixed(1)} ${H-PADB} L ${X(x0).toFixed(1)} ${H-PADB} Z`;
+  const lastX=X(nf),lastY=Y(cum);
+  const ticks=[]; for(let h=x0;h<=x1;h+=2){ ticks.push(`<text x="${X(h).toFixed(0)}" y="${H-6}" fill="#9AAcA8" font-size="11" text-anchor="middle">${h}h</text><line x1="${X(h)}" y1="0" x2="${X(h)}" y2="${H-PADB}" stroke="#EEF4F3"/>`); }
+  return { tot:cum, totLbl:"acumulado del día",
+    svg:`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:210px;display:block;margin-top:6px"><defs><linearGradient id="ldg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0AA89F" stop-opacity=".28"/><stop offset="1" stop-color="#0AA89F" stop-opacity="0"/></linearGradient></defs>${ticks.join("")}<path d="${area}" fill="url(#ldg)"/><path d="${line}" fill="none" stroke="#048782" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="9" fill="#22e0c6" opacity=".25"/><circle class="ldneon" cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="5" fill="#22e0c6" style="filter:drop-shadow(0 0 6px #22e0c6)"/></svg>` };
+}
+function ldBar(series){
+  const W=1000,H=230,PADB=28,PADT=12,PADL=6,n=series.length||1;
+  const max=Math.max(...series.map(s=>s.val),1);
+  const bw=(W-PADL*2)/n, gap=n>20?1.5:n>12?2.5:6;
+  const bars=series.map((s,i)=>{ const h=(s.val/max)*(H-PADB-PADT); const x=PADL+i*bw+gap/2,yy=H-PADB-h,w=Math.max(1,bw-gap); const fill=s.cur?'var(--coral)':'url(#ldgb)'; return `<rect x="${x.toFixed(1)}" y="${yy.toFixed(1)}" width="${w.toFixed(1)}" height="${Math.max(0,h).toFixed(1)}" rx="${Math.min(3,w/2).toFixed(1)}" fill="${fill}"><title>${esc(s.label)}: ${money(s.val)}</title></rect>`; }).join("");
+  const step=n>24?Math.ceil(n/15):1;
+  const labels=series.map((s,i)=>{ if(i%step!==0 && !s.cur) return ""; const x=PADL+i*bw+bw/2; return `<text x="${x.toFixed(1)}" y="${H-9}" text-anchor="middle" font-size="12" fill="${s.cur?'var(--coral)':'#9AAcA8'}" font-weight="${s.cur?800:500}">${esc(s.label)}</text>`; }).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;margin-top:6px"><defs><linearGradient id="ldgb" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0AA89F"/><stop offset="1" stop-color="#7ad5cc"/></linearGradient></defs>${bars}${labels}</svg>`;
+}
+function ldRender(){
+  const box=document.getElementById("ldchartbox"); if(!box)return;
+  const kc=(k,lab,sub)=>`<div class="ldkpi ${LD.per===k?'sel':''}" onclick="ldSetPer('${k}')"><div class="ldk-l">${lab}</div><div class="ldk-v">${money(LD.tot[k]||0)}</div><div class="ldk-s">${sub}</div></div>`;
+  const kpis=`<div class="ldkpis">${kc("hoy","Hoy",LD.today.length+" pedido"+(LD.today.length===1?"":"s"))}${kc("sem","Esta semana","por día")}${kc("mes","Este mes","por día")}${kc("ano","Este año","por mes")}</div>`;
+  const TIT={hoy:"Evolución de hoy",sem:"Ventas de la semana · por día",mes:"Ventas del mes · por día",ano:"Ventas del año · por mes"};
+  let tot=0,totLbl="",svg="",live=false;
+  if(LD.per==="hoy"){ const c=ldChartHoy(); tot=c.tot; totLbl=c.totLbl; svg=c.svg; live=true; }
+  else{ const s=LD.series[LD.per]; if(!s){ svg='<div class="floading"><span class="spin-sm"></span> cargando…</div>'; } else { tot=s.reduce((a,b)=>a+b.val,0); totLbl="total del período"; svg=ldBar(s); } }
+  box.innerHTML=`<div class="secrow"><h2 class="sec">📈 Evolución de tus ventas</h2></div>${kpis}
+    <div class="chartbox"><div class="ch-head"><h3>${TIT[LD.per]}</h3>${live?'<span class="live"><span class="dot"></span>En vivo · minuto a minuto</span>':''}</div>
+    <div class="ch-tot">${money(tot)} <span class="ch-totl">${totLbl}</span></div>${svg}</div>`;
+}
+
 EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
   window.__perfil = perfil;
   const q = new URLSearchParams(location.search).get("c");
@@ -1269,6 +1370,12 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
     if(nb){ nb.textContent="Salir"; nb.href="#"; nb.title="Cerrar sesión"; nb.onclick=(e)=>{e.preventDefault();EYG.logout();}; }
   } else {
     COMERCIAL = q || perfil.comercial_ref || "Natividad Sanchez";       // líder/admin: puede elegir con ?c=
+    // Modo dirección/líder: su propia cartera SIN gamificación (nivel/comisión/salud/objetivos) + gráfico de evolución.
+    MODO_LIDER = new URLSearchParams(location.search).get("modo")==="lider";
+    if(MODO_LIDER){
+      const sub=document.querySelector(".who span"); if(sub) sub.textContent="Mi cartera · Dirección";
+      const nb=document.getElementById("navBack"); if(nb){ nb.href="comerciales.html"; nb.title="Volver al Panel comerciales"; }
+    }
   }
   cargar().then(()=>{
     // Presencia: solo si es SU propia cuenta (no cuando un líder/admin espía el panel con ?c=).
