@@ -288,7 +288,12 @@ window.EYG = (function(){
     {key:"stock",     dept:"inventario", cat:"Inventario", ico:"📦", titulo:"Stock y Sobrestock", desc:"Plata inmovilizada, rotación por producto y vencimientos. Qué frenar y qué liquidar.", roles:["finanzas","inventario"], ready:true, path:()=>"inventario/stock.html"},
     {key:"nombres",   dept:"inventario", cat:"Inventario", ico:"🏷️", titulo:"Maestro de productos", desc:"Ordená el dato maestro de cada producto: nombre, unidades, embalaje y subcategoría. Detecta errores y completa lo que falta, con un clic.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/nombres.html"},
     {key:"oportunidades", dept:"inventario", cat:"Inventario", ico:"💡", titulo:"Oportunidades y Ofertas", desc:"Cuando un costo baja, el sistema detecta una oportunidad de oferta. Confirmala (precio, stock, vigencia) o armá combos, y van a la tarjeta de los comerciales.", roles:["inventario"], ready:true, path:()=>"inventario/oportunidades.html"},
-    {key:"contactos", dept:"datos", cat:"Datos", ico:"🗂️", titulo:"Contactos", desc:"Calidad de datos (teléfono, email, condición fiscal), duplicados y ventas por comercial.", roles:["comercial","admin"], ready:false, path:()=>"datos/contactos.html"},
+    /* EN PRUEBAS: CRM de contactos (existentes + por conquistar). Oculto para todo
+       el equipo hasta terminarlo — sólo super-admins (Diego/German). Para liberarlo:
+       borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de datos/contactos.html. */
+    {key:"contactos", dept:"datos", cat:"Datos", ico:"🗂️", titulo:"Contactos · CRM", desc:"Gestioná tus contactos y descubrí a quién falta conquistar: agrupá por comercial, corregí datos, reasigná comercial y cruzá con el padrón oficial de farmacias e instituciones.", roles:["comercial","lider","admin","direccion"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"datos/contactos.html"},
     /* EN PRUEBAS: oculto para todo el equipo hasta terminarlo. `pruebas` son
        huellas (SHA-256) de email — así no publicamos direcciones en el repo.
        Para liberarlo a todos: borrar la línea `pruebas` de acá y el {pruebas:…}
