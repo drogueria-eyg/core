@@ -120,6 +120,8 @@ const DOCTYPE   = 73;                    // (99) Other vouchers
 const POS       = "00002";               // punto de venta de préstamos
 const ACC = { neto:350, interes:260, sellados:233 };   // Recibos pend. / Interest on loans / Sellados
 const TAX = { exento:57, iva105:63 };    // 0% NT / IVA 10,5%
+const SELLADO_RATE = 0.002515;           // sellado ≈ 0,2515% del capital (constante en los préstamos vistos).
+                                         // Sirve para ESTIMAR el neto (capital − sellado) cuando no está el extracto.
 const ODOO = "https://drogueriaeyg.odoo.com";
 
 /* Bancos que dan préstamos → su partner en Odoo (subcuenta "…- Préstamo/PRESTAMOS").
@@ -212,7 +214,9 @@ function autodetectar(text){
   const a={};
   const b=detectarBanco(text); if(b){ ST.form.banco=b; a.banco=true; }
   const cap=buscarImporte(text,["SALDO\\s+CAPITAL\\s+AJUSTADO","CAPITAL\\s+OTORGADO","CAPITAL\\s+SOLICITADO","IMPORTE\\s+(?:SOLICITADO|OTORGADO|ACREDITADO)","MONTO\\s+(?:SOLICITADO|OTORGADO|DEL\\s+PR[ÉE]STAMO)","CAPITAL"]);
-  if(cap){ ST.form.capital=String(cap); a.capital=true; }
+  if(cap){ ST.form.capital=String(cap); a.capital=true;
+    // Estimar el neto acreditado si todavía no se cargó a mano (neto = capital − sellado).
+    if(!ST.form.neto){ ST.form.neto=String(round2(cap*(1-SELLADO_RATE))); a.neto="estim"; } }
   const nro=buscarTexto(text,["N[ÚU]MERO\\s+DE\\s+PR[ÉE]STAMO","NRO\\.?\\s+DE\\s+PR[ÉE]STAMO","N[°º]?\\s+OPERACI[ÓO]N","PR[ÉE]STAMO\\s+N[°º]?"]);
   if(nro){ ST.form.nro=nro; a.nro=true; }
   ST.autodet=a;
@@ -362,7 +366,7 @@ function render(){
       <div><label class="req">N° de comprobante</label><input value="${esc(f.numero)}" oninput="setF('numero',this.value)" placeholder="${POS}-00000014"><div class="hint">Serie ${POS} (préstamos). Sugerido: el próximo libre.</div></div>
       <div><label>N° de préstamo (banco)${flag('nro')}</label><input class="${a.nro?'auto':''}" value="${esc(f.nro)}" oninput="setF('nro',this.value)" placeholder="del archivo"></div>
       <div><label class="req">Capital solicitado${flag('capital')}</label><input class="${a.capital?'auto':''}" value="${esc(f.capital)}" oninput="setF('capital',this.value)" placeholder="del archivo"></div>
-      <div><label class="req">Neto acreditado (extracto)</label><input class="manual" value="${esc(f.neto)}" oninput="setF('neto',this.value)" placeholder="lo que entró a la cuenta"><div class="hint">Del extracto. Sellados = capital − neto.</div></div>
+      <div><label class="req">Neto acreditado (extracto)${a.neto==='estim'?'<span style="color:var(--warn);font-weight:700"> ~ estimado</span>':''}</label><input class="manual" value="${esc(f.neto)}" oninput="setF('neto',this.value)" placeholder="lo que entró a la cuenta"><div class="hint">${a.neto==='estim'?`Estimado con sellado 0,2515% (sellados ≈ ${money2((parseNum(f.capital)||0)-(parseNum(f.neto)||0))}). <b>Confirmá con el extracto</b> y corregí si difiere.`:'Del extracto. Sellados = capital − neto.'}</div></div>
     </div>
     <div class="actions"><button class="btn" onclick="analizar()">Analizar</button>${p?`<span style="color:var(--ok);font-weight:700;font-size:13px">✓ ${p.cuotas.length} cuotas leídas</span>`:""}</div>
   </div>`;
