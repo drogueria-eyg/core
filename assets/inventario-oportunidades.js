@@ -29,13 +29,15 @@ window.EYGOpo = (function(){
     }).filter(r=> r.motivo && r.score>0).sort((a,b)=>b.score-a.score).slice(0,20);
   }
 
-  /* De candidatos rankeados + mapa de precio base por template → hasta 5 items finales. */
-  function finalize(cands, baseByTmpl){
-    baseByTmpl = baseByTmpl||{};
+  /* De candidatos rankeados + mapa de precio base por template → hasta N items finales.
+     opts: {max:Number (default 5), desc:{vence,sobre,muerto}} — configurables desde el módulo. */
+  function finalize(cands, baseByTmpl, opts){
+    baseByTmpl = baseByTmpl||{}; opts=opts||{};
+    const DESCX = opts.desc||DESC, MAX = opts.max>0?opts.max:5;
     return cands.map(r=>{
       const base = baseByTmpl[r.tmpl]!=null ? baseByTmpl[r.tmpl] : r.pvp;
       const costo = r.sp>0 ? r.sp : r.cu;   // costo más reciente (standard_price sincronizado), fallback valuación
-      const piso = costo*1.05, desc = DESC[r.motivo];
+      const piso = costo*1.05, desc = (DESCX[r.motivo]!=null?DESCX[r.motivo]:DESC[r.motivo]);
       let sug = Math.round(base*(1-desc)); if(sug<piso) sug=Math.round(piso);
       const margenAbs = Math.round(sug - costo);                                   // $ por unidad con la oferta
       const margenPct = (sug>0 && costo>0) ? Math.round((sug-costo)/sug*100) : null; // % sobre venta neta (sin IVA)
@@ -46,7 +48,7 @@ window.EYGOpo = (function(){
         stock:r.qty, meses:r.meses>900?null:r.meses, min:r.min, valor:Math.round(r.val),
         motivo:r.motivo, motivoTxt:motTxt, precio:Math.round(base), costoU:Math.round(costo),
         desc, sugPrecio:sug, margenAbs, margenPct };
-    }).filter(r=> r.precio>r.costoU*1.05 && r.precio<r.costoU*4).slice(0,5); // margen real, sin precios mal cargados
+    }).filter(r=> r.precio>r.costoU*1.05 && r.precio<r.costoU*4).slice(0,MAX); // margen real, sin precios mal cargados
   }
 
   /* Precio de venta base (escalera min_quantity más baja) de la lista, por template. */
@@ -64,7 +66,7 @@ window.EYGOpo = (function(){
   async function desdeData(rpc, rows, opts){
     const cands = rank(rows, opts);
     const base = await fetchBase(rpc, [...new Set(cands.map(r=>r.tmpl).filter(Boolean))]);
-    return finalize(cands, base);
+    return finalize(cands, base, opts);
   }
 
   /* Detección completa (hace todas las consultas). Para oportunidades.html. */
