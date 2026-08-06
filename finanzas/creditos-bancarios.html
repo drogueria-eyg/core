@@ -122,7 +122,7 @@ const JOURNAL   = 10;                    // Vendor Bills
 const DOCTYPE   = 73;                    // (99) Other vouchers
 const POS       = "00002";               // punto de venta de préstamos
 const ACC = { neto:350, interes:260, sellados:233 };   // Recibos pend. / Interest on loans / Sellados
-const TAX = { exento:57, iva105:63 };    // 0% NT / IVA 10,5%
+const TAX = { exento:57, iva105:63, percep:136 };    // 0% NT / IVA 10,5% / percepción IVA 1,5% (cuenta 337)
 const SELLADO_RATE = 0.002515;           // sellado ≈ 0,2515% del capital (constante en los préstamos vistos).
                                          // Sirve para ESTIMAR el neto (capital − sellado) cuando no está el extracto.
 const ODOO = "https://drogueriaeyg.odoo.com";
@@ -287,9 +287,16 @@ function finalizeLoan(cuotas, opt){
   const iva=round2(cuotas.reduce((a,c)=>a+(c.iva||0),0));
   const totalCuotas=round2(cuotas.reduce((a,c)=>a+(c.total||0),0));
   const capital=round2(cuotas.reduce((a,c)=>a+(c.capital||0),0));
-  const extras=opt.extras||{}; const extraTot=round2(Object.values(extras).reduce((a,v)=>a+v,0));
+  const extras=Object.assign({}, opt.extras||{});
+  // Un rubro extra ≈ 1,5% del interés = percepción de IVA (impuesto id 136, cuenta 337).
+  // Lo separamos de los extras "desconocidos" para poder generar el préstamo.
+  let percepcion=0;
+  for(const k of Object.keys(extras)){
+    if(Math.abs(extras[k]-round2(interes*0.015)) < Math.max(1, interes*0.0006)){ percepcion=extras[k]; delete extras[k]; break; }
+  }
+  const extraTot=round2(Object.values(extras).reduce((a,v)=>a+v,0));
   const cu=cuotas.map(c=>({venc:c.venc, interes:round2(c.interes||0), iva:round2(c.iva||0), total:round2(c.total||0)}));
-  return { cuotas:cu, capital, interes, iva, totalCuotas, extras, extraTot,
+  return { cuotas:cu, capital, interes, iva, percepcion, totalCuotas, extras, extraTot,
            nro:opt.nro||null, fecha:menosUnMes(cu[0]&&cu[0].venc) };
 }
 // Vuelca el "loan" leído al formulario (banco, nº, capital, fecha) y analiza.
@@ -344,7 +351,7 @@ function analizar(){
   if(ST.netoManual && parseNum(f.neto)>0){ neto=round2(parseNum(f.neto)); }
   else { neto = capital>0 ? round2(capital*(1-SELLADO_RATE)) : 0; ST.form.neto = neto?String(neto):""; netoEstim = neto>0; }
   ST.autodet=ST.autodet||{}; ST.autodet.neto = netoEstim ? "estim" : (ST.netoManual ? "manual" : "");
-  const interes=L.interes, iva=L.iva, totalCuotas=L.totalCuotas, extras=L.extras||{}, extraTot=L.extraTot||0;
+  const interes=L.interes, iva=L.iva, percepcion=L.percepcion||0, totalCuotas=L.totalCuotas, extras=L.extras||{}, extraTot=L.extraTot||0;
   const sellados=round2(capital-neto);
   const hayExtras=Object.keys(extras).length>0;
 
@@ -355,14 +362,15 @@ function analizar(){
   const termId=ST.termByCount[L.cuotas.length];
   if(!termId) errs.push(`No hay un plazo de pago de ${L.cuotas.length} cuotas configurado en Odoo. Avisá para crear uno.`);
 
-  const totalDoc=round2(neto+sellados+interes+extraTot+iva);
+  const totalDoc=round2(neto+sellados+interes+extraTot+iva+percepcion);
   const ivaTeorico=round2(interes*0.105);
+  const percepTeorico=round2(interes*0.015);
   const okBalance=Math.abs(totalDoc-totalCuotas)<0.05;
-  const okIdentPDF=Math.abs(round2(capital+interes+iva+extraTot)-totalCuotas)<0.05;
+  const okIdentPDF=Math.abs(round2(capital+interes+iva+percepcion+extraTot)-totalCuotas)<0.05;
 
   ST.parsed = errs.length ? null :
-    { capital, neto, nro:L.nro||f.nro, cuotas:L.cuotas, interes, iva, sellados, extras, extraTot, hayExtras,
-      totalCuotas, totalDoc, ivaTeorico, okBalance, okIdentPDF, termId };
+    { capital, neto, nro:L.nro||f.nro, cuotas:L.cuotas, interes, iva, percepcion, sellados, extras, extraTot, hayExtras,
+      totalCuotas, totalDoc, ivaTeorico, percepTeorico, okBalance, okIdentPDF, termId };
   if(errs.length) ST.error=errs.join(" ");
   render();
 }
@@ -382,17 +390,22 @@ async function generar(){
       l10n_latam_document_number:f.numero, ref:(p.nro?("Prestamo "+p.nro):"Prestamo bancario"),
       invoice_line_ids:[
         [0,0,{name:"Neto acreditado (extracto banco)", account_id:ACC.neto,    quantity:1, price_unit:p.neto,    tax_ids:[[6,0,[TAX.exento]]]}],
-        [0,0,{name:"Interes del prestamo",             account_id:ACC.interes, quantity:1, price_unit:p.interes, tax_ids:[[6,0,[TAX.iva105]]]}],
+        [0,0,{name:"Interes del prestamo",             account_id:ACC.interes, quantity:1, price_unit:p.interes, tax_ids:[[6,0, p.percepcion>0?[TAX.iva105,TAX.percep]:[TAX.iva105] ]]}],
         [0,0,{name:"Sellados",                          account_id:ACC.sellados,quantity:1, price_unit:p.sellados,tax_ids:[[6,0,[TAX.exento]]]}]
       ]};
     const moveId = await EYG.rpc("account.move","create",[vals]);
     await EYG.rpc("account.move","write",[[moveId],{invoice_payment_term_id:p.termId}]);
-    let lines = await EYG.rpc("account.move.line","search_read",[[["move_id","=",moveId]]],{fields:["id","display_type"]});
-    const taxLine = lines.find(l=>l.display_type==="tax");
+    let lines = await EYG.rpc("account.move.line","search_read",[[["move_id","=",moveId]]],{fields:["id","display_type","tax_line_id"]});
     const nGen = lines.filter(l=>l.display_type==="payment_term").length;
     if(nGen!==p.cuotas.length) throw new Error(`El plazo generó ${nGen} cuotas y esperaba ${p.cuotas.length}. Documento ${moveId} quedó en borrador.`);
-    if(taxLine && Math.abs(p.iva-p.ivaTeorico)>=0.005)
-      await EYG.rpc("account.move","write",[[moveId],{line_ids:[[1,taxLine.id,{debit:p.iva, credit:0}]]}]);
+    // Forzar IVA y percepción al valor exacto del banco (ajuste de redondeo por cuota).
+    const tcmds=[];
+    for(const l of lines.filter(l=>l.display_type==="tax")){
+      const tid=Array.isArray(l.tax_line_id)?l.tax_line_id[0]:l.tax_line_id;
+      if(tid===TAX.iva105 && Math.abs(p.iva-p.ivaTeorico)>=0.005) tcmds.push([1,l.id,{debit:p.iva,credit:0}]);
+      else if(tid===TAX.percep && p.percepcion>0 && Math.abs(p.percepcion-p.percepTeorico)>=0.005) tcmds.push([1,l.id,{debit:p.percepcion,credit:0}]);
+    }
+    if(tcmds.length) await EYG.rpc("account.move","write",[[moveId],{line_ids:tcmds}]);
     const cuotaLines = await EYG.rpc("account.move.line","search_read",
       [[["move_id","=",moveId],["display_type","=","payment_term"]]],{fields:["id"],order:"id"});
     const cmds = cuotaLines.map((l,i)=>[1,l.id,{name:"cuota #"+(i+1), date_maturity:p.cuotas[i].venc, credit:p.cuotas[i].total, debit:0}]);
@@ -487,6 +500,7 @@ function render(){
         <div class="pv-tile"><div class="l">Interés</div><div class="v">${money2(p.interes)}</div></div>
         <div class="pv-tile"><div class="l">Sellados</div><div class="v">${money2(p.sellados)}</div></div>
         <div class="pv-tile"><div class="l">IVA 10,5%</div><div class="v">${money2(p.iva)}</div></div>
+        ${p.percepcion>0?`<div class="pv-tile"><div class="l">Percep. IVA 1,5%</div><div class="v">${money2(p.percepcion)}</div></div>`:""}
         ${Object.entries(p.extras||{}).map(([k,v])=>`<div class="pv-tile" style="border-color:#EAD9A0;background:var(--warnbg)"><div class="l">${esc(k)}</div><div class="v">${money2(v)}</div></div>`).join("")}
         <div class="pv-tile tot"><div class="l">Total (${p.cuotas.length} cuotas)</div><div class="v">${money2(p.totalDoc)}</div></div>
       </div>
