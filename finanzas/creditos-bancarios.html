@@ -181,7 +181,7 @@ const COLS={ venc:["vencimiento","vto","fecha"], total:["total a pagar","total c
 function matchCol(h){ const n=norm(h); for(const k in COLS){ if(COLS[k].some(a=>n===a||n.includes(a))) return k; } return null; }
 
 let ST = { form:{banco:"santafe", fecha:EYG.argToday(), numero:"", capital:"", neto:"", nro:"", texto:""},
-           loan:null, customBanks:[], _bankHits:[], fileName:"", extracting:false, autodet:{}, termByCount:{}, parsed:null, error:null, generating:false, result:null };
+           loan:null, customBanks:[], _bankHits:[], netoManual:false, fileName:"", extracting:false, autodet:{}, termByCount:{}, parsed:null, error:null, generating:false, result:null };
 
 /* =========================================================================
    LECTURA DE ARCHIVOS
@@ -294,15 +294,16 @@ function finalizeLoan(cuotas, opt){
 }
 // Vuelca el "loan" leído al formulario (banco, nº, capital, fecha) y analiza.
 function aplicarLoan(loan, text){
-  ST.loan=loan; const a={};
+  ST.loan=loan; ST.netoManual=false; const a={};   // archivo nuevo → el neto se recalcula
   const b=detectarBanco(text||""); if(b){ ST.form.banco=b; a.banco=true; }
   const nro=loan.nro || buscarTexto(text||"",["N[ÚU]MERO\\s+DE\\s+PR[ÉE]STAMO","NRO\\.?\\s+DE\\s+PR[ÉE]STAMO","N[°º]?\\s+OPERACI[ÓO]N"]);
   if(nro){ ST.form.nro=nro; a.nro=true; }
-  if(loan.capital){ ST.form.capital=String(loan.capital); a.capital=true;
-    if(!ST.form.neto){ ST.form.neto=String(round2(loan.capital*(1-SELLADO_RATE))); a.neto="estim"; } }
+  if(loan.capital){ ST.form.capital=String(loan.capital); a.capital=true; }
   if(loan.fecha){ ST.form.fecha=loan.fecha; a.fecha="estim"; }
-  ST.autodet=a; analizar();
+  ST.autodet=a; analizar();     // analizar estima el neto desde el capital
 }
+// Neto tocado a mano → no lo pisamos con la estimación. Si lo vacían, vuelve a estimarse.
+function setNeto(v){ ST.form.neto=v; ST.netoManual = String(v||"").trim()!==""; }
 function reanalizar(){ try{ aplicarLoan(parsePdfLoan(ST.form.texto||""), ST.form.texto||""); }catch(e){ ST.error="No pude releer el texto: "+(e.message||e); render(); } }
 
 /* ---- Selección / alta de banco ---- */
@@ -336,7 +337,13 @@ function analizar(){
   if(!L || !L.cuotas.length){ ST.parsed=null; ST.error="Subí el archivo del banco (PDF o Excel) o pegá el detalle del cuadro."; return render(); }
 
   const capital=round2(parseNum(f.capital)|| L.capital || 0);
-  const neto=round2(parseNum(f.neto)||0);
+  // Neto acreditado: NO es obligatorio. Si no se cargó a mano, se ESTIMA = capital −
+  // sellado (0,2515%). El split neto/sellado no afecta el balance (siempre suman el
+  // capital), así que se puede dejar estimado y corregir si el extracto difiere.
+  let neto, netoEstim=false;
+  if(ST.netoManual && parseNum(f.neto)>0){ neto=round2(parseNum(f.neto)); }
+  else { neto = capital>0 ? round2(capital*(1-SELLADO_RATE)) : 0; ST.form.neto = neto?String(neto):""; netoEstim = neto>0; }
+  ST.autodet=ST.autodet||{}; ST.autodet.neto = netoEstim ? "estim" : (ST.netoManual ? "manual" : "");
   const interes=L.interes, iva=L.iva, totalCuotas=L.totalCuotas, extras=L.extras||{}, extraTot=L.extraTot||0;
   const sellados=round2(capital-neto);
   const hayExtras=Object.keys(extras).length>0;
@@ -344,7 +351,6 @@ function analizar(){
   const errs=[];
   if(!bankByK(f.banco)) errs.push("Elegí el banco.");
   if(!capital) errs.push("Falta el capital solicitado.");
-  if(!neto) errs.push("Falta el neto acreditado (lo que entró a la cuenta, del extracto).");
   if(neto>capital && capital) errs.push("El neto acreditado no puede ser mayor que el capital.");
   const termId=ST.termByCount[L.cuotas.length];
   if(!termId) errs.push(`No hay un plazo de pago de ${L.cuotas.length} cuotas configurado en Odoo. Avisá para crear uno.`);
@@ -462,7 +468,7 @@ function render(){
       <div><label class="req">N° de comprobante</label><input value="${esc(f.numero)}" oninput="setF('numero',this.value)" placeholder="${POS}-00000014"><div class="hint">Serie ${POS} (préstamos). Sugerido: el próximo libre.</div></div>
       <div><label>N° de préstamo (banco)${flag('nro')}</label><input class="${a.nro?'auto':''}" value="${esc(f.nro)}" oninput="setF('nro',this.value)" placeholder="del archivo"></div>
       <div><label class="req">Capital solicitado${flag('capital')}</label><input class="${a.capital?'auto':''}" value="${esc(f.capital)}" oninput="setF('capital',this.value)" placeholder="del archivo"></div>
-      <div><label class="req">Neto acreditado (extracto)${a.neto==='estim'?'<span style="color:var(--warn);font-weight:700"> ~ estimado</span>':''}</label><input class="manual" value="${esc(f.neto)}" oninput="setF('neto',this.value)" placeholder="lo que entró a la cuenta"><div class="hint">${a.neto==='estim'?`Estimado con sellado 0,2515% (sellados ≈ ${money2((parseNum(f.capital)||0)-(parseNum(f.neto)||0))}). <b>Confirmá con el extracto</b> y corregí si difiere.`:'Del extracto. Sellados = capital − neto.'}</div></div>
+      <div><label>Neto acreditado${a.neto==='estim'?'<span style="color:var(--teal);font-weight:700"> · calculado</span>':(a.neto==='manual'?'<span style="color:var(--gris2);font-weight:700"> · a mano</span>':'')}</label><input class="${a.neto==='estim'?'auto':'manual'}" value="${esc(f.neto)}" oninput="setNeto(this.value)" placeholder="se calcula del capital"><div class="hint">${a.neto==='estim'?`Lo calculo = capital − sellado 0,2515% (sellados ≈ ${money2(round2((parseNum(f.capital)||0)-(parseNum(f.neto)||0)))}). Corregí sólo si el extracto difiere.`:'Sellados = capital − neto. Se calcula solo; podés corregirlo con el dato del extracto.'}</div></div>
     </div>
     <div class="actions"><button class="btn" onclick="analizar()">Analizar</button>${p?`<span style="color:var(--ok);font-weight:700;font-size:13px">✓ ${p.cuotas.length} cuotas leídas</span>`:""}</div>
   </div>`;
@@ -509,7 +515,7 @@ function render(){
 
   document.getElementById("app").innerHTML = html;
 }
-function nuevo(){ proximoNumero().then(n=>{ ST.form={banco:ST.form.banco, fecha:EYG.argToday(), numero:n, capital:"", neto:"", nro:"", texto:""}; ST.loan=null; ST.fileName=""; ST.autodet={}; ST.parsed=null; ST.error=null; ST.result=null; render(); }); }
+function nuevo(){ proximoNumero().then(n=>{ ST.form={banco:ST.form.banco, fecha:EYG.argToday(), numero:n, capital:"", neto:"", nro:"", texto:""}; ST.loan=null; ST.netoManual=false; ST.fileName=""; ST.autodet={}; ST.parsed=null; ST.error=null; ST.result=null; render(); }); }
 
 /* EN PRUEBAS: gateado al super-admin (Diego). Ver core.js SUPER. */
 EYG.guard(["finanzas","direccion","admin"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(async ()=>{
