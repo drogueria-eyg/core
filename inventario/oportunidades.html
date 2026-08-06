@@ -544,7 +544,10 @@ function rgFormHTML(){
   const results=(!d.target && rgBusq.length)?`<div class="ofbusq">${rgBusq.map(r=>`<div class="ofbitem" onclick="rgElegir('${r.k}',${r.id},'${esc((r.name||'').replace(/'/g,''))}')">${r.k==='p'?"🔖":"📂"} ${esc(r.name)}${r.sku?(" · "+esc(r.sku)):""}</div>`).join("")}</div>`:"";
   const etico = d.tipo==='p' && d._pvp>0;   // éticos: mecánica propia, el descuento se calcula sobre el PVP
   const rent=d.tipo==='p'?`<div class="fld2" style="margin-top:4px"><label>${etico?'Precio, margen y descuento sobre el PVP':'Rentabilidad final en vivo'}</label><div id="rg-rent" class="rentbox">Calculando el costo del producto…</div><div class="hint2">${etico?'el descuento que ve el cliente es sobre el PVP de Alfabeta':'se actualiza al mover el descuento · sobre el costo actual (neto, sin IVA)'}</div></div>`:"";
-  const bannerEtico = etico ? `<div class="eticobox">💊 <b>Producto ético.</b> El descuento se aplica sobre el <b>PVP de Alfabeta (${money(d._pvp)})</b>, no sobre la escalera. El precio final es el PVP menos el descuento, y así lo ve el cliente.</div>` : "";
+  // referencia: descuento con que se vende HOY sobre el PVP (1er tramo de la escalera actual)
+  const escAct = (etico && rgTramosBase && rgTramosBase.length) ? rgTramosBase[0].p : 0;
+  const descAct = (escAct>0 && d._pvp>0) ? Math.round((1-escAct/d._pvp)*100) : null;
+  const bannerEtico = etico ? `<div class="eticobox">💊 <b>Producto ético.</b> El descuento se calcula sobre el <b>PVP de Alfabeta (${money(d._pvp)})</b> y así lo ve el cliente.${descAct!=null?` <b>Hoy se vende a −${descAct}% del PVP</b> (${money(d._pvp)} → ${money(escAct)}) — usalo de referencia para definir la oferta.`:''}</div>` : "";
   return `<div class="rgform">${seg}
     <div class="fld2" style="margin-bottom:12px"><label>Aplicar a (categoría, subcategoría o producto)</label>
       ${d.target?`<div class="oftgtsel">${tgtTxt} <button class="btn-mini" onclick="rgDraft.target=null;rgDraft.targetName='';rgDraft._pvp=0;rgBusq=[];rgBusqQ='';rgCosto=null;rgTramos=null;rgTramosBase=null;rgApplied=null;render()">cambiar</button></div>`
@@ -553,15 +556,15 @@ function rgFormHTML(){
     ${bannerEtico}
     <div class="grid4">
       <div class="fld2"><label>Tipo de descuento</label><select id="rg-modo" onchange="rgDraft.modo=this.value;rgDraft.valor='';render()">
-        <option value="pct" ${d.modo==='pct'?'selected':''}>${etico?'Porcentaje sobre el PVP (%)':'Porcentaje (%)'}</option>
-        <option value="monto" ${d.modo==='monto'?'selected':''}>${etico?'Monto off del PVP ($)':'Monto fijo ($ off)'}</option>
+        <option value="pct" ${d.modo==='pct'?'selected':''}>Porcentaje (%)</option>
+        <option value="monto" ${d.modo==='monto'?'selected':''}>Monto fijo ($ off)</option>
         <option value="precio" ${d.modo==='precio'?'selected':''}>Precio fijo ($)</option>
-      </select><div class="hint2">${etico?'el % / monto se descuenta del PVP':'precio fijo = reemplaza siempre'}</div></div>
+      </select><div class="hint2">${etico?(d.modo==='precio'?'precio único directo':'precio único = sobre el PVP · escalera = cada tramo'):'precio fijo = reemplaza siempre'}</div></div>
       <div class="fld2"><label>Valor</label><div class="inpu"><input type="number" id="rg-valor" step="0.01" value="${d.valor?(d.modo==='pct'?rgPct(d.valor):d.valor):''}" oninput="rgDraft.valor=(this.value===''?'':(rgDraft.modo==='pct'?parseFloat(this.value)/100:parseFloat(this.value)));rgActualizarRent()"><span class="suf">${d.modo==='pct'?'%':'$'}</span></div><div class="hint2">${d.modo==='pct'?'ej: 20':'ej: 1500'}</div></div>
-      ${etico?'':`<div class="fld2"><label>Cómo aplica</label><select id="rg-reemplaza" ${d.modo==='precio'?'disabled':''} onchange="rgDraft.reemplaza=this.value==='1';rgActualizarRent()">
-        <option value="1" ${(d.reemplaza||d.modo==='precio')?'selected':''}>Reemplaza (precio único desde 1)</option>
-        <option value="0" ${(!d.reemplaza&&d.modo!=='precio')?'selected':''}>Pisa la escalera (descuenta cada tramo)</option>
-      </select><div class="hint2">reemplaza = un solo precio</div></div>`}
+      <div class="fld2"><label>Cómo aplica</label><select id="rg-reemplaza" ${d.modo==='precio'?'disabled':''} onchange="rgDraft.reemplaza=this.value==='1';render()">
+        <option value="1" ${(d.reemplaza||d.modo==='precio')?'selected':''}>${etico?'Precio único (sobre el PVP)':'Reemplaza (precio único desde 1)'}</option>
+        <option value="0" ${(!d.reemplaza&&d.modo!=='precio')?'selected':''}>${etico?'Escalera (descuenta cada tramo)':'Pisa la escalera (descuenta cada tramo)'}</option>
+      </select><div class="hint2">${etico?'precio único = un precio sobre el PVP · escalera = descuenta cada tramo':'reemplaza = un solo precio'}</div></div>
       <div class="fld2"><label>Vigencia hasta</label><input type="date" id="rg-hasta" value="${esc(d.hasta||'')}"><div class="hint2">vacío = sin vencimiento</div></div>
       <div class="fld2"><label>Stock a ofertar (informativo)</label><input type="number" id="rg-stock" min="0" value="${d.stock||''}"><div class="hint2">no se descuenta con ventas · lo controlás vos</div></div>
     </div>
@@ -685,33 +688,37 @@ function rgActualizarRent(){
   if(costo==null){ box.className="rentbox"; box.innerHTML="No hay costo cargado en Odoo para este producto."; return; }
   const mrg=pr=>pr>0?Math.round((pr-costo)/pr*100):-999;
   const cls=mm=>mm<0?"neg":(mm<15?"low":"ok");
-  // ===== ÉTICOS: mecánica propia — el descuento se calcula sobre el PVP de Alfabeta =====
-  if(rgDraft._pvp>0){
-    const pvp=rgDraft._pvp;
-    if(!(valRaw>0)){ box.className="rentbox"; box.innerHTML=`Cargá el valor para ver el precio y el margen. <span class="sub2">PVP ${M(pvp)} · costo ${M(costo)}</span>`; return; }
+  const etico=rgDraft._pvp>0, pvp=rgDraft._pvp;
+  // referencia: descuento con que se vende HOY sobre el PVP (1er tramo de la escalera actual)
+  const refEtico=(etico && rgTramosBase && rgTramosBase.length && pvp>0)
+    ? `<div class="sub2" style="margin-bottom:5px">Hoy: <b>−${Math.round((1-rgTramosBase[0].p/pvp)*100)}% del PVP</b> (${M(pvp)} → ${M(rgTramosBase[0].p)})</div>` : "";
+  // ===== ÉTICOS · PRECIO ÚNICO: el descuento se calcula sobre el PVP de Alfabeta =====
+  if(etico && (rem || modo==='precio')){
+    if(!(valRaw>0)){ box.className="rentbox"; box.innerHTML=refEtico+`Cargá el valor para ver el precio y el margen. <span class="sub2">PVP ${M(pvp)} · costo ${M(costo)}</span>`; return; }
     const precio = modo==='precio'?valRaw:(modo==='monto'?pvp-valRaw:pvp*(1-valRaw/100));
-    if(!(precio>0)){ box.className="rentbox neg"; box.innerHTML=`Ese descuento deja el precio en cero o menos. <span class="sub2">PVP ${M(pvp)}</span>`; return; }
+    if(!(precio>0)){ box.className="rentbox neg"; box.innerHTML=refEtico+`Ese descuento deja el precio en cero o menos. <span class="sub2">PVP ${M(pvp)}</span>`; return; }
     const mm=mrg(precio), descTot=Math.round((1-precio/pvp)*100);
     box.className="rentbox "+cls(mm);
-    box.innerHTML=`💊 <b>Ético</b> · Precio final <b>${M(precio)}</b> · Margen <b>${mm}%</b> <span class="sub2">(${M(precio-costo)}/u · costo ${M(costo)})</span>
+    box.innerHTML=refEtico+`💊 <b>Ético</b> · Precio final <b>${M(precio)}</b> · Margen <b>${mm}%</b> <span class="sub2">(${M(precio-costo)}/u · costo ${M(costo)})</span>
       <div style="margin-top:6px;font-weight:800;color:#0E5C46">🏷️ Descuento total que ve el cliente: −${descTot}% <span class="sub2" style="font-weight:600">(PVP ${M(pvp)} → ${M(precio)})</span></div>
       ${mm<0?'<div style="margin-top:4px;font-weight:700">⚠️ perdés plata</div>':(mm<15?'<div class="sub2" style="margin-top:4px">margen ajustado</div>':'')}`;
     return;
   }
-  if(!(valRaw>0)){ box.className="rentbox"; box.innerHTML=`Cargá el valor para ver la rentabilidad. <span class="sub2">costo ${M(costo)}</span>`; return; }
+  if(!(valRaw>0)){ box.className="rentbox"; box.innerHTML=refEtico+`Cargá el valor para ver la rentabilidad. <span class="sub2">costo ${M(costo)}</span>`; return; }
   const base=(rgTramosBase&&rgTramosBase.length)?rgTramosBase[0].p:null;
   const finalDe=pr=>modo==='precio'?valRaw:(modo==='monto'?pr-valRaw:pr*(1-valRaw/100));
   if(modo!=='precio' && base==null){ box.className="rentbox"; box.innerHTML="No puedo estimar la escalera base de este producto (la oferta actual es precio fijo o no tiene escalera). Usá <b>Precio fijo</b> para ver la rentabilidad."; return; }
   if(rem || modo==='precio'){
     const pf=modo==='precio'?valRaw:finalDe(base); const mm=mrg(pf);
     box.className="rentbox "+cls(mm);
-    box.innerHTML=`Precio único <b>${M(pf)}</b> · Rentabilidad <b>${mm}%</b> <span class="sub2">(${M(pf-costo)}/u · costo ${M(costo)})</span>${mm<0?' ⚠️ perdés plata':(mm<15?' · margen ajustado':'')}`;
+    box.innerHTML=refEtico+`Precio único <b>${M(pf)}</b> · Rentabilidad <b>${mm}%</b> <span class="sub2">(${M(pf-costo)}/u · costo ${M(costo)})</span>${mm<0?' ⚠️ perdés plata':(mm<15?' · margen ajustado':'')}`;
   } else {
     const t1=rgTramosBase[0], tN=rgTramosBase[rgTramosBase.length-1];
     const p1=finalDe(t1.p), pN=finalDe(tN.p); const m1=mrg(p1), mN=mrg(pN);
     box.className="rentbox "+cls(mN);
     const rango=rgTramosBase.length>1?`de <b>${m1}%</b> (${t1.q}u → ${M(p1)}) a <b>${mN}%</b> (${tN.q}u → ${M(pN)})`:`<b>${m1}%</b> (${M(p1)})`;
-    box.innerHTML=`Sobre la escalera · Rentabilidad ${rango} <span class="sub2">· costo ${M(costo)}</span>${mN<0?' ⚠️ el último tramo pierde plata':(mN<15?' · último tramo ajustado':'')}`;
+    const dPvp=(etico&&pvp>0)?` <div style="margin-top:4px;font-weight:800;color:#0E5C46">🏷️ Descuento vs PVP: de −${Math.round((1-p1/pvp)*100)}% a −${Math.round((1-pN/pvp)*100)}%</div>`:"";
+    box.innerHTML=refEtico+`Sobre la escalera · Rentabilidad ${rango} <span class="sub2">· costo ${M(costo)}</span>${mN<0?' ⚠️ el último tramo pierde plata':(mN<15?' · último tramo ajustado':'')}${dPvp}`;
   }
 }
 // Escribe eyg.sync_ofertas (+_flat) con TODO SYNC_OF y recalcula (1 producto → instantáneo; categoría → completo).
@@ -740,9 +747,10 @@ window.rgGuardar=async()=>{
     reemplaza:(modo==='precio'?true:(remEl&&remEl.value==='1')),
     hasta:(document.getElementById("rg-hasta").value||""),
     stock:(document.getElementById("rg-stock").value||""), pausada:!!d.pausada };
-  // ÉTICOS: el descuento se define sobre el PVP → lo convertimos a un PRECIO FIJO limpio.
-  // Así el motor fija ese precio y el panel del comercial muestra el descuento contra el PVP.
-  if(rule.tipo==='p' && d._pvp>0){
+  // ÉTICOS · PRECIO ÚNICO: el descuento se define sobre el PVP → lo convertimos a un PRECIO FIJO
+  // limpio. Así el motor fija ese precio y el panel/orden muestran el descuento contra el PVP.
+  // ÉTICOS · ESCALERA (pisa): se deja como %/monto y el motor lo aplica a cada tramo (como el resto).
+  if(rule.tipo==='p' && d._pvp>0 && (rule.reemplaza || rule.modo==='precio')){
     const pvp=d._pvp; let precio;
     if(rule.modo==='pct') precio=Math.round(pvp*(1-rule.valor));
     else if(rule.modo==='monto') precio=Math.round(pvp-rule.valor);
