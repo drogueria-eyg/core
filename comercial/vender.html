@@ -137,6 +137,42 @@
   .stepper input{flex:1;text-align:center;font-family:inherit;font-size:16px;font-weight:800;border:1.5px solid var(--line);border-radius:10px;padding:8px 4px;width:100%;min-width:0;-moz-appearance:textfield}
   .stepper input::-webkit-outer-spin-button,.stepper input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 
+  /* ---- toolbar: buscador + toggle de vista ---- */
+  .toolrow{display:flex;gap:9px;align-items:center}
+  .toolrow .search2{flex:1}
+  .vtoggle{display:flex;gap:2px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:2px;flex:none}
+  .vbtn{width:38px;height:38px;border:0;background:none;border-radius:8px;font-size:16px;cursor:pointer;color:var(--gris);display:flex;align-items:center;justify-content:center}
+  .vbtn.on{background:var(--teal);color:#fff}
+
+  /* ---- vista FILAS (mejor para scrollear) ---- */
+  .rows{display:flex;flex-direction:column;padding:12px;gap:8px}
+  .rprod{position:relative;display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:9px 12px;background:var(--surface);transition:.12s}
+  .rprod.incart{border-color:var(--teal);box-shadow:inset 0 0 0 1.5px var(--teal)}
+  .rprod.oferta{background:#FEF5F3;border-color:var(--coral);animation:ofGlow 2.4s ease-in-out infinite}
+  .rprod.oferta.incart{border-color:var(--teal)}
+  @media(prefers-reduced-motion:reduce){ .rprod.oferta{animation:none;box-shadow:0 0 0 1px var(--coral),0 0 12px rgba(236,94,79,.4)} }
+  .rprod .thumb{width:62px;height:62px;border-radius:10px;background:#f2f6f5;border:1px solid var(--line);flex:none;object-fit:contain;display:block}
+  .rprod .thumb.ph{display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--gris2)}
+  .rinfo{flex:1;min-width:0}
+  .rprod .pn{font-weight:700;font-size:14px;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .rprod .pm{font-size:11px;color:var(--gris2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rmeta{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:4px}
+  .rprod .stk{font-size:11px;font-weight:700;color:var(--ok);flex:none}
+  .rprod .stk.low{color:var(--gold)}
+  .rprod .esc{min-height:0;flex:1;min-width:120px}
+  .rprod.oferta .pm,.rprod.oferta .esc{color:var(--gris)}
+  .rright{flex:none;width:212px;display:flex;flex-direction:column;gap:6px;align-items:stretch}
+  .rright .pr{font-size:17px;font-weight:800;color:var(--teal-deep);line-height:1}
+  .rright .pr small{font-size:10.5px;color:var(--gris);font-weight:600}
+  .rright .pr.of{color:var(--coral)}
+  .rright .pr .pr-old{color:var(--gris2);text-decoration:line-through;font-size:12.5px;font-weight:600;margin-right:5px}
+  @media(max-width:560px){
+    .rprod{flex-wrap:wrap}
+    .rright{width:100%}
+    .rprod .thumb{width:52px;height:52px}
+    .rinfo{flex:1 1 60%}
+  }
+
   /* carrito */
   .cart{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);position:sticky;top:var(--topH,56px);display:flex;flex-direction:column;max-height:calc(100vh - var(--topH,56px) - 16px)}
   .cart .ch{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
@@ -236,6 +272,7 @@ let ST = {
   // catálogo
   fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, ofertaPids:new Set(), ofertaTmpls:new Set(), ofertaInfo:{}, ofertaRule:{}, _ofLoaded:false, cargandoCat:false,
   cartOpen:false,
+  vista:(function(){ try{ return localStorage.getItem("eyg_vender_vista")||"filas"; }catch(e){ return "filas"; } })(),  // "filas" | "grilla"
 };
 
 /* ---------- utilidades ---------- */
@@ -554,9 +591,31 @@ function renderGrid(){
   const el=document.getElementById("gridWrap"); if(!el) return;
   if(ST.cargandoCat){ el.innerHTML='<div class="loading"><div class="spinner"></div>Leyendo catálogo…</div>'; return; }
   if(!ST.prods.length){ el.innerHTML='<div class="empty">'+(ST.qProd?"No encontré productos con ese nombre (y stock).":(ST.fam==="OFERTAS"?"No hay ofertas vigentes con stock por ahora.":"No hay productos con stock en esta familia."))+'</div>'; return; }
-  el.innerHTML='<div class="grid">'+ST.prods.map(cardProd).join("")+'</div>'+
+  const cuerpo = ST.vista==="grilla"
+    ? '<div class="grid">'+ST.prods.map(cardProd).join("")+'</div>'
+    : '<div class="rows">'+ST.prods.map(rowProd).join("")+'</div>';
+  el.innerHTML = cuerpo +
     (ST.prods.length>=200?'<div style="text-align:center;color:var(--gris2);font-size:12px;padding:0 0 16px">Mostrando los primeros 200. Afiná con el buscador.</div>':"");
   // imágenes: <img loading="lazy" src="/web/image/..."> directo (ver thumbHtml), fuera del canal RPC
+}
+// ---- vista FILAS: foto + info a la izquierda, precio/escalera al centro, stepper a la derecha ----
+function rowProd(p){
+  const q=ST.want[p.id]||0;
+  const pr=ST.precios[p.id];
+  const stk=p.qty_available||0;
+  const oferta=esOferta(p);
+  return `<div class="rprod ${q>0?"incart":""} ${oferta?"oferta":""}" id="prod-${p.id}">
+    ${thumbHtml(p)}
+    <div class="rinfo">
+      <div class="pn">${esc(p.name)}</div>
+      <div class="pm">${p.default_code?("["+esc(p.default_code)+"] "):""}${esc(catCorta(p.categ_id&&p.categ_id[1]))}</div>
+      <div class="rmeta"><span class="stk ${stk<10?"low":""}">${stk<10?"⚠ ":"✓ "}${Math.round(stk)} en stock</span>${escHtml(p.id)}</div>
+    </div>
+    <div class="rright">
+      ${precioHtml(p, pr, oferta)}
+      <div id="dyn-${p.id}">${dynHtml(p.id,q)}</div>
+    </div>
+  </div>`;
 }
 function thumbHtml(p){
   // Imagen DIRECTA del controlador de Odoo (/web/image): NO pasa por el canal RPC/edge, así que
@@ -718,7 +777,13 @@ function vVenta(){
 
     <div class="cat-card">
       <div class="cat-tools">
-        <div class="search2">🔎 <input id="prodSearch" placeholder="Buscar producto por nombre o código…" value="${esc(ST.qProd)}" oninput="buscarProd(this.value)"></div>
+        <div class="toolrow">
+          <div class="search2">🔎 <input id="prodSearch" placeholder="Buscar producto por nombre o código…" value="${esc(ST.qProd)}" oninput="buscarProd(this.value)"></div>
+          <div class="vtoggle" title="Cambiar vista">
+            <button class="vbtn ${ST.vista==='filas'?'on':''}" data-v="filas" onclick="setVista('filas')" title="Vista en filas">☰</button>
+            <button class="vbtn ${ST.vista==='grilla'?'on':''}" data-v="grilla" onclick="setVista('grilla')" title="Vista en grilla">▦</button>
+          </div>
+        </div>
         <div class="fams">${FAMILIAS.map(f=>`<button class="fam ${ST.fam===f.k&&!ST.qProd?"on":""}" data-fam="${f.k}" onclick="setFam('${f.k}')">${esc(f.label)}</button>`).join("")}<button class="fam of ${ST.fam==='OFERTAS'&&!ST.qProd?'on':''}" data-fam="OFERTAS" onclick="setFam('OFERTAS')">🏷️ Ofertas</button></div>
       </div>
       <div id="gridWrap"></div>
@@ -739,6 +804,7 @@ function vVenta(){
 function marcarFam(){ document.querySelectorAll(".fam").forEach(b=>b.classList.toggle("on", !ST.qProd && b.dataset.fam===ST.fam)); }
 window.buscarProd = EYG.buscador(v=>{ ST.qProd=v; marcarFam(); cargarCatalogo(); }, 380);
 function setFam(k){ ST.fam=k; ST.qProd=""; const s=document.getElementById("prodSearch"); if(s) s.value=""; marcarFam(); cargarCatalogo(); }
+function setVista(v){ if(ST.vista===v) return; ST.vista=v; try{ localStorage.setItem("eyg_vender_vista",v); }catch(e){} document.querySelectorAll(".vbtn").forEach(b=>b.classList.toggle("on",b.dataset.v===v)); renderGrid(); }
 function toggleCart(){ ST.cartOpen=!ST.cartOpen; const b=document.getElementById("cartBox"); if(b) b.classList.toggle("open",ST.cartOpen); }
 
 function renderCartBadge(){
