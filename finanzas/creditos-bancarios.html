@@ -96,6 +96,9 @@
   .spinner{width:16px;height:16px;border:2.5px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block;vertical-align:middle;margin-right:7px}
   .spinner.dark{border-color:rgba(4,135,130,.25);border-top-color:var(--teal)}
   @keyframes spin{to{transform:rotate(360deg)}}
+  .bankopt{padding:9px 12px;font-size:13px;cursor:pointer;border-bottom:1px solid #EEF3F2}
+  .bankopt:last-child{border-bottom:0}
+  .bankopt:hover{background:var(--agua)}
   .hidden{display:none}
 </style>
 </head>
@@ -127,18 +130,58 @@ const ODOO = "https://drogueriaeyg.odoo.com";
 /* Bancos que dan préstamos → su partner en Odoo (subcuenta "…- Préstamo/PRESTAMOS").
    `det` = palabras para autodetectar el banco desde el texto del archivo. */
 const BANKS = [
-  {k:"santafe", nom:"Banco Santa Fe",  partner:3947, det:[/santa\s*fe/i]},
-  {k:"bbva",    nom:"Banco BBVA",      partner:3782, det:[/bbva/i]},
-  {k:"macro",   nom:"Banco Macro",     partner:2422, det:[/macro/i]},
+  {k:"santafe",   nom:"Banco Santa Fe", partner:3947, det:[/santa\s*fe/i]},
+  {k:"bbva",      nom:"Banco BBVA",     partner:3782, det:[/bbva/i]},
+  {k:"macro",     nom:"Banco Macro",    partner:2422, det:[/macro/i]},
+  {k:"credicoop", nom:"Banco Credicoop",partner:2188, det:[/credicoop/i]},
+  {k:"nacion",    nom:"Banco Nación",   partner:4046, det:[/naci[oó]n/i]},
 ];
+// Bancos agregados a mano en la sesión (opción "+ Agregar otro banco").
+function allBanks(){ return BANKS.concat(ST.customBanks||[]); }
+function bankByK(k){ return allBanks().find(b=>b.k===k) || null; }
 
 const money2 = n => "$"+Number(n||0).toLocaleString("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2});
 const esc = EYG.esc;
-const parseNum = s => parseFloat(String(s).replace(/[^\d,.-]/g,"").replace(/\./g,"").replace(",","."));
-const round2 = n => Math.round(n*100)/100;
+const round2 = n => Math.round((n+Number.EPSILON)*100)/100;
+const norm = s => String(s==null?"":s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").trim();
+
+// Números robustos a formato AR (1.234.567,89) y US (1,234,567.89): el ÚLTIMO
+// separador es el decimal (si tiene 2 dígitos); el otro es de miles.
+function parseNum(raw){
+  if(typeof raw==="number") return raw;
+  let s=String(raw).replace(/[^\d.,-]/g,"").trim();
+  if(!s||s==="-") return 0;
+  const d=s.lastIndexOf("."), c=s.lastIndexOf(",");
+  const dec = d>c ? "." : (c>d ? "," : null);
+  if(dec){
+    if(s.length-1-s.lastIndexOf(dec)===2){ const oth=dec==="."?",":"."; s=s.split(oth).join("").replace(dec,"."); }
+    else s=s.replace(/[.,]/g,"");   // separador de miles, sin decimales
+  }
+  const n=parseFloat(s); return isNaN(n)?0:n;
+}
+// Fechas: soporta "DD/MM/YYYY", "M/D/YY" y Date. Desambigua D/M vs M/D por
+// la columna constante (mismo día cada mes) o por un componente > 12.
+function _dp(s){ const m=String(s).match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/); if(!m)return null; let y=+m[3]; if(y<100)y+=2000; return {a:+m[1],b:+m[2],y}; }
+function smartDates(list){
+  const P=list.map(_dp);
+  let aDay=null;
+  for(const p of P){ if(!p)continue; if(p.a>12){aDay=true;break;} if(p.b>12){aDay=false;break;} }
+  if(aDay===null){ const A=P.filter(Boolean).map(p=>p.a), B=P.filter(Boolean).map(p=>p.b);
+    const aC=new Set(A).size===1, bC=new Set(B).size===1; aDay=(bC&&!aC)?false:(aC&&!bC)?true:true; }
+  return P.map(p=>{ if(!p)return null; const day=aDay?p.a:p.b, mon=aDay?p.b:p.a;
+    return `${p.y}-${String(mon).padStart(2,"0")}-${String(day).padStart(2,"0")}`; });
+}
+function menosUnMes(ymd){ if(!ymd)return ""; const [y,m,d]=ymd.split("-").map(Number);
+  const dt=new Date(Date.UTC(y,m-1,d)); dt.setUTCMonth(dt.getUTCMonth()-1);
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth()+1).padStart(2,"0")}-${String(dt.getUTCDate()).padStart(2,"0")}`; }
+// Columnas del cuadro (para Excel): alias normalizados por concepto.
+const COLS={ venc:["vencimiento","vto","fecha"], total:["total a pagar","total cuota","total","importe cuota"],
+  capital:["capital","amortizacion"], interes:["intereses","interes"], iva:["iva"],
+  seguro:["seguro","seguros"], otrocap:["otro capital"], otros:["otros rubros","otros","gastos","cargos"] };
+function matchCol(h){ const n=norm(h); for(const k in COLS){ if(COLS[k].some(a=>n===a||n.includes(a))) return k; } return null; }
 
 let ST = { form:{banco:"santafe", fecha:EYG.argToday(), numero:"", capital:"", neto:"", nro:"", texto:""},
-           fileName:"", extracting:false, autodet:{}, termByCount:{}, parsed:null, error:null, generating:false, result:null };
+           loan:null, customBanks:[], _bankHits:[], fileName:"", extracting:false, autodet:{}, termByCount:{}, parsed:null, error:null, generating:false, result:null };
 
 /* =========================================================================
    LECTURA DE ARCHIVOS
@@ -164,32 +207,21 @@ async function pdfToText(arrayBuffer){
   }
   return out.map(l=>l.replace(/\s+/g," ").trim()).join("\n");
 }
-// Excel/CSV → texto (cada fila una línea, celdas separadas por espacio).
-async function sheetToText(arrayBuffer){
-  if(!window.XLSX) throw new Error("El lector de Excel no cargó.");
-  const wb = XLSX.read(arrayBuffer, {type:"array"});
-  const out=[];
-  wb.SheetNames.forEach(nm=>{
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[nm], {header:1, raw:false});
-    rows.forEach(r=> out.push((r||[]).join(" ")));
-  });
-  return out.join("\n");
-}
+// Excel/CSV → texto plano (para autodetectar banco y para el cuadro "texto leído").
+function sheetFlatten(wb){ const out=[]; wb.SheetNames.forEach(nm=>{ XLSX.utils.sheet_to_json(wb.Sheets[nm],{header:1,raw:false,defval:""}).forEach(r=>out.push((r||[]).join("  "))); }); return out.join("\n"); }
 
 async function onFile(file){
   if(!file) return;
   ST.fileName=file.name; ST.extracting=true; ST.error=null; ST.result=null; render();
   try{
     const buf = await file.arrayBuffer();
-    let text="";
-    if(/\.pdf$/i.test(file.name) || file.type==="application/pdf") text = await pdfToText(buf);
-    else if(/\.(xlsx|xls|csv)$/i.test(file.name)) text = await sheetToText(buf);
-    else if(/\.(txt|text)$/i.test(file.name) || /^text\//.test(file.type||"")) text = new TextDecoder().decode(buf);
+    let loan, text="";
+    if(/\.pdf$/i.test(file.name) || file.type==="application/pdf"){ text=await pdfToText(buf); loan=parsePdfLoan(text); }
+    else if(/\.(xlsx|xls|csv)$/i.test(file.name)){ if(!window.XLSX) throw new Error("El lector de Excel no cargó."); const wb=XLSX.read(buf,{type:"array"}); loan=parseExcelLoan(wb); text=sheetFlatten(wb); }
+    else if(/\.(txt|text)$/i.test(file.name) || /^text\//.test(file.type||"")){ text=new TextDecoder().decode(buf); loan=parsePdfLoan(text); }
     else throw new Error("Formato no reconocido. Subí PDF, Excel o texto — o pegá el contenido abajo.");
-    ST.form.texto = text;
-    autodetectar(text);
-    ST.extracting=false;
-    analizar();                 // parsea cuotas + valida + render
+    ST.form.texto = text; ST.extracting=false;
+    aplicarLoan(loan, text);    // vuelca los datos al formulario + analiza
   }catch(e){
     ST.extracting=false; ST.error="No pude leer el archivo: "+(e.message||e); render();
   }
@@ -199,84 +231,132 @@ async function onFile(file){
    AUTODETECCIÓN (robusta a distintos bancos: varios patrones por dato)
    ========================================================================= */
 function detectarBanco(text){ const b=BANKS.find(b=>b.det.some(rx=>rx.test(text))); return b?b.k:null; }
-// Fecha del préstamo ≈ primer vencimiento − 1 mes (la de acreditación real sale del extracto).
-function fechaPrestamo(text){
-  const m = text.match(/PRIMER\s+VENCIMIENTO[^0-9]{0,20}?(\d{2})\/(\d{2})\/(\d{4})/i);
-  if(!m) return null;
-  const d = new Date(+m[3], (+m[2])-1, +m[1]); d.setMonth(d.getMonth()-1);
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-}
-function buscarImporte(text, patrones){
-  for(const p of patrones){
-    const rx = new RegExp(p+"[^0-9]{0,40}?(\\d{1,3}(?:\\.\\d{3})*(?:,\\d{2})?)","i");
-    const m = text.match(rx); if(m) return parseNum(m[1]);
-  }
-  return null;
-}
 function buscarTexto(text, patrones){
   for(const p of patrones){ const m=text.match(new RegExp(p+"[^0-9A-Za-z]{0,10}([A-Za-z0-9\\-]{4,})","i")); if(m) return m[1]; }
   return null;
 }
-function autodetectar(text){
-  const a={};
-  const b=detectarBanco(text); if(b){ ST.form.banco=b; a.banco=true; }
-  const fp=fechaPrestamo(text); if(fp){ ST.form.fecha=fp; a.fecha="estim"; }
-  const cap=buscarImporte(text,["SALDO\\s+CAPITAL\\s+AJUSTADO","CAPITAL\\s+OTORGADO","CAPITAL\\s+SOLICITADO","IMPORTE\\s+(?:SOLICITADO|OTORGADO|ACREDITADO)","MONTO\\s+(?:SOLICITADO|OTORGADO|DEL\\s+PR[ÉE]STAMO)","CAPITAL"]);
-  if(cap){ ST.form.capital=String(cap); a.capital=true;
-    // Estimar el neto acreditado si todavía no se cargó a mano (neto = capital − sellado).
-    if(!ST.form.neto){ ST.form.neto=String(round2(cap*(1-SELLADO_RATE))); a.neto="estim"; } }
-  const nro=buscarTexto(text,["N[ÚU]MERO\\s+DE\\s+PR[ÉE]STAMO","NRO\\.?\\s+DE\\s+PR[ÉE]STAMO","N[°º]?\\s+OPERACI[ÓO]N","PR[ÉE]STAMO\\s+N[°º]?"]);
-  if(nro){ ST.form.nro=nro; a.nro=true; }
-  ST.autodet=a;
-}
 
 /* =========================================================================
-   PARSEO DEL CUADRO DE CUOTAS
-   Una fila válida tiene una fecha (venc.) y al menos 5 importes. Tomamos por
-   posición: interés = 2º importe, IVA = penúltimo, total = último.
-   (En los PDF de Santa Fe: capital, interés, cargos, comp, punit, IVA, total.)
+   PARSEO DEL CUADRO DE CUOTAS → objeto "loan" normalizado
+   { cuotas:[{venc,capital,interes,iva,total}], capital, interes, iva,
+     totalCuotas, extras:{rubro:monto}, extraTot, nro, fecha }
    ========================================================================= */
-function parseCuadro(text){
+// PDF/texto: una fila válida tiene una fecha y ≥5 importes. Posición (Santa Fe):
+// capital, interés, cargos, comp, punit, IVA, total. Robusto a números US/AR.
+function parsePdfLoan(text){
   const rows=[];
   for(const ln of String(text).split(/\r?\n/)){
-    const dm = ln.match(/(\d{2})\/(\d{2})\/(\d{4})/);
-    const nums = (ln.match(/\d{1,3}(?:\.\d{3})*,\d{2}/g)||[]);
+    const dm = ln.match(/\d{1,2}\/\d{1,2}\/\d{2,4}/);
+    const nums = (ln.match(/-?\d{1,3}(?:[.,]\d{3})*[.,]\d{2}/g)||[]);
     if(!dm || nums.length<5) continue;
     const v = nums.map(parseNum);
-    rows.push({ venc:`${dm[3]}-${dm[2]}-${dm[1]}`, interes:v[1], iva:v[v.length-2], total:v[v.length-1] });
+    rows.push({ rawv:dm[0], capital:v[0], interes:v[1], iva:v[v.length-2], total:v[v.length-1] });
   }
-  // ordenar por vencimiento y descartar duplicados exactos
+  const ds=smartDates(rows.map(r=>r.rawv)); rows.forEach((r,i)=>r.venc=ds[i]);
   const seen=new Set();
-  return rows.filter(r=>{ const k=r.venc+"|"+r.total; if(seen.has(k))return false; seen.add(k); return true; })
-             .sort((a,b)=>a.venc.localeCompare(b.venc));
+  const cuotas=rows.filter(r=>{ const k=r.venc+"|"+r.total; if(seen.has(k))return false; seen.add(k); return true; })
+                   .sort((a,b)=>String(a.venc).localeCompare(String(b.venc)));
+  const nro=(text.match(/N[ÚU]MERO\s+DE\s+PR[ÉE]STAMO\s*[\r\n]*\s*(\d{4,})/i)||[])[1]||null;
+  return finalizeLoan(cuotas, {nro, extras:{}});
+}
+// Excel/CSV: mapea columnas por su encabezado (orden y nombres varían entre bancos).
+function parseExcelLoan(wb){
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:""});
+  let hi=-1, map={};
+  for(let i=0;i<rows.length;i++){ const r=rows[i]||[];
+    if(r.some(c=>norm(c)==="vencimiento" || norm(c).includes("vencimiento"))){ hi=i;
+      r.forEach((c,j)=>{ const k=matchCol(c); if(k&&map[k]==null) map[k]=j; }); break; } }
+  if(hi<0 || map.venc==null || map.total==null) throw new Error("No reconocí el cuadro de cuotas del Excel (necesito columnas Vencimiento y Total).");
+  const data=[];
+  for(let i=hi+1;i<rows.length;i++){ const r=rows[i]||[];
+    if(norm(r[0]).startsWith("total")) break;
+    const vc=r[map.venc]; if(vc===""||vc==null){ if(data.length) break; else continue; }
+    data.push(r); }
+  const vencs=smartDates(data.map(r=>r[map.venc]));
+  const g=(r,k)=> map[k]==null?0:parseNum(r[map[k]]);
+  const cuotas=data.map((r,i)=>({ venc:vencs[i], capital:g(r,"capital")+g(r,"otrocap"),
+    interes:g(r,"interes"), iva:g(r,"iva"), total:g(r,"total") }));
+  const extras={};
+  const seg=round2(data.reduce((a,r)=>a+g(r,"seguro"),0)); if(seg>0.005) extras["Seguro"]=seg;
+  const otr=round2(data.reduce((a,r)=>a+g(r,"otros"),0));  if(otr>0.005) extras["Otros rubros"]=otr;
+  return finalizeLoan(cuotas, {nro:null, extras});
+}
+function finalizeLoan(cuotas, opt){
+  const interes=round2(cuotas.reduce((a,c)=>a+(c.interes||0),0));
+  const iva=round2(cuotas.reduce((a,c)=>a+(c.iva||0),0));
+  const totalCuotas=round2(cuotas.reduce((a,c)=>a+(c.total||0),0));
+  const capital=round2(cuotas.reduce((a,c)=>a+(c.capital||0),0));
+  const extras=opt.extras||{}; const extraTot=round2(Object.values(extras).reduce((a,v)=>a+v,0));
+  const cu=cuotas.map(c=>({venc:c.venc, interes:round2(c.interes||0), iva:round2(c.iva||0), total:round2(c.total||0)}));
+  return { cuotas:cu, capital, interes, iva, totalCuotas, extras, extraTot,
+           nro:opt.nro||null, fecha:menosUnMes(cu[0]&&cu[0].venc) };
+}
+// Vuelca el "loan" leído al formulario (banco, nº, capital, fecha) y analiza.
+function aplicarLoan(loan, text){
+  ST.loan=loan; const a={};
+  const b=detectarBanco(text||""); if(b){ ST.form.banco=b; a.banco=true; }
+  const nro=loan.nro || buscarTexto(text||"",["N[ÚU]MERO\\s+DE\\s+PR[ÉE]STAMO","NRO\\.?\\s+DE\\s+PR[ÉE]STAMO","N[°º]?\\s+OPERACI[ÓO]N"]);
+  if(nro){ ST.form.nro=nro; a.nro=true; }
+  if(loan.capital){ ST.form.capital=String(loan.capital); a.capital=true;
+    if(!ST.form.neto){ ST.form.neto=String(round2(loan.capital*(1-SELLADO_RATE))); a.neto="estim"; } }
+  if(loan.fecha){ ST.form.fecha=loan.fecha; a.fecha="estim"; }
+  ST.autodet=a; analizar();
+}
+function reanalizar(){ try{ aplicarLoan(parsePdfLoan(ST.form.texto||""), ST.form.texto||""); }catch(e){ ST.error="No pude releer el texto: "+(e.message||e); render(); } }
+
+/* ---- Selección / alta de banco ---- */
+function onBanco(v){ ST.form.banco=v; if(v!=="__add__" && ST.loan) analizar(); else render(); if(v==="__add__"){ const q=document.getElementById("bankq"); if(q) q.focus(); } }
+let _bankT=null;
+function buscarBanco(q){
+  clearTimeout(_bankT);
+  _bankT=setTimeout(async ()=>{
+    const box=document.getElementById("bankres"); if(!box) return;
+    if((q||"").trim().length<3){ box.innerHTML='<div class="hint">Escribí al menos 3 letras…</div>'; return; }
+    box.innerHTML='<div class="hint">Buscando…</div>';
+    try{
+      const r=await EYG.rpc("res.partner","search_read",[[["name","ilike",q]]],{fields:["id","name"],limit:12});
+      ST._bankHits=r;
+      box.innerHTML = r.length
+        ? r.map((p,i)=>`<div class="bankopt" onclick="addBankIdx(${i})">${esc(p.name)} <span style="color:var(--gris2)">#${p.id}</span></div>`).join("")
+        : '<div class="hint">Sin resultados. Probá con el nombre del banco.</div>';
+    }catch(e){ box.innerHTML='<div class="hint" style="color:var(--err)">Error al buscar.</div>'; }
+  }, 320);
+}
+function addBankIdx(i){
+  const p=ST._bankHits[i]; if(!p) return;
+  const k="cust-"+p.id;
+  if(!ST.customBanks.some(b=>b.k===k)) ST.customBanks.push({k, nom:p.name, partner:p.id, det:[]});
+  ST.form.banco=k; if(ST.loan) analizar(); else render();
 }
 
 function analizar(){
   ST.error=null; ST.result=null;
-  const f=ST.form;
-  const cuotas=parseCuadro(f.texto);
-  const capital=round2(parseNum(f.capital)||0);
+  const f=ST.form, L=ST.loan;
+  if(!L || !L.cuotas.length){ ST.parsed=null; ST.error="Subí el archivo del banco (PDF o Excel) o pegá el detalle del cuadro."; return render(); }
+
+  const capital=round2(parseNum(f.capital)|| L.capital || 0);
   const neto=round2(parseNum(f.neto)||0);
+  const interes=L.interes, iva=L.iva, totalCuotas=L.totalCuotas, extras=L.extras||{}, extraTot=L.extraTot||0;
+  const sellados=round2(capital-neto);
+  const hayExtras=Object.keys(extras).length>0;
 
   const errs=[];
-  if(!cuotas.length) errs.push("No pude leer el cuadro de cuotas. Revisá el archivo o pegá el texto.");
+  if(!bankByK(f.banco)) errs.push("Elegí el banco.");
   if(!capital) errs.push("Falta el capital solicitado.");
   if(!neto) errs.push("Falta el neto acreditado (lo que entró a la cuenta, del extracto).");
   if(neto>capital && capital) errs.push("El neto acreditado no puede ser mayor que el capital.");
+  const termId=ST.termByCount[L.cuotas.length];
+  if(!termId) errs.push(`No hay un plazo de pago de ${L.cuotas.length} cuotas configurado en Odoo. Avisá para crear uno.`);
 
-  const interes=round2(cuotas.reduce((a,c)=>a+c.interes,0));
-  const iva=round2(cuotas.reduce((a,c)=>a+c.iva,0));
-  const totalCuotas=round2(cuotas.reduce((a,c)=>a+c.total,0));
-  const sellados=round2(capital-neto);
-  const totalDoc=round2(neto+interes+sellados+iva);
+  const totalDoc=round2(neto+sellados+interes+extraTot+iva);
   const ivaTeorico=round2(interes*0.105);
   const okBalance=Math.abs(totalDoc-totalCuotas)<0.05;
-  const okIdentPDF=Math.abs(round2(capital+interes+iva)-totalCuotas)<0.05;
-  const termId=ST.termByCount[cuotas.length];
-  if(cuotas.length && !termId) errs.push(`No hay un plazo de pago de ${cuotas.length} cuotas configurado en Odoo. Avisá para crear uno.`);
+  const okIdentPDF=Math.abs(round2(capital+interes+iva+extraTot)-totalCuotas)<0.05;
 
   ST.parsed = errs.length ? null :
-    { capital, neto, nro:f.nro, cuotas, interes, iva, sellados, totalCuotas, totalDoc, ivaTeorico, okBalance, okIdentPDF, termId };
+    { capital, neto, nro:L.nro||f.nro, cuotas:L.cuotas, interes, iva, sellados, extras, extraTot, hayExtras,
+      totalCuotas, totalDoc, ivaTeorico, okBalance, okIdentPDF, termId };
   if(errs.length) ST.error=errs.join(" ");
   render();
 }
@@ -286,8 +366,10 @@ function analizar(){
    ========================================================================= */
 async function generar(){
   if(!ST.parsed || ST.generating) return;
+  const f=ST.form, p=ST.parsed, bank=bankByK(f.banco);
+  if(!bank){ ST.error="Elegí un banco antes de generar."; return render(); }
+  if(p.hayExtras){ ST.error="Este préstamo trae rubros extra ("+Object.keys(p.extras).join(", ")+") que todavía no sé a qué cuenta contable imputar. Definamos esa cuenta y lo habilito."; return render(); }
   ST.generating=true; ST.result=null; ST.error=null; render();
-  const f=ST.form, p=ST.parsed, bank=BANKS.find(b=>b.k===f.banco);
   try{
     const vals={ move_type:"in_invoice", journal_id:JOURNAL, partner_id:bank.partner,
       invoice_date:f.fecha, date:f.fecha, l10n_latam_document_type_id:DOCTYPE,
@@ -344,7 +426,8 @@ function onLeave(e){ const el=document.getElementById("drop"); if(el)el.classLis
 
 function render(){
   const f=ST.form, p=ST.parsed, a=ST.autodet||{};
-  const bankOpts = BANKS.map(b=>`<option value="${b.k}" ${f.banco===b.k?"selected":""}>${esc(b.nom)}</option>`).join("");
+  const bankOpts = allBanks().map(b=>`<option value="${b.k}" ${f.banco===b.k?"selected":""}>${esc(b.nom)}</option>`).join("")
+    + `<option value="__add__" ${f.banco==="__add__"?"selected":""}>➕ Agregar otro banco…</option>`;
 
   // Card 1: subir archivo
   let html = `<div class="card">
@@ -359,7 +442,7 @@ function render(){
     ${ST.fileName && !ST.extracting ? `<div style="margin-top:10px"><span class="filechip">📎 ${esc(ST.fileName)}</span></div>`:""}
     <details class="raw"><summary>Ver / editar el texto leído</summary>
       <textarea oninput="setF('texto',this.value)" placeholder="Acá aparece lo que leí del archivo. También podés pegar el texto a mano.">${esc(f.texto)}</textarea>
-      <div class="actions"><button class="btn ghost" onclick="autodetectar(ST.form.texto);analizar()">Volver a analizar el texto</button></div>
+      <div class="actions"><button class="btn ghost" onclick="reanalizar()">Volver a analizar el texto</button></div>
     </details>
   </div>`;
 
@@ -369,7 +452,12 @@ function render(){
     <h3><span class="step">2</span>Datos del comprobante</h3>
     <div class="cap">Lo que leí del archivo (fondo celeste) y lo que cargás a mano (fondo amarillo). Revisá y corregí si hace falta.</div>
     <div class="grid">
-      <div><label class="req">Banco${flag('banco')}</label><select class="${a.banco?'auto':''}" onchange="setF('banco',this.value)">${bankOpts}</select></div>
+      <div><label class="req">Banco${flag('banco')}</label><select class="${a.banco?'auto':''}" onchange="onBanco(this.value)">${bankOpts}</select>
+        ${f.banco==="__add__"?`<div style="margin-top:8px">
+          <input id="bankq" placeholder="Buscá el banco en Odoo (ej. Nación, ICBC…)" oninput="buscarBanco(this.value)" autocomplete="off">
+          <div class="hint">Elegí la subcuenta de <b>préstamo</b> del banco (ej. "… - Préstamo").</div>
+          <div id="bankres" style="margin-top:6px;border:1px solid var(--line);border-radius:9px;overflow:hidden;max-height:220px;overflow-y:auto"></div>
+        </div>`:""}</div>
       <div><label class="req">Fecha del préstamo${a.fecha==='estim'?'<span style="color:var(--warn);font-weight:700"> ~ estimada</span>':''}</label><input class="${a.fecha==='estim'?'manual':''}" type="date" value="${esc(f.fecha)}" onchange="setF('fecha',this.value)">${a.fecha==='estim'?'<div class="hint">Estimada (primer vencimiento − 1 mes). <b>Confirmá con el extracto</b> la fecha de acreditación.</div>':''}</div>
       <div><label class="req">N° de comprobante</label><input value="${esc(f.numero)}" oninput="setF('numero',this.value)" placeholder="${POS}-00000014"><div class="hint">Serie ${POS} (préstamos). Sugerido: el próximo libre.</div></div>
       <div><label>N° de préstamo (banco)${flag('nro')}</label><input class="${a.nro?'auto':''}" value="${esc(f.nro)}" oninput="setF('nro',this.value)" placeholder="del archivo"></div>
@@ -393,8 +481,10 @@ function render(){
         <div class="pv-tile"><div class="l">Interés</div><div class="v">${money2(p.interes)}</div></div>
         <div class="pv-tile"><div class="l">Sellados</div><div class="v">${money2(p.sellados)}</div></div>
         <div class="pv-tile"><div class="l">IVA 10,5%</div><div class="v">${money2(p.iva)}</div></div>
+        ${Object.entries(p.extras||{}).map(([k,v])=>`<div class="pv-tile" style="border-color:#EAD9A0;background:var(--warnbg)"><div class="l">${esc(k)}</div><div class="v">${money2(v)}</div></div>`).join("")}
         <div class="pv-tile tot"><div class="l">Total (${p.cuotas.length} cuotas)</div><div class="v">${money2(p.totalDoc)}</div></div>
       </div>
+      ${p.hayExtras?`<div class="check bad"><span class="ic">⚠️</span> Este préstamo trae <b>${esc(Object.keys(p.extras).join(", "))}</b> — falta definir a qué cuenta contable van esos rubros antes de poder generarlo. Avisame cuál es.</div>`:""}
       <div class="check ${p.okBalance?'ok':'bad'}"><span class="ic">${p.okBalance?'✓':'✕'}</span> Débitos = créditos: ${money2(p.totalDoc)} vs ${money2(p.totalCuotas)} ${p.okBalance?'(cuadra)':'(NO cuadra)'}</div>
       <div class="check ${p.okIdentPDF?'ok':'bad'}"><span class="ic">${p.okIdentPDF?'✓':'✕'}</span> Capital + Interés + IVA = suma de cuotas ${p.okIdentPDF?'(el archivo cierra)':'(revisá los números)'}</div>
       ${ivaDif?`<div class="check ok"><span class="ic">ℹ️</span> El IVA del banco (${money2(p.iva)}) difiere ${money2(Math.abs(p.iva-p.ivaTeorico))} del 10,5% teórico por redondeo. Se fuerza al del banco.</div>`:""}
@@ -404,8 +494,8 @@ function render(){
         <tfoot class="foot"><tr><td colspan="2">Totales</td><td class="r">${money2(p.interes)}</td><td class="r">${money2(p.iva)}</td><td class="r">${money2(p.totalCuotas)}</td></tr></tfoot>
       </table>
       <div class="actions">
-        <button class="btn big" onclick="generar()" ${(!p.okBalance||ST.generating)?'disabled':''}>${ST.generating?'<span class="spinner"></span>Generando…':'Generar en Odoo (borrador)'}</button>
-        <span class="hint">Banco: <b>${esc(BANKS.find(b=>b.k===f.banco).nom)}</b> · N° ${esc(f.numero||'(definí el número)')}</span>
+        <button class="btn big" onclick="generar()" ${(!p.okBalance||p.hayExtras||ST.generating)?'disabled':''}>${ST.generating?'<span class="spinner"></span>Generando…':'Generar en Odoo (borrador)'}</button>
+        <span class="hint">Banco: <b>${esc((bankByK(f.banco)||{}).nom||'—')}</b> · N° ${esc(f.numero||'(definí el número)')}</span>
       </div>
     </div>`;
   }
@@ -419,7 +509,7 @@ function render(){
 
   document.getElementById("app").innerHTML = html;
 }
-function nuevo(){ proximoNumero().then(n=>{ ST.form={banco:ST.form.banco, fecha:EYG.argToday(), numero:n, capital:"", neto:"", nro:"", texto:""}; ST.fileName=""; ST.autodet={}; ST.parsed=null; ST.error=null; ST.result=null; render(); }); }
+function nuevo(){ proximoNumero().then(n=>{ ST.form={banco:ST.form.banco, fecha:EYG.argToday(), numero:n, capital:"", neto:"", nro:"", texto:""}; ST.loan=null; ST.fileName=""; ST.autodet={}; ST.parsed=null; ST.error=null; ST.result=null; render(); }); }
 
 /* EN PRUEBAS: gateado al super-admin (Diego). Ver core.js SUPER. */
 EYG.guard(["finanzas","direccion","admin"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(async ()=>{
