@@ -226,7 +226,7 @@ function familia(categ){ if(!categ) return "Sin categoría"; const p=categ[1].sp
 function mesesHasta(f){ if(!f) return null; const d=new Date(f.slice(0,10)); return (d-HOY)/(1000*3600*24*30.44); }
 const cleanName=n=>(n||"").replace(/@$/,"").replace(/@\s+\d+T?$/,"").trim();
 
-let DATA=[], LOTES={}, FLUJO={meses:[],ventas:[],compras:[]}, CAD={}, TOT=0, KPI={}, BUCKETS=[], FAMS=[];
+let DATA=[], ARCH=[], LOTES={}, FLUJO={meses:[],ventas:[],compras:[]}, CAD={}, TOT=0, KPI={}, BUCKETS=[], FAMS=[];
 let TAB="repo";
 let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
 let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
@@ -258,7 +258,7 @@ async function cargar(){
 
     prog("categorías, proveedores y en camino…");
     const [meta, quantsLote] = await Promise.all([
-      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price","incoming_qty","seller_ids","uom_po_id"]]),
+      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price","incoming_qty","seller_ids","uom_po_id","active"]]),
       rpc("stock.quant","search_read",[[["location_id.usage","=","internal"],["quantity",">",0],["lot_id","!=",false]],["product_id","lot_id","quantity","value"]],{limit:5000}),
     ]);
     const M={}; for(const m of meta) M[m.id]=m;
@@ -294,7 +294,7 @@ async function cargar(){
       const formal=sellers.find(x=>x.partner_id && x.partner_id[0]!==PROVEEDOR_T);
       const hayT=sellers.some(x=>x.partner_id && x.partner_id[0]===PROVEEDOR_T);
       const costoU=m.standard_price||0, pvp=m.list_price||0;
-      return {id, code:m.default_code||"", name:s.product_id[1], fam:familia(m.categ_id),
+      return {id, code:m.default_code||"", archivado:m.active===false, name:s.product_id[1], fam:familia(m.categ_id),
         categ:m.categ_id?m.categ_id[1]:"", val, qty, ventaU, venta3, freq,
         incoming:Math.round(m.incoming_qty||0),
         meses: meses>900?999:Math.round(meses*10)/10,
@@ -306,6 +306,9 @@ async function cargar(){
         min:(vp.min!==undefined&&vp.min<9999)?Math.round(vp.min*10)/10:null,
         valVenc:Math.round(vp.venc||0), val6:Math.round(vp.v6||0), val12:Math.round(vp.v12||0)};
     });
+    // separar archivados (dados de baja en Odoo pero con stock): van a un panel aparte
+    ARCH=DATA.filter(r=>r.archivado).sort((a,b)=>b.val-a.val);
+    DATA=DATA.filter(r=>!r.archivado);
 
     const monK=g=>g.__range?g.__range["date_order:month"].from:g["date_order:month"];
     const label=fromStr=>{const d=new Date(fromStr); return MESES_ES[d.getMonth()]+"'"+String(d.getFullYear()).slice(2);};
@@ -587,6 +590,7 @@ function tabsBar(rd){
     <button class="tab ${TAB==="repo"?"on":""}" onclick="setTab('repo')">🛒 Reponer / Comprar ${nrep?`<span class="b">${nrep}</span>`:""}</button>
     <button class="tab ${TAB==="win"?"on":""}" onclick="setTab('win')">⭐ Ganadores</button>
     <button class="tab ${TAB==="stock"?"on":""}" onclick="setTab('stock')">📦 Cuidar el stock</button>
+    ${ARCH.length?`<button class="tab ${TAB==="revisar"?"on":""}" onclick="setTab('revisar')">🗃️ A revisar <span class="b">${ARCH.length}</span></button>`:""}
   </div>`;
 }
 function setTab(t){ TAB=t; render(); }
@@ -594,7 +598,34 @@ function renderTab(rd){
   const c=document.getElementById("tabc");
   if(TAB==="repo") c.innerHTML=tabRepo(rd);
   else if(TAB==="win") { c.innerHTML=tabWin(rd); renderWin(); }
+  else if(TAB==="revisar") c.innerHTML=tabRevisar();
   else { c.innerHTML=tabStock(); renderTabla(); }
+}
+
+// ---------- TAB: A revisar (archivados con stock) ----------
+function tabRevisar(){
+  const tot=ARCH.reduce((a,r)=>a+r.val,0);
+  if(!ARCH.length) return `<div class="pcard empty">No hay productos archivados con stock. 👌</div>`;
+  return `
+    <div class="note info">Estos <b>${ARCH.length} productos están archivados en Odoo</b> (dados de baja) pero todavía figuran con stock (${fmtM(tot)}). Por eso los saqué de las listas, la reposición y los ganadores, y los junté acá. La droguería dice que ya no existen: hay que regularizar ese stock fantasma.</div>
+    <div class="kpis" style="margin-top:12px">
+      <div class="kpi warn"><div class="l">Archivados con stock</div><div class="n">${ARCH.length}</div><div class="d">fuera del catálogo activo</div></div>
+      <div class="kpi warn"><div class="l">Valor a regularizar</div><div class="n">${fmtM(tot)}</div><div class="d">stock fantasma en el sistema</div></div>
+    </div>
+    <div class="tablecard" style="margin-top:14px">
+      <div class="thead" style="grid-template-columns:2.6fr 1.2fr 0.9fr 1fr 0.8fr">
+        <div>Producto</div><div class="hide-sm">Código</div><div class="tr-r">Unidades</div><div class="tr-r">Valor</div><div class="tr-r">Vence</div>
+      </div>
+      ${ARCH.map(r=>{const venc=r.min===null?'<span style="color:#CCD5D3">—</span>':r.min<0?'<b style="color:var(--red)">vencido</b>':r.min+'m';
+        return `<div class="row" style="grid-template-columns:2.6fr 1.2fr 0.9fr 1fr 0.8fr;cursor:default">
+          <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">archivado en Odoo</div></div>
+          <div class="hide-sm cmeta">${esc(r.code||"")}</div>
+          <div class="tr-r num">${r.qty.toLocaleString("es-AR")}</div>
+          <div class="tr-r num">${money(r.val)}</div>
+          <div class="tr-r">${venc}</div>
+        </div>`}).join("")}
+    </div>
+    <div class="note" style="margin-top:12px">⚙️ Los botones de acción por producto (poner en 0 / marcar para destruir / archivar) los habilito apenas definamos con vos qué hace exactamente cada uno, porque escriben en el inventario real de Odoo.</div>`;
 }
 
 // ---------- TAB: Reponer / Comprar ----------
