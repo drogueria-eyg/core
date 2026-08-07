@@ -89,7 +89,16 @@
   .seg.riesgo{background:var(--warnbg);color:var(--warn)} .seg.dormido{background:var(--badbg);color:var(--bad)} .seg.sin{background:#EEF1F0;color:var(--gris)}
   .num{font-variant-numeric:tabular-nums;font-weight:700;font-size:13.5px}
   .muted{color:var(--gris2);font-size:12px}
-  .pad{display:inline-block;font-size:10px;font-weight:700;padding:2px 6px;border-radius:5px;background:#EAF6F0;color:#1E7D46;margin-top:4px}
+  .pad{display:inline-block;font-size:10px;font-weight:700;padding:2px 6px;border-radius:5px;background:#EAF6F0;color:#1E7D46}
+  .rub{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;white-space:nowrap}
+  .rubchips{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:16px}
+  .rchip{font-family:inherit;font-size:12.5px;font-weight:600;border:1px solid var(--line);background:var(--surface);border-radius:20px;padding:6px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .rchip:hover{border-color:var(--teal-med)} .rchip.on{background:var(--teal);border-color:var(--teal);color:#fff}
+  .rchip .rc{font-size:11px;font-weight:800;background:rgba(0,0,0,.07);border-radius:20px;padding:0 6px} .rchip.on .rc{background:rgba(255,255,255,.25)}
+  .mini-btn.bovon{background:#F3E9DA;border-color:#E0CBA0;color:#8A6D1A}
+  .bovbanner{background:#F7F0E4;border:1px solid #E7D6B4;color:#7A5E1E;border-radius:10px;padding:10px 13px;font-size:13px;margin-bottom:12px}.bovbanner a{color:#04635F;font-weight:700;cursor:pointer;margin-left:6px}
+  .bovbox{background:#FBF6EE;border:1px solid #EAD9BC;border-radius:10px;padding:12px 13px;font-size:13px;color:#5F5232}
+  .bovinput{width:100%;font-family:inherit;font-size:13.5px;border:1px solid var(--line);border-radius:9px;padding:10px 11px;color:var(--ink)}
 
   .loading,.empty{text-align:center;padding:60px 20px;color:var(--gris)}
   .spinner{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--teal);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px}
@@ -195,8 +204,21 @@ const rolRank=n=>n==="German Banquero"?0:n==="Marcela Carranza"?1:n==="Sin asign
 let PERFIL=null;
 let DATA=[], COMS=[], COMLIST=[], VENTA={}, DUPVAT={}, DUPNAME={};
 let CAT={fiscal:[],idt:[],prov:[]}, PROVIDX={};
-let UNI=null, CREADOS=new Set();
-let filtro={tab:"nuestros", com:"", seg:"", issue:"", q:"", ocultarRuido:true, pTipo:"", pProv:"", pLoc:"", pQ:""};
+let UNI=null, CREADOS=new Set(), BOVEDA={};
+let filtro={tab:"nuestros", com:"", seg:"", issue:"", rubro:"", boveda:false, q:"", ocultarRuido:true, pTipo:"", pProv:"", pLoc:"", pQ:""};
+const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador en el chatter del contacto (fuente de verdad, reversible)
+
+/* Rubro (campo Studio) → chip de color para identificar de un vistazo. */
+const RUBRO_META={
+  "FARMACIAS":{ab:"Farmacia",ico:"💊",c:"#048782",bg:"#E2F1EF"},
+  "INSTITUCIONES":{ab:"Institución",ico:"🏥",c:"#1E5FA8",bg:"#E7F0FB"},
+  "EMPRESAS DE SALUD":{ab:"Emp. salud",ico:"➕",c:"#04635F",bg:"#DDEFED"},
+  "DISTRIBUIDORAS":{ab:"Distribuidora",ico:"📦",c:"#7A4DB8",bg:"#EEE7F8"},
+  "DROGUERIAS":{ab:"Droguería",ico:"⚗️",c:"#B7791F",bg:"#FBF0DA"},
+  "VETERINARIAS":{ab:"Veterinaria",ico:"🐾",c:"#1E7D46",bg:"#E4F5E9"},
+  "PERSONAL":{ab:"Personal",ico:"👤",c:"#5F716E",bg:"#EEF1F0"}
+};
+function rubroBadge(r){ const m=RUBRO_META[r]; if(!m) return `<span class="rub" style="background:#F3F5F4;color:#8A9A97">Sin rubro</span>`; return `<span class="rub" style="background:${m.bg};color:${m.c}">${m.ico} ${m.ab}</span>`; }
 
 function toast(msg){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";t.className="toast";document.body.appendChild(t);}t.textContent=msg;t.classList.add("on");clearTimeout(toast._t);toast._t=setTimeout(()=>t.classList.remove("on"),2800);}
 
@@ -205,22 +227,35 @@ function segmentar(c){ if(!c.compro) return "sin"; const d=c.dias; if(d==null) r
 const SEG_LBL={activo:"Activo",nuevo:"Nuevo",riesgo:"En riesgo",dormido:"Dormido",sin:"Sin compras"};
 
 /* ================= Carga ================= */
-async function cargar(){
+let _cargando=false, _lastLoad=0;
+async function cargar(silent){
+  if(_cargando) return; _cargando=true;
   try{
     const HOY=new Date(); const m30=iso(new Date(HOY-30*864e5)), d7=iso(new Date(HOY-7*864e5));
     const base=[["state","in",["sale","done"]]];
-    const [ct,gTot,gMes,gSem,gRec,fiscal,idt,prov]=await Promise.all([
+    const [ct,gTot,gMes,gSem,gRec,bovMsgs]=await Promise.all([
       rpc("res.partner","search_read",[[["type","=","contact"]]],{fields:PFIELDS,limit:0,context:{lang:"es_AR"}}),
       rpc("sale.order","read_group",[base,["amount_total:sum"],["partner_id"]],{lazy:false}),
       rpc("sale.order","read_group",[[...base,["date_order",">=",m30]],["amount_total:sum"],["partner_id"]],{lazy:false}),
       rpc("sale.order","read_group",[[...base,["date_order",">=",d7]],["amount_total:sum"],["partner_id"]],{lazy:false}),
       rpc("sale.order","read_group",[base,["date_order:max"],["partner_id"]],{lazy:false,limit:4000}),
-      rpc("l10n_ar.afip.responsibility.type","search_read",[[]],{fields:["id","name"],context:{lang:"es_AR"}}),
-      rpc("l10n_latam.identification.type","search_read",[[["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}}),
-      rpc("res.country.state","search_read",[[["country_id.code","=","AR"]]],{fields:["id","name"],limit:0})
+      rpc("mail.message","search_read",[[["model","=","res.partner"],["body","like",BOV_TAG]]],{fields:["res_id","body","date"],limit:0})
     ]);
-    CAT={fiscal,idt,prov};
-    PROVIDX={}; prov.forEach(p=>{ PROVIDX[NORM(p.name.replace(/\s*\((AR|IT)\)$/,""))]=p.id; });
+    // catálogos de edición (fiscal/idt/provincias): no cambian → se cargan 1 sola vez
+    if(!CAT.prov.length){
+      const [fiscal,idt,prov]=await Promise.all([
+        rpc("l10n_ar.afip.responsibility.type","search_read",[[]],{fields:["id","name"],context:{lang:"es_AR"}}),
+        rpc("l10n_latam.identification.type","search_read",[[["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}}),
+        rpc("res.country.state","search_read",[[["country_id.code","=","AR"]]],{fields:["id","name"],limit:0})
+      ]);
+      CAT={fiscal,idt,prov};
+      PROVIDX={}; prov.forEach(p=>{ PROVIDX[NORM(p.name.replace(/\s*\((AR|IT)\)$/,""))]=p.id; });
+    }
+    // bóveda: el último marcador por contacto manda (salir = fuera)
+    BOVEDA={}; bovMsgs.sort((a,b)=>(b.date||"").localeCompare(a.date||"")); const _vb=new Set();
+    for(const msg of bovMsgs){ if(_vb.has(msg.res_id)) continue; _vb.add(msg.res_id);
+      const body=(msg.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," "); if(/salir/i.test(body)) continue;
+      BOVEDA[msg.res_id]={nota:(body.split("]").slice(1).join("]")||"").trim()}; }
 
     VENTA={}; const put=(g,k)=>g.forEach(x=>{if(x.partner_id){(VENTA[x.partner_id[0]]=VENTA[x.partner_id[0]]||{})[k]=x.amount_total;}});
     put(gTot,"tot"); put(gMes,"mes"); put(gSem,"sem");
@@ -250,18 +285,21 @@ async function cargar(){
         rubro:p[RUBRO_FIELD]||"", esCliente:p.customer_rank>0||nped>0, compro:nped>0, nped, dias,
         comprado:v.tot||0, mesv:v.mes||0, semv:v.sem||0, faltantes,
         wa:waNumber(p.mobile,p.phone), tellink:telLink(p.mobile,p.phone),
-        dupVat:DUPVAT[p.id]||"", dupName:DUPNAME[p.id]||"", enPadron:false, nombreOficial:"", part:p,
+        dupVat:DUPVAT[p.id]||"", dupName:DUPNAME[p.id]||"", enPadron:false, nombreOficial:"", part:p, boveda:BOVEDA[p.id]||null,
         noUsar:/\(no usar\)/i.test(p.name||""), combo:/combo|super combo|^oferta|^promo|^tanda|^bloque|prueba|test\b/i.test(p.name||"") };
       c.seg=segmentar(c);
       return c;
     });
     COMLIST=comercialesDe(DATA);
+    if(UNI) cruzar();
     recalcComs();
-    render();
-    // el padrón oficial se carga aparte (≈900 KB) y actualiza los cruces al llegar
-    cargarUniverso();
-  }catch(e){ document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar.</b><br>'+esc(e.message||e)+'</div>'; }
+    if(silent){ const y=window.scrollY; render(); window.scrollTo(0,y); } else render();
+    if(!UNI) cargarUniverso();   // el padrón (~900 KB) se trae 1 vez y actualiza los cruces al llegar
+  }catch(e){ if(!silent) document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar.</b><br>'+esc(e.message||e)+'</div>'; }
+  finally{ _cargando=false; _lastLoad=Date.now(); }
 }
+function drawerAbierto(){ const d=document.getElementById("drawer"); return d&&d.classList.contains("on"); }
+function editando(){ const a=document.activeElement; return a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName||""); }
 
 function comercialesDe(rows){
   const m=new Map();
@@ -329,11 +367,15 @@ function coberturaProv(provName){
 }
 
 /* ================= Filtros de "Nuestros contactos" ================= */
-function base(){ return DATA.filter(c=> !(filtro.ocultarRuido && (c.combo||c.noUsar))); }
+/* base = universo de trabajo: sin ruido y SIN los archivados en bóveda (salen de todas las vistas). */
+function base(){ return DATA.filter(c=> !c.boveda && !(filtro.ocultarRuido && (c.combo||c.noUsar))); }
+function enBoveda(){ return DATA.filter(c=> c.boveda && !(filtro.ocultarRuido && (c.combo||c.noUsar))); }
 function visibles(){
+  if(filtro.boveda){ const q=(filtro.q||"").toLowerCase(); return enBoveda().filter(c=> !q || c.nombre.toLowerCase().includes(q) || (c.ciudad||"").toLowerCase().includes(q)); }
   return base().filter(c=>{
     if(filtro.com && c.comercial!==filtro.com) return false;
     if(filtro.seg && c.seg!==filtro.seg) return false;
+    if(filtro.rubro==="__none"){ if(c.rubro) return false; } else if(filtro.rubro){ if(c.rubro!==filtro.rubro) return false; }
     if(filtro.issue==="tel0" && c.telEstado!=="falta") return false;
     if(filtro.issue==="telbad" && c.telEstado!=="dudoso") return false;
     if(filtro.issue==="mail0" && c.emailOk) return false;
@@ -385,6 +427,13 @@ function renderNuestros(){
       ${segs.map(s=>`<div class="kpi ${filtro.seg===s?"on":""}" onclick="setSeg('${s}')"><div class="n">${cont(c=>c.seg===s)}</div><div class="l">${SEG_LBL[s]}</div></div>`).join("")}
     </div>
 
+    <h3 class="sec">Rubro — tocá para filtrar</h3>
+    <div class="rubchips">
+      <button class="rchip ${filtro.rubro===""&&!filtro.boveda?"on":""}" onclick="setRubro('')">Todos</button>
+      ${RUBROS7.filter(r=>B.some(c=>c.rubro===r)).map(r=>{const m=RUBRO_META[r];const n=B.filter(c=>c.rubro===r).length;const on=filtro.rubro===r;return `<button class="rchip ${on?"on":""}" onclick="setRubro('${r}')" style="${on?`background:${m.c};border-color:${m.c};color:#fff`:`color:${m.c}`}">${m.ico} ${m.ab} <span class="rc">${n}</span></button>`;}).join("")}
+      ${B.filter(c=>!c.rubro).length?`<button class="rchip ${filtro.rubro==="__none"?"on":""}" onclick="setRubro('__none')">Sin rubro <span class="rc">${B.filter(c=>!c.rubro).length}</span></button>`:''}
+    </div>
+
     <div class="toolbar">
       <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
         <input id="q" placeholder="Buscar nombre, CUIT o ciudad…" value="${esc(filtro.q)}" oninput="onSearch(this.value)"></div>
@@ -399,7 +448,9 @@ function renderNuestros(){
         <option value="dup" ${filtro.issue==="dup"?"selected":""}>Duplicados</option>
       </select>
       ${filtro.com?`<button class="mini-btn" onclick="setCom(-1)">✕ ${esc(filtro.com)}</button>`:""}
+      <button class="mini-btn ${filtro.boveda?'bovon':''}" onclick="toggleBoveda()">🔒 Bóveda${enBoveda().length?` (${enBoveda().length})`:''}</button>
       <button class="mini-btn" onclick="exportarCSV()">Exportar CSV</button>
+      <span class="muted" style="margin-left:auto;font-size:11.5px;white-space:nowrap">🔄 se actualiza solo</span>
     </div>
     <div class="toggles"><label><input type="checkbox" ${filtro.ocultarRuido?'checked':''} onchange="filtro.ocultarRuido=this.checked;recalcComs();render()"> Ocultar combos y "(no usar)"</label></div>
     <div id="listwrap"></div>`;
@@ -411,8 +462,9 @@ function renderLista(){
   let list=visibles();
   if(filtro.issue==="dup") list=[...list].sort((a,b)=>(a.dupVat||a.dupName||"").localeCompare(b.dupVat||b.dupName||"")||a.nombre.localeCompare(b.nombre));
   else list=[...list].sort((a,b)=>b.comprado-a.comprado);
-  if(!list.length){w.innerHTML='<div class="tablecard"><div class="empty">Sin contactos con ese filtro.</div></div>';return;}
-  const head=`<div class="count-line">Mostrando <b>${list.length}</b> contactos${filtro.com?" de "+esc(filtro.com):""}</div>`;
+  const banner=filtro.boveda?`<div class="bovbanner">🔒 <b>Bóveda</b> — contactos archivados que no aplican o ya no están. Están fuera de todas las vistas. Abrí uno para sacarlo. <a onclick="toggleBoveda()">← Volver a contactos</a></div>`:"";
+  if(!list.length){w.innerHTML=banner+'<div class="tablecard"><div class="empty">'+(filtro.boveda?'La bóveda está vacía.':'Sin contactos con ese filtro.')+'</div></div>';return;}
+  const head=`<div class="count-line">Mostrando <b>${list.length}</b> ${filtro.boveda?'en bóveda':'contactos'}${filtro.com&&!filtro.boveda?" de "+esc(filtro.com):""}</div>`;
   const rows=list.slice(0,700).map(c=>{
     const tb = c.telEstado==="ok"?`<span class="badge ok">${esc(c.telv)}</span>`
              : c.telEstado==="dudoso"?`<span class="badge warn">⚠ ${esc(c.telv)}</span>`
@@ -420,8 +472,8 @@ function renderLista(){
     const mb = c.emailOk?`<span class="muted trunc" title="${esc(c.email)}">✓ ${esc(c.email)}</span>`:`<span class="badge bad">sin email</span>`;
     return `<div class="row" onclick="abrir(${c.id})">
       <div><div class="cname">${esc(c.nombre)} ${(c.dupVat||c.dupName)?'<span class="badge warn" style="font-size:10px">⚠ dup</span>':''}</div>
-        <div class="cmeta">${esc(c.ciudad||"—")} · <span class="seg ${c.seg}">${SEG_LBL[c.seg]}</span></div>
-        ${c.enPadron?'<span class="pad">✓ en padrón oficial</span>':''}
+        <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">${rubroBadge(c.rubro)}<span class="seg ${c.seg}">${SEG_LBL[c.seg]}</span>${c.enPadron?'<span class="pad">✓ padrón</span>':''}</div>
+        <div class="cmeta">${esc(c.ciudad||"—")}</div>
         ${c.faltantes.length?`<div class="flags">${c.faltantes.map(f=>`<span class="flag">falta ${f}</span>`).join("")}</div>`:''}</div>
       <div class="hide-sm"><span class="muted trunc" title="${esc(c.comercial)}">${esc(c.comercial)}</span></div>
       <div>${c.fiscal?`<span class="badge ok">${esc(c.fiscal)}</span>`:`<span class="badge bad">sin cond. fiscal</span>`}</div>
@@ -491,9 +543,11 @@ function renderProspectos(){
 let sT; function onSearch(v){filtro.q=v;clearTimeout(sT);sT=setTimeout(renderLista,180);}
 let sP; function onSearchP(v){filtro.pQ=v;clearTimeout(sP);sP=setTimeout(renderProspectos,200);}
 function setTab(t){filtro.tab=t;render();}
-function setCom(i){const name=i<0?"":(COMS[i]?COMS[i].comercial:"");filtro.com=filtro.com===name?"":name;render();}
-function setSeg(s){filtro.seg=filtro.seg===s?"":s;render();}
-function setIssue(k){filtro.issue=k;render();}
+function setCom(i){const name=i<0?"":(COMS[i]?COMS[i].comercial:"");filtro.com=filtro.com===name?"":name;filtro.boveda=false;render();}
+function setSeg(s){filtro.seg=filtro.seg===s?"":s;filtro.boveda=false;render();}
+function setIssue(k){filtro.issue=k;filtro.boveda=false;render();}
+function setRubro(r){filtro.rubro=filtro.rubro===r?"":r;filtro.boveda=false;render();}
+function toggleBoveda(){filtro.boveda=!filtro.boveda;filtro.com="";filtro.seg="";filtro.issue="";filtro.rubro="";render();}
 
 /* ================= Drawer: ver contacto ================= */
 const ODOO="https://drogueriaeyg.odoo.com/web#model=res.partner&view_type=form&id=";
@@ -509,7 +563,8 @@ function abrir(id){
   const nombre=esc(c.nombre);
   d.innerHTML=`
     <div class="dhead"><span class="x" onclick="cerrar()">✕</span><h2>${nombre}</h2>
-      <div class="dsub">${esc(c.comercial)} · <span class="seg ${c.seg}" style="color:#fff">${SEG_LBL[c.seg]}</span>${c.enPadron?' · ✓ padrón oficial':''}</div></div>
+      <div class="dsub">${esc(c.comercial)} · <span class="seg ${c.seg}" style="color:#fff">${SEG_LBL[c.seg]}</span>${c.enPadron?' · ✓ padrón oficial':''}${c.boveda?' · 🔒 en bóveda':''}</div>
+      <div style="margin-top:7px">${rubroBadge(c.rubro)}</div></div>
     <div class="dbody">
       <div class="dsec"><h4>Comercial asignado</h4>
         <div class="assign"><select id="reasg" onchange="reasignar(${id},this.value)">${optCom(c.comercialId)}</select></div>
@@ -539,6 +594,14 @@ function abrir(id){
       ${dupIds.length?`<div class="dsec"><h4>⚠ Posibles duplicados (${dupIds.length})</h4>
         ${dupIds.map(x=>`<div class="kv"><span class="k">${esc(x.nombre)}</span><span class="v muted">${x.dupVat&&x.dupVat===c.dupVat?'mismo CUIT':'mismo nombre'}</span></div>`).join("")}
         <p class="muted" style="margin-top:8px">Revisá en Odoo si conviene fusionarlos.</p></div>`:''}
+      <div class="dsec"><h4>🔒 Bóveda</h4>
+        ${c.boveda
+          ? `<div class="bovbox">Archivado — está fuera de todas las vistas.${c.boveda.nota?`<div style="margin-top:5px"><b>Motivo:</b> ${esc(c.boveda.nota)}</div>`:''}
+             <button class="abtn" style="background:#FBE4E3;color:#8A2E2B;width:100%;margin-top:9px" onclick="sacarBoveda(${id})">🔓 Sacar de bóveda</button></div>`
+          : `<p class="muted" style="margin-bottom:8px">Si este contacto ya no existe o no aplica como cliente de la droguería, archivalo para sacarlo de todas las vistas. Es reversible.</p>
+             <input id="bovnota" class="bovinput" placeholder="Motivo (opcional): cerró, no es del rubro, duplicado…">
+             <button class="abtn" style="background:#F3E9DA;color:#8A6D1A;width:100%;margin-top:8px" onclick="archivarBoveda(${id})">🔒 Archivar en bóveda</button>`}
+      </div>
       <div class="actbtns">
         <button class="abtn edit" onclick="editarContacto(${id})">✏️ Editar datos</button>
         <a class="abtn odoo" target="_blank" href="${ODOO}${id}">Abrir en Odoo ↗</a>
@@ -563,6 +626,25 @@ async function reasignar(id,val){
     recalcComs(); toast("✅ Reasignado a "+c.comercial);
     if(sel) sel.disabled=false;
   }catch(e){ if(sel) sel.disabled=false; toast("⚠ No se pudo reasignar: "+(e.message||e)); }
+}
+
+/* ================= Bóveda: archivar / sacar (marcador reversible en el chatter) ================= */
+async function archivarBoveda(id){
+  const c=DATA.find(x=>x.id===id); if(!c) return;
+  const nota=(document.getElementById("bovnota")?document.getElementById("bovnota").value:"").trim();
+  try{
+    await rpc("res.partner","message_post",[[id]],{body:`🔒 ${BOV_TAG} ${nota}`,message_type:"comment"});
+    c.boveda={nota}; BOVEDA[id]={nota};
+    recalcComs(); toast("🔒 Archivado en la bóveda"); render(); cerrar();
+  }catch(e){ toast("⚠ No se pudo archivar: "+(e.message||e)); }
+}
+async function sacarBoveda(id){
+  const c=DATA.find(x=>x.id===id); if(!c) return;
+  try{
+    await rpc("res.partner","message_post",[[id]],{body:`🔓 ${BOV_TAG} salir`,message_type:"comment"});
+    c.boveda=null; delete BOVEDA[id];
+    if(UNI) cruzar(); recalcComs(); toast("🔓 Sacado de la bóveda"); render(); abrir(id);
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
 }
 
 /* ================= Editar ficha ================= */
@@ -693,7 +775,15 @@ function exportarCSV(){
   const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="contactos-eyg"+(filtro.com?"-"+norm2(filtro.com):"")+".csv";a.click();
 }
 
-EYG.guard(["comercial","lider","admin","direccion"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(p=>{ PERFIL=p; cargar(); });
+/* ================= Auto-refresco (la info se va actualizando en Odoo) =================
+   Recarga silenciosa cada ~45s: no molesta si la pestaña está oculta, si hay un panel
+   abierto o si estás escribiendo/eligiendo en un campo. Preserva el scroll y los filtros. */
+function iniciarAutoRefresco(){
+  setInterval(()=>{ if(document.hidden||drawerAbierto()||editando()||_cargando) return; if(Date.now()-_lastLoad<45000) return; cargar(true); }, 30000);
+  document.addEventListener("visibilitychange",()=>{ if(!document.hidden && !drawerAbierto() && !editando() && Date.now()-_lastLoad>60000) cargar(true); });
+}
+
+EYG.guard(["comercial","lider","admin","direccion"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(p=>{ PERFIL=p; cargar(); iniciarAutoRefresco(); });
 </script>
 </body>
 </html>
