@@ -90,6 +90,25 @@
   .nota{font-size:12px;color:var(--gris);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:13px 16px;line-height:1.6;margin-top:4px}
   .nota b{color:var(--teal-deep)}
   .vacio{text-align:center;color:var(--gris2);padding:40px 0;font-size:14px}
+
+  /* Tarjeta interna: cómo te paga a vos (EyG / Cobranzas) */
+  .eygc{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--teal);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;margin-bottom:16px}
+  .eygc .eygh{display:flex;align-items:center;gap:9px;padding:14px 20px 2px;font-size:12.5px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--teal-deep)}
+  .eygc .eygh .tag{font-size:10px;font-weight:800;letter-spacing:.5px;color:#fff;background:var(--teal);border-radius:20px;padding:2px 9px;text-transform:none}
+  .eygver{display:flex;gap:14px;align-items:center;padding:8px 20px 15px;flex-wrap:wrap}
+  .eygver .dot{width:42px;height:42px;border-radius:50%;flex:none;box-shadow:0 0 0 5px rgba(0,0,0,.04)}
+  .eygver.g .dot{background:var(--ok)} .eygver.y .dot{background:var(--amar)} .eygver.r .dot{background:var(--rojo)} .eygver.n .dot{background:var(--gris2)}
+  .eygver .vt{flex:1;min-width:200px}
+  .eygver .vt b{font-size:16px;font-weight:800;display:block;line-height:1.25;margin-bottom:2px}
+  .eygver.g .vt b{color:var(--ok)} .eygver.y .vt b{color:var(--amar)} .eygver.r .vt b{color:var(--rojo)} .eygver.n .vt b{color:var(--gris)}
+  .eygver .vt span{font-size:13px;color:var(--gris);line-height:1.5}
+  .eygkpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;background:var(--line);border-top:1px solid var(--line)}
+  .eygkpis .rc{background:var(--surface);padding:12px 16px}
+  .eygmini{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:11px 20px;font-size:12.5px;color:var(--gris);background:var(--bg);border-top:1px solid var(--line)}
+  .eygmini a{color:var(--teal);font-weight:700;text-decoration:none;margin-left:auto}
+  .eygmini a:hover{text-decoration:underline}
+  .eygload{display:flex;align-items:center;gap:10px;padding:16px 20px;color:var(--gris);font-size:13px}
+  .eygload .sp{width:20px;height:20px;border:2px solid var(--line);border-top-color:var(--teal);border-radius:50%;animation:spin .8s linear infinite}
 </style>
 </head>
 <body>
@@ -124,6 +143,20 @@ function limpiarCuit(v){ return String(v||"").replace(/\D/g,""); }
 function fmtCuit(c){ c=limpiarCuit(c); return c.length===11 ? c.slice(0,2)+"-"+c.slice(2,10)+"-"+c.slice(10) : c; }
 /* Porcentaje amigable: montos ínfimos no muestran "0%" sino "<0,1%". */
 function pctPretty(f){ const p=(f||0)*100; if(p>0 && p<0.1) return "<0,1%"; return p.toLocaleString("es-AR",{maximumFractionDigits:1})+"%"; }
+const diasDesde = f => f ? Math.max(0, Math.floor((Date.now()-new Date(String(f).slice(0,10)+"T00:00:00"))/86400000)) : null;
+const fmtFecha = f => f ? String(f).slice(0,10).split("-").reverse().join("/") : "—";
+
+/* Tramos de mora — mismos cortes que el módulo Cobranzas, para que el cruce coincida. */
+const TRAMOS_EYG=[
+  {k:"vencer",l:"por vencer",     test:d=>d<=0},
+  {k:"d1",    l:"1–20 días",      test:d=>d>0&&d<21},
+  {k:"d21",   l:"+21 días",       test:d=>d>=21&&d<31},
+  {k:"d30",   l:"+30 días",       test:d=>d>=31&&d<61},
+  {k:"d60",   l:"+60 días",       test:d=>d>=61&&d<91},
+  {k:"d90",   l:"+90 días",       test:d=>d>=91&&d<121},
+  {k:"d120",  l:"+120 días",      test:d=>d>=121},
+];
+const tramoEyG = d => TRAMOS_EYG.find(t=>t.test(d)) || TRAMOS_EYG[0];
 
 /* ---- Consulta al BCRA (3 endpoints en paralelo). 404 = sin registros de ese tipo. ---- */
 async function traer(path){
@@ -194,6 +227,7 @@ async function ir(cuitForzado){
     const nombre = (data.deudas&&data.deudas.denominacion) || (data.historicas&&data.historicas.denominacion) || (data.cheques&&data.cheques.denominacion) || "";
     guardarReciente(cuit, nombre);
     $("res").innerHTML = vistaResultado(cuit, nombre, data);
+    fillEyG(cuit);   // cruce con Cobranzas (Odoo) — se llena aparte, sin frenar al BCRA
   }catch(err){
     $("res").innerHTML = `<div class="rescard"><div class="vacio">No se pudo consultar al BCRA en este momento.<br><span style="font-size:12.5px;color:var(--gris2)">${esc(err.message||"")}</span><br><br><button class="chip" style="cursor:pointer" onclick="ir('${cuit}')">Reintentar</button></div></div>`;
   }finally{
@@ -221,7 +255,8 @@ function vistaResultado(cuit, nombre, data){
         <div class="cuit">${esc(fmtCuit(cuit))}</div>
         <div class="expli">No figura con deuda en el sistema financiero ni con cheques rechazados en el BCRA. Puede que no tenga productos bancarios (tarjeta, préstamo). El BCRA no reporta deuda comercial ni juicios.</div>
       </div></div>
-    </div>` + notaPie();
+    </div>
+    <div id="eygbox"></div>` + notaPie();
   }
 
   const ents = (actual&&actual.entidades||[]).filter(e=>e.situacion>0 || e.monto>0);
@@ -351,6 +386,9 @@ function vistaResultado(cuit, nombre, data){
       <div class="expli">${esc(expli)}</div>
     </div></div>
     ${resumen}
+  </div>
+  <div id="eygbox"></div>
+  <div class="rescard">
     ${tablaEnt}
     ${chBloque}
     ${evo}
@@ -358,13 +396,121 @@ function vistaResultado(cuit, nombre, data){
 }
 
 function notaPie(){
-  return `<div class="nota"><b>Qué muestra y qué no.</b> Este informe sale de la <b>Central de Deudores del BCRA</b>: refleja la deuda en el <b>sistema financiero</b> (bancos, tarjetas, financieras) y los <b>cheques rechazados</b>. Los montos los informa el BCRA en miles de pesos (acá ya convertidos) y pueden diferir del saldo exacto. <b>No incluye</b> deuda comercial entre privados ni juicios (eso es lo que venden Veraz/Nosis). El mejor complemento es <b>cómo te paga a vos</b>: eso lo tenés en <a href="${EYG.abs('finanzas/cobranzas.html')}" style="color:var(--teal);font-weight:700">Cobranzas</a>.</div>`;
+  return `<div class="nota"><b>Cómo leer este informe.</b> La parte del <b>BCRA</b> (Central de Deudores) refleja la deuda en el <b>sistema financiero</b> (bancos, tarjetas, financieras) y los <b>cheques rechazados</b>; los montos vienen en miles de pesos (acá ya convertidos) y se actualizan una vez por mes. <b>No incluye</b> deuda comercial entre privados ni juicios (eso es lo que venden Veraz/Nosis). La tarjeta <b>“Cómo te paga a vos”</b> sale de tu propia cuenta corriente en Odoo (Cobranzas), en vivo: es el dato que ni Veraz tiene. Juntá los dos para decidir el beneficio de pago.</div>`;
+}
+/* ================= CRUCE CON COBRANZAS (Odoo) =================
+   Dado el CUIT, busca el cliente en Odoo por su `vat` y calcula su cuenta corriente
+   con EXACTAMENTE la misma lógica que el módulo Cobranzas: deuda neta (facturas − NC
+   − recibos sin imputar − pagos en borrador), vencido real y tramo de mora. Así el
+   panel dice "cómo te paga a vos", que es el dato que ni Veraz ni el BCRA tienen. */
+let PERFIL=null;
+const ROLES_VE_EYG=["finanzas","direccion","admin","cobranzas"]; // quién ve la deuda interna
+
+function puedeVerEyG(){
+  if(!PERFIL) return false;
+  if(ROLES_VE_EYG.includes(PERFIL.rol)) return true;
+  // super-admins (Diego/German) ven todo aunque su rol sea otro
+  const SUPER=["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122","53ab45c75c97fc80109dddf425c8343ca47287b95bcad8ee868cad8fd3d171bd"];
+  return SUPER.includes(PERFIL._h);
+}
+
+async function cruzarCobranzas(cuit){
+  const fmt = fmtCuit(cuit);
+  const partners = await EYG.rpc("res.partner","search_read",
+    [["|",["vat","=",fmt],["vat","=",cuit]]],
+    {fields:["id","name","property_payment_term_id"], limit:8, context:{lang:"es_AR"}});
+  if(!partners.length) return {cliente:false};
+  const ids = partners.map(p=>p.id);
+  const [ml, draft, pagos] = await Promise.all([
+    EYG.rpc("account.move.line","search_read",
+      [[["partner_id","in",ids],["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual","!=",0]]],
+      {fields:["move_type","date","date_maturity","amount_residual","balance"], limit:0}),
+    EYG.rpc("account.payment","search_read",
+      [[["partner_id","in",ids],["partner_type","=","customer"],["payment_type","=","inbound"],["state","=","draft"]]],
+      {fields:["amount"], limit:0}),
+    EYG.rpc("account.payment","search_read",
+      [[["partner_id","in",ids],["partner_type","=","customer"],["payment_type","=","inbound"],["state","=","posted"],["is_internal_transfer","=",false]]],
+      {fields:["amount","date"], limit:80, order:"date desc"}),
+  ]);
+  const hoyStr = new Date().toISOString().slice(0,10);
+  let saldo=0, vencidoGross=0, minVenc=null, base=0, cobradoSinImp=0, nfac=0;
+  for(const l of ml){
+    const r=l.amount_residual||0; if(Math.abs(r)<0.5) continue;
+    const venc=l.date_maturity||l.date||null;
+    const esFac=l.move_type==="out_invoice", esNC=l.move_type==="out_refund";
+    saldo+=r;
+    if(esFac && r>0) nfac++;
+    if(r<0 && !esFac && !esNC) cobradoSinImp+=(-r);   // recibo posteado sin imputar
+    if(r>0){ base+=(l.balance||r); if(venc && venc<hoyStr){ vencidoGross+=r; if(!minVenc||venc<minVenc) minVenc=venc; } }
+  }
+  const borrador = draft.reduce((a,d)=>a+(d.amount||0),0);
+  const deudaReal = saldo - borrador;
+  const gris = cobradoSinImp + borrador;
+  let vencidoReal = Math.max(0, vencidoGross - gris);
+  vencidoReal = Math.min(vencidoReal, Math.max(0, deudaReal));
+  let situacion, mora, tramo;
+  if(saldo<-1){ situacion="afavor"; mora=0; tramo=tramoEyG(0); }
+  else if(deudaReal<=1){ situacion="cubierto"; mora=0; tramo=tramoEyG(0); }
+  else { mora = vencidoReal>1 ? diasDesde(minVenc) : 0; tramo=tramoEyG(mora); situacion = mora>=121?"incobrable":(vencidoReal>1?"vencido":"porvencer"); }
+  const ult = pagos[0]||null;
+  const y1 = new Date(Date.now()-365*86400000).toISOString().slice(0,10);
+  const pagos12 = pagos.filter(p=>String(p.date)>=y1);
+  return { cliente:true, nombre:partners[0].name, nPartners:partners.length,
+    plazo: partners[0].property_payment_term_id ? partners[0].property_payment_term_id[1] : "",
+    saldo, deudaReal, vencidoReal, gris, mora, tramo, situacion, nfac,
+    ultPago:ult, nPagos12:pagos12.length, tot12:pagos12.reduce((a,p)=>a+(p.amount||0),0) };
+}
+
+/* Veredicto interno: cómo te paga. */
+function veredictoEyG(d){
+  if(!d.cliente) return {cls:"n", t:"No figura como cliente en EyG", sub:"Este CUIT no está en Odoo. Puede ser un cliente nuevo, o estar a nombre de otra razón social."};
+  if(d.situacion==="afavor") return {cls:"g", t:"Al día · tiene saldo a favor", sub:"No te debe; incluso quedó un saldo a su favor."};
+  if(d.deudaReal<=1 && d.gris<=1) return {cls:"g", t:"Al día con vos", sub:"Sin deuda pendiente. Buen pagador."};
+  if(d.deudaReal<=1 && d.gris>1) return {cls:"y", t:"Pagó, falta imputar", sub:"El pago llegó pero falta el comprobante de retención / la orden de pago para cerrarlo."};
+  if(d.vencidoReal<=1) return {cls:"g", t:"Al día (deuda por vencer)", sub:"Te debe, pero todavía no venció. Viene en fecha."};
+  if(d.mora>=121) return {cls:"r", t:"Muy atrasado · +120 días", sub:"Deuda vencida hace más de 4 meses. Riesgo alto para nuevos beneficios."};
+  if(d.mora>=61)  return {cls:"r", t:"Atrasado · "+d.tramo.l, sub:"Tiene plata vencida con vos hace bastante."};
+  if(d.mora>=31)  return {cls:"y", t:"Con atraso · "+d.tramo.l, sub:"Se está demorando en pagarte."};
+  return {cls:"y", t:"Atraso leve · "+d.tramo.l, sub:"Un poco demorado, nada grave."};
+}
+
+function tarjetaEyG(d){
+  const v = veredictoEyG(d);
+  const cab = `<div class="eygh">🤝 Cómo te paga a vos <span class="tag">EyG</span></div>`;
+  if(!d.cliente){
+    return `<div class="eygc">${cab}<div class="eygver n"><div class="dot"></div><div class="vt"><b>${esc(v.t)}</b><span>${esc(v.sub)}</span></div></div></div>`;
+  }
+  const ult = d.ultPago;
+  const kpis = `<div class="eygkpis">
+    <div class="rc"><div class="l">Te debe hoy</div><div class="v" style="color:${d.deudaReal>1?"var(--ink)":"var(--ok)"}">${d.deudaReal>1?money(d.deudaReal):"$0"}</div><div class="s">${d.nfac?d.nfac+" factura"+(d.nfac>1?"s":"")+" abierta"+(d.nfac>1?"s":""):"sin facturas abiertas"}</div></div>
+    <div class="rc"><div class="l">Vencido</div><div class="v" style="color:${d.vencidoReal>1?"var(--rojo)":"var(--ok)"}">${d.vencidoReal>1?money(d.vencidoReal):"$0"}</div><div class="s">${d.vencidoReal>1?("hace "+d.mora+" días · "+d.tramo.l):"nada vencido ✓"}</div></div>
+    <div class="rc"><div class="l">Último pago</div><div class="v" style="font-size:16px">${ult?fmtFecha(ult.date):"—"}</div><div class="s">${ult?(money(ult.amount)+(diasDesde(ult.date)!=null?" · hace "+diasDesde(ult.date)+" d":"")):"sin pagos registrados"}</div></div>
+    <div class="rc"><div class="l">Últimos 12 meses</div><div class="v" style="font-size:16px">${money(d.tot12)}</div><div class="s">${d.nPagos12} pago${d.nPagos12===1?"":"s"}</div></div>
+  </div>`;
+  const mini = `<div class="eygmini">${d.plazo?("Plazo pactado: <b style='color:var(--teal-deep);margin:0 4px'>"+esc(d.plazo)+"</b>"):""}${d.gris>1?(" · $"+Math.round(d.gris).toLocaleString("es-AR")+" recibido sin imputar (falta papel)"):""}<a href="${EYG.abs('finanzas/cobranzas.html')}">Abrir en Cobranzas →</a></div>`;
+  return `<div class="eygc">${cab}
+    <div class="eygver ${v.cls}"><div class="dot"></div><div class="vt"><b>${esc(v.t)}</b><span>${esc(v.sub)}</span></div></div>
+    ${kpis}${mini}</div>`;
+}
+
+async function fillEyG(cuit){
+  const box = $("eygbox"); if(!box) return;
+  if(!(window.EYG && EYG.rpc)) return;   // vista previa / sin Odoo: no muestra nada
+  if(!puedeVerEyG()) return;             // comercial/líder: solo ven el BCRA, no la deuda interna
+  box.innerHTML = `<div class="eygc"><div class="eygh">🤝 Cómo te paga a vos <span class="tag">EyG</span></div><div class="eygload"><div class="sp"></div>Buscando su cuenta corriente en EyG…</div></div>`;
+  try{
+    const d = await cruzarCobranzas(cuit);
+    box.innerHTML = tarjetaEyG(d);
+  }catch(e){
+    box.innerHTML = `<div class="eygc"><div class="eygh">🤝 Cómo te paga a vos <span class="tag">EyG</span></div><div class="eygload" style="color:var(--gris)">No se pudo leer el historial interno ahora. ${esc(e.message||"")}</div></div>`;
+  }
 }
 window.ir = ir;
 
 /* Módulo EN PRUEBAS: sólo para la huella del dueño mientras se construye.
    Para liberarlo al equipo: quitar {pruebas:…} de acá y la línea `pruebas` del core.js. */
 EYG.guard(["finanzas","direccion","admin","comercial","lider"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(perfil=>{
+  PERFIL = perfil;
   document.body.innerHTML = EYG.layout(perfil, "credito", '<div id="cont"></div>', "Situación crediticia");
   pintar();
 });
