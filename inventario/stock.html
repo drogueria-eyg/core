@@ -613,19 +613,51 @@ function tabRevisar(){
       <div class="kpi warn"><div class="l">Valor a regularizar</div><div class="n">${fmtM(tot)}</div><div class="d">stock fantasma en el sistema</div></div>
     </div>
     <div class="tablecard" style="margin-top:14px">
-      <div class="thead" style="grid-template-columns:2.6fr 1.2fr 0.9fr 1fr 0.8fr">
-        <div>Producto</div><div class="hide-sm">Código</div><div class="tr-r">Unidades</div><div class="tr-r">Valor</div><div class="tr-r">Vence</div>
+      <div class="thead" style="grid-template-columns:2.4fr 0.7fr 0.9fr 0.6fr 1.9fr">
+        <div>Producto</div><div class="tr-r">Unid.</div><div class="tr-r">Valor</div><div class="tr-r">Vence</div><div style="text-align:right">Acción</div>
       </div>
       ${ARCH.map(r=>{const venc=r.min===null?'<span style="color:#CCD5D3">—</span>':r.min<0?'<b style="color:var(--red)">vencido</b>':r.min+'m';
-        return `<div class="row" style="grid-template-columns:2.6fr 1.2fr 0.9fr 1fr 0.8fr;cursor:default">
-          <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">archivado en Odoo</div></div>
-          <div class="hide-sm cmeta">${esc(r.code||"")}</div>
+        return `<div class="row" style="grid-template-columns:2.4fr 0.7fr 0.9fr 0.6fr 1.9fr;cursor:default" id="arow${r.id}">
+          <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">${r.code?esc(r.code)+" · ":""}archivado en Odoo</div></div>
           <div class="tr-r num">${r.qty.toLocaleString("es-AR")}</div>
           <div class="tr-r num">${money(r.val)}</div>
           <div class="tr-r">${venc}</div>
+          <div class="actions" style="display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap">
+            <button class="mini-btn" onclick="accionCero(${r.id})" title="Ajuste de inventario a 0 (regulariza)">Poner en 0</button>
+            <button class="mini-btn" onclick="accionDestruir(${r.id})" style="border-color:#F0B3B0;color:var(--red)" title="Scrap: pasa a la ubicación Scrap y sale del stock">Destruir</button>
+            <button class="mini-btn" onclick="accionDesarchivar(${r.id})" style="border-color:#BFE0DC;color:var(--teal-deep)" title="Reactivar en el catálogo">Desarchivar</button>
+          </div>
         </div>`}).join("")}
     </div>
-    <div class="note" style="margin-top:12px">⚙️ Los botones de acción por producto (poner en 0 / marcar para destruir / archivar) los habilito apenas definamos con vos qué hace exactamente cada uno, porque escriben en el inventario real de Odoo.</div>`;
+    <div class="note info" style="margin-top:12px"><b>Poner en 0</b>: ajuste de inventario a 0 (era un fantasma del sistema). <b>Destruir</b>: crea un scrap, sale del stock y queda registrado (para mercadería que sí está y hay que destruir). <b>Desarchivar</b>: lo reactiva y vuelve a las listas normales. Cada acción pide confirmación y escribe en Odoo.</div>`;
+}
+async function _quantsInternos(pid, pos){
+  return await rpc("stock.quant","search_read",[[["product_id","=",pid],["location_id.usage","=","internal"],["quantity",pos?">":"!=",0]]],{fields:["id","quantity","lot_id","location_id"]});
+}
+async function accionCero(id){
+  const r=ARCH.find(x=>x.id===id); if(!r) return;
+  if(!confirm(`¿Poner en CERO el stock de "${cleanName(r.name)}" (${r.qty} u)?\n\nAjuste de inventario a 0 en Odoo. Es reversible.`)) return;
+  try{
+    const qs=await _quantsInternos(id,false);
+    for(const q of qs){ await rpc("stock.quant","write",[[q.id],{inventory_quantity:0}]); await rpc("stock.quant","action_apply_inventory",[[q.id]]); }
+    toast("✓ Stock puesto en 0"); await cargar();
+  }catch(e){ alert("No se pudo poner en 0: "+(e.message||e)); }
+}
+async function accionDestruir(id){
+  const r=ARCH.find(x=>x.id===id); if(!r) return;
+  if(!confirm(`¿Marcar para DESTRUIR "${cleanName(r.name)}" (${r.qty} u)?\n\nCrea un scrap en Odoo: las unidades pasan a la ubicación Scrap y salen del stock. Queda registrado.`)) return;
+  try{
+    const qs=await _quantsInternos(id,true);
+    for(const q of qs){ const vals={product_id:id,scrap_qty:q.quantity,location_id:q.location_id[0],scrap_location_id:16}; if(q.lot_id)vals.lot_id=q.lot_id[0];
+      const sid=await rpc("stock.scrap","create",[vals]); await rpc("stock.scrap","action_validate",[[sid]]); }
+    toast("✓ Enviado a destruir (scrap)"); await cargar();
+  }catch(e){ alert("No se pudo destruir: "+(e.message||e)); }
+}
+async function accionDesarchivar(id){
+  const r=ARCH.find(x=>x.id===id); if(!r) return;
+  if(!confirm(`¿Desarchivar "${cleanName(r.name)}"?\n\nVuelve al catálogo activo y reaparece en las listas normales.`)) return;
+  try{ await rpc("product.product","write",[[id],{active:true}]); toast("✓ Desarchivado"); await cargar(); }
+  catch(e){ alert("No se pudo desarchivar: "+(e.message||e)); }
 }
 
 // ---------- TAB: Reponer / Comprar ----------
