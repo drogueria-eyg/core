@@ -38,6 +38,28 @@
   .spark .st{font-size:11px;font-weight:700;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;display:flex;justify-content:space-between}
   .spark .leg{font-size:11px;color:var(--gris);margin-top:5px;display:flex;gap:14px}
   .spark .leg i{display:inline-block;width:18px;height:3px;border-radius:2px;vertical-align:3px;margin-right:5px}
+  .chartwrap{cursor:pointer;position:relative;border-radius:8px;transition:background .12s}
+  .chartwrap:hover{background:#F6FBFA}
+  .chartwrap .zoom{position:absolute;top:-1px;right:2px;font-size:10px;font-weight:800;color:var(--teal);opacity:.7}
+  .chartwrap:hover .zoom{opacity:1}
+  .spark .mticks{display:flex;justify-content:space-between;font-size:9.5px;color:var(--gris2);margin-top:3px;font-weight:600}
+  /* modal gráfico (patrón reutilizable) */
+  .scrim2{position:fixed;inset:0;background:rgba(6,65,62,.42);opacity:0;pointer-events:none;transition:opacity .2s;z-index:80}
+  .scrim2.on{opacity:1;pointer-events:auto}
+  .chartmodal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(.98);opacity:0;pointer-events:none;transition:.2s;z-index:90;
+    width:960px;max-width:96vw;max-height:92vh;background:var(--surface);border-radius:16px;box-shadow:0 20px 70px rgba(6,65,62,.3);display:flex;flex-direction:column;overflow:hidden}
+  .chartmodal.on{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+  .cm-head{display:flex;align-items:center;gap:12px;padding:18px 22px;border-bottom:1px solid var(--line)}
+  .cm-head h3{font-size:17px;font-weight:800}
+  .cm-head .x{margin-left:auto;cursor:pointer;font-size:22px;color:var(--gris);line-height:1}
+  .cm-bar{display:flex;align-items:center;gap:14px;padding:14px 22px 4px;flex-wrap:wrap}
+  .cm-legend{display:flex;gap:16px;font-size:12.5px;color:var(--gris);margin-left:auto}
+  .cm-legend i{display:inline-block;width:16px;height:3px;border-radius:2px;vertical-align:3px;margin-right:6px}
+  .cm-chart{position:relative;padding:8px 18px 6px}
+  .cm-chart svg{width:100%;display:block}
+  #cmTip{position:absolute;pointer-events:none;background:var(--ink);color:#fff;padding:8px 11px;border-radius:9px;font-size:12px;line-height:1.55;opacity:0;transition:opacity .1s;white-space:nowrap;z-index:5;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+  #cmTip b{font-weight:700}
+  .cm-note{padding:2px 22px 18px;font-size:12.5px;color:var(--gris)}.cm-note b{color:var(--ink)}
   .hmetrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0;border-top:1px solid var(--line);background:#FAFDFC}
   .hm{padding:13px 18px;border-right:1px solid var(--line)}
   .hm:last-child{border-right:0}
@@ -194,6 +216,7 @@ const money=EYG.money, esc=EYG.esc;
 const PROVEEDOR_T=2634; // compra informal: se excluye del flujo formal de compras
 const fmtM=n=>"$"+(n/1e6).toFixed(1)+"M";
 const fmtK=n=>Math.abs(n)>=1e6?fmtM(n):Math.abs(n)>=1000?"$"+Math.round(n/1000)+"k":money(n);
+const fmtAxis=n=>{const a=Math.abs(n);return a>=1e6?"$"+(a/1e6).toFixed(a>=1e7?0:1)+"M":a>=1e3?"$"+Math.round(a/1e3)+"k":"$"+Math.round(a);};
 const prog=t=>{const e=document.getElementById("prog");if(e)e.textContent=t;};
 
 const HOY=new Date(); HOY.setHours(0,0,0,0);
@@ -375,14 +398,155 @@ function render(){
 }
 
 function sparkSVG(){
-  const W=280,H=54,pad=3,n=FLUJO.meses.length||1;
+  const W=280,H=58,pad=4,n=FLUJO.meses.length||1;
   const mx=Math.max(1,...FLUJO.ventas,...FLUJO.compras);
-  const pts=arr=>arr.map((v,i)=>`${(pad+i*(W-2*pad)/(n-1||1)).toFixed(1)},${(H-pad-v/mx*(H-2*pad)).toFixed(1)}`).join(" ");
+  const X=i=>pad+(n===1?(W-2*pad)/2:i*(W-2*pad)/(n-1));
+  const Y=v=>H-pad-v/mx*(H-2*pad);
+  const pts=arr=>arr.map((v,i)=>`${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(" ");
+  const grid=FLUJO.meses.map((m,i)=>`<line x1="${X(i).toFixed(1)}" y1="3" x2="${X(i).toFixed(1)}" y2="${H-3}" stroke="var(--line)" stroke-width="1" opacity=".55"/>`).join("");
+  const area=`${X(0).toFixed(1)},${(H-pad).toFixed(1)} ${pts(FLUJO.ventas)} ${X(n-1).toFixed(1)},${(H-pad).toFixed(1)}`;
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none">
+    ${grid}
+    <polygon points="${area}" fill="var(--teal)" opacity=".08"/>
     <polyline fill="none" stroke="var(--compra)" stroke-width="2" points="${pts(FLUJO.compras)}"/>
     <polyline fill="none" stroke="var(--teal)" stroke-width="2.2" points="${pts(FLUJO.ventas)}"/>
   </svg>`;
 }
+function monthTicks(){
+  const m=FLUJO.meses; if(!m.length) return "";
+  const idx=[...new Set([0,Math.floor(m.length/3),Math.floor(2*m.length/3),m.length-1])];
+  return idx.map(i=>`<span>${m[i]}</span>`).join("");
+}
+
+/* ===================== modal de evolución (ampliable) ===================== */
+let DIARIO=null, GRAF={gran:"mes",data:null,geom:null};
+async function fetchDiario(){
+  if(DIARIO) return DIARIO;
+  const ini=new Date(HOY.getFullYear(),HOY.getMonth()-24,1);
+  const [sv,cv]=await Promise.all([
+    rpc("sale.order","read_group",[[["state","in",["sale","done"]],["date_order",">=",iso(ini)]],["amount_untaxed:sum"],["date_order:day"]],{lazy:false,limit:3000}),
+    rpc("purchase.order","read_group",[[["state","in",["purchase","done"]],["date_order",">=",iso(ini)],["partner_id","!=",PROVEEDOR_T]],["amount_untaxed:sum"],["date_order:day"]],{lazy:false,limit:3000}),
+  ]);
+  const key=g=>(g.__range&&g.__range["date_order:day"])?g.__range["date_order:day"].from.slice(0,10):null;
+  const V={},C={}; let min=iso(HOY);
+  for(const g of sv){const k=key(g);if(k){V[k]=g.amount_untaxed||0;if(k<min)min=k;}}
+  for(const g of cv){const k=key(g);if(k){C[k]=g.amount_untaxed||0;if(k<min)min=k;}}
+  DIARIO={V,C,min};
+  return DIARIO;
+}
+const pad2=n=>String(n).padStart(2,"0");
+function aggregar(gran){
+  const {V,C,min}=DIARIO;
+  const start=new Date(min+"T00:00:00"), end=new Date(HOY);
+  const out=[];
+  if(gran==="dia"){
+    for(let d=new Date(start); d<=end; d.setDate(d.getDate()+1)){
+      const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+      out.push({lab:`${pad2(d.getDate())}/${pad2(d.getMonth()+1)}`, sub:`${pad2(d.getDate())}/${pad2(d.getMonth()+1)}/${d.getFullYear()}`, v:V[k]||0, c:C[k]||0});
+    }
+  } else if(gran==="semana"){
+    const b={};
+    const lunes=dt=>{const x=new Date(dt);const wd=(x.getDay()+6)%7;x.setDate(x.getDate()-wd);x.setHours(0,0,0,0);return x;};
+    for(let d=new Date(start); d<=end; d.setDate(d.getDate()+1)){
+      const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+      const mk=lunes(d), kk=`${mk.getFullYear()}-${pad2(mk.getMonth()+1)}-${pad2(mk.getDate())}`;
+      const o=b[kk]||(b[kk]={mk,v:0,c:0}); o.v+=V[k]||0; o.c+=C[k]||0;
+    }
+    Object.values(b).sort((a,b)=>a.mk-b.mk).forEach(o=>{const mk=o.mk;
+      out.push({lab:`${pad2(mk.getDate())}/${pad2(mk.getMonth()+1)}`, sub:`semana del ${pad2(mk.getDate())}/${pad2(mk.getMonth()+1)}/${mk.getFullYear()}`, v:o.v, c:o.c});});
+  } else {
+    const b={};
+    for(let d=new Date(start); d<=end; d.setDate(d.getDate()+1)){
+      const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+      const mk=`${d.getFullYear()}-${pad2(d.getMonth()+1)}`;
+      const o=b[mk]||(b[mk]={y:d.getFullYear(),m:d.getMonth(),v:0,c:0}); o.v+=V[k]||0; o.c+=C[k]||0;
+    }
+    Object.keys(b).sort().forEach(mk=>{const o=b[mk];
+      out.push({lab:`${MESES_ES[o.m]}'${String(o.y).slice(2)}`, sub:`${MESES_ES[o.m]} ${o.y}`, v:o.v, c:o.c});});
+  }
+  return out;
+}
+function chartSVG(data){
+  const W=960,H=360,padL=64,padR=18,padT=18,padB=44;
+  const n=data.length||1, plotW=W-padL-padR, plotH=H-padT-padB;
+  const mx=Math.max(1,...data.map(d=>Math.max(d.v,d.c)));
+  const X=i=>padL+(n===1?plotW/2:i*plotW/(n-1));
+  const Y=v=>padT+plotH-v/mx*plotH;
+  let grid="",ylab=""; const GL=4;
+  for(let g=0;g<=GL;g++){const yy=(padT+plotH-g/GL*plotH).toFixed(1), val=mx*g/GL;
+    grid+=`<line x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}" stroke="var(--line)" stroke-width="1"/>`;
+    ylab+=`<text x="${padL-8}" y="${(+yy+4)}" text-anchor="end" font-size="11" fill="var(--gris2)">${fmtAxis(val)}</text>`;}
+  const step=Math.max(1,Math.ceil(n/11)); let xlab="";
+  for(let i=0;i<n;i+=step) xlab+=`<text x="${X(i).toFixed(1)}" y="${H-padB+18}" text-anchor="middle" font-size="10.5" fill="var(--gris2)">${data[i].lab}</text>`;
+  const line=(f,col,w)=>`<polyline fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" stroke-linecap="round" points="${data.map((d,i)=>X(i).toFixed(1)+","+Y(f(d)).toFixed(1)).join(" ")}"/>`;
+  const area=`${X(0).toFixed(1)},${(padT+plotH).toFixed(1)} ${data.map((d,i)=>X(i).toFixed(1)+","+Y(d.v).toFixed(1)).join(" ")} ${X(n-1).toFixed(1)},${(padT+plotH).toFixed(1)}`;
+  GRAF.geom={W,H,padL,padR,padT,padB,plotW,plotH,mx,n};
+  return `<svg id="cmSvg" viewBox="0 0 ${W} ${H}">
+    ${grid}${ylab}${xlab}
+    <polygon points="${area}" fill="var(--teal)" opacity=".08"/>
+    ${line(d=>d.c,"var(--compra)",2)}
+    ${line(d=>d.v,"var(--teal)",2.4)}
+    <line id="cmGuide" x1="0" y1="${padT}" x2="0" y2="${padT+plotH}" stroke="var(--gris2)" stroke-width="1" stroke-dasharray="4 3" opacity="0"/>
+    <circle id="cmDotC" r="4" fill="var(--compra)" opacity="0"/>
+    <circle id="cmDotV" r="4.5" fill="var(--teal)" opacity="0"/>
+    <rect id="cmHit" x="${padL}" y="${padT}" width="${plotW}" height="${plotH}" fill="transparent"/>
+  </svg>`;
+}
+function ensureChartModal(){
+  if(document.getElementById("chartmodal")) return;
+  const sc=document.createElement("div"); sc.className="scrim2"; sc.id="scrim2"; sc.onclick=cerrarGraf; document.body.appendChild(sc);
+  const m=document.createElement("div"); m.className="chartmodal"; m.id="chartmodal";
+  m.innerHTML=`<div class="cm-head"><h3>📈 Evolución de compra vs venta</h3><span class="x" onclick="cerrarGraf()">✕</span></div>
+    <div class="cm-bar">
+      <div class="segs" id="cmSegs"><button data-g="dia" onclick="setGran('dia')">Día</button><button data-g="semana" onclick="setGran('semana')">Semana</button><button data-g="mes" class="on" onclick="setGran('mes')">Mes</button></div>
+      <div class="cm-legend"><span><i style="background:var(--teal)"></i>Ventas</span><span><i style="background:var(--compra)"></i>Compras</span></div>
+    </div>
+    <div class="cm-chart" id="cmChart"></div>
+    <div class="cm-note" id="cmResumen"></div>`;
+  document.body.appendChild(m);
+}
+async function openGrafico(){
+  ensureChartModal();
+  document.getElementById("scrim2").classList.add("on");
+  document.getElementById("chartmodal").classList.add("on");
+  const chart=document.getElementById("cmChart");
+  chart.innerHTML='<div class="loading" style="padding:60px"><div class="spinner"></div>Cargando la evolución día a día…</div>';
+  try{ await fetchDiario(); renderGrafico(GRAF.gran||"mes"); }
+  catch(e){ chart.innerHTML='<div class="errbox" style="margin:20px">No pude cargar el detalle: '+esc(e.message)+'</div>'; }
+}
+function setGran(g){ GRAF.gran=g; document.querySelectorAll("#cmSegs button").forEach(b=>b.classList.toggle("on",b.dataset.g===g)); renderGrafico(g); }
+function renderGrafico(g){
+  const data=aggregar(g); GRAF.data=data;
+  const chart=document.getElementById("cmChart");
+  chart.innerHTML=chartSVG(data)+'<div id="cmTip"></div>';
+  const svg=document.getElementById("cmSvg");
+  svg.addEventListener("mousemove",onHover);
+  svg.addEventListener("mouseleave",hideHover);
+  const tv=data.reduce((a,d)=>a+d.v,0), tc=data.reduce((a,d)=>a+d.c,0);
+  const un=g==="dia"?"días":g==="semana"?"semanas":"meses";
+  document.getElementById("cmResumen").innerHTML=`En este período: ventas <b>${fmtAxis(tv)}</b> · compras <b>${fmtAxis(tc)}</b> · las compras fueron el <b>${tv>0?Math.round(tc/tv*100):0}%</b> de las ventas · ${data.length} ${un}. Pasá el mouse por el gráfico para ver cada ${g==="dia"?"día":g==="semana"?"semana":"mes"}.`;
+}
+function onHover(e){
+  const g=GRAF.geom, data=GRAF.data; if(!g||!data) return;
+  const svg=document.getElementById("cmSvg"), r=svg.getBoundingClientRect();
+  const sx=(e.clientX-r.left)/r.width*g.W;
+  let idx=Math.round((sx-g.padL)/(g.n===1?1:g.plotW/(g.n-1)));
+  idx=Math.max(0,Math.min(data.length-1,idx));
+  const X=g.padL+(g.n===1?g.plotW/2:idx*g.plotW/(g.n-1));
+  const Yv=g.padT+g.plotH-data[idx].v/g.mx*g.plotH, Yc=g.padT+g.plotH-data[idx].c/g.mx*g.plotH;
+  const set=(id,at)=>{const el=document.getElementById(id);for(const k in at)el.setAttribute(k,at[k]);};
+  set("cmGuide",{x1:X,x2:X,opacity:.6});
+  set("cmDotV",{cx:X,cy:Yv,opacity:1});
+  set("cmDotC",{cx:X,cy:Yc,opacity:1});
+  const tip=document.getElementById("cmTip");
+  tip.innerHTML=`<b>${data[idx].sub}</b><br>🟢 Ventas ${fmtAxis(data[idx].v)}<br>🟡 Compras ${fmtAxis(data[idx].c)}`;
+  tip.style.opacity="1";
+  const px=svg.offsetLeft+(X/g.W)*r.width;
+  let left=px+14; const cw=svg.parentElement.clientWidth; if(left>cw-160) left=px-160;
+  tip.style.left=Math.max(4,left)+"px"; tip.style.top="14px";
+}
+function hideHover(){["cmGuide","cmDotV","cmDotC"].forEach(id=>{const el=document.getElementById(id);if(el)el.setAttribute("opacity","0");});const t=document.getElementById("cmTip");if(t)t.style.opacity="0";}
+function cerrarGraf(){const s=document.getElementById("scrim2"),m=document.getElementById("chartmodal");if(s)s.classList.remove("on");if(m)m.classList.remove("on");}
 function healthCard(rd){
   const s=salud(rd);
   const col=s.st[0]==="g"?"var(--green)":s.st[0]==="y"?"var(--org)":"var(--red)";
@@ -399,7 +563,11 @@ function healthCard(rd){
       </div>
       <div class="spark">
         <div class="st"><span>Compra vs venta · 12 meses</span><span>${fmtM((FLUJO.ventas.reduce((a,b)=>a+b,0))*1e6)}</span></div>
-        ${sparkSVG()}
+        <div class="chartwrap" onclick="openGrafico()" title="Tocá para ver la evolución día, semana y mes">
+          ${sparkSVG()}
+          <span class="zoom">⤢ ampliar</span>
+        </div>
+        <div class="mticks">${monthTicks()}</div>
         <div class="leg"><span><i style="background:var(--teal)"></i>Ventas</span><span><i style="background:var(--compra)"></i>Compras</span><span style="margin-left:auto;font-weight:700">compras ≈ ${ratio.toFixed(0)}% de ventas</span></div>
       </div>
     </div>
@@ -696,7 +864,7 @@ function sugerencia(r,rp){
   return `Rotación saludable. Mantener el nivel de reposición actual.`;
 }
 function cerrar(){document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");}
-document.addEventListener("keydown",e=>{if(e.key==="Escape")cerrar();});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){cerrar();cerrarGraf();}});
 
 // ---------- drawer proveedor: armar pedido + borrador Odoo ----------
 let PEDIDO={id:null,name:"",items:[]};
