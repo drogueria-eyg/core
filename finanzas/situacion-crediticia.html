@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Situación crediticia · EyG Core</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/core.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../assets/core.js?v=13"></script>
+<style>
+  :root{
+    --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
+    --agua:#E2F1EF; --coral:#EC8B5E; --ink:#0E1F1D; --gris:#5F716E; --gris2:#8A9A97;
+    --surface:#fff; --bg:#F4F8F7; --line:#DCE8E6; --radius:12px;
+    --shadow:0 1px 2px rgba(6,65,62,.05), 0 6px 24px rgba(6,65,62,.06);
+    /* semáforo / situación */
+    --ok:#1E7D46; --okbg:#E4F5E9;
+    --s1:#1E7D46; --s1bg:#E4F5E9;   /* normal */
+    --s2:#0A6BB0; --s2bg:#E4F0FA;   /* riesgo bajo */
+    --s3:#B7791F; --s3bg:#FBE9CF;   /* riesgo medio */
+    --s4:#C4602A; --s4bg:#FBE3D4;   /* riesgo alto */
+    --s5:#B0413E; --s5bg:#FBE0DF;   /* irrecuperable */
+    --rojo:#B0413E; --rojobg:#FBE0DF; --amar:#B7791F; --amarbg:#FBF3D9;
+  }
+  .cred{max-width:960px;margin:0 auto}
+  /* Buscador */
+  .searchbox{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:20px 22px;margin-bottom:18px}
+  .searchbox h2{font-size:16px;font-weight:800;color:var(--ink);margin-bottom:4px}
+  .searchbox p{font-size:13px;color:var(--gris);line-height:1.5;margin-bottom:14px}
+  .srow{display:flex;gap:10px;flex-wrap:wrap}
+  .srow input{flex:1;min-width:200px;font-family:inherit;font-size:18px;font-weight:700;letter-spacing:.5px;color:var(--ink);padding:13px 15px;border:2px solid var(--line);border-radius:11px;background:var(--bg);outline:none}
+  .srow input:focus{border-color:var(--teal-med);background:#fff}
+  .srow button{font-family:inherit;font-size:15px;font-weight:800;color:#fff;background:var(--teal);border:0;border-radius:11px;padding:0 26px;cursor:pointer;transition:background .12s}
+  .srow button:hover{background:var(--teal-deep)}
+  .srow button:disabled{opacity:.6;cursor:default}
+  .recientes{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px;align-items:center}
+  .recientes .lb{font-size:11.5px;color:var(--gris2);font-weight:700}
+  .chip{font-size:12px;font-weight:600;color:var(--teal-deep);background:var(--agua);border:1px solid var(--line);border-radius:20px;padding:4px 11px;cursor:pointer}
+  .chip:hover{background:#d3ece8}
+  .msgerr{margin-top:12px;font-size:13px;color:var(--rojo);background:var(--rojobg);border:1px solid #f0cfce;border-radius:9px;padding:10px 13px;display:none}
+
+  /* Estado de carga */
+  .cargando{text-align:center;padding:46px 0;color:var(--gris)}
+  .cargando .sp{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--teal);border-radius:50%;margin:0 auto 12px;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* Resultado */
+  .rescard{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;margin-bottom:16px}
+  .semaf{display:flex;gap:18px;align-items:center;padding:20px 22px;flex-wrap:wrap}
+  .semaf.g{background:linear-gradient(135deg,#e9f7ee,#f4fbf6)} .semaf.y{background:linear-gradient(135deg,#fbf3d9,#fdf9ec)} .semaf.r{background:linear-gradient(135deg,#fbe0df,#fdeeed)}
+  .luz{width:56px;height:56px;border-radius:50%;flex:none;box-shadow:0 0 0 6px rgba(255,255,255,.55)}
+  .semaf.g .luz{background:var(--ok)} .semaf.y .luz{background:var(--amar)} .semaf.r .luz{background:var(--rojo)}
+  .semt{flex:1;min-width:220px}
+  .semt .est{font-size:11px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase}
+  .semaf.g .est{color:var(--ok)} .semaf.y .est{color:var(--amar)} .semaf.r .est{color:var(--rojo)}
+  .semt .nom{font-size:20px;font-weight:800;color:var(--ink);margin:2px 0 3px;line-height:1.2}
+  .semt .cuit{font-size:13px;color:var(--gris);font-weight:600}
+  .semt .expli{font-size:13.5px;color:var(--ink);margin-top:7px;line-height:1.5}
+
+  .resumen{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--line);border-top:1px solid var(--line)}
+  .rc{background:var(--surface);padding:14px 16px}
+  .rc .l{font-size:11px;color:var(--gris);font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+  .rc .v{font-size:20px;font-weight:800;color:var(--ink);margin-top:3px;line-height:1.15}
+  .rc .s{font-size:11.5px;color:var(--gris2);margin-top:2px}
+
+  .sec{padding:18px 22px;border-top:1px solid var(--line)}
+  .sec h3{font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--teal-deep);margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .sec h3 .per{font-weight:600;text-transform:none;letter-spacing:0;color:var(--gris2);font-size:12px}
+
+  table.ent{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.ent th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--gris2);font-weight:700;padding:6px 8px;border-bottom:1px solid var(--line)}
+  table.ent td{padding:9px 8px;border-bottom:1px solid #eef4f2;vertical-align:middle}
+  table.ent td.r{text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
+  .sit{display:inline-flex;align-items:center;gap:6px;font-weight:800;font-size:12px;padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .sit .d{width:7px;height:7px;border-radius:50%;background:currentColor}
+  .flag{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;padding:2px 7px;border-radius:5px;background:var(--rojobg);color:var(--rojo);margin-left:4px}
+  .flag.w{background:var(--amarbg);color:var(--amar)}
+
+  .evo{display:flex;gap:3px;flex-wrap:wrap}
+  .evocell{width:26px;height:30px;border-radius:5px;display:flex;align-items:flex-end;justify-content:center;font-size:9px;font-weight:800;color:#fff;position:relative;cursor:default}
+  .evocell span{padding-bottom:2px;opacity:.9}
+  .evoleg{display:flex;gap:14px;flex-wrap:wrap;margin-top:11px;font-size:11.5px;color:var(--gris)}
+  .evoleg i{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-1px;margin-right:5px}
+
+  .okbox{display:flex;align-items:center;gap:10px;background:var(--okbg);border:1px solid #cfe9d8;border-radius:10px;padding:12px 15px;font-size:13.5px;color:var(--ok);font-weight:600}
+
+  .nota{font-size:12px;color:var(--gris);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:13px 16px;line-height:1.6;margin-top:4px}
+  .nota b{color:var(--teal-deep)}
+  .vacio{text-align:center;color:var(--gris2);padding:40px 0;font-size:14px}
+</style>
+</head>
+<body>
+<script>
+/* ===== Situación crediticia por CUIT — fuente: Central de Deudores del BCRA =====
+   API pública y gratuita del BCRA. El navegador le pega DIRECTO (la API manda CORS
+   abierto), así que no hace falta ninguna edge function ni pasar por Supabase.
+   Devuelve la deuda en el sistema financiero (situación 1-5 por banco), los cheques
+   rechazados y el histórico de 24 meses. NO incluye deuda comercial entre privados
+   ni juicios: para eso está el historial propio de Cobranzas (a sumar en fase 2). */
+
+const BCRA = "https://api.bcra.gob.ar/centraldedeudores/v1.0";
+const esc = EYG.esc, money = EYG.money;
+
+/* Clasificación oficial del BCRA (situación del deudor). */
+const SIT = {
+  1:{t:"Normal",           v:"var(--s1)", bg:"var(--s1bg)"},
+  2:{t:"Riesgo bajo",      v:"var(--s2)", bg:"var(--s2bg)"},
+  3:{t:"Riesgo medio",     v:"var(--s3)", bg:"var(--s3bg)"},
+  4:{t:"Riesgo alto",      v:"var(--s4)", bg:"var(--s4bg)"},
+  5:{t:"Irrecuperable",    v:"var(--s5)", bg:"var(--s5bg)"},
+  6:{t:"Irrec. téc.",      v:"var(--s5)", bg:"var(--s5bg)"},
+};
+const sitMeta = n => SIT[n] || {t:"Sin clasificar", v:"var(--gris2)", bg:"var(--bg)"};
+
+const MESES=["","enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+function periodoTxt(p){ p=String(p||""); if(p.length!==6) return p; const a=p.slice(0,4), m=+p.slice(4,6); return (MESES[m]||m)+" "+a; }
+function periodoCorto(p){ p=String(p||""); if(p.length!==6) return p; return p.slice(4,6)+"/"+p.slice(2,4); }
+
+/* CUIT: solo dígitos, 11 largo. Formatea 30-12345678-9. */
+function limpiarCuit(v){ return String(v||"").replace(/\D/g,""); }
+function fmtCuit(c){ c=limpiarCuit(c); return c.length===11 ? c.slice(0,2)+"-"+c.slice(2,10)+"-"+c.slice(10) : c; }
+/* Porcentaje amigable: montos ínfimos no muestran "0%" sino "<0,1%". */
+function pctPretty(f){ const p=(f||0)*100; if(p>0 && p<0.1) return "<0,1%"; return p.toLocaleString("es-AR",{maximumFractionDigits:1})+"%"; }
+
+/* ---- Consulta al BCRA (3 endpoints en paralelo). 404 = sin registros de ese tipo. ---- */
+async function traer(path){
+  const r = await fetch(BCRA+path, {headers:{Accept:"application/json"}});
+  if(r.status===404) return null;
+  if(!r.ok) throw new Error("BCRA respondió "+r.status);
+  const j = await r.json();
+  return j.results || null;
+}
+async function consultar(cuit){
+  const [deudas, historicas, cheques] = await Promise.all([
+    traer("/Deudas/"+cuit),
+    traer("/Deudas/Historicas/"+cuit),
+    traer("/Deudas/ChequesRechazados/"+cuit).catch(()=>null),
+  ]);
+  return {deudas, historicas, cheques};
+}
+
+/* ---- Consultas recientes (localStorage) ---- */
+const LS="eyg_cred_recientes";
+function recientes(){ try{ return JSON.parse(localStorage.getItem(LS)||"[]"); }catch(e){ return []; } }
+function guardarReciente(cuit, nombre){
+  let r = recientes().filter(x=>x.cuit!==cuit);
+  r.unshift({cuit, nombre:nombre||"", ts:Date.now()});
+  r = r.slice(0,6);
+  try{ localStorage.setItem(LS, JSON.stringify(r)); }catch(e){}
+}
+
+/* ================= UI ================= */
+const $ = id => document.getElementById(id);
+
+function vistaBuscador(){
+  const rec = recientes();
+  return `<div class="cred">
+    <div class="searchbox">
+      <h2>Consultá la situación crediticia por CUIT</h2>
+      <p>Deuda en el sistema financiero, cheques rechazados y evolución de los últimos 2 años, directo de la <b>Central de Deudores del BCRA</b>. La fuente oficial y gratuita.</p>
+      <div class="srow">
+        <input id="cuit" inputmode="numeric" autocomplete="off" placeholder="Ej: 30-54668997-9  ·  o el CUIT sin guiones" value="">
+        <button id="btn" onclick="ir()">Consultar</button>
+      </div>
+      <div class="msgerr" id="err"></div>
+      ${rec.length?`<div class="recientes"><span class="lb">Recientes:</span>${rec.map(x=>
+        `<span class="chip" onclick="ir('${x.cuit}')">${esc(fmtCuit(x.cuit))}${x.nombre?" · "+esc(x.nombre.length>22?x.nombre.slice(0,22)+"…":x.nombre):""}</span>`
+      ).join("")}</div>`:""}
+    </div>
+    <div id="res"></div>
+  </div>`;
+}
+
+function pintar(){
+  $("cont").innerHTML = vistaBuscador();
+  const inp=$("cuit"); if(inp){ inp.focus(); inp.addEventListener("keydown",e=>{ if(e.key==="Enter") ir(); }); }
+}
+
+function error(m){ const e=$("err"); if(e){ e.textContent=m; e.style.display="block"; } }
+
+async function ir(cuitForzado){
+  const raw = cuitForzado || ($("cuit")?$("cuit").value:"");
+  const cuit = limpiarCuit(raw);
+  const e=$("err"); if(e) e.style.display="none";
+  if(cuit.length!==11){ error("El CUIT/CUIL tiene que tener 11 dígitos. Fijate que esté completo."); return; }
+  if($("cuit")) $("cuit").value = fmtCuit(cuit);
+  const btn=$("btn"); if(btn){ btn.disabled=true; btn.textContent="Consultando…"; }
+  $("res").innerHTML = `<div class="rescard"><div class="cargando"><div class="sp"></div>Consultando la Central de Deudores del BCRA…</div></div>`;
+  try{
+    const data = await consultar(cuit);
+    const nombre = (data.deudas&&data.deudas.denominacion) || (data.historicas&&data.historicas.denominacion) || (data.cheques&&data.cheques.denominacion) || "";
+    guardarReciente(cuit, nombre);
+    $("res").innerHTML = vistaResultado(cuit, nombre, data);
+  }catch(err){
+    $("res").innerHTML = `<div class="rescard"><div class="vacio">No se pudo consultar al BCRA en este momento.<br><span style="font-size:12.5px;color:var(--gris2)">${esc(err.message||"")}</span><br><br><button class="chip" style="cursor:pointer" onclick="ir('${cuit}')">Reintentar</button></div></div>`;
+  }finally{
+    const b=$("btn"); if(b){ b.disabled=false; b.textContent="Consultar"; }
+    // refrescar los chips de recientes
+    const box=document.querySelector(".searchbox .recientes"); // (se re-renderiza al volver a pintar el buscador)
+  }
+}
+
+/* Peor situación (>0) de un período. Ignora situación 0 = sin clasificar. */
+function peorSituacion(ents){
+  return (ents||[]).reduce((m,e)=> (e.situacion>0 && e.situacion>m)?e.situacion:m, 0);
+}
+
+function vistaResultado(cuit, nombre, data){
+  const {deudas, historicas, cheques} = data;
+  const actual = (deudas&&deudas.periodos&&deudas.periodos[0]) || (historicas&&historicas.periodos&&historicas.periodos[0]) || null;
+
+  // Sin ningún registro en el BCRA
+  if(!actual && !cheques){
+    return `<div class="rescard">
+      <div class="semaf g"><div class="luz"></div><div class="semt">
+        <div class="est">Sin registros</div>
+        <div class="nom">${esc(nombre||"CUIT "+fmtCuit(cuit))}</div>
+        <div class="cuit">${esc(fmtCuit(cuit))}</div>
+        <div class="expli">No figura con deuda en el sistema financiero ni con cheques rechazados en el BCRA. Puede que no tenga productos bancarios (tarjeta, préstamo). El BCRA no reporta deuda comercial ni juicios.</div>
+      </div></div>
+    </div>` + notaPie();
+  }
+
+  const ents = (actual&&actual.entidades||[]).filter(e=>e.situacion>0 || e.monto>0);
+  const ws = peorSituacion(ents);
+  const totalMiles = ents.reduce((a,e)=>a+(e.monto||0),0);
+  const irregEnts = ents.filter(e=>e.situacion>=3);
+  const irregMiles = irregEnts.reduce((a,e)=>a+(e.monto||0),0);
+  const wsIrreg = peorSituacion(irregEnts);
+  // Proporción de la deuda que está irregular. Si no hay montos pero sí una marca
+  // irregular (deudor sin saldo pero clasificado feo), la tomamos como 100%.
+  const pctIrreg = totalMiles>0 ? irregMiles/totalMiles : (irregEnts.length?1:0);
+  const legalEnts = ents.filter(e=>e.procesoJud || e.situacionJuridica);
+  const legalMaterial = legalEnts.some(e=> totalMiles>0 ? (e.monto/totalMiles)>=0.10 : true);
+
+  // Cheques rechazados: contar detalle e impagos
+  let chDet=[], chImpagos=0;
+  if(cheques && cheques.causales){
+    cheques.causales.forEach(c=>(c.entidades||[]).forEach(en=>(en.detalle||[]).forEach(d=>{
+      chDet.push({entidad:en.entidad||c.causal||"", ...d});
+      if(!d.fechaPago) chImpagos++;
+    })));
+  }
+  const hayCheques = chDet.length>0;
+
+  // ---- Semáforo (PONDERADO POR MONTO) ----
+  // Regla: una deuda chica en mala situación no debe tumbar a un gran deudor sano.
+  // Rojo sólo si lo irregular pesa (≥10% de la deuda), hay cheques impagos, o hay
+  // proceso judicial por un monto relevante. Un cliente cuya ÚNICA deuda está en
+  // situación 5 da pctIrreg=100% → rojo, como debe ser.
+  const UMBRAL = 0.10;
+  let luz="g", est="Apto", expli="";
+  if(chImpagos>0 || pctIrreg>=UMBRAL || legalMaterial){
+    luz="r"; est="Revisar con cuidado";
+    const motivos=[];
+    if(pctIrreg>=UMBRAL) motivos.push("el "+pctPretty(pctIrreg)+" de su deuda está en situación "+wsIrreg+" ("+sitMeta(wsIrreg).t.toLowerCase()+"), "+money(irregMiles*1000));
+    if(chImpagos>0) motivos.push(chImpagos+" cheque"+(chImpagos>1?"s":"")+" rechazado"+(chImpagos>1?"s":"")+" sin pagar");
+    if(legalMaterial) motivos.push("proceso judicial / situación jurídica por un monto relevante");
+    expli="Presenta "+motivos.join("; ")+". Conviene revisar bien antes de otorgar beneficios de pago.";
+  } else if(irregMiles>0 || ws===2 || hayCheques || legalEnts.length){
+    luz="y"; est="Con reparos";
+    const motivos=[];
+    if(irregMiles>0) motivos.push("una parte menor en situación 3-5 ("+money(irregMiles*1000)+", "+pctPretty(pctIrreg)+" del total"+(irregEnts.length?" — "+irregEnts.slice(0,2).map(e=>esc(e.entidad||"")).join(", "):"")+")");
+    if(ws===2 && !irregMiles) motivos.push("situación 2 (riesgo bajo / seguimiento) en algún banco");
+    if(hayCheques) motivos.push(chDet.length+" cheque"+(chDet.length>1?"s":"")+" rechazado"+(chDet.length>1?"s":"")+" ya regularizado"+(chDet.length>1?"s":""));
+    if(legalEnts.length && !legalMaterial) motivos.push("una marca judicial por monto menor");
+    expli="Está mayormente en orden, pero registra "+motivos.join("; ")+". Se puede avanzar, con criterio.";
+  } else {
+    luz="g"; est="Apto";
+    expli = ents.length
+      ? "Toda su deuda está en situación normal (1) en el sistema financiero, sin cheques rechazados. Buen perfil para beneficios de pago."
+      : "Sin irregularidades en el BCRA.";
+  }
+
+  // ---- Resumen (money-weighted, para decidir) ----
+  const resumen = `<div class="resumen">
+    <div class="rc"><div class="l">Deuda financiera</div><div class="v">${money(totalMiles*1000)}</div><div class="s">${ents.length} entidad${ents.length===1?"":"es"} · ${esc(periodoTxt(actual&&actual.periodo))}</div></div>
+    <div class="rc"><div class="l">En situación irregular (3-5)</div><div class="v" style="color:${irregMiles>0?"var(--rojo)":"var(--ok)"}">${irregMiles>0?money(irregMiles*1000):"$0"}</div><div class="s">${irregMiles>0?(pctPretty(pctIrreg)+" del total · peor: "+wsIrreg+" "+sitMeta(wsIrreg).t):"todo en situación normal ✓"}</div></div>
+    <div class="rc"><div class="l">Cheques rechazados</div><div class="v" style="color:${chImpagos>0?"var(--rojo)":(hayCheques?"var(--amar)":"var(--ok)")}">${hayCheques?chDet.length:"0"}</div><div class="s">${chImpagos>0?chImpagos+" sin pagar":(hayCheques?"todos regularizados":"ninguno ✓")}</div></div>
+  </div>`;
+
+  // ---- Detalle por entidad ----
+  let tablaEnt = "";
+  if(ents.length){
+    const filas = ents.slice().sort((a,b)=>(b.situacion-a.situacion)||(b.monto-a.monto)).map(e=>{
+      const m=sitMeta(e.situacion);
+      const flags=[];
+      if(e.procesoJud) flags.push('<span class="flag">Proc. judicial</span>');
+      if(e.situacionJuridica) flags.push('<span class="flag">Sit. jurídica</span>');
+      if(e.refinanciaciones) flags.push('<span class="flag w">Refinanciado</span>');
+      if(e.enRevision) flags.push('<span class="flag w">En revisión</span>');
+      if(e.diasAtrasoPago>0) flags.push('<span class="flag w">'+e.diasAtrasoPago+' d atraso</span>');
+      return `<tr>
+        <td>${esc(e.entidad||"—")}${flags.join("")}</td>
+        <td><span class="sit" style="color:${m.v};background:${m.bg}"><span class="d"></span>${e.situacion||"–"} · ${esc(m.t)}</span></td>
+        <td class="r">${money((e.monto||0)*1000)}</td>
+      </tr>`;
+    }).join("");
+    tablaEnt = `<div class="sec"><h3>Deuda por entidad <span class="per">· ${esc(periodoTxt(actual&&actual.periodo))}</span></h3>
+      <div style="overflow-x:auto"><table class="ent"><thead><tr><th>Entidad</th><th>Situación</th><th style="text-align:right">Monto</th></tr></thead><tbody>${filas}</tbody></table></div></div>`;
+  }
+
+  // ---- Cheques rechazados (detalle) ----
+  let chBloque = "";
+  if(hayCheques){
+    const filas = chDet.slice(0,20).map(d=>`<tr>
+      <td>${esc(d.entidad||"—")}</td>
+      <td>${esc(d.nroCheque!=null?("Nº "+d.nroCheque):"—")}</td>
+      <td>${esc(d.fechaRechazo||"—")}</td>
+      <td class="r">${money(d.monto||0)}</td>
+      <td><span class="sit" style="color:${d.fechaPago?"var(--ok)":"var(--rojo)"};background:${d.fechaPago?"var(--okbg)":"var(--rojobg)"}"><span class="d"></span>${d.fechaPago?"Pagado":"Impago"}</span></td>
+    </tr>`).join("");
+    chBloque = `<div class="sec"><h3>Cheques rechazados</h3>
+      <div style="overflow-x:auto"><table class="ent"><thead><tr><th>Entidad</th><th>Cheque</th><th>Rechazo</th><th style="text-align:right">Monto</th><th>Estado</th></tr></thead><tbody>${filas}</tbody></table></div>
+      ${chDet.length>20?`<div style="font-size:11.5px;color:var(--gris2);margin-top:8px">Mostrando 20 de ${chDet.length}.</div>`:""}</div>`;
+  } else {
+    chBloque = `<div class="sec"><h3>Cheques rechazados</h3><div class="okbox">✓ No registra cheques rechazados en el BCRA.</div></div>`;
+  }
+
+  // ---- Evolución 24 meses ----
+  let evo = "";
+  const per = (historicas&&historicas.periodos)||[];
+  if(per.length){
+    const orden = per.slice().sort((a,b)=>String(a.periodo).localeCompare(String(b.periodo))); // viejo → nuevo
+    const cells = orden.map(p=>{
+      const w=peorSituacion(p.entidades);
+      const m=sitMeta(w||0);
+      const col = w? m.v : "var(--line)";
+      return `<div class="evocell" title="${esc(periodoTxt(p.periodo))} · ${w?("situación "+w+" ("+m.t+")"):"sin clasificar"}" style="background:${col}"><span>${w||""}</span></div>`;
+    }).join("");
+    evo = `<div class="sec"><h3>Evolución <span class="per">· peor situación mes a mes, últimos ${orden.length}</span></h3>
+      <div class="evo">${cells}</div>
+      <div class="evoleg">
+        <span><i style="background:var(--s1)"></i>1 Normal</span>
+        <span><i style="background:var(--s2)"></i>2 Riesgo bajo</span>
+        <span><i style="background:var(--s3)"></i>3 Riesgo medio</span>
+        <span><i style="background:var(--s4)"></i>4 Riesgo alto</span>
+        <span><i style="background:var(--s5)"></i>5 Irrecuperable</span>
+      </div>
+      <div style="font-size:11.5px;color:var(--gris2);margin-top:8px">Izquierda = más viejo · derecha = más reciente. Pasá el mouse por cada mes.</div></div>`;
+  }
+
+  return `<div class="rescard">
+    <div class="semaf ${luz}"><div class="luz"></div><div class="semt">
+      <div class="est">${est}</div>
+      <div class="nom">${esc(nombre||"CUIT "+fmtCuit(cuit))}</div>
+      <div class="cuit">${esc(fmtCuit(cuit))}</div>
+      <div class="expli">${esc(expli)}</div>
+    </div></div>
+    ${resumen}
+    ${tablaEnt}
+    ${chBloque}
+    ${evo}
+  </div>` + notaPie();
+}
+
+function notaPie(){
+  return `<div class="nota"><b>Qué muestra y qué no.</b> Este informe sale de la <b>Central de Deudores del BCRA</b>: refleja la deuda en el <b>sistema financiero</b> (bancos, tarjetas, financieras) y los <b>cheques rechazados</b>. Los montos los informa el BCRA en miles de pesos (acá ya convertidos) y pueden diferir del saldo exacto. <b>No incluye</b> deuda comercial entre privados ni juicios (eso es lo que venden Veraz/Nosis). El mejor complemento es <b>cómo te paga a vos</b>: eso lo tenés en <a href="${EYG.abs('finanzas/cobranzas.html')}" style="color:var(--teal);font-weight:700">Cobranzas</a>.</div>`;
+}
+window.ir = ir;
+
+/* Módulo EN PRUEBAS: sólo para la huella del dueño mientras se construye.
+   Para liberarlo al equipo: quitar {pruebas:…} de acá y la línea `pruebas` del core.js. */
+EYG.guard(["finanzas","direccion","admin","comercial","lider"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(perfil=>{
+  document.body.innerHTML = EYG.layout(perfil, "credito", '<div id="cont"></div>', "Situación crediticia");
+  pintar();
+});
+</script>
+</body>
+</html>

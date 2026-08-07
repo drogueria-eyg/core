@@ -272,6 +272,12 @@ window.EYG = (function(){
     {key:"precios",   dept:"comercial", cat:"Precios", ico:"🏷️", titulo:"Rentabilidad y Precios", desc:"Costo, escalera de precios por cantidad y margen por tramo, con salud por color.", roles:["comercial","finanzas","inventario"], ready:true, path:()=>"comercial/precios.html"},
     {key:"config-precios", dept:"comercial", cat:"Precios", ico:"⚙️", titulo:"Motor de precios", desc:"Reglas del motor por categoría: recargo, cortes, descuentos, IVA al costo y piso de margen. Las ofertas se crean en Oportunidades y Ofertas.", roles:["comercial","finanzas"], ready:true, path:()=>"comercial/config-precios.html"},
     {key:"cobranzas", dept:"finanzas", cat:"Finanzas", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","cobranzas"], ready:true, path:()=>"finanzas/cobranzas.html"},
+    /* EN PRUEBAS: consulta crediticia por CUIT (Central de Deudores del BCRA, fuente pública/gratis).
+       La página le pega directo al BCRA (no usa Supabase). Gateada al super-admin hasta revisarla.
+       Para liberarla: borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/situacion-crediticia.html. */
+    {key:"credito", dept:"finanzas", cat:"Finanzas", ico:"🔎", titulo:"Situación crediticia", desc:"Consultá por CUIT la deuda en bancos, cheques rechazados y el historial de 2 años, directo del BCRA. Para decidir beneficios de pago sin pagar Veraz/Nosis.", roles:["finanzas","direccion","comercial","lider"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"finanzas/situacion-crediticia.html"},
     /* EN PRUEBAS: módulo de Egresos (espejo de Cobranzas). Oculto para todo el equipo
        hasta terminarlo — sólo la huella del dueño. Para liberarlo: borrar la línea
        `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/egresos.html. */
