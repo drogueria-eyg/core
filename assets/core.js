@@ -282,10 +282,14 @@ window.EYG = (function(){
       roles:["comercial","lider","finanzas","inventario","cobranzas","maestro"], ready:true,
       path:()=>"comunicaciones/comunicaciones.html"},
     {key:"panel", dept:"comercial", cat:"Comercial", ico:"⚡",
-      titulo:p=>(p.rol==="admin"||p.rol==="direccion")?"Panel comerciales":"Mi Panel",
-      desc:p=>(p.rol==="admin"||p.rol==="direccion")?"El equipo: métricas resumidas de cada comercial + acceso a su panel individual y al panel del líder.":(p.rol==="lider"?"Tu panel de líder: el equipo, cumplimiento y alertas.":"Tu sesión de venta: objetivos, comisión, salud y tu cartera a mano."),
+      titulo:p=>"Mi Panel",
+      desc:p=>(p.rol==="admin"||p.rol==="direccion")?"Tu panel de mando, todo en uno: tus ventas, tu equipo, ofertas y mensajes. Y cargás ventas desde acá.":(p.rol==="lider"?"Tu panel de mando: tus ventas, el equipo, ofertas y mensajes, todo en uno.":"Tu sesión de venta: objetivos, comisión, salud y tu cartera a mano."),
       roles:["comercial","lider"], ready:true,
-      path:p=>{ if(p.rol==="admin"||p.rol==="direccion") return "comercial/comerciales.html"; if(p.rol==="lider") return "comercial/lider.html"; return `comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`; }},
+      path:p=>{ if(p.rol==="admin"||p.rol==="direccion") return `comercial/lider.html${p&&(p.comercial_ref||p.nombre)?("?lider="+encodeURIComponent(p.comercial_ref||p.nombre)):""}`; if(p.rol==="lider") return "comercial/lider.html"; return `comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`; }},
+    /* Vista de toda la fuerza comercial (cada líder y comercial con sus métricas). Sólo dirección/admin. */
+    {key:"empresa", dept:"comercial", cat:"Comercial", ico:"🏢",
+      titulo:"Panel de la empresa", desc:"Toda la fuerza comercial: cada líder y cada comercial con sus métricas y su panel. Vista de dirección.",
+      roles:[], ready:true, path:()=>"comercial/comerciales.html"},
     /* "Cargar venta" (comercial/vender.html) NO va como módulo suelto del menú:
        se entra desde ADENTRO del panel del comercial (botón "Cargar una venta" en panel.html). */
     {key:"crm",       dept:"comercial", cat:"Comercial", ico:"👥", titulo:"CRM · Clientes", desc:"Segmentá farmacias e instituciones por frecuencia y contactá por WhatsApp.", roles:["comercial"], ready:false, path:()=>"comercial/crm.html"},

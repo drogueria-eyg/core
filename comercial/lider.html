@@ -292,7 +292,8 @@ async function boot(){
       else return selectorLider(lideres);
     }
     LIDER = await resolverLider(liderName);
-    if(!LIDER.team.length){ ldErr('El líder <b>'+esc(LIDER.name)+'</b> no tiene comerciales asignados. Asignáselos desde el panel superior.'); return; }
+    // El equipo puede ser [] (líder que vende sin comerciales a cargo, ej. Germán): igual
+    // se arma el panel — la pestaña "Mi venta" muestra sus propias ventas.
     COM = LIDER.team.map((c,i)=>({...c, color:COLORS[i%COLORS.length]}));
     UIDS = COM.map(c=>c.uid);
     init();
@@ -321,15 +322,18 @@ async function init(){
     // COM y UIDS ya vienen resueltos por boot() con el equipo del líder (organigrama Odoo).
     const y=argToday().slice(0,4), m=argToday().slice(0,7);
     const d=new Date(); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow); const _lun=lun.toISOString().slice(0,10); const inicioSem=_lun<(m+"-01")?(m+"-01"):_lun;   // semana calendario, acotada al mes
-    const [aA,aM,aS]=await Promise.all([periodo(y+"-01-01"), periodo(m+"-01"), periodo(inicioSem)]);
+    const [aA,aM,aS]= UIDS.length ? await Promise.all([periodo(y+"-01-01"), periodo(m+"-01"), periodo(inicioSem)]) : [{},{},{}];
     DATA=COM.map(c=>({...c, ano:aA[c.uid]||0, mes:aM[c.uid]||0, sem:aS[c.uid]||0, hoy:0, horas:new Array(24).fill(0)}));
-    await refreshHoy();
+    if(UIDS.length) await refreshHoy();
     render();
-    chartTimer=setInterval(tick, 180000);   // 180s (era 60s): menos carga recurrente sobre Odoo
-    cargarVentasEq();     // ventas del equipo con consultas propias (rápido, no espera a las fichas)
-    cargarFichas();       // análisis por comercial (nivel/salud/comparativas) en segundo plano
-    cargarProductos();
-    cargarPresencia();    // conectados X/X en la vista principal (async, no bloquea)
+    // Loaders del EQUIPO sólo si hay comerciales a cargo (un líder que vende sin equipo, ej. Germán, igual ve "Mi venta").
+    if(UIDS.length){
+      chartTimer=setInterval(tick, 180000);   // 180s: menos carga recurrente sobre Odoo
+      cargarVentasEq();     // ventas del equipo con consultas propias (rápido, no espera a las fichas)
+      cargarFichas();       // análisis por comercial (nivel/salud/comparativas) en segundo plano
+      cargarProductos();
+      cargarPresencia();    // conectados X/X en la vista principal (async, no bloquea)
+    }
   }catch(e){ const el=document.getElementById("ld"); if(el) el.innerHTML='<div class="errbox">No pude cargar el tablero: '+esc(e.message)+'</div>'; }
 }
 async function refreshHoy(){
@@ -360,22 +364,26 @@ async function cargarPresencia(){
   }catch(e){}
 }
 
-let VISTA="rendimiento";
+let VISTA="miventa";
 function headerLider(){
   const puedeCambiar = PERFIL && (PERFIL.rol==="admin"||PERFIL.rol==="direccion");
+  const cVender = "vender.html?nuevo=1&c="+encodeURIComponent(LIDER.name);
   return `<div class="ldhead"><span class="ic">🏆</span>
-    <div><div class="t">Panel del líder</div><div class="n">${esc(LIDER.name)}</div>
-      <div class="sub">${COM.length} comercial${COM.length===1?"":"es"} a cargo · métricas y contactos del equipo</div></div>
-    ${puedeCambiar?`<a class="chg" href="lider.html">↔ Cambiar líder</a>`:""}</div>`;
+    <div><div class="t">Panel de mando</div><div class="n">${esc(LIDER.name)}</div>
+      <div class="sub">${COM.length?`${COM.length} comercial${COM.length===1?"":"es"} a cargo · `:''}tus ventas y las de tu equipo</div></div>
+    <a class="chg" href="${cVender}" style="background:var(--coral)">🛒 Cargar una venta</a>
+    ${puedeCambiar?`<a class="chg" href="comerciales.html">🏢 Empresa</a><a class="chg" href="lider.html">↔ Cambiar</a>`:""}</div>`;
 }
 function render(){
   document.getElementById("ld").innerHTML = `${headerLider()}
     <div class="tabs">
-      <button class="tab ${VISTA==='rendimiento'?'on':''}" onclick="setVista('rendimiento')">📊 Rendimiento</button>
+      <button class="tab ${VISTA==='miventa'?'on':''}" onclick="setVista('miventa')">🛒 Mi venta</button>
+      <button class="tab ${VISTA==='rendimiento'?'on':''}" onclick="setVista('rendimiento')">👥 Mi equipo</button>
       <button class="tab ${VISTA==='historico'?'on':''}" onclick="setVista('historico')">📈 Histórico</button>
       <button class="tab ${VISTA==='ofertas'?'on':''}" onclick="setVista('ofertas')">🎁 Ofertas</button>
+      <button class="tab ${VISTA==='mensajes'?'on':''}" onclick="setVista('mensajes')">💬 Mensajes</button>
       <button class="tab ${VISTA==='actividad'?'on':''}" onclick="setVista('actividad')">🟢 Actividad</button>
-      <button class="tab ${VISTA==='contactos'?'on':''}" onclick="setVista('contactos')">🗂️ Contactos del equipo</button>
+      <button class="tab ${VISTA==='contactos'?'on':''}" onclick="setVista('contactos')">🗂️ Contactos</button>
     </div>
     <div id="vista"></div>`;
   pintarVista();
@@ -385,6 +393,12 @@ function setVista(v){ if(v===VISTA)return; VISTA=v; render();
   if(v==="rendimiento" && FICHAS_STALE){ FICHAS_STALE=false; VENTASEQ={}; CARTERA_EQ=null; cargarVentasEq(); cargarFichas(); } }
 function pintarVista(){
   const v=document.getElementById("vista"); if(!v)return;
+  if(VISTA==="miventa"){ v.innerHTML='<div id="miventa"></div>'; renderMiVenta(); cargarMiVenta(); return; }
+  if(VISTA==="mensajes"){ v.innerHTML='<div id="mensajes"></div>'; renderMensajes(); cargarMensajes(); return; }
+  if(!UIDS.length){   // líder que vende sin comerciales a cargo (ej. Germán): las pestañas de equipo no aplican
+    v.innerHTML='<div class="scopenote">Todavía no tenés comerciales a cargo. Cuando te asignen, vas a ver acá el rendimiento, ofertas, actividad y contactos de tu equipo. Mientras, la pestaña <b>🛒 Mi venta</b> tiene tus propias ventas.</div>';
+    return;
+  }
   if(VISTA==="rendimiento"){
     // Orden: pulso del equipo (kpis + evolución de hoy) → rendimiento por comercial
     // (el centro del panel) → productos (secundario) → ofertas de la semana.
@@ -404,6 +418,73 @@ function pintarVista(){
     renderContactos();
   }
 }
+/* ===== Mi venta: ventas propias del líder (sin gamificación) + cargar venta ===== */
+let MIV=null;
+async function cargarMiVenta(){
+  MIV=null;
+  try{
+    const uid=LIDER.uid, t=argToday(), y=t.slice(0,4), mo=t.slice(0,7);
+    const d=new Date(t+"T00:00:00"); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow);
+    const _l=lun.toISOString().slice(0,10), _im=mo+"-01"; const iniSem=_l<_im?_im:_l;
+    const per=async desde=>{ const g=await EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",desde+" 00:00:00"]],["amount_untaxed:sum"],[]],{lazy:false}); return (g[0]&&g[0].amount_untaxed)||0; };
+    const [hoy,sem,mes,ano,cart,serieG]=await Promise.all([
+      per(t), per(iniSem), per(mo+"-01"), per(y+"-01-01"),
+      EYG.rpc("res.partner","search_count",[[["user_id","=",uid],["customer_rank",">",0]]]).catch(()=>0),
+      EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",mo+"-01 00:00:00"]],["amount_untaxed:sum"],["date_order:day"]],{lazy:false}).catch(()=>[])
+    ]);
+    const m={}; (serieG||[]).forEach(r=>{ const rg=r.__range&&r.__range["date_order:day"]; const f=rg?rg.from.slice(0,10):null; if(f) m[f]=(m[f]||0)+(r.amount_untaxed||0); });
+    const [yy,mm]=mo.split("-").map(Number); const dim=new Date(yy,mm,0).getDate(); const serie=[];
+    for(let dd=1;dd<=dim;dd++){ const k=`${mo}-${String(dd).padStart(2,"0")}`; serie.push({label:String(dd), val:m[k]||0, cur:k===t}); }
+    MIV={hoy,sem,mes,ano,cart,serie};
+  }catch(e){ MIV={err:e.message||String(e)}; }
+  renderMiVenta();
+}
+function renderMiVenta(){
+  const box=document.getElementById("miventa"); if(!box)return;
+  const cVender="vender.html?nuevo=1&c="+encodeURIComponent(LIDER.name);
+  if(!MIV){ box.innerHTML='<div class="floading"><span class="spin-sm"></span> cargando tus ventas…</div>'; return; }
+  if(MIV.err){ box.innerHTML='<div class="errbox">No pude cargar tus ventas: '+esc(MIV.err)+'</div>'; return; }
+  const kpi=(l,v,s)=>`<div class="kpi"><div class="l">${l}</div><div class="v">${M(v)}</div><div class="s">${s||'&nbsp;'}</div></div>`;
+  box.innerHTML=`
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:16px">
+      <a href="${cVender}" style="background:var(--coral);color:#fff;text-decoration:none;font-weight:800;padding:13px 20px;border-radius:12px;font-size:15px;box-shadow:0 6px 18px rgba(200,70,60,.28)">🛒 Cargar una venta</a>
+      <span class="muted">Estas son <b>tus ventas propias</b> como ${esc(LIDER.name.split(" ")[0])} (no las del equipo).</span>
+    </div>
+    <div class="kpis">
+      <div class="kpi hoy"><div class="l">Hoy</div><div class="v">${M(MIV.hoy)}</div><div class="s">tus ventas de hoy</div></div>
+      ${kpi("Esta semana",MIV.sem,"acumulado")}
+      ${kpi("Este mes",MIV.mes,"acumulado")}
+      ${kpi("Este año",MIV.ano,"acumulado")}
+      <div class="kpi"><div class="l">Tu cartera</div><div class="v">${MIV.cart}</div><div class="s">clientes asignados</div></div>
+    </div>
+    <div class="chartbox"><div class="ch-head"><h2>Tus ventas del mes · por día</h2></div>${barChart(MIV.serie)}</div>
+    ${MIV.cart===0?'<div class="scopenote">Todavía no tenés clientes en tu cartera. Cuando te asignen contactos, van a aparecer acá tus ventas y tu cartera.</div>':''}`;
+}
+
+/* ===== Mensajes: novedades de la empresa + acceso a Comunicaciones ===== */
+let MSG=null;
+async function cargarMensajes(){
+  MSG=null;
+  try{
+    const arr = await EYG.comsLeer();
+    const novs = EYG.comsParaMi ? EYG.comsParaMi(PERFIL, arr) : [];
+    const was  = EYG.wasParaComercial ? EYG.wasParaComercial(PERFIL, arr) : [];
+    MSG={n:novs.length, wa:was.length};
+  }catch(e){ MSG={n:0, wa:0, err:e.message||String(e)}; }
+  renderMensajes();
+}
+function renderMensajes(){
+  const box=document.getElementById("mensajes"); if(!box)return;
+  if(!MSG){ box.innerHTML='<div class="floading"><span class="spin-sm"></span> cargando mensajes…</div>'; return; }
+  box.innerHTML=`
+    <div class="scopenote">💬 Acá ves las <b>novedades y comunicaciones</b> de la empresa. La 🔔 campana (arriba a la derecha) te avisa las nuevas. Para escribir mensajes de WhatsApp a tu cartera y ver el detalle, abrí Comunicaciones.</div>
+    <div class="kpis" style="margin-bottom:16px">
+      <div class="kpi"><div class="l">Novedades vigentes</div><div class="v">${MSG.n}</div><div class="s">para vos</div></div>
+      <div class="kpi"><div class="l">Mensajes de WhatsApp</div><div class="v">${MSG.wa}</div><div class="s">para enviar a la cartera</div></div>
+    </div>
+    <a href="../comunicaciones/comunicaciones.html" style="display:inline-block;background:var(--teal);color:#fff;text-decoration:none;font-weight:800;padding:12px 18px;border-radius:12px">📣 Abrir Comunicaciones →</a>`;
+}
+
 async function cargarProductos(){
   try{
     const y=argToday().slice(0,4);
