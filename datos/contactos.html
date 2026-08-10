@@ -117,6 +117,10 @@
   @keyframes spin{to{transform:rotate(360deg)}}
   .errbox{background:#FBE4E3;border:1px solid #F3B5B2;color:#8A2E2B;padding:16px;border-radius:12px}
   .info{background:#EAF6F4;border:1px solid #BFE3DE;color:#0B5C57;padding:11px 14px;border-radius:10px;font-size:13px;margin-bottom:14px}
+  .alert{border-radius:10px;padding:10px 13px;font-size:13px;line-height:1.35}
+  .alert.alto{background:#FBE4E3;border:1px solid #F3B5B2;color:#8A2E2B}
+  .alert.aten{background:#FBF0DA;border:1px solid #EAD6A6;color:#7A5B12}
+  .alert.okk{background:#E4F5E9;border:1px solid #BFE3CB;color:#1E7D46}
 
   /* Drawer + edit form */
   .scrim{position:fixed;inset:0;background:rgba(6,65,62,.35);opacity:0;pointer-events:none;transition:opacity .2s;z-index:40}.scrim.on{opacity:1;pointer-events:auto}
@@ -216,7 +220,7 @@ const rolRank=n=>n==="German Banquero"?0:n==="Marcela Carranza"?1:n==="Sin asign
 let PERFIL=null;
 let DATA=[], COMS=[], COMLIST=[], VENTA={}, DUPVAT={}, DUPNAME={};
 let CAT={fiscal:[],idt:[],prov:[]}, PROVIDX={};
-let UNI=null, CREADOS=new Set(), BOVEDA={}, SEL=new Set(), _bajaTag=null;
+let UNI=null, CREADOS=new Set(), BOVEDA={}, SEL=new Set(), _bajaTag=null, _riesgoAt=0;
 let filtro={tab:"nuestros", com:"", seg:"", issue:"", rubro:"", boveda:false, proveedores:false, q:"", ocultarRuido:true, pTipo:"", pProv:"", pLoc:"", pQ:""};
 const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador en el chatter del contacto (fuente de verdad, reversible)
 
@@ -310,11 +314,21 @@ async function cargar(silent){
     recalcComs();
     if(silent){ const y=window.scrollY; render(); window.scrollTo(0,y); } else render();
     if(!UNI) cargarUniverso();   // el padrón (~900 KB) se trae 1 vez y actualiza los cruces al llegar
+    if(!silent || Date.now()-_riesgoAt>180000) cargarRiesgos();   // alerta de crédito (más liviana: cada ~3 min)
   }catch(e){ if(!silent) document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar.</b><br>'+esc(e.message||e)+'</div>'; }
   finally{ _cargando=false; _lastLoad=Date.now(); }
 }
 function drawerAbierto(){ const d=document.getElementById("drawer"); return d&&d.classList.contains("on"); }
 function editando(){ const a=document.activeElement; return a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName||""); }
+/* Alerta de crédito: cruza cuenta corriente + bóveda incobrable + marca manual (motor en core.js).
+   Se trae aparte (no frena el primer render) y actualiza los badges cuando llega. */
+async function cargarRiesgos(){
+  try{
+    const M=await EYG.riesgoCartera(); _riesgoAt=Date.now();
+    DATA.forEach(c=>{ c.riesgo=M[c.id]||null; });
+    if(filtro.tab==="nuestros" && !drawerAbierto() && !editando()){ const y=window.scrollY; renderLista(); window.scrollTo(0,y); }
+  }catch(e){ console.warn("riesgos:",e.message); }
+}
 
 function comercialesDe(rows){
   const m=new Map();
@@ -401,6 +415,7 @@ function visibles(){
     if(filtro.issue==="fiscal0" && c.fiscal) return false;
     if(filtro.issue==="dup" && !(c.dupVat||c.dupName)) return false;
     if(filtro.issue==="pad" && !c.enPadron) return false;
+    if(filtro.issue==="riesgo" && !(c.riesgo && c.riesgo.nivel && c.riesgo.nivel!=="ok")) return false;
     if(filtro.q){const q=filtro.q.toLowerCase(); if(!(c.nombre.toLowerCase().includes(q)||(c.cuit||"").includes(q)||(c.ciudad||"").toLowerCase().includes(q))) return false;}
     return true;
   });
@@ -457,6 +472,7 @@ function renderNuestros(){
         <input id="q" placeholder="Buscar nombre, CUIT o ciudad…" value="${esc(filtro.q)}" oninput="onSearch(this.value)"></div>
       <select onchange="setIssue(this.value)">
         <option value="">Calidad: todos</option>
+        <option value="riesgo" ${filtro.issue==="riesgo"?"selected":""}>⚠ Con alerta de crédito</option>
         <option value="pad" ${filtro.issue==="pad"?"selected":""}>En padrón oficial</option>
         <option value="tel0" ${filtro.issue==="tel0"?"selected":""}>Sin teléfono</option>
         <option value="telbad" ${filtro.issue==="telbad"?"selected":""}>Tel. formato dudoso</option>
@@ -513,7 +529,7 @@ function renderLista(){
     return `<div class="row ${SEL.has(c.id)?'selrow':''}" onclick="abrir(${c.id})">
       <div style="display:flex;gap:9px;align-items:flex-start">${chk}<div style="min-width:0;flex:1">
         <div class="cname">${esc(c.nombre)} ${(c.dupVat||c.dupName)?'<span class="badge warn" style="font-size:10px">⚠ dup</span>':''}</div>
-        <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">${rubroBadge(c.rubro)}${!c.empresa?'<span class="rub" style="background:#EEE9F6;color:#6B4FA0">👤 persona</span>':''}<span class="seg ${c.seg}">${SEG_LBL[c.seg]}</span>${c.enPadron?'<span class="pad">✓ padrón</span>':''}${c.proveedor?'<span class="rub" style="background:#EFE3D0;color:#8A6D1A">🏭 prov.</span>':''}</div>
+        <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">${EYG.badgeRiesgo(c.riesgo&&c.riesgo.nivel)}${rubroBadge(c.rubro)}${!c.empresa?'<span class="rub" style="background:#EEE9F6;color:#6B4FA0">👤 persona</span>':''}<span class="seg ${c.seg}">${SEG_LBL[c.seg]}</span>${c.enPadron?'<span class="pad">✓ padrón</span>':''}${c.proveedor?'<span class="rub" style="background:#EFE3D0;color:#8A6D1A">🏭 prov.</span>':''}</div>
         <div class="cmeta">${esc(c.ciudad||"—")}</div>
         ${c.faltantes.length?`<div class="flags">${c.faltantes.map(f=>`<span class="flag">falta ${f}</span>`).join("")}</div>`:''}</div></div>
       <div class="hide-sm"><span class="muted trunc" title="${esc(c.comercial)}">${esc(c.comercial)}</span></div>
@@ -610,6 +626,17 @@ function abrir(id){
       <div class="dsub">${esc(c.comercial)} · <span class="seg ${c.seg}" style="color:#fff">${SEG_LBL[c.seg]}</span>${c.enPadron?' · ✓ padrón oficial':''}${c.proveedor?' · 🏭 proveedor':''}${c.boveda?' · 🔒 en bóveda':''}</div>
       <div style="margin-top:7px">${rubroBadge(c.rubro)}</div></div>
     <div class="dbody">
+      ${(function(){const r=c.riesgo;
+        const box=r&&r.nivel==="alto"?`<div class="alert alto">⚠ <b>Riesgo de pago — no ofrecer plazos.</b>${r.motivo?`<div style="margin-top:4px;font-weight:500">${esc(r.motivo)}</div>`:''}</div>`
+          :r&&r.nivel==="atencion"?`<div class="alert aten">⚠ <b>Atención:</b> ${esc(r.motivo||"tiene deuda vencida")}. Cuidado con los plazos.</div>`
+          :`<div class="alert okk">✓ Sin alertas de pago con nosotros.</div>`;
+        const manual=r&&r.manual;
+        return `<div class="dsec"><h4>Alerta de crédito</h4>${box}
+          <div id="bcrabox"></div>
+          <div class="actbtns" style="margin-top:8px">
+            ${c.cuit?`<button class="abtn" style="background:var(--agua);color:var(--teal-deep)" onclick="consultarBCRA('${(c.cuit||'').replace(/[^0-9]/g,'')}')">🏦 Consultar BCRA</button>`:''}
+            ${manual?`<button class="abtn" style="background:#EEF1F0;color:var(--gris)" onclick="quitarRiesgo(${id})">Quitar marca de pago</button>`:`<button class="abtn" style="background:#FBE4E3;color:#B0322F" onclick="ponerRiesgo(${id})">⚑ Marcar problema de pago</button>`}
+          </div></div>`;})()}
       <div class="dsec"><h4>Comercial asignado</h4>
         <div class="assign"><select id="reasg" onchange="reasignar(${id},this.value)">${optCom(c.comercialId)}</select></div>
         <div class="muted" style="margin-top:6px">Cambiá el comercial y se reasigna al toque en Odoo.</div></div>
@@ -804,6 +831,28 @@ async function darDeBaja(id){
     if(motivo) await rpc("res.partner","message_post",[[id]],{body:`🗑️ [BAJA] ${motivo}`,message_type:"comment"});
     DATA=DATA.filter(x=>x.id!==id); recalcComs(); toast("🗑️ Dado de baja y archivado en Odoo"); render(); cerrar();
   }catch(e){ toast("⚠ No se pudo dar de baja: "+(e.message||e)); }
+}
+
+/* ================= Alerta de crédito (motor compartido EYG.riesgo*) ================= */
+async function consultarBCRA(cuit){
+  const box=document.getElementById("bcrabox"); if(!box) return;
+  box.innerHTML='<div class="muted" style="margin-top:8px">Consultando BCRA…</div>';
+  const r=await EYG.riesgoBCRA(cuit);
+  if(!r){ box.innerHTML='<div class="muted" style="margin-top:8px">CUIT inválido para consultar.</div>'; return; }
+  if(r.error){ box.innerHTML='<div class="muted" style="margin-top:8px">No se pudo consultar el BCRA ('+esc(r.error)+').</div>'; return; }
+  if(r.sinRegistros){ box.innerHTML='<div class="alert okk" style="margin-top:8px">🏦 BCRA: sin registros de deuda financiera.</div>'; return; }
+  const cls=r.nivel==="alto"?"alto":r.nivel==="atencion"?"aten":"okk";
+  const SITL={1:"Normal",2:"Riesgo bajo",3:"Riesgo medio",4:"Riesgo alto",5:"Irrecuperable",6:"Irrec. téc."};
+  box.innerHTML=`<div class="alert ${cls}" style="margin-top:8px">🏦 <b>BCRA:</b> deuda financiera ${money(r.total)} en ${r.n} entidad(es). Peor situación: <b>${r.sitMax} · ${SITL[r.sitMax]||"—"}</b>.${r.irreg>0?` En irregular (3-5): ${money(r.irreg)} (${Math.round(r.pct*100)}%).`:" Todo normal."}${r.jud?" ⚖ Proceso judicial.":""}</div>`;
+}
+async function ponerRiesgo(id){
+  const nota=prompt("¿Por qué marcás problema de pago? (opcional)"); if(nota===null) return;
+  try{ await EYG.marcarRiesgo(id,nota); toast("⚑ Marcado con problema de pago"); await cargarRiesgos(); abrir(id); }
+  catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
+}
+async function quitarRiesgo(id){
+  try{ await EYG.sacarRiesgo(id); toast("✅ Marca de pago quitada"); await cargarRiesgos(); abrir(id); }
+  catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
 }
 
 /* ================= Editar ficha ================= */

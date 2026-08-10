@@ -647,7 +647,72 @@ window.EYG = (function(){
     document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="hidden") ping(true); });
   }
 
+  /* ===== Riesgo de pago del contacto (COMPARTIDO en todo el Core) =====
+     Un solo vistazo del riesgo, encadenando datos VIVOS: la cuenta corriente real
+     (misma base que Cobranzas) + marcadores (bóveda "incobrable" de Cobranzas y una
+     marca manual de "problemas de pago"). Como se deriva del dato vivo, si el cliente
+     regulariza (paga lo vencido / sale de bóveda) la alerta se apaga SOLA. El BCRA
+     (situación crediticia) es una consulta aparte por CUIT: riesgoBCRA(cuit).
+     Uso en cualquier módulo:
+       const R = await EYG.riesgoCartera();        // {partnerId: {nivel, vencido, mora, ...}}
+       elem.innerHTML = EYG.badgeRiesgo(R[id]?.nivel);   // ⚠ badge (o "")
+     Niveles: 'alto' (⚠ no ofrecer plazos) · 'atencion' (deuda vencida) · 'ok'. */
+  const RIESGO_TAG="[RIESGO-PAGO]";
+  async function riesgoCartera(){
+    const hoy=argToday();
+    const dom=[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual","!=",0]];
+    const [lines,msgs]=await Promise.all([
+      rpc("account.move.line","search_read",[dom,["partner_id","amount_residual","date_maturity","move_type"]],{limit:0}),
+      rpc("mail.message","search_read",[[["model","=","res.partner"],"|",["body","like","[BOVEDA]"],["body","like",RIESGO_TAG]]],{fields:["res_id","body","date"],limit:0})
+    ]);
+    const M={}; const g=id=>M[id]||(M[id]={deuda:0,vgross:0,gris:0,venc:null});
+    for(const l of lines){ if(!l.partner_id) continue; const o=g(l.partner_id[0]); const r=l.amount_residual||0; o.deuda+=r;
+      if(l.move_type==="entry" && r<0) o.gris+=-r;                                   // cobrado sin imputar (retenciones/gris)
+      else if(r>0 && l.date_maturity && l.date_maturity<hoy){ o.vgross+=r; if(!o.venc||l.date_maturity<o.venc) o.venc=l.date_maturity; } }
+    msgs.sort((a,b)=>(b.date||"").localeCompare(a.date||"")); const vb=new Set(),vr=new Set();
+    for(const m of msgs){ const b=(m.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," ");
+      if(b.includes("[BOVEDA]") && !b.includes("[BOVEDA-CONTACTO]")){ if(!vb.has(m.res_id)){ vb.add(m.res_id); if(!/salir/i.test(b) && /incobrable/i.test(b)) g(m.res_id).bovIncobrable=true; } }
+      else if(b.includes(RIESGO_TAG)){ if(!vr.has(m.res_id)){ vr.add(m.res_id); const o=g(m.res_id); if(/salir/i.test(b)) o.manual=false; else { o.manual=true; o.manualNota=(b.split("]").slice(1).join("]")||"").trim(); } } } }
+    for(const id in M){ const o=M[id]; o.vencido=Math.max(0,(o.vgross||0)-(o.gris||0)); o.mora=o.venc?Math.max(0,Math.floor((new Date(hoy+"T00:00:00")-new Date(String(o.venc).slice(0,10)+"T00:00:00"))/864e5)):0; o.nivel=riesgoNivel(o); o.motivo=riesgoMotivo(o); }
+    return M;
+  }
+  function riesgoNivel(o){ const V=o.vencido||0, mora=o.mora||0;
+    // exige deuda vencida REAL (si el gris/retenciones cubrió lo vencido, no alerta)
+    if(o.manual || o.bovIncobrable || (V>1000&&mora>=90)) return "alto";
+    if(V>1000 && mora>=30) return "atencion";
+    return "ok"; }
+  function riesgoMotivo(o){ const mot=[]; const V=o.vencido||0, mora=o.mora||0;
+    if(o.manual) mot.push(o.manualNota?("⚑ "+o.manualNota):"marcado con problemas de pago");
+    if(o.bovIncobrable) mot.push("marcado incobrable en Cobranzas");
+    if(V>1000 && mora>=121) mot.push("deuda vencida +120 días ("+money(V)+")");
+    else if(V>1000 && mora>=30) mot.push("deuda vencida hace "+mora+" días ("+money(V)+")");
+    return mot.join(" · "); }
+  function riesgoStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-riesgo-css")) return; const s=document.createElement("style"); s.id="eyg-riesgo-css"; s.textContent=".eyg-riesgo{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:20px;white-space:nowrap}.eyg-riesgo.alto{background:#FBE4E3;color:#B0322F}.eyg-riesgo.aten{background:#FBF0DA;color:#9A6B12}"; document.head.appendChild(s); }
+  function badgeRiesgo(nivel){ if(!nivel||nivel==="ok") return ""; riesgoStyles(); return nivel==="alto"?'<span class="eyg-riesgo alto" title="No ofrecer plazos de pago">⚠ Riesgo de pago</span>':'<span class="eyg-riesgo aten" title="Tiene deuda vencida">⚠ Atención</span>'; }
+  async function marcarRiesgo(id,nota){ return rpc("res.partner","message_post",[[id]],{body:"⚑ "+RIESGO_TAG+" "+(nota||""),message_type:"comment"}); }
+  async function sacarRiesgo(id){ return rpc("res.partner","message_post",[[id]],{body:"✅ "+RIESGO_TAG+" salir",message_type:"comment"}); }
+  /* BCRA (Central de Deudores) por CUIT → resumen + nivel ponderado por monto. */
+  async function riesgoBCRA(cuit){
+    const c=(cuit||"").replace(/\D/g,""); if(c.length!==11) return null;
+    try{
+      const r=await fetch("https://api.bcra.gob.ar/centraldedeudores/v1.0/Deudas/"+c,{headers:{Accept:"application/json"}});
+      if(r.status===404) return {sinRegistros:true};
+      if(!r.ok) throw new Error("BCRA "+r.status);
+      const res=(await r.json()).results||{}; const per=(res.periodos&&res.periodos[0])||null;
+      const ents=((per&&per.entidades)||[]).filter(e=>e.situacion>0||e.monto>0);
+      let total=0,irreg=0,sitMax=0,jud=false;
+      ents.forEach(e=>{ const m=(e.monto||0)*1000; total+=m; const s=e.situacion||0; if(s>sitMax)sitMax=s; if(s>=3)irreg+=m; if(e.procesoJud||e.situacionJuridica)jud=true; });
+      // semáforo PONDERADO por monto (no por la peor situación puntual): rojo solo si lo
+      // irregular pesa ≥10% del total o hay proceso judicial. Un gran deudor sano con una
+      // deuda chica en sit.5 queda amarillo, no rojo (ver [[eyg-core-situacion-crediticia]]).
+      const pct=total?irreg/total:0;
+      const nivel=(jud||pct>=0.10)?"alto":(irreg>0)?"atencion":"ok";
+      return {periodo:per&&per.periodo, total, irreg, sitMax, pct, jud, nivel, n:ents.length};
+    }catch(e){ return {error:e.message}; }
+  }
+
   return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
+    riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA };
