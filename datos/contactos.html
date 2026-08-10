@@ -214,13 +214,16 @@ function _coincide(a,b){
 const RUBRO_FIELD="x_studio_selection_field_6ui_1j42g6fu9";
 const RUBROS7=["FARMACIAS","INSTITUCIONES","DISTRIBUIDORAS","VETERINARIAS","EMPRESAS DE SALUD","DROGUERIAS","PERSONAL"];
 const PFIELDS=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","customer_rank","supplier_rank","x_studio_selection_field_6ui_1j42g6fu9"];
-const ROLES={"German Banquero":{label:"Gerente",cls:"gerente"},"Marcela Carranza":{label:"Líder Comercial",cls:"lider"}};
-const rolRank=n=>n==="German Banquero"?0:n==="Marcela Carranza"?1:n==="Sin asignar"?9:2;
+const ROLES={"German Banquero":{label:"Gerente",cls:"gerente"},"Diego Velazquez":{label:"Dirección",cls:"gerente"},"Marcela Carranza":{label:"Líder Comercial",cls:"lider"}};
+const rolRank=n=>(n==="German Banquero"||n==="Diego Velazquez")?0:n==="Marcela Carranza"?1:n==="Sin asignar"?9:2;
+// Equipo comercial: siempre se muestran como tarjeta, aunque tengan 0 contactos (ej. las nuevas Lucía y Marianela).
+const COMERCIALES=["German Banquero","Diego Velazquez","Marcela Carranza","Natividad Sanchez","Claudia Dominguez","Samanta Luna","Ruth Aguayo","Antonella Infanti","Maricruz Finochietti","Lucia Oviedo","Marianela Soto"];
 
 let PERFIL=null;
 let DATA=[], COMS=[], COMLIST=[], VENTA={}, DUPVAT={}, DUPNAME={};
 let CAT={fiscal:[],idt:[],prov:[]}, PROVIDX={};
-let UNI=null, CREADOS=new Set(), BOVEDA={}, SEL=new Set(), _bajaTag=null, _riesgoAt=0;
+let UNI=null, CREADOS=new Set(), BOVEDA={}, SEL=new Set(), _bajaTag=null, _riesgoAt=0, NUEVOS=[];
+const NUEVO_TAG="[CONTACTO-NUEVO]"; // marca de contacto creado desde el Core (guarda el creador real)
 let filtro={tab:"nuestros", com:"", seg:"", issue:"", rubro:"", boveda:false, proveedores:false, q:"", ocultarRuido:true, pTipo:"", pProv:"", pLoc:"", pQ:""};
 const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador en el chatter del contacto (fuente de verdad, reversible)
 
@@ -337,6 +340,7 @@ function comercialesDe(rows){
 }
 function recalcComs(){
   const cm={};
+  COMERCIALES.forEach(n=>{ cm[n]={comercial:n,n:0,tot:0,mes:0,sem:0}; });   // el equipo siempre aparece
   base().forEach(c=>{ const o=cm[c.comercial]||(cm[c.comercial]={comercial:c.comercial,n:0,tot:0,mes:0,sem:0}); o.n++; o.tot+=c.comprado; o.mes+=c.mesv; o.sem+=c.semv; });
   COMS=Object.values(cm).sort((a,b)=>rolRank(a.comercial)-rolRank(b.comercial)||b.tot-a.tot);
 }
@@ -944,14 +948,22 @@ function crearProspecto(idx){
     <div class="dhead"><span class="x" onclick="cerrar()">✕</span><h2>Nuevo contacto</h2>
       <div class="dsub">Desde el padrón oficial · ${e[2]===0?"💊 Farmacia":"🏥 Institución"}</div></div>
     <div class="dbody eform">
-      <div class="info">Se va a crear en Odoo como contacto nuevo (todavía sin compras). Después completás teléfono, CUIT y el resto desde la ficha.</div>
+      <div class="info">Se crea en Odoo como contacto nuevo. Cargá lo que tengas ahora (nada es obligatorio salvo el nombre); lo demás se completa después desde la ficha.</div>
       <div class="fld"><label>Nombre / Razón social</label><input id="np_name" value="${esc(nombre)}"></div>
       <div class="fld"><label>Rubro</label><select id="np_rubro">${RUBROS7.map(r=>`<option ${r===rubro?"selected":""}>${esc(r)}</option>`).join("")}</select></div>
       <div class="grid2">
         <div class="fld"><label>Localidad</label><input id="np_city" value="${esc(L[0]||'')}"></div>
         <div class="fld"><label>Provincia</label><select id="np_state">${optSel(CAT.prov,provId||false,'— provincia —')}</select></div>
       </div>
-      <div class="fld"><label>Dirección (opcional)</label><input id="np_street" value="${esc(e[3]?titulo(e[3]):'')}"></div>
+      <div class="fld"><label>Dirección</label><input id="np_street" value="${esc(e[3]?titulo(e[3]):'')}"></div>
+      <div class="grid2">
+        <div class="fld"><label>Teléfono</label><input id="np_phone" placeholder="0341 155033943"></div>
+        <div class="fld"><label>Email</label><input id="np_email" placeholder="nombre@dominio.com"></div>
+      </div>
+      <div class="grid2">
+        <div class="fld"><label>CUIT</label><input id="np_vat" placeholder="30-12345678-9"></div>
+        <div class="fld"><label>Cond. fiscal (AFIP)</label><select id="np_fiscal">${optSel(CAT.fiscal,false,'— condición —')}</select></div>
+      </div>
       <div class="fld"><label>Comercial asignado</label><select id="np_com">${optCom(false)}</select></div>
     </div>
     <div class="dfoot"><button class="btn-save" id="btnNew" onclick="guardarProspecto(${idx})">Crear contacto en Odoo</button></div>`;
@@ -963,14 +975,21 @@ async function guardarProspecto(idx){
   const num=x=>{const v=val(x);return v?parseInt(v,10):false;};
   const name=val("np_name"); if(!name){ toast("⚠ Falta el nombre"); return; }
   btn.disabled=true; btn.textContent="Creando…";
+  const tieneVat=!!val("np_vat");
   const vals={ name, company_type:"company", city:val("np_city")?oracion(val("np_city")):false,
-    state_id:num("np_state"), street:val("np_street")?oracion(val("np_street")):false, user_id:num("np_com") };
+    state_id:num("np_state"), street:val("np_street")?oracion(val("np_street")):false, user_id:num("np_com"),
+    phone:val("np_phone")?fmtTel(val("np_phone")):false, email:val("np_email")||false,
+    vat:tieneVat?fmtDoc(val("np_vat"),IDT.cuit):false, l10n_latam_identification_type_id:tieneVat?IDT.cuit:false,
+    l10n_ar_afip_responsibility_type_id:num("np_fiscal") };
   vals[RUBRO_FIELD]=val("np_rubro")||false;
   try{
     const newId=await rpc("res.partner","create",[vals],{context:{lang:"es_AR"}});
+    // marca de "contacto nuevo" con el creador real (el create_uid de Odoo es el conector, no el usuario del Core)
+    const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
+    try{ await rpc("res.partner","message_post",[[newId]],{body:"👤 "+NUEVO_TAG+" por="+quien,message_type:"comment"}); }catch(_){}
     CREADOS.add(idx); if(UNI&&UNI.est[idx]) UNI.est[idx][6]=newId;
     toast("✅ Contacto creado en Odoo");
-    cerrar(); render();
+    cerrar(); render(); cargarNuevos();
   }catch(e){ btn.disabled=false; btn.textContent="Crear contacto en Odoo"; toast("⚠ No se pudo crear: "+(e.message||e)); }
 }
 

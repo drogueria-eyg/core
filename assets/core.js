@@ -923,9 +923,54 @@ window.EYG = (function(){
   /* Badge para la lista: r=undefined → "consultando"; r.error → nada. */
   function badgeBCRA(r){ bcraStyles(); if(r===null) return ""; if(!r) return '<span class="eyg-bcra load" title="Consultando situación crediticia (BCRA)…"><span class="pt"></span>crédito…</span>'; if(r.error) return ""; const luz=r.luz||"g"; const t=r.sin?"Apto · sin deuda":(luz==="g"?"Apto":luz==="y"?"Con reparos":"Revisar"); return `<span class="eyg-bcra ${luz}" title="Situación crediticia BCRA: ${esc(r.est||t)}${r.chImpagos?(' · '+r.chImpagos+' cheque(s) impago(s)'):''}"><span class="pt"></span>${t}</span>`; }
 
+  /* ===== VEREDICTO DE CRÉDITO (para el comercial) =====
+     Cruza TODAS las fuentes (como la evaluación de Cobranzas): externo (BCRA: situación,
+     cheques, judicial) + interno (historial de pago con EyG: vencido, mora, incobrable/marca).
+     Devuelve UN resultado simple (sin desglose): apto · reparos · consultar · noapto. Aplica a
+     CUALQUIER beneficio (plazos de pago, cheque, etc.). El umbral para "consultar con Cobranzas"
+     es CONFIGURABLE en ir.config_parameter `eyg.credito` (moraConsultar/moraNoApto/vencidoMin):
+     Cobranzas ajusta desde dónde debe intervenir, porque es quien define tras una evaluación
+     más profunda. El comercial solo ve el veredicto; el detalle vive en el módulo de Cobranzas. */
+  const CRED_KEY="eyg.credito";
+  let _credCfg=null;
+  async function creditoConfig(force){ if(_credCfg && !force) return _credCfg; let o={}; try{ o=JSON.parse(await rpc("ir.config_parameter","get_param",[CRED_KEY])||"{}")||{}; }catch(e){} _credCfg=Object.assign({moraConsultar:30, moraNoApto:90, vencidoMin:1000}, o); return _credCfg; }
+  const CRED_NIV={
+    apto:     {luz:"g", titulo:"Apto",                   sub:"Podés otorgar el beneficio."},
+    reparos:  {luz:"y", titulo:"Apto con reparos",       sub:"Podés otorgar, con criterio."},
+    consultar:{luz:"o", titulo:"Consultar con Cobranzas",sub:"Que Cobranzas evalúe antes de otorgar."},
+    noapto:   {luz:"r", titulo:"No apto",                sub:"Mejor no otorgar por ahora."},
+  };
+  function _cred(nivel,mot){ const m=CRED_NIV[nivel]; return {nivel, luz:m.luz, titulo:m.titulo, sub:m.sub, motivo:(mot||[]).join(" · ")}; }
+  /* interno = fila de riesgoCartera(): {nivel:'ok'|'atencion'|'alto', vencido, mora, bovIncobrable, manual}. */
+  function evalCredito(bcra, interno, cfg){
+    cfg=cfg||_credCfg||{moraConsultar:30, moraNoApto:90, vencidoMin:1000};
+    const iv=interno||{}, mora=iv.mora||0, venc=iv.vencido||0, vmin=cfg.vencidoMin||1000;
+    const incob=!!(iv.bovIncobrable||iv.manual);
+    const b=bcra||{}, chImp=(b.chImpagos||0)>0, bR=b.luz==="r", bY=b.luz==="y";
+    // No apto — señales fuertes
+    if(incob) return _cred("noapto",[iv.manual?"marcado con problemas de pago":"marcado incobrable en Cobranzas"]);
+    if(chImp) return _cred("noapto",["cheques rechazados sin pagar"]);
+    if(venc>vmin && mora>=cfg.moraNoApto) return _cred("noapto",["deuda muy atrasada con EyG"]);
+    // Consultar con Cobranzas — señales medias (umbral configurable)
+    const mc=[];
+    if(bR) mc.push("situación irregular en el sistema financiero");
+    if(venc>vmin && mora>=cfg.moraConsultar) mc.push("registra atrasos de pago con EyG");
+    if(mc.length) return _cred("consultar",mc);
+    // Apto con reparos — marcas menores
+    const mr=[];
+    if(bY) mr.push("alguna marca menor en el BCRA");
+    if(venc>vmin && mora>0) mr.push("atraso leve de pago");
+    if(mr.length) return _cred("reparos",mr);
+    // Apto
+    return _cred("apto",[]);
+  }
+  function credStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-cred-css")) return; const s=document.createElement("style"); s.id="eyg-cred-css"; s.textContent=".eyg-cred{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;padding:2px 9px;border-radius:20px;white-space:nowrap}.eyg-cred .pt{width:7px;height:7px;border-radius:50%;background:currentColor}.eyg-cred.g{background:#E4F5E9;color:#1E7D46}.eyg-cred.y{background:#FBF0DA;color:#9A6B12}.eyg-cred.o{background:#FBE3D4;color:#B45816}.eyg-cred.r{background:#FBE4E3;color:#B0322F}.eyg-cred.load{background:#eef3f2;color:#8A9A97}"; document.head.appendChild(s); }
+  function badgeCredito(v){ credStyles(); if(!v) return ""; if(v.loading) return '<span class="eyg-cred load" title="Evaluando…"><span class="pt"></span>evaluando…</span>'; return `<span class="eyg-cred ${v.luz}" title="Evaluación para beneficios: ${esc(v.titulo)}${v.motivo?(' — '+esc(v.motivo)):''}"><span class="pt"></span>${esc(v.titulo)}</span>`; }
+
   return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
+    creditoConfig, evalCredito, badgeCredito, credStyles, CRED_NIV,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA,
