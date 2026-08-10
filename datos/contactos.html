@@ -318,6 +318,7 @@ async function cargar(silent){
     if(silent){ const y=window.scrollY; render(); window.scrollTo(0,y); } else render();
     if(!UNI) cargarUniverso();   // el padrón (~900 KB) se trae 1 vez y actualiza los cruces al llegar
     if(!silent || Date.now()-_riesgoAt>180000) cargarRiesgos();   // alerta de crédito (más liviana: cada ~3 min)
+    if(!silent) cargarNuevos();   // historial de contactos nuevos (se refresca al abrir la pestaña)
   }catch(e){ if(!silent) document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar.</b><br>'+esc(e.message||e)+'</div>'; }
   finally{ _cargando=false; _lastLoad=Date.now(); }
 }
@@ -331,6 +332,62 @@ async function cargarRiesgos(){
     DATA.forEach(c=>{ c.riesgo=M[c.id]||null; });
     if(filtro.tab==="nuestros" && !drawerAbierto() && !editando()){ const y=window.scrollY; renderLista(); window.scrollTo(0,y); }
   }catch(e){ console.warn("riesgos:",e.message); }
+}
+
+/* Historial de contactos NUEVOS (creados desde el Core): quién los creó, a quién están
+   asignados hoy, si fueron contactados (cruce con los marcadores del comercial) y si vendieron.
+   Se re-consulta en vivo → los datos se van actualizando solos. */
+async function cargarNuevos(){
+  try{
+    const msgs=await rpc("mail.message","search_read",[[["model","=","res.partner"],["body","like",NUEVO_TAG]]],{fields:["res_id","body","date"],limit:0});
+    msgs.sort((a,b)=>(a.date||"").localeCompare(b.date||""));   // el más viejo = la creación
+    const creado={};
+    for(const m of msgs){ if(creado[m.res_id]) continue; const b=(m.body||"").replace(/<[^>]+>/g," "); const mm=b.match(/por=([^<\n]+)/); creado[m.res_id]={creador:((mm&&mm[1])||"").trim()||"—", fecha:m.date}; }
+    const ids=Object.keys(creado).map(x=>+x);
+    if(!ids.length){ NUEVOS=[]; if(filtro.tab==="nuevos") renderNuevos(); const t=document.getElementById("cntNuevos"); if(t)t.textContent="0"; return; }
+    const [parts, contactMsgs, ventas]=await Promise.all([
+      rpc("res.partner","read",[ids],{fields:["id","name","user_id","city","create_date",RUBRO_FIELD],context:{lang:"es_AR"}}),
+      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],"|","|","|",["body","like","[COBRO-CONTACTO]"],["body","like","EyGWA"],["body","like","EyGCRM"],["body","like","[EyGWA]"]]],{fields:["res_id","date"],limit:0}),
+      rpc("sale.order","read_group",[[["partner_id","in",ids],["state","in",["sale","done"]]],["amount_total:sum"],["partner_id"]],{lazy:false})
+    ]);
+    const cont={}; contactMsgs.forEach(m=>{ if(!cont[m.res_id]||m.date>cont[m.res_id]) cont[m.res_id]=m.date; });
+    const vt={}; ventas.forEach(g=>{ if(g.partner_id) vt[g.partner_id[0]]={tot:g.amount_total||0,n:g.__count||0}; });
+    const byId={}; parts.forEach(p=>byId[p.id]=p);
+    NUEVOS=ids.map(id=>{ const p=byId[id]||{}, cr=creado[id], v=vt[id]||{}; return {
+      id, nombre:p.name||"(sin nombre)", creador:cr.creador, fecha:p.create_date||cr.fecha,
+      comercial:p.user_id?p.user_id[1]:"Sin asignar", rubro:p[RUBRO_FIELD]||"",
+      contactado:cont[id]||null, ventaTot:v.tot||0, nped:v.n||0 };
+    }).sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||""));
+    const t=document.getElementById("cntNuevos"); if(t) t.textContent=NUEVOS.length;
+    if(filtro.tab==="nuevos" && !drawerAbierto()) renderNuevos();
+  }catch(e){ console.warn("nuevos:",e.message); }
+}
+function fmtCuando(iso){ if(!iso) return "—"; const p=EYG.argParts(iso); return p.date===EYG.argToday()?("hoy "+p.hm):(p.date.slice(8,10)+"/"+p.date.slice(5,7)+"/"+p.date.slice(2,4)); }
+function renderNuevos(){
+  const tb=document.getElementById("tabbody"); if(!tb) return;
+  const GC="grid-template-columns:2fr 1.1fr .9fr 1.2fr .9fr .9fr";
+  const hoy=EYG.argToday(), ym=hoy.slice(0,7), sem=EYG.hace(7);
+  const df=n=>EYG.argParts(n.fecha).date;
+  const nHoy=NUEVOS.filter(n=>df(n)===hoy).length, nSem=NUEVOS.filter(n=>df(n)>=sem).length, nMes=NUEVOS.filter(n=>df(n).startsWith(ym)).length;
+  const nCont=NUEVOS.filter(n=>n.contactado).length, nVend=NUEVOS.filter(n=>n.ventaTot>0||n.nped>0).length;
+  const kpi=(n,l)=>`<div class="kpi" style="cursor:default"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  const rows=NUEVOS.slice(0,500).map(n=>`<div class="row" onclick="abrir(${n.id})" style="${GC}">
+      <div><div class="cname">${esc(n.nombre)}</div><div style="margin-top:3px">${rubroBadge(n.rubro)}</div></div>
+      <div class="hide-sm"><span class="muted trunc" title="${esc(n.creador)}">${esc(n.creador)}</span></div>
+      <div class="muted">${fmtCuando(n.fecha)}</div>
+      <div><span class="muted trunc" title="${esc(n.comercial)}">${esc(n.comercial)}</span></div>
+      <div class="hide-sm">${n.contactado?`<span class="badge ok">✓ ${fmtCuando(n.contactado)}</span>`:`<span class="badge bad">no</span>`}</div>
+      <div class="num">${n.ventaTot>0?money(n.ventaTot):(n.nped>0?'<span class="badge ok">✓</span>':'<span class="muted">—</span>')}</div>
+    </div>`).join("");
+  tb.innerHTML=`
+    <div class="info">📊 Historial de los contactos <b>creados desde acá</b> (pestaña "Por conquistar"). Se actualiza solo: quién lo creó, a quién está asignado hoy, si ya lo contactaron (cruza con el trabajo del comercial) y si tuvo ventas.</div>
+    <div class="kpis">
+      ${kpi(NUEVOS.length,"Nuevos (total)")}${kpi(nHoy,"Hoy")}${kpi(nSem,"Últimos 7 días")}${kpi(nMes,"Este mes")}${kpi(nCont,"Ya contactados")}${kpi(nVend,"Con ventas")}
+    </div>
+    ${NUEVOS.length?`<div class="tablecard">
+      <div class="thead" style="${GC}"><div>Contacto</div><div class="hide-sm">Creado por</div><div>Cuándo</div><div>Comercial actual</div><div class="hide-sm">Contactado</div><div>Venta</div></div>
+      ${rows}${NUEVOS.length>500?'<div class="empty" style="padding:16px">Mostrando los primeros 500.</div>':''}
+    </div>`:'<div class="tablecard"><div class="empty">Todavía no se crearon contactos nuevos desde el módulo. Andá a "Por conquistar" y creá el primero.</div></div>'}`;
 }
 
 function comercialesDe(rows){
@@ -436,9 +493,10 @@ function render(){
     <div class="tabs">
       <button class="tab ${filtro.tab==="nuestros"?"on":""}" onclick="setTab('nuestros')">👥 Nuestros contactos <span class="cnt">${base().length}</span></button>
       <button class="tab ${filtro.tab==="conquistar"?"on":""}" onclick="setTab('conquistar')">🎯 Por conquistar <span class="cnt" id="cntConq">${nConq}</span></button>
+      <button class="tab ${filtro.tab==="nuevos"?"on":""}" onclick="setTab('nuevos')">📊 Nuevos <span class="cnt" id="cntNuevos">${NUEVOS.length}</span></button>
     </div>
     <div id="tabbody"></div>`;
-  if(filtro.tab==="nuestros") renderNuestros(); else renderConquistar();
+  if(filtro.tab==="nuestros") renderNuestros(); else if(filtro.tab==="conquistar") renderConquistar(); else renderNuevos();
 }
 
 function renderNuestros(){
@@ -603,7 +661,7 @@ function renderProspectos(){
 /* ================= Interacción filtros ================= */
 let sT; function onSearch(v){filtro.q=v;clearTimeout(sT);sT=setTimeout(renderLista,180);}
 let sP; function onSearchP(v){filtro.pQ=v;clearTimeout(sP);sP=setTimeout(renderProspectos,200);}
-function setTab(t){filtro.tab=t;SEL.clear();render();}
+function setTab(t){filtro.tab=t;SEL.clear();render(); if(t==='nuevos') cargarNuevos();}
 function setCom(i){const name=i<0?"":(COMS[i]?COMS[i].comercial:"");filtro.com=filtro.com===name?"":name;filtro.boveda=false;filtro.proveedores=false;SEL.clear();render();}
 function setSeg(s){filtro.seg=filtro.seg===s?"":s;filtro.boveda=false;filtro.proveedores=false;SEL.clear();render();}
 function setIssue(k){filtro.issue=k;filtro.boveda=false;filtro.proveedores=false;SEL.clear();render();}
