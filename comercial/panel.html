@@ -156,6 +156,7 @@
   .dfoot{padding:14px 22px;border-top:1px solid var(--line);display:flex;gap:10px;background:var(--surface)}
   .btn{flex:1;font-family:inherit;font-size:14.5px;font-weight:700;border:0;border-radius:10px;padding:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;text-decoration:none}
   .btn.save{background:var(--teal);color:#fff} .btn.save:hover{filter:brightness(1.06)}
+  .btn.arch{flex:0 0 auto;background:#FBE4E3;color:#8A2E2B} .btn.arch:hover{filter:brightness(.98)}
   .btn[disabled]{opacity:.5;cursor:default}
   .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;padding:13px 22px;border-radius:30px;font-weight:600;font-size:14px;opacity:0;transition:.3s;z-index:80;box-shadow:0 8px 30px rgba(0,0,0,.25)}
   .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -384,6 +385,7 @@ async function rpc(model,method,args,kwargs={},intentos=3){
 
 // ===== Config / objetivos =====
 const OBJ={diarioContactos:10, mensualNuevos:3, semanalFact:10000000}; // semanalFact = objetivo de VENTA NETA semanal (sin IVA, ya descontadas las notas de crédito)
+const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador reversible en el chatter del contacto (misma bóveda que usa la líder en Contactos). La gerencia revisa lo archivado.
 // ===== Comisión: escalera marginal sobre FACTURADO NETO (base). El cobro NO es la base: es PREMIO → sube el nivel/multiplicador que agranda toda la comisión =====
 // 3 SISTEMAS · escalera 2 tramos con corte en el OBJETIVO (baseline facturado ×1,2), MARGINAL:
 //  🏥 Instituciones 2%/3% · 💊 Farmacias 2,5%/3,5% (× nivel) · 🔵 Externo (Samanta) 3%/4% @ $50M fijo, sin nivel.
@@ -500,7 +502,7 @@ async function cargar(){
     ST.contactos=contactos; ST.catFiscal=fiscal; ST.catId=idt; ST.catProv=prov; ST.nuevos=nuevos;
     const ids=contactos.map(c=>c.id);
     // recencia/frecuencia + notas de hoy + cuentas corrientes (deuda) + cobrado del mes
-    const [og,notas,ccLines,cobrado,aFact,facMes,facSem,ncMes,ncSem]=await Promise.all([
+    const [og,notas,ccLines,cobrado,aFact,facMes,facSem,ncMes,ncSem,bovMsgs]=await Promise.all([
       rpc("sale.order","read_group",[[["partner_id","in",ids],["state","in",["sale","done"]]],["date_order:max","amount_total:sum"],["partner_id"]],{lazy:false}),
       // Mensajes de WhatsApp registrados (confirmados) de la SEMANA: [EyGWA] tipo/nuevo|seg. Incluye legacy [EyGCRM].
       rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",hace(7)+" 00:00:00"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id","date","body"],limit:0}),
@@ -515,8 +517,16 @@ async function cargar(){
       rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",inicioSem]],["amount_untaxed:sum"],[]],{lazy:false}),
       // NC de la cartera (se restan de la venta facturada)
       rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
-      rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioSem]],["amount_untaxed:sum"],[]],{lazy:false})
+      rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioSem]],["amount_untaxed:sum"],[]],{lazy:false}),
+      // bóveda: marcadores de archivado de esta cartera (para sacar los archivados de la lista)
+      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["body","like",BOV_TAG]]],{fields:["res_id","body","date"],limit:0})
     ]);
+    // aplicar bóveda: los contactos archivados salen de la cartera (los revisa la gerencia)
+    { const seen=new Set(), bov=new Set();
+      (bovMsgs||[]).sort((a,b)=>(b.date||"").localeCompare(a.date||"")).forEach(m=>{
+        if(seen.has(m.res_id)) return; seen.add(m.res_id);
+        if(/salir/i.test((m.body||"").replace(/<[^>]+>/g," "))) return; bov.add(m.res_id); });
+      if(bov.size) ST.contactos=ST.contactos.filter(c=>!bov.has(c.id)); }
     ST.orders={}; og.forEach(g=>{if(g.partner_id)ST.orders[g.partner_id[0]]={ultima:g.date_order,pedidos:g.__count,total:g.amount_total};});
     // Mensajes WA de la semana, parseados; contactados hoy = distintos con mensaje hoy
     ST.msgs=notas.map(n=>{const p=parseWA(n.body); return p?{res_id:n.res_id,date:(n.date||"").slice(0,10),tipo:p.tipo,ng:p.ng}:null;}).filter(Boolean);
@@ -1266,7 +1276,7 @@ function abrirForm(c,isNew){
         <div class="fld"><label>Condición fiscal (AFIP) ${comp.has.fiscal||isNew?'':'<span class="miss">falta</span>'}</label><select id="f_fiscal">${optSel(ST.catFiscal,c.l10n_ar_afip_responsibility_type_id,'— condición —')}</select></div>
       </div>
     </div>
-    <div class="dfoot"><button class="btn save" id="btnSave" onclick="guardar()">${isNew?'Crear contacto':'Guardar ficha'}</button></div>`;
+    <div class="dfoot">${isNew?'':`<button class="btn arch" onclick="pedirArchivar(${c.id})">🔒 Archivar</button>`}<button class="btn save" id="btnSave" onclick="guardar()">${isNew?'Crear contacto':'Guardar ficha'}</button></div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
   prevTel(); prevDoc();
   if(!isNew) cargarIntel(c.id);
@@ -1314,6 +1324,28 @@ function prevName(){}
 function prevTel(){const v=document.getElementById("f_phone").value;const el=document.getElementById("prev_phone");if(el)el.textContent=v?('Se guardará: '+fmtTel(v)):'';}
 function prevDoc(){const t=parseInt(document.getElementById("f_idtype").value||0,10);const v=document.getElementById("f_vat").value;const el=document.getElementById("prev_doc");if(el)el.textContent=v?('→ '+fmtDoc(v,t)):'';}
 function cerrar(){document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");EDIT=null;}
+
+/* ===== Bóveda: el comercial archiva un contacto (mismo lugar que revisa la gerencia) ===== */
+// Pide confirmación con motivo opcional, reemplazando el pie de la ficha.
+function pedirArchivar(id){
+  const f=document.querySelector("#drawer .dfoot"); if(!f) return;
+  f.innerHTML=`<div style="width:100%">
+    <div style="font-size:13px;font-weight:800;margin-bottom:3px">Archivar en la bóveda</div>
+    <div style="font-size:12px;color:var(--gris);margin-bottom:8px">Sale de tu cartera y queda para que lo revise la gerencia. Es reversible.</div>
+    <input id="arch_nota" placeholder="Motivo (opcional): no existe, no aplica, cerró…" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:9px;font-family:inherit;font-size:13.5px;margin-bottom:9px">
+    <div style="display:flex;gap:9px">
+      <button class="btn" style="background:var(--bg);color:var(--gris)" onclick="abrir(${id})">Cancelar</button>
+      <button class="btn arch" style="flex:1" onclick="archivarBoveda(${id})">🔒 Archivar</button>
+    </div></div>`;
+}
+async function archivarBoveda(id){
+  const nota=(document.getElementById("arch_nota")?document.getElementById("arch_nota").value:"").trim();
+  try{
+    await rpc("res.partner","message_post",[[id]],{body:`🔒 ${BOV_TAG} ${nota}`,message_type:"comment"});
+    ST.contactos=ST.contactos.filter(c=>c.id!==id);
+    cerrar(); toast("🔒 Archivado — lo revisa la gerencia"); render();
+  }catch(e){ toast("⚠ No se pudo archivar: "+(e.message||e)); }
+}
 document.addEventListener("keydown",e=>{if(e.key==="Escape")cerrar();});
 
 async function guardar(){
