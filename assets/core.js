@@ -132,6 +132,23 @@ window.EYG = (function(){
   async function login(email,pwd){ return await supa().auth.signInWithPassword({email:(email||"").trim().toLowerCase(),password:pwd}); }
   async function logout(){ try{ await supa().auth.signOut(); }catch(e){} location.href=BASE; }
 
+  /* ---- Encierro del rol "comercial" ------------------------------------
+     Un comercial vive dentro de su sesión de venta y nada más: puede estar en
+     su panel y en "Cargar venta" (que se abre desde adentro del panel). Cualquier
+     otra página del Core (inicio, precios, comunicaciones, etc.) lo devuelve a su
+     panel. Su menú/tarjetas quedan sólo con "Mi Panel" (ver puedeVer). Se aplica
+     en requireAuth y en guard, apenas se confirma el perfil. Reversible: borrar
+     este bloque y sus dos llamadas + la línea de puedeVer. */
+  const COMERCIAL_OK = ["panel.html","vender.html"];
+  function comercialLock(p){
+    if(!p || p.rol!=="comercial") return false;
+    if(typeof location==="undefined") return false;
+    const file = (location.pathname.split("/").pop()||"").toLowerCase();
+    if(COMERCIAL_OK.includes(file)) return false;   // ya está donde puede estar
+    location.replace(abs("comercial/panel.html"));  // el resto → a su panel
+    return true;
+  }
+
   /* Portón: requireAuth(rolesPermitidos, cb). [] = cualquier logueado. admin/direccion pueden todo. */
   async function requireAuth(roles, cb){
     document.body.innerHTML = '<div class="gate"><div class="spinner"></div><div>Verificando acceso…</div></div>';
@@ -139,6 +156,7 @@ window.EYG = (function(){
     if(!s){ showLogin(); return; }
     const p = await perfil();
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso", accesoMsg(p,s), false); return; }
+    if(comercialLock(p)) return;   // comercial fuera de su panel → a su panel
     const ok = esSuper(p._h) || p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return; }
     if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return; }
@@ -152,6 +170,7 @@ window.EYG = (function(){
     if(!s){ showLogin(); return new Promise(()=>{}); }
     const p = await perfil();
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso", accesoMsg(p,s), false); return new Promise(()=>{}); }
+    if(comercialLock(p)) return new Promise(()=>{});   // comercial fuera de su panel → a su panel
     // Módulo EN PRUEBAS: sólo para las huellas de email listadas (ver puedeVer)
     const pr = opts && opts.pruebas;
     if(pr && pr.length && !pr.includes(p._h) && !esSuper(p._h)){
@@ -325,6 +344,7 @@ window.EYG = (function(){
     const p = (typeof perfilORol === "string") ? {rol:perfilORol} : (perfilORol||{});
     if(esSuper(p._h)) return true;   // super-admins (German y Diego) ven todo
     if(m.pruebas && m.pruebas.length && !m.pruebas.includes(p._h) && !esSuper(p._h)) return false;
+    if(p.rol==="comercial") return m.key==="panel";   // comercial: sólo su panel, nada más
     return p.rol==="admin"||p.rol==="direccion" ? true : m.roles.includes(p.rol);
   }
   function T(v,p){ return typeof v==="function" ? v(p) : v; }  // título/desc pueden depender del rol
