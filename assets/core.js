@@ -875,8 +875,57 @@ window.EYG = (function(){
     }catch(e){ return {error:e.message}; }
   }
 
+  /* ===== SITUACIÓN CREDITICIA (BCRA) — helpers compartidos + CACHE por CUIT =====
+     Mismo semáforo que el módulo "Situación crediticia" (ponderado por monto). Se usa en el
+     badge de la lista de contactos y en la ficha. CACHE compartida en ir.config_parameter
+     `eyg.bcra` (mapa CUIT→resumen): el badge aparece al instante y no re-consulta a cada rato;
+     se refresca si está viejo. "Ligada al contacto" = keyed por su CUIT (la ve comercial y líder). */
+  const BCRA_URL="https://api.bcra.gob.ar/centraldedeudores/v1.0";
+  const BCRA_KEY="eyg.bcra";
+  async function bcraTraer(path){ const r=await fetch(BCRA_URL+path,{headers:{Accept:"application/json"}}); if(r.status===404) return null; if(!r.ok) throw new Error("BCRA "+r.status); return (await r.json()).results||null; }
+  async function bcraFull(cuit){ const c=(cuit||"").replace(/\D/g,""); if(c.length!==11) return null;
+    const [deudas,historicas,cheques]=await Promise.all([ bcraTraer("/Deudas/"+c), bcraTraer("/Deudas/Historicas/"+c).catch(()=>null), bcraTraer("/Deudas/ChequesRechazados/"+c).catch(()=>null) ]);
+    return {deudas,historicas,cheques}; }
+  function bcraClasificar(data){
+    const {deudas,historicas,cheques}=data||{};
+    const actual=(deudas&&deudas.periodos&&deudas.periodos[0])||(historicas&&historicas.periodos&&historicas.periodos[0])||null;
+    const nombre=(deudas&&deudas.denominacion)||(historicas&&historicas.denominacion)||(cheques&&cheques.denominacion)||"";
+    const peor=ents=>(ents||[]).reduce((m,e)=>(e.situacion>0&&e.situacion>m)?e.situacion:m,0);
+    let chDet=[],chImpagos=0;
+    if(cheques&&cheques.causales){ cheques.causales.forEach(x=>(x.entidades||[]).forEach(en=>(en.detalle||[]).forEach(d=>{ chDet.push({entidad:en.entidad||x.causal||"",...d}); if(!d.fechaPago) chImpagos++; }))); }
+    const hayCheques=chDet.length>0;
+    if(!actual && !cheques){ return {luz:"g",sin:true,est:"Sin registros",nombre,expli:"No figura con deuda en el sistema financiero ni cheques rechazados en el BCRA. Puede no tener productos bancarios.",deuda:0,irreg:0,pctIrreg:0,cheques:0,chImpagos:0,ws:0,ents:[],chDet:[],historicas:null,periodo:null}; }
+    const ents=((actual&&actual.entidades)||[]).filter(e=>e.situacion>0||e.monto>0);
+    const ws=peor(ents);
+    const totalMiles=ents.reduce((a,e)=>a+(e.monto||0),0);
+    const irregEnts=ents.filter(e=>e.situacion>=3);
+    const irregMiles=irregEnts.reduce((a,e)=>a+(e.monto||0),0);
+    const wsIrreg=peor(irregEnts);
+    const pctIrreg=totalMiles>0?irregMiles/totalMiles:(irregEnts.length?1:0);
+    const legalEnts=ents.filter(e=>e.procesoJud||e.situacionJuridica);
+    const legalMaterial=legalEnts.some(e=> totalMiles>0 ? (e.monto/totalMiles)>=0.10 : true);
+    let luz="g",est="Apto",expli="";
+    if(chImpagos>0||pctIrreg>=0.10||legalMaterial){ luz="r"; est="Revisar con cuidado"; const mot=[]; if(pctIrreg>=0.10) mot.push("parte de su deuda está en situación "+wsIrreg); if(chImpagos>0) mot.push(chImpagos+" cheque"+(chImpagos>1?"s":"")+" impago"+(chImpagos>1?"s":"")); if(legalMaterial) mot.push("proceso judicial"); expli="Presenta "+mot.join(", ")+". Conviene revisar antes de otorgar beneficios de pago (ej. cheque a 120 días)."; }
+    else if(irregMiles>0||ws===2||hayCheques||legalEnts.length){ luz="y"; est="Con reparos"; expli="Mayormente en orden, con alguna marca menor. Se puede avanzar con criterio."; }
+    else { luz="g"; est="Apto"; expli=ents.length?"Toda su deuda en situación normal, sin cheques rechazados. Buen perfil para beneficios de pago.":"Sin irregularidades en el BCRA."; }
+    return {luz,sin:false,est,nombre,expli,deuda:totalMiles*1000,irreg:irregMiles*1000,pctIrreg,cheques:chDet.length,chImpagos,ws,wsIrreg,hayCheques,ents,chDet,historicas,periodo:actual&&actual.periodo};
+  }
+  /* Resumen LITE para badge/cache (2 endpoints: Deudas + Cheques). */
+  async function bcraResumen(cuit){ const c=(cuit||"").replace(/\D/g,""); if(c.length!==11) return null;
+    try{ const [deudas,cheques]=await Promise.all([ bcraTraer("/Deudas/"+c), bcraTraer("/Deudas/ChequesRechazados/"+c).catch(()=>null) ]);
+      const s=bcraClasificar({deudas,historicas:null,cheques});
+      return {luz:s.luz,sin:s.sin,est:s.est,deuda:Math.round(s.deuda),irreg:Math.round(s.irreg),cheques:s.cheques,chImpagos:s.chImpagos,ws:s.ws,nombre:s.nombre};
+    }catch(e){ return {error:e.message}; }
+  }
+  async function bcraCacheLeer(){ try{ return JSON.parse(await rpc("ir.config_parameter","get_param",[BCRA_KEY])||"{}")||{}; }catch(e){ return {}; } }
+  async function bcraCacheMerge(obj){ if(!obj||!Object.keys(obj).length) return; try{ const cur=await bcraCacheLeer(); Object.assign(cur,obj); await rpc("ir.config_parameter","set_param",[BCRA_KEY,JSON.stringify(cur)]); }catch(e){} }
+  function bcraStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-bcra-css")) return; const s=document.createElement("style"); s.id="eyg-bcra-css"; s.textContent=".eyg-bcra{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:20px;white-space:nowrap}.eyg-bcra .pt{width:7px;height:7px;border-radius:50%;background:currentColor}.eyg-bcra.g{background:#E4F5E9;color:#1E7D46}.eyg-bcra.y{background:#FBF0DA;color:#9A6B12}.eyg-bcra.r{background:#FBE4E3;color:#B0322F}.eyg-bcra.load{background:#eef3f2;color:#8A9A97}"; document.head.appendChild(s); }
+  /* Badge para la lista: r=undefined → "consultando"; r.error → nada. */
+  function badgeBCRA(r){ bcraStyles(); if(r===null) return ""; if(!r) return '<span class="eyg-bcra load" title="Consultando situación crediticia (BCRA)…"><span class="pt"></span>crédito…</span>'; if(r.error) return ""; const luz=r.luz||"g"; const t=r.sin?"Apto · sin deuda":(luz==="g"?"Apto":luz==="y"?"Con reparos":"Revisar"); return `<span class="eyg-bcra ${luz}" title="Situación crediticia BCRA: ${esc(r.est||t)}${r.chImpagos?(' · '+r.chImpagos+' cheque(s) impago(s)'):''}"><span class="pt"></span>${t}</span>`; }
+
   return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
+    bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA,
