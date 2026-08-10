@@ -641,9 +641,9 @@ async function cargar(){
     // Ofertas y WhatsApp llegan después y RE-pintan (el nivel se ajusta al instante cuando
     // entran los combos colocados; mejor eso que dejar el panel en blanco 10s esperándolos).
     render();
-    if(MODO_LIDER) ldInit();   // gráfico de evolución (período + hoy minuto a minuto) para su propia cartera
-    cargarOfertas(ids).then(()=>render()).catch(()=>{});
-    cargarWA().then(()=>render()).catch(()=>{});
+    if(MODO_LIDER){ ldInit(); ldTeamInit(); }   // gráfico de evolución + rendimiento del equipo (líder que vende)
+    cargarOfertas(ids).then(()=>{ render(); if(MODO_LIDER){ ldRender(); ldTeamRender(); } }).catch(()=>{});
+    cargarWA().then(()=>{ render(); if(MODO_LIDER){ ldRender(); ldTeamRender(); } }).catch(()=>{});
   }catch(e){ document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar el panel.</b><br>'+esc(e.message)+'</div>'; }
 }
 /* Mensajes de WhatsApp que este comercial puede enviar a su cartera (Comunicaciones). */
@@ -872,7 +872,7 @@ function render(){
       </div>
       <a class="cta-venta big" href="${venderURL('nuevo=1')}">🛒 Cargar una venta</a>
     </div>
-    ${MODO_LIDER?'<div id="ldchartbox"></div>':`<div class="secrow"><h2 class="sec">🎯 Tus objetivos</h2></div>
+    ${MODO_LIDER?'<div id="ldchartbox"></div><div id="ldTeam"></div>':`<div class="secrow"><h2 class="sec">🎯 Tus objetivos</h2></div>
     <div class="goals">
       <div class="goal ${pDia>=100?'done':''}"><span class="chk">✅</span>${ring(pDia,dHoy,dObj,'var(--teal)')}<div><div class="gt">Hoy · contactos</div><div class="gn">${dHoy}/${dObj}</div><div class="gs">${dHoy>=dObj?'¡Meta cumplida! 🎉':(dObj-dHoy)+' para tu meta'}${msgHoy?` · 📤 ${msgHoy} msg`:''}</div></div></div>
       <div class="goal ${pNue>=100?'done':''}"><span class="chk">✅</span>${ring(pNue,ST.nuevos,OBJ.mensualNuevos,'var(--coral)')}<div><div class="gt">Mes · nuevos</div><div class="gn">${ST.nuevos}/${OBJ.mensualNuevos}</div><div class="gs">clientes nuevos</div></div></div>
@@ -1769,6 +1769,52 @@ function ldRender(){
   box.innerHTML=`<div class="secrow"><h2 class="sec">📈 Evolución de tus ventas</h2></div>${kpis}
     <div class="chartbox"><div class="ch-head"><h3>${TIT[LD.per]}</h3>${live?'<span class="live"><span class="dot"></span>En vivo · minuto a minuto</span>':''}</div>
     <div class="ch-tot">${money(tot)} <span class="ch-totl">${totLbl}</span></div>${svg}</div>`;
+}
+
+/* ===== Rendimiento del equipo (sólo modo líder): si el que mira es jefe de comerciales de
+   Ventas, mostramos sus ventas de este mes/hoy + link al panel del líder completo. ===== */
+let LDTEAM=null;
+async function ldTeamInit(){
+  try{
+    if(!ST.userId){ LDTEAM={team:[]}; return ldTeamRender(); }
+    const emp=await rpc("hr.employee","search_read",[[["user_id","=",ST.userId]]],{fields:["child_ids"]});
+    const childIds=(emp[0]&&emp[0].child_ids)||[];
+    let team=[];
+    if(childIds.length){
+      const subs=await rpc("hr.employee","read",[childIds,["name","user_id","department_id","child_ids"]]);
+      team=subs.filter(s=>s.user_id && s.department_id && /ventas/i.test(s.department_id[1]) && !(s.child_ids||[]).length)
+               .map(s=>({uid:s.user_id[0], name:s.user_id[1]}));
+    }
+    if(!team.length){ LDTEAM={team:[]}; return ldTeamRender(); }
+    const uids=team.map(t=>t.uid), t=ldToday(), mo=t.slice(0,7);
+    const [gMes,gHoy]=await Promise.all([
+      rpc("sale.order","read_group",[[["user_id","in",uids],["state","in",["sale","done"]],["date_order",">=",mo+"-01 00:00:00"]],["amount_untaxed:sum"],["user_id"]],{lazy:false}),
+      rpc("sale.order","read_group",[[["user_id","in",uids],["state","in",["sale","done"]],["date_order",">=",t+" 00:00:00"]],["amount_untaxed:sum"],["user_id"]],{lazy:false})
+    ]);
+    const mes={}, hoy={}; gMes.forEach(g=>{ if(g.user_id) mes[g.user_id[0]]=g.amount_untaxed||0; }); gHoy.forEach(g=>{ if(g.user_id) hoy[g.user_id[0]]=g.amount_untaxed||0; });
+    team=team.map(m=>({...m, mes:mes[m.uid]||0, hoy:hoy[m.uid]||0})).sort((a,b)=>b.mes-a.mes);
+    LDTEAM={team, tot:team.reduce((a,b)=>a+b.mes,0), totHoy:team.reduce((a,b)=>a+b.hoy,0)};
+  }catch(e){ LDTEAM={team:[], err:e.message}; }
+  ldTeamRender();
+}
+function ldTeamRender(){
+  const box=document.getElementById("ldTeam"); if(!box)return;
+  if(!LDTEAM || !LDTEAM.team.length){ box.innerHTML=''; return; }   // sin equipo (ej. Germán): sección oculta
+  const max=Math.max(...LDTEAM.team.map(t=>t.mes),1);
+  box.innerHTML=`
+    <div class="secrow"><h2 class="sec">👥 Rendimiento de mi equipo</h2>
+      <a href="lider.html?lider=${encodeURIComponent(COMERCIAL)}" style="margin-left:auto;color:var(--teal);font-weight:800;text-decoration:none;font-size:13px">Ver panel del equipo →</a></div>
+    <div class="kpis" style="margin-bottom:12px">
+      <div class="kpi"><div class="khead"><span class="kic pop">👥</span><div class="kmeta"><div class="kl">Ventas del equipo · este mes</div><div class="kv">${money(LDTEAM.tot)}</div><div class="ks">${LDTEAM.team.length} comercial${LDTEAM.team.length===1?'':'es'} · hoy ${money(LDTEAM.totHoy)}</div></div></div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:20px">
+      ${LDTEAM.team.map(m=>`<div style="background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:13px 15px;box-shadow:var(--shadow)">
+        <div style="font-weight:800;font-size:14.5px;margin-bottom:6px">${esc(m.name)}</div>
+        <div style="font-size:20px;font-weight:900;color:var(--teal-deep)">${money(m.mes)}</div>
+        <div style="font-size:11.5px;color:var(--gris2);margin-bottom:8px">este mes · hoy ${money(m.hoy)}</div>
+        <div style="height:6px;background:#EDF2F1;border-radius:4px;overflow:hidden"><i style="display:block;height:100%;width:${Math.round(m.mes/max*100)}%;background:var(--teal);border-radius:4px"></i></div>
+      </div>`).join("")}
+    </div>`;
 }
 
 EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
