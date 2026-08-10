@@ -86,11 +86,18 @@
   .clihdr .who2 .badges{margin-top:5px;display:flex;gap:7px;flex-wrap:wrap}
   .bdg{font-size:11.5px;font-weight:700;border-radius:20px;padding:3px 10px;background:var(--agua);color:var(--teal-deep)}
   .bdg.plazo{background:#FBF0D6;color:#9A6A0B}
-  .bdg.entrega{background:#EAF3FF;color:#12507F}
+  .bdg.entrega{background:#EAF3FF;color:#12507F;cursor:pointer}
+  .bdg.entrega:hover{filter:brightness(.97)}
   /* paso "¿a dónde entregás?" (modal): opciones tocables grandes */
   .eopts{display:flex;flex-direction:column;gap:9px;margin-top:16px}
   .eopt{justify-content:flex-start;text-align:left;gap:10px;padding:14px 16px}
   .eopt small{color:var(--gris);font-weight:500;font-size:12.5px}
+  .eopt.eadd{border-style:dashed;color:var(--teal-deep)}
+  /* formulario "nueva dirección de entrega" */
+  .eform{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+  .eform label{font-size:12px;font-weight:700;color:var(--gris);margin-top:7px}
+  .eform input{border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-family:inherit;font-size:15px;outline:none}
+  .eform input:focus{border-color:var(--teal)}
 
   /* catálogo */
   .cat-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
@@ -408,36 +415,101 @@ async function elegirCliente(pid){
   // ¿el cliente tiene direcciones de entrega propias (sucursales)? Odoo NO las asigna solo al crear
   // el pedido sobre la central, así que las resolvemos acá.
   document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Abriendo cliente…</div>';
-  let dels=[];
-  try{
-    dels = await rpc("res.partner","search_read",[[["parent_id","=",pid],["type","=","delivery"]]],
-      {fields:["id","name","street","city"], order:"name", context:ES});
-  }catch(e){}
-  if(dels.length>=2){ elegirEntrega(pid, c, dels); return; }   // varias → preguntar a dónde
-  const ship = dels.length===1 ? dels[0] : null;               // una → esa; ninguna → la central
-  await crearOrden(pid, c, ship);
+  const dels = await cargarEntregas(pid);
+  if(dels.length===1){ await crearOrden(pid, c, dels[0]); return; }  // una sola → directo
+  elegirEntrega(pid, c, dels, "create");                             // 0 ó 2+ → elegir / agregar
 }
 
-// Paso "¿a dónde entregás?" (solo cuando el cliente tiene 2+ sucursales)
-function elegirEntrega(pid, c, dels){
-  ST._entrega = {pid, dels};
-  const rows = dels.map((d,i)=>{
-    const dir=[d.street,d.city].filter(Boolean).join(", ");
-    return `<button class="btn ghost eopt" onclick="crearOrdenSel(${i})">📍 <span><b>${esc(d.name||"Sucursal")}</b>${dir?`<br><small>${esc(dir)}</small>`:""}</span></button>`;
-  }).join("");
-  modal(`<h3>¿A dónde lo entregás?</h3>
-    <p><b>${esc(c.name)}</b> tiene varias direcciones. Elegí a cuál va este pedido (se factura igual a la central).</p>
-    <div class="eopts">${rows}
-      <button class="btn ghost eopt" onclick="crearOrdenSel(-1)">🏢 <span><b>La central</b><br><small>Entregar en la dirección principal</small></span></button>
-    </div>
-    <div class="mb"><button class="btn ghost" onclick="cerrarModal();volverInicio()" style="flex:1">Cancelar</button></div>`);
+// Direcciones de entrega (sucursales) de un cliente.
+async function cargarEntregas(pid){
+  try{ return await rpc("res.partner","search_read",[[["parent_id","=",pid],["type","=","delivery"]]],
+    {fields:["id","name","street","city"], order:"name", context:ES}); }
+  catch(e){ return []; }
 }
-// puente desde el modal: crea el pedido con la sucursal elegida (i=-1 → la central)
-async function crearOrdenSel(i){
+
+// Paso "¿a dónde entregás?": elegir una existente, agregar una nueva, o la dirección fiscal.
+// mode="create" (antes de crear el pedido) | "edit" (cambiar la entrega de un pedido ya abierto)
+function elegirEntrega(pid, c, dels, mode){
+  ST._entrega = {pid, c, dels, mode};
+  const rows = (dels||[]).map((d,i)=>{
+    const dir=[d.street,d.city].filter(Boolean).join(", ");
+    return `<button class="btn ghost eopt" onclick="usarEntrega(${i})">📍 <span><b>${esc(d.name||"Sucursal")}</b>${dir?`<br><small>${esc(dir)}</small>`:""}</span></button>`;
+  }).join("");
+  const intro = (dels&&dels.length) ? "Elegí a dónde va este pedido (se factura igual a la central)."
+    : "Este cliente todavía no tiene dirección de entrega. Agregá una — la dirección fiscal (del CUIT) casi nunca es la de entrega.";
+  modal(`<h3>¿A dónde lo entregás?</h3>
+    <p><b>${esc(c.name||"")}</b>. ${intro}</p>
+    <div class="eopts">${rows}
+      <button class="btn ghost eopt eadd" onclick="agregarEntrega()">＋ <span><b>Agregar dirección de entrega</b><br><small>Nueva sucursal / punto de entrega</small></span></button>
+      <button class="btn ghost eopt" onclick="usarEntrega(-1)">🏢 <span><b>Entregar en la dirección fiscal</b><br><small>La misma del CUIT</small></span></button>
+    </div>
+    <div class="mb"><button class="btn ghost" onclick="cancelarEntrega()" style="flex:1">Cancelar</button></div>`);
+}
+function volverElegirEntrega(){ const e=ST._entrega||{}; elegirEntrega(e.pid, e.c, e.dels, e.mode); }
+function cancelarEntrega(){ cerrarModal(); if((ST._entrega||{}).mode==="create") volverInicio(); }
+
+// eligió una existente (i>=0) o la fiscal (i=-1)
+async function usarEntrega(i){
+  const e=ST._entrega||{}; const ship=(i>=0 && e.dels)?e.dels[i]:null;
+  cerrarModal(); await aplicarEntrega(ship);
+}
+
+// formulario para agregar una dirección de entrega nueva (se guarda como sucursal del cliente)
+function agregarEntrega(){
+  const e=ST._entrega||{};
+  modal(`<h3>Nueva dirección de entrega</h3>
+    <p>Para <b>${esc(e.c?e.c.name:"")}</b>. Se guarda como sucursal del cliente; no cambia la facturación.</p>
+    <div class="eform">
+      <label>Nombre / referencia</label>
+      <input id="ne_name" placeholder="Ej: Depósito San Lorenzo, Sucursal Centro…">
+      <label>Dirección</label>
+      <input id="ne_street" placeholder="Calle y número">
+      <label>Localidad</label>
+      <input id="ne_city" placeholder="Ej: Rosario">
+    </div>
+    <div class="mb">
+      <button class="btn ghost" onclick="volverElegirEntrega()" style="flex:1">← Volver</button>
+      <button class="btn grn" onclick="guardarNuevaEntrega()" style="flex:1">Guardar y usar</button>
+    </div>`);
+  setTimeout(()=>{ const i=document.getElementById("ne_name"); if(i) i.focus(); },60);
+}
+async function guardarNuevaEntrega(){
+  const e=ST._entrega||{};
+  const val=id=>{ const el=document.getElementById(id); return el?el.value.trim():""; };
+  const name=val("ne_name"), street=val("ne_street"), city=val("ne_city");
+  if(!name && !street){ toast("Poné al menos un nombre o la dirección"); return; }
   cerrarModal();
-  const e=ST._entrega||{}; const c=ST.cartera.find(x=>x.id===e.pid);
-  const ship=(i>=0 && e.dels)?e.dels[i]:null;
-  await crearOrden(e.pid, c, ship);
+  document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Guardando dirección…</div>';
+  try{
+    const vals={parent_id:e.pid, type:"delivery", name:name||city||"Entrega"};
+    if(street) vals.street=street; if(city) vals.city=city;
+    const id=await rpc("res.partner","create",[vals],{context:ES});
+    e.dels=(e.dels||[]).concat([{id, name:vals.name, street, city}]);   // queda disponible para próximas veces
+    await aplicarEntrega({id, name:vals.name});
+  }catch(err){ toast("No pude guardar la dirección"); elegirEntrega(e.pid, e.c, e.dels, e.mode); }
+}
+
+// aplica la entrega elegida según el modo (crear el pedido, o cambiarlo si ya existe)
+async function aplicarEntrega(ship){
+  const e=ST._entrega||{};
+  if(e.mode==="edit" && ST.order){
+    document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Actualizando entrega…</div>';
+    try{
+      const shipId=ship?ship.id:e.pid;
+      await rpc("sale.order","write",[[ST.order.id],{partner_shipping_id:shipId}],{context:ES});
+      ST.order.shipId=shipId; ST.order.shipName=(ship && shipId!==e.pid)?ship.name:"";
+      toast("📦 Entrega actualizada");
+    }catch(err){ toast("No pude cambiar la entrega"); }
+    ST.view="venta"; render(); return;
+  }
+  await crearOrden(e.pid, e.c, ship);   // mode create
+}
+
+// cambiar la entrega de un pedido ya abierto (desde el encabezado)
+async function cambiarEntrega(){
+  if(!ST.order) return;
+  const dels=await cargarEntregas(ST.order.partnerId);
+  elegirEntrega(ST.order.partnerId, {name:ST.order.partnerName}, dels, "edit");
 }
 
 async function crearOrden(pid, c, ship){
@@ -830,7 +902,7 @@ function vVenta(){
           <span class="bdg">${esc(o.name||"Presupuesto")}</span>
           ${o.listName?`<span class="bdg">🏷️ ${esc(o.listName)}</span>`:""}
           ${o.plazo?`<span class="bdg plazo">🕐 ${esc(o.plazo)}</span>`:""}
-          ${o.shipName?`<span class="bdg entrega">📦 Entrega: ${esc(o.shipName)}</span>`:""}
+          <span class="bdg entrega" onclick="cambiarEntrega()" title="Cambiar dirección de entrega">📦 ${o.shipName?("Entrega: "+esc(o.shipName)):"Entrega: dirección fiscal"} ✎</span>
         </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
