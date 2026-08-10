@@ -455,15 +455,27 @@ window.EYG = (function(){
   }
   async function comsGuardar(arr){ return rpc("ir.config_parameter","set_param",[COM_KEY, JSON.stringify(arr)]); }
 
+  /* Padrón del Core (para el selector de destinatarios y el denominador de lectura).
+     Viene de la función SECURITY DEFINER list_core_roster: sólo responde a un usuario
+     logueado y activo del Core. Se cachea. Filtra filas con email inválido. */
+  let _roster=null;
+  async function rosterCore(force){
+    if(_roster && !force) return _roster;
+    try{ const {data,error}=await supa().rpc("list_core_roster"); _roster = error?[]:(data||[]).filter(u=>u&&u.email&&u.email.includes("@")); }
+    catch(e){ _roster=[]; }
+    return _roster;
+  }
+
   /* Novedades vigentes dirigidas a este perfil. admin/dirección ven todas (supervisión). */
   function comsParaMi(perfil, arr){
-    const hoy = argToday(), dept = comDeptDeRol(perfil.rol), ref = perfil.comercial_ref || "";
+    const hoy = argToday(), dept = comDeptDeRol(perfil.rol), ref = perfil.comercial_ref || "", email=(perfil.email||"").toLowerCase();
     const manda = perfil.rol==="admin" || perfil.rol==="direccion";
     return (arr||[]).filter(c=>{
       if(!c || c.activo===false) return false;
-      if(c.clase && c.clase!=="novedad") return false;           // fase 1: sólo novedades
+      if(c.clase && c.clase!=="novedad") return false;           // sólo novedades
       if(c.desde && c.desde>hoy) return false;
       if(c.hasta && c.hasta<hoy) return false;
+      if(c.alcance==="personas") return (c.personas||[]).includes(email);   // dirigida: incluso admin/dir sólo si está en la lista
       if(manda) return true;
       if(c.alcance==="todos") return true;
       if(c.alcance==="departamento") return (c.departamentos||[]).includes(dept);
@@ -490,11 +502,19 @@ window.EYG = (function(){
      (destinatarios). Cada tarjeta muestra quién lo creó (autor). El envío a cada cliente se mide
      con una nota [EyGWA] campana/<id> en el partner (ver waMarker). */
   function _comVig(c,hoy){ return (!c.desde||c.desde<=hoy) && (!c.hasta||c.hasta>=hoy); }
-  /* Mensajes WA que este comercial puede enviar a su cartera. */
+  /* Mensajes WA que este comercial puede enviar a su cartera. Targeting por `alcance`:
+     'comerciales' (todos), 'equipo' (destinatarios) o 'personas' (emails). Fallback para
+     registros viejos sin alcance: gerencia→comerciales, líder→equipo. */
   function wasParaComercial(perfil, arr){
-    const hoy=argToday(), ref=perfil.comercial_ref||"";
-    return (arr||[]).filter(c=>c && c.clase==="wa" && c.activo!==false && _comVig(c,hoy) && (c.origen==="gerencia" || (c.destinatarios||[]).includes(ref)))
-      .sort((a,b)=>String(b.ts||"").localeCompare(String(a.ts||"")));
+    const hoy=argToday(), ref=perfil.comercial_ref||"", email=(perfil.email||"").toLowerCase();
+    return (arr||[]).filter(c=>{
+      if(!(c && c.clase==="wa" && c.activo!==false && _comVig(c,hoy))) return false;
+      const alc = c.alcance || (c.origen==="gerencia"?"comerciales":"equipo");
+      if(alc==="comerciales") return true;
+      if(alc==="equipo") return (c.destinatarios||[]).includes(ref);
+      if(alc==="personas") return (c.personas||[]).includes(email);
+      return false;
+    }).sort((a,b)=>String(b.ts||"").localeCompare(String(a.ts||"")));
   }
   function comVistoWA(c, email){ return (c.vistoPor||[]).includes((email||"").toLowerCase()); }
   /* Marca WA como "visto" por el comercial (para apagar el aviso de la campana). RMW. */
@@ -713,7 +733,7 @@ window.EYG = (function(){
 
   return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
-    COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, comsParaMi, comLeida, comMarcarLeido,
+    COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA };
 })();
