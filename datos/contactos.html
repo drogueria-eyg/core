@@ -108,6 +108,7 @@
   .bulkbar .bsel{font-size:13px;padding:8px 10px}
   .bulkbar .bbtn{font-family:inherit;font-size:13px;font-weight:700;border:1px solid var(--teal);background:var(--teal);color:#fff;border-radius:9px;padding:8px 12px;cursor:pointer}
   .bulkbar .bbtn.ghost{background:var(--surface);border-color:var(--line);color:var(--gris)}
+  .bulkbar .bbtn.danger{background:#FBE4E3;border-color:#F3B5B2;color:#B0322F}
   .rowchk{width:17px;height:17px;flex:none;margin-top:1px;cursor:pointer;accent-color:var(--teal)}
   .row.selrow{background:#EDF7F5}
 
@@ -215,7 +216,7 @@ const rolRank=n=>n==="German Banquero"?0:n==="Marcela Carranza"?1:n==="Sin asign
 let PERFIL=null;
 let DATA=[], COMS=[], COMLIST=[], VENTA={}, DUPVAT={}, DUPNAME={};
 let CAT={fiscal:[],idt:[],prov:[]}, PROVIDX={};
-let UNI=null, CREADOS=new Set(), BOVEDA={}, SEL=new Set();
+let UNI=null, CREADOS=new Set(), BOVEDA={}, SEL=new Set(), _bajaTag=null;
 let filtro={tab:"nuestros", com:"", seg:"", issue:"", rubro:"", boveda:false, proveedores:false, q:"", ocultarRuido:true, pTipo:"", pProv:"", pLoc:"", pQ:""};
 const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador en el chatter del contacto (fuente de verdad, reversible)
 
@@ -297,7 +298,7 @@ async function cargar(silent){
         cuit:p.vat||"", fiscal:p.l10n_ar_afip_responsibility_type_id?p.l10n_ar_afip_responsibility_type_id[1]:"",
         comercial:p.user_id?p.user_id[1]:"Sin asignar", comercialId:p.user_id?p.user_id[0]:false,
         rubro:p[RUBRO_FIELD]||"", esCliente:p.customer_rank>0||nped>0, compro:nped>0, nped, dias,
-        proveedor:(p.supplier_rank||0)>0,
+        proveedor:(p.supplier_rank||0)>0, empresa:(p.is_company||p.company_type==="company"),
         comprado:v.tot||0, mesv:v.mes||0, semv:v.sem||0, faltantes,
         wa:waNumber(p.mobile,p.phone), tellink:telLink(p.mobile,p.phone),
         dupVat:DUPVAT[p.id]||"", dupName:DUPNAME[p.id]||"", enPadron:false, nombreOficial:"", part:p, boveda:BOVEDA[p.id]||null,
@@ -485,8 +486,10 @@ function bulkBarHTML(){
     ${n?`<span class="bcount">${n} seleccionados</span>
       <select class="bsel" onchange="asignarLote(this.value);this.selectedIndex=0"><option value="">👤 Asignar comercial…</option>${COMLIST.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join("")}</select>
       <select class="bsel" onchange="rubroLote(this.value);this.selectedIndex=0"><option value="">🏷️ Poner rubro…</option>${RUBROS7.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join("")}</select>
+      <select class="bsel" onchange="tipoLote(this.value);this.selectedIndex=0"><option value="">🏢 Tipo…</option><option value="company">Empresa</option><option value="person">Persona</option></select>
       <button class="bbtn" onclick="proveedorLote()">🏭 Es proveedor</button>
       <button class="bbtn" onclick="archivarLote()">🔒 Archivar</button>
+      <button class="bbtn danger" onclick="bajaLote()">🗑️ Dar de baja</button>
       <button class="bbtn ghost" onclick="SEL.clear();renderLista()">✕ Limpiar</button>`
     :`<span class="muted" style="font-size:12px">Tildá contactos para asignar comercial, poner rubro, marcar proveedor o archivar en lote.</span>`}
   </div>`;
@@ -510,7 +513,7 @@ function renderLista(){
     return `<div class="row ${SEL.has(c.id)?'selrow':''}" onclick="abrir(${c.id})">
       <div style="display:flex;gap:9px;align-items:flex-start">${chk}<div style="min-width:0;flex:1">
         <div class="cname">${esc(c.nombre)} ${(c.dupVat||c.dupName)?'<span class="badge warn" style="font-size:10px">⚠ dup</span>':''}</div>
-        <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">${rubroBadge(c.rubro)}<span class="seg ${c.seg}">${SEG_LBL[c.seg]}</span>${c.enPadron?'<span class="pad">✓ padrón</span>':''}${c.proveedor?'<span class="rub" style="background:#EFE3D0;color:#8A6D1A">🏭 prov.</span>':''}</div>
+        <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">${rubroBadge(c.rubro)}${!c.empresa?'<span class="rub" style="background:#EEE9F6;color:#6B4FA0">👤 persona</span>':''}<span class="seg ${c.seg}">${SEG_LBL[c.seg]}</span>${c.enPadron?'<span class="pad">✓ padrón</span>':''}${c.proveedor?'<span class="rub" style="background:#EFE3D0;color:#8A6D1A">🏭 prov.</span>':''}</div>
         <div class="cmeta">${esc(c.ciudad||"—")}</div>
         ${c.faltantes.length?`<div class="flags">${c.faltantes.map(f=>`<span class="flag">falta ${f}</span>`).join("")}</div>`:''}</div></div>
       <div class="hide-sm"><span class="muted trunc" title="${esc(c.comercial)}">${esc(c.comercial)}</span></div>
@@ -648,10 +651,14 @@ function abrir(id){
         ${c.boveda
           ? `<div class="bovbox">Archivado — está fuera de todas las vistas.${c.boveda.nota?`<div style="margin-top:5px"><b>Motivo:</b> ${esc(c.boveda.nota)}</div>`:''}
              <button class="abtn" style="background:#FBE4E3;color:#8A2E2B;width:100%;margin-top:9px" onclick="sacarBoveda(${id})">🔓 Sacar de bóveda</button></div>`
-          : `<p class="muted" style="margin-bottom:8px">Si este contacto ya no existe o no aplica como cliente de la droguería, archivalo para sacarlo de todas las vistas. Es reversible.</p>
-             <input id="bovnota" class="bovinput" placeholder="Motivo (opcional): cerró, no es del rubro, duplicado…">
+          : `<p class="muted" style="margin-bottom:8px">Para sacarlo de la vista sin borrarlo (no aplica ahora, revisar después). Sigue activo en Odoo y es reversible desde acá.</p>
+             <input id="bovnota" class="bovinput" placeholder="Motivo (opcional): no es del rubro, revisar, duplicado…">
              <button class="abtn" style="background:#F3E9DA;color:#8A6D1A;width:100%;margin-top:8px" onclick="archivarBoveda(${id})">🔒 Archivar en bóveda</button>`}
       </div>
+      ${!c.boveda?`<div class="dsec"><h4>🗑️ Dar de baja</h4>
+        <p class="muted" style="margin-bottom:8px">Si el contacto <b>ya no existe</b> (cerró, no está más): se archiva en Odoo con la etiqueta <b>"DADO DE BAJA"</b> y sale de la base. Se recupera desde Odoo → Archivados.</p>
+        <input id="bajanota" class="bovinput" placeholder="Motivo (opcional): cerró, no atiende más…">
+        <button class="abtn" style="background:#FBE4E3;color:#B0322F;width:100%;margin-top:8px" onclick="darDeBaja(${id})">🗑️ Dar de baja y archivar</button></div>`:''}
       <div class="actbtns">
         <button class="abtn edit" onclick="editarContacto(${id})">✏️ Editar datos</button>
         <a class="abtn odoo" target="_blank" href="${ODOO}${id}">Abrir en Odoo ↗</a>
@@ -741,6 +748,25 @@ async function archivarLote(){
     SEL.clear(); recalcComs(); toast(`🔒 ${ids.length} archivado(s)`); render();
   }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
 }
+async function tipoLote(val){
+  const ids=idsSel(); if(!ids.length||!val) return;
+  const lbl=val==="company"?"Empresa":"Persona";
+  if(!confirm(`¿Marcar ${ids.length} contacto(s) como ${lbl}?`)) return;
+  try{
+    await rpc("res.partner","write",[ids,{company_type:val}],{context:{lang:"es_AR"}});
+    ids.forEach(id=>{const c=DATA.find(x=>x.id===id); if(c){c.empresa=(val==="company"); if(c.part){c.part.company_type=val;c.part.is_company=(val==="company");}}});
+    SEL.clear(); toast(`✅ ${ids.length} → ${lbl}`); render();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
+}
+async function bajaLote(){
+  const ids=idsSel(); if(!ids.length) return;
+  if(!confirm(`¿DAR DE BAJA ${ids.length} contacto(s)? Se archivan en Odoo con la etiqueta "DADO DE BAJA" y salen de la base. Se recuperan desde Odoo → Archivados.`)) return;
+  try{
+    const tag=await tagBaja();
+    await rpc("res.partner","write",[ids,{active:false, category_id:[[4,tag]]}],{context:{lang:"es_AR"}});
+    DATA=DATA.filter(c=>!ids.includes(c.id)); SEL.clear(); recalcComs(); toast(`🗑️ ${ids.length} dado(s) de baja`); render();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
+}
 
 /* ================= Proveedor + rubro rápido (single, desde la ficha) ================= */
 async function marcarProveedor(id){
@@ -758,6 +784,26 @@ async function rubroRapido(id,val){
   const sel=document.getElementById("qrubro"); if(sel) sel.disabled=true;
   try{ const vals={}; vals[RUBRO_FIELD]=val||false; await rpc("res.partner","write",[[id],vals],{context:{lang:"es_AR"}}); c.rubro=val||""; if(c.part)c.part[RUBRO_FIELD]=val||false; if(UNI)cruzar(); recalcComs(); toast("✅ Rubro actualizado"); if(sel)sel.disabled=false; renderLista(); }
   catch(e){ if(sel)sel.disabled=false; toast("⚠ No se pudo: "+(e.message||e)); }
+}
+
+/* ================= Dar de baja (archiva en Odoo con etiqueta) ================= */
+// busca/crea la etiqueta "DADO DE BAJA" (category_id) una sola vez
+async function tagBaja(){
+  if(_bajaTag) return _bajaTag;
+  const f=await rpc("res.partner.category","search_read",[[["name","=","DADO DE BAJA"]]],{fields:["id"],limit:1,context:{active_test:false}});
+  _bajaTag = f.length ? f[0].id : await rpc("res.partner.category","create",[{name:"DADO DE BAJA",color:1}]);
+  return _bajaTag;
+}
+async function darDeBaja(id){
+  const c=DATA.find(x=>x.id===id); if(!c) return;
+  const motivo=(document.getElementById("bajanota")?document.getElementById("bajanota").value:"").trim();
+  if(!confirm(`¿Dar de baja "${c.nombre}"? Se archiva en Odoo con la etiqueta "DADO DE BAJA" y sale de la base. Se recupera desde Odoo → Archivados.`)) return;
+  try{
+    const tag=await tagBaja();
+    await rpc("res.partner","write",[[id],{active:false, category_id:[[4,tag]]}],{context:{lang:"es_AR"}});
+    if(motivo) await rpc("res.partner","message_post",[[id]],{body:`🗑️ [BAJA] ${motivo}`,message_type:"comment"});
+    DATA=DATA.filter(x=>x.id!==id); recalcComs(); toast("🗑️ Dado de baja y archivado en Odoo"); render(); cerrar();
+  }catch(e){ toast("⚠ No se pudo dar de baja: "+(e.message||e)); }
 }
 
 /* ================= Editar ficha ================= */
