@@ -533,8 +533,10 @@ window.EYG = (function(){
      Reemplaza a la tarjeta grande: un ícono 🔔 con badge de no leídas y un
      desplegable con las novedades. COM_CTX guarda el perfil por punto de montaje.
      (Fase 2: la misma campana avisará de mensajes de WhatsApp nuevos.) */
-  const COM_CTX = {};   // mountId -> {perfil, opts}
+  const COM_CTX = {};   // mountId -> {perfil, opts, mountId, arr}
   let _bellOpen = null;
+  let _lastBellMount = null;              // última campana montada (para el gestor/overlay)
+  let _gs = {tab:"activas", open:new Set()};  // estado del gestor "Ver todas"
   function comBellStyles(){
     if(typeof document==="undefined" || document.getElementById("eyg-bell-css")) return;
     const s=document.createElement("style"); s.id="eyg-bell-css";
@@ -560,7 +562,49 @@ window.EYG = (function(){
     .eyg-bell-empty{padding:22px 12px;text-align:center;color:#8A9A97;font-size:13px}
     .eyg-bell-alta{background:#fbe4e3;color:#b0322f;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;border-radius:20px;padding:1px 7px}
     @keyframes eygWaFlash{0%{box-shadow:0 0 0 0 rgba(30,125,70,.55)}100%{box-shadow:0 0 0 10px rgba(30,125,70,0)}}
-    .eyg-wa-flash{animation:eygWaFlash 1.2s ease-out 1;border-radius:16px}`;
+    .eyg-wa-flash{animation:eygWaFlash 1.2s ease-out 1;border-radius:16px}
+    /* item de la campana: clickable → popup individual, cuerpo recortado a 2 líneas */
+    .eyg-nov{cursor:pointer}
+    .eyg-nov .bd.clip{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .eyg-nov .go2{color:#048782;font-weight:800;white-space:nowrap}
+    .eyg-bell-foot{border-top:1px solid #eef1f0;margin-top:4px;padding:9px 8px 4px;text-align:center}
+    .eyg-bell-foot button{background:none;border:0;color:#048782;font-size:12.5px;font-weight:800;cursor:pointer;font-family:inherit}
+    /* ===== Overlay gestor + popup individual ===== */
+    .eyg-ov{position:fixed;inset:0;background:rgba(6,40,38,.5);z-index:10000;display:flex;justify-content:center;align-items:flex-start;padding:40px 14px;animation:eygOvIn .18s ease}
+    @keyframes eygOvIn{from{opacity:0}to{opacity:1}}
+    .eyg-ov .card{background:#fff;border-radius:16px;max-width:640px;width:100%;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(0,0,0,.35);overflow:hidden;font-family:'Archivo',system-ui,sans-serif}
+    .eyg-ov .ohd{display:flex;align-items:center;gap:10px;padding:15px 18px;border-bottom:1px solid #eef1f0}
+    .eyg-ov .ohd b{font-size:16px;color:#0E1F1D;flex:1;line-height:1.25}
+    .eyg-ov .ohd .allread{background:none;border:0;color:#048782;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
+    .eyg-ov .ox{cursor:pointer;color:#5F716E;font-size:19px;line-height:1;background:none;border:0;padding:2px 4px}
+    .eyg-ov .otabs{display:flex;gap:8px;padding:12px 18px 2px}
+    .eyg-ov .otab{font-size:12.5px;font-weight:700;border:1px solid #DCE8E6;background:#fff;color:#5F716E;border-radius:20px;padding:6px 13px;cursor:pointer;font-family:inherit}
+    .eyg-ov .otab.on{background:#048782;border-color:#048782;color:#fff}
+    .eyg-ov .obody{overflow:auto;padding:8px 12px 14px}
+    .eyg-nacc{border:1px solid #e7edec;border-radius:12px;margin:8px 0;overflow:hidden;background:#fff}
+    .eyg-nacc.unread{border-color:#bfe6e2;background:#f5fcfb}
+    .eyg-nacc .nh{display:flex;align-items:center;gap:9px;padding:12px 14px;cursor:pointer}
+    .eyg-nacc .nh .dot{width:8px;height:8px;border-radius:50%;background:#048782;flex:none}
+    .eyg-nacc .nh .tt{flex:1;font-weight:800;font-size:13.5px;color:#0E1F1D;line-height:1.3}
+    .eyg-nacc .nh .dd{font-size:11px;color:#8A9A97;white-space:nowrap}
+    .eyg-nacc .nh .cv{color:#8A9A97;transition:transform .2s;font-size:12px}
+    .eyg-nacc.open .nh .cv{transform:rotate(180deg)}
+    .eyg-nacc .nb{display:grid;grid-template-rows:0fr;transition:grid-template-rows .28s ease}
+    .eyg-nacc.open .nb{grid-template-rows:1fr}
+    .eyg-nacc .nbw{overflow:hidden}
+    .eyg-nacc .nbin{padding:0 14px 12px}
+    .eyg-nacc .nbin .bd{font-size:13px;color:#3a4a47;white-space:pre-wrap;line-height:1.5}
+    .eyg-nacc .nact{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
+    .eyg-nacc .nact button{font-family:inherit;font-size:12px;font-weight:700;border-radius:8px;padding:6px 12px;cursor:pointer;border:1px solid #DCE8E6;background:#fff;color:#3a4a47}
+    .eyg-nacc .nact button.pri{background:#04635F;color:#fff;border-color:#04635F}
+    .eyg-nmodal .card{max-width:520px}
+    .eyg-nmodal .nmbody{padding:16px 20px;overflow:auto}
+    .eyg-nmodal .nmbody .meta{font-size:11.5px;color:#8A9A97}
+    .eyg-nmodal .nmbody .bd{font-size:14px;color:#2a3a37;white-space:pre-wrap;line-height:1.55;margin-top:9px}
+    .eyg-nmodal .nmfoot{display:flex;gap:10px;padding:12px 18px;border-top:1px solid #eef1f0}
+    .eyg-nmodal .nmfoot button{flex:1;font-family:inherit;font-size:13.5px;font-weight:700;border-radius:10px;padding:11px;cursor:pointer;border:1px solid #DCE8E6;background:#fff;color:#3a4a47}
+    .eyg-nmodal .nmfoot button.pri{background:#048782;color:#fff;border-color:#048782}
+    .eyg-nmodal .nmfoot button:disabled{opacity:.5;cursor:default}`;
     document.head.appendChild(s);
   }
   function comCerrarBells(){ if(typeof document==="undefined") return; document.querySelectorAll(".eyg-bell-dd").forEach(d=>d.style.display="none"); _bellOpen=null; }
@@ -571,29 +615,34 @@ window.EYG = (function(){
      bloque de la sección WhatsApp al que hace scroll el botón "Ver". */
   async function bellComunicaciones(mountId, perfil, opts){
     const mount=document.getElementById(mountId); if(!mount||!perfil) return;
-    opts=opts||{}; comBellStyles(); COM_CTX[mountId]={perfil, opts};
+    opts=opts||{}; comBellStyles(); COM_CTX[mountId]={perfil, opts, mountId}; _lastBellMount=mountId;
     let arr; try{ arr=await comsLeer(); }catch(e){ arr=[]; }
+    COM_CTX[mountId].arr=arr;
     const email=(perfil.email||"").toLowerCase();
-    const mine=comsParaMi(perfil,arr).sort((a,b)=>{ const la=comLeida(a,email),lb=comLeida(b,email); if(la!==lb) return la?1:-1; return ((b.prioridad==="alta")-(a.prioridad==="alta"))||String(b.ts||"").localeCompare(String(a.ts||"")); });
+    // La campana muestra las ACTIVAS (no archivadas). Las archivadas viven en el gestor "Ver todas".
+    const mineAll=comsParaMi(perfil,arr);
+    const mine=mineAll.filter(c=>!comArchivada(c,email)).sort((a,b)=>{ const la=comLeida(a,email),lb=comLeida(b,email); if(la!==lb) return la?1:-1; return ((b.prioridad==="alta")-(a.prioridad==="alta"))||String(b.ts||"").localeCompare(String(a.ts||"")); });
     const nUnread=mine.filter(c=>!comLeida(c,email)).length;
     const waNuevos = opts.wa ? wasParaComercial(perfil,arr).filter(c=>!comVistoWA(c,email)) : [];
     const nBadge = nUnread + waNuevos.length;
     const fD=s=>s?(String(s).slice(8,10)+"/"+String(s).slice(5,7)):"";
     const abierto=_bellOpen===mountId;
+    // Item compacto: tocarlo abre el popup individual (ventana emergente) para leerlo completo.
     const item=c=>{ const leida=comLeida(c,email);
-      return `<div class="eyg-nov ${leida?'':'unread'}">
+      return `<div class="eyg-nov ${leida?'':'unread'}" onclick="EYG.comAbrirNota('${mountId}','${c.id}')">
         <div class="t">${!leida?'<span class="dot"></span>':''}${c.prioridad==="alta"?'<span class="eyg-bell-alta">Importante</span>':''}${esc(c.titulo||"")}</div>
-        <div class="bd">${esc(c.cuerpo||"")}</div>
-        <div class="mt"><span>${esc(c.autor||"")}${c.ts?" · "+fD(c.ts.slice(0,10)):""}</span>${leida?'<span>✓ leído</span>':`<button class="mk" onclick="EYG.comMarcarYRepintar('${mountId}','${c.id}')">Leído</button>`}</div>
+        <div class="bd clip">${esc(c.cuerpo||"")}</div>
+        <div class="mt"><span>${esc(c.autor||"")}${c.ts?" · "+fD(c.ts.slice(0,10)):""}</span><span class="go2">Abrir →</span></div>
       </div>`;
     };
     const waBanner = waNuevos.length ? `<div class="eyg-wa-banner" onclick="EYG.comVerWA('${mountId}')">📱 <span><b>${waNuevos.length}</b> mensaje${waNuevos.length>1?'s':''} de WhatsApp para enviar a tus clientes</span><span class="go">Ver ↓</span></div>` : '';
     mount.innerHTML=`<div class="eyg-bell-wrap">
-      <button class="eyg-bell-btn" title="Novedades" onclick="EYG.comToggleBell(event,'${mountId}')">🔔${nBadge?`<span class="eyg-bell-badge">${nBadge>9?'9+':nBadge}</span>`:''}</button>
+      <button class="eyg-bell-btn" title="Notificaciones" onclick="EYG.comToggleBell(event,'${mountId}')">🔔${nBadge?`<span class="eyg-bell-badge">${nBadge>9?'9+':nBadge}</span>`:''}</button>
       <div class="eyg-bell-dd" style="display:${abierto?'block':'none'}">
         ${waBanner}
-        <div class="hd"><b>📣 Novedades</b>${nUnread?`<button class="allread" onclick="EYG.comMarcarTodas('${mountId}')">Marcar todas leídas</button>`:''}</div>
-        ${mine.length?mine.map(item).join(""):'<div class="eyg-bell-empty">No tenés novedades por ahora.</div>'}
+        <div class="hd"><b>🔔 Notificaciones</b>${nUnread?`<button class="allread" onclick="EYG.comMarcarTodas('${mountId}')">Marcar todas leídas</button>`:''}</div>
+        ${mine.length?mine.map(item).join(""):'<div class="eyg-bell-empty">No tenés notificaciones nuevas.</div>'}
+        <div class="eyg-bell-foot"><button onclick="EYG.comAbrirGestor('${mountId}')">🗂️ Ver todas${mineAll.length?` (${mineAll.length})`:''} →</button></div>
       </div>
     </div>`;
   }
@@ -621,6 +670,101 @@ window.EYG = (function(){
     comCerrarBells();
     if(opts.waTarget && typeof document!=="undefined"){ const t=document.getElementById(opts.waTarget); if(t){ t.scrollIntoView({behavior:"smooth",block:"start"}); t.classList.add("eyg-wa-flash"); setTimeout(()=>t.classList.remove("eyg-wa-flash"),1300); } }
     await bellComunicaciones(mountId,p,opts);
+  }
+
+  /* ===== GESTOR DE NOTIFICACIONES =====
+     Archivado por-usuario (archivadoPor, igual molde que leidoPor: RMW del array compartido, no
+     borra la novedad para los demás). Popup individual (leer completo) + overlay "Ver todas" con
+     acordeón, pestañas Activas/Archivadas y acciones (leído/archivar/restaurar). */
+  function comArchivada(c, email){ return (c.archivadoPor||[]).includes((email||"").toLowerCase()); }
+  async function comSetArchivo(perfil, id, arch){
+    const email=(perfil.email||"").toLowerCase();
+    const arr=await comsLeer(); const c=arr.find(x=>x.id===id); if(!c) return;
+    c.archivadoPor=c.archivadoPor||[]; const has=c.archivadoPor.includes(email);
+    if(arch && !has) c.archivadoPor.push(email);
+    else if(!arch && has) c.archivadoPor=c.archivadoPor.filter(e=>e!==email);
+    await comsGuardar(arr);
+  }
+  const _fFecha=s=>s?(String(s).slice(8,10)+"/"+String(s).slice(5,7)+"/"+String(s).slice(0,4)):"";
+  function _ovHost(){ let h=document.getElementById("eyg-ov-host"); if(!h){ h=document.createElement("div"); h.id="eyg-ov-host"; document.body.appendChild(h); } return h; }
+  function comCerrarOverlay(){ const h=document.getElementById("eyg-ov-host"); if(h) h.innerHTML=""; }
+  function _ovBg(ev){ if(ev.target.classList && ev.target.classList.contains("eyg-ov")) comCerrarOverlay(); }
+  async function _refrescar(cx){
+    if(cx && cx.mountId) await bellComunicaciones(cx.mountId, cx.perfil, cx.opts);
+    const host=document.getElementById("eyg-ov-host");
+    if(host && host.querySelector(".eyg-ov") && !host.querySelector(".eyg-nmodal")) await _pintarGestor(cx);
+  }
+  /* Popup individual: abre para leer completo y marca leído (leer = leído). */
+  async function comAbrirNota(mountId, id){
+    const cx=COM_CTX[mountId]||COM_CTX[_lastBellMount]; if(!cx) return; _lastBellMount=cx.mountId;
+    comCerrarBells();
+    await comMarcarLeido(cx.perfil, id);
+    const arr=await comsLeer(); cx.arr=arr;
+    const email=(cx.perfil.email||"").toLowerCase();
+    const c=arr.find(x=>x.id===id);
+    await bellComunicaciones(cx.mountId, cx.perfil, cx.opts);
+    if(!c){ return; }
+    const arch=comArchivada(c,email);
+    _ovHost().innerHTML=`<div class="eyg-ov eyg-nmodal" onclick="EYG._ovBg(event)"><div class="card">
+      <div class="ohd">${c.prioridad==="alta"?'<span class="eyg-bell-alta">Importante</span>':''}<b>${esc(c.titulo||"")}</b><button class="ox" title="Cerrar" onclick="EYG.comCerrarOverlay()">✕</button></div>
+      <div class="nmbody"><div class="meta">${esc(c.autor||"")}${c.ts?" · "+_fFecha(c.ts.slice(0,10)):""}</div><div class="bd">${esc(c.cuerpo||"")||"(sin texto)"}</div></div>
+      <div class="nmfoot">
+        <button onclick="EYG.comArchivarDesde('${c.id}',${arch?'false':'true'})">${arch?'♻️ Restaurar':'🗂️ Archivar'}</button>
+        <button class="pri" onclick="EYG.comCerrarOverlay()">Cerrar</button>
+      </div>
+    </div></div>`;
+  }
+  /* Overlay "Ver todas": acordeón con pestañas Activas / Archivadas. */
+  async function comAbrirGestor(mountId){
+    const cx=COM_CTX[mountId]||COM_CTX[_lastBellMount]; if(!cx) return; _lastBellMount=cx.mountId;
+    comCerrarBells(); _gs.tab="activas"; _gs.open=new Set();
+    await _pintarGestor(cx);
+  }
+  async function _pintarGestor(cx){
+    if(!cx) return; const p=cx.perfil, email=(p.email||"").toLowerCase();
+    const arr=await comsLeer(); cx.arr=arr;
+    const mine=comsParaMi(p,arr);
+    const activas=mine.filter(c=>!comArchivada(c,email));
+    const archivadas=mine.filter(c=>comArchivada(c,email));
+    const lista=(_gs.tab==="activas"?activas:archivadas).slice().sort((a,b)=>{
+      const la=comLeida(a,email),lb=comLeida(b,email); if(_gs.tab==="activas" && la!==lb) return la?1:-1;
+      return ((b.prioridad==="alta")-(a.prioridad==="alta"))||String(b.ts||"").localeCompare(String(a.ts||""));
+    });
+    const nUnread=activas.filter(c=>!comLeida(c,email)).length;
+    const item=c=>{ const leida=comLeida(c,email), open=_gs.open.has(c.id), a=comArchivada(c,email);
+      return `<div class="eyg-nacc ${leida?'':'unread'} ${open?'open':''}" data-id="${c.id}">
+        <div class="nh" onclick="EYG._gsToggle(event,'${c.id}')">${!leida?'<span class="dot"></span>':''}<span class="tt">${c.prioridad==="alta"?'⚠️ ':''}${esc(c.titulo||"")}</span><span class="dd">${c.ts?_fFecha(c.ts.slice(0,10)):""}</span><span class="cv">▾</span></div>
+        <div class="nb"><div class="nbw"><div class="nbin">
+          <div style="font-size:11px;color:#8A9A97;margin-bottom:6px">${esc(c.autor||"")}</div>
+          <div class="bd">${esc(c.cuerpo||"")||"(sin texto)"}</div>
+          <div class="nact">
+            ${leida?'':`<button class="pri" onclick="EYG.comLeidoDesde('${c.id}')">✓ Marcar leído</button>`}
+            <button onclick="EYG.comArchivarDesde('${c.id}',${a?'false':'true'})">${a?'♻️ Restaurar':'🗂️ Archivar'}</button>
+          </div>
+        </div></div></div>
+      </div>`;
+    };
+    const vacio=_gs.tab==="activas"?"No tenés notificaciones activas.":"No hay notificaciones archivadas.";
+    _ovHost().innerHTML=`<div class="eyg-ov" onclick="EYG._ovBg(event)"><div class="card">
+      <div class="ohd"><b>🔔 Notificaciones</b>${nUnread?`<button class="allread" onclick="EYG.comMarcarTodasGestor()">Marcar todas leídas</button>`:''}<button class="ox" title="Cerrar" onclick="EYG.comCerrarOverlay()">✕</button></div>
+      <div class="otabs">
+        <button class="otab ${_gs.tab==="activas"?"on":""}" onclick="EYG._gsTab('activas')">Activas (${activas.length})</button>
+        <button class="otab ${_gs.tab==="archivadas"?"on":""}" onclick="EYG._gsTab('archivadas')">Archivadas (${archivadas.length})</button>
+      </div>
+      <div class="obody">${lista.length?lista.map(item).join(""):'<div class="eyg-bell-empty">'+vacio+'</div>'}</div>
+    </div></div>`;
+  }
+  function _gsTab(t){ _gs.tab=t; _gs.open=new Set(); _pintarGestor(COM_CTX[_lastBellMount]); }
+  /* Abrir/cerrar acordeón sin re-render (preserva scroll). */
+  function _gsToggle(ev, id){ if(ev) ev.stopPropagation(); const card=ev.target.closest(".eyg-nacc"); if(!card) return; const open=card.classList.toggle("open"); if(open) _gs.open.add(id); else _gs.open.delete(id); }
+  async function comLeidoDesde(id){ const cx=COM_CTX[_lastBellMount]; if(!cx) return; await comMarcarLeido(cx.perfil,id); await _refrescar(cx); }
+  async function comArchivarDesde(id, arch){ const cx=COM_CTX[_lastBellMount]; if(!cx) return; await comSetArchivo(cx.perfil,id, arch!==false && arch!=="false"); if(document.getElementById("eyg-ov-host")&&document.querySelector(".eyg-nmodal")) comCerrarOverlay(); await _refrescar(cx); }
+  async function comMarcarTodasGestor(){
+    const cx=COM_CTX[_lastBellMount]; if(!cx) return; const p=cx.perfil, email=(p.email||"").toLowerCase();
+    const arr=await comsLeer(); let ch=false;
+    comsParaMi(p,arr).filter(c=>!comArchivada(c,email)).forEach(c=>{ if(!comLeida(c,email)){ (c.leidoPor=c.leidoPor||[]).push({email,nombre:p.nombre||email,ts:new Date().toISOString()}); ch=true; } });
+    if(ch) await comsGuardar(arr);
+    await _refrescar(cx);
   }
 
   /* ---- Presencia (heartbeat en el Core) ----
@@ -735,5 +879,7 @@ window.EYG = (function(){
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
-    bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA };
+    bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA,
+    comArchivada, comSetArchivo, comAbrirNota, comAbrirGestor, comCerrarOverlay,
+    comLeidoDesde, comArchivarDesde, comMarcarTodasGestor, _ovBg, _gsTab, _gsToggle };
 })();
