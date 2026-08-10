@@ -105,12 +105,14 @@ window.EYGHome = (function(){
   let timers=[];
 
   /* ---------- granularidades del gráfico de evolución ---------- */
+  /* n   = barras en modo ventas (una sola consulta agrupada, salen baratas)
+     nMg = barras en modo margen (una consulta POR BARRA, ver serieMargen) */
   const GRAN={
     hora:  {lab:"Hora",   uni:"hora",   n:0},
-    dia:   {lab:"Día",    uni:"día",    n:30, g:"day",   prev:(s,k)=>addD(s,-k),   ini:s=>s},
-    semana:{lab:"Semana", uni:"semana", n:16, g:"week",  prev:(s,k)=>addD(s,-7*k), ini:s=>addD(s,-dow(s))},
-    mes:   {lab:"Mes",    uni:"mes",    n:18, g:"month", prev:(s,k)=>addM(s,-k),   ini:s=>s.slice(0,7)+"-01"},
-    ano:   {lab:"Año",    uni:"año",    n:6,  g:"year",  prev:(s,k)=>addA(s,-k),   ini:s=>s.slice(0,4)+"-01-01"},
+    dia:   {lab:"Día",    uni:"día",    n:30, nMg:14, g:"day",   prev:(s,k)=>addD(s,-k),   ini:s=>s},
+    semana:{lab:"Semana", uni:"semana", n:16, nMg:10, g:"week",  prev:(s,k)=>addD(s,-7*k), ini:s=>addD(s,-dow(s))},
+    mes:   {lab:"Mes",    uni:"mes",    n:18, nMg:12, g:"month", prev:(s,k)=>addM(s,-k),   ini:s=>s.slice(0,7)+"-01"},
+    ano:   {lab:"Año",    uni:"año",    n:6,  nMg:3,  g:"year",  prev:(s,k)=>addA(s,-k),   ini:s=>s.slice(0,4)+"-01-01"},
   };
   const bkt = (k,s)=>GRAN[k].ini(s.slice(0,10));
   function etiqueta(k,s){
@@ -199,48 +201,50 @@ window.EYGHome = (function(){
   }
 
   /* ---- Margen ------------------------------------------------------------
-     Fuente: `sale.report` (el modelo del informe "Análisis de ventas"). Es el
-     ÚNICO que se puede agrupar por fecha: `sale.order.line` no acepta agrupar
-     por `order_id.date_order` ("has to be used on a property field"), y no tiene
-     fecha propia. Verificado contra Odoo: sale.report da exactamente lo mismo
-     que sale.order.line para el mismo período, así que el anillo y el gráfico
-     de evolución muestran siempre el mismo número.
-     Contracara: sale.report NO expone `purchase_price`, así que no se pueden
-     excluir las líneas sin costo cargado (dan margen 100% y inflan el total).
-     Por eso se mide aparte cuánta venta está en esa situación y se avisa. */
-  const domReport = extra => [["state","in",["sale","done"]]]
-      .concat(SC.uid?[["user_id","=",SC.uid]]:[]).concat(extra||[]);
+     Fuente: `sale.order.line`, NO `sale.report`. Se probaron las dos:
+
+     · sale.report se agrupa por fecha en una sola consulta, pero NO expone
+       `purchase_price`, así que arrastra las líneas cuyo producto no tenía costo
+       cargado. Esas líneas dan margen 100% y en Odoo real inflan el margen 0,8
+       puntos en promedio y hasta 3,1 (junio 2026: 24,9% real vs 21,8%).
+     · Excluir esos productos enteros tampoco sirve: son 431 y se llevan el 30%
+       de la venta, porque a veces sí tienen costo.
+     · sale.order.line permite filtrar `purchase_price > 0` línea por línea, que
+       es lo correcto, pero NO se puede agrupar por la fecha del pedido:
+       `date_order` existe pero con store=false, y `create_date` se desvía hasta
+       3,3% del pedido real.
+
+     Conclusión: se consulta un período por vez, con el recorte exacto por
+     `order_id.date_order` y filtrando las líneas sin costo. Cuesta una llamada
+     por período, y por eso el gráfico de margen usa menos barras que el de
+     ventas (ver GRAN.nMg).
+
+     El IVA no entra: es crédito/débito fiscal, no costo. El motor de precios
+     hace lo mismo (suma IVA sólo para armar el precio, nunca a x_costo_motor). */
+  async function margenPeriodo(desde, hasta, soloConCosto){
+    const dom=domLineas([["order_id.date_order",">=",uDesde(desde)]]);
+    if(hasta) dom.push(["order_id.date_order","<",uDesde(hasta)]);
+    if(soloConCosto) dom.push(["purchase_price",">",0]);
+    const g=await rpc("sale.order.line","read_group",[dom,["margin:sum","price_subtotal:sum"],[]],
+      Object.assign({lazy:false},CTX));
+    const m=(g[0]&&g[0].margin)||0, s=(g[0]&&g[0].price_subtotal)||0;
+    return {m, s, pct:s?m/s*100:null};
+  }
 
   async function margenResumen(){
     try{
-      const desde=addM(MES_INI,-12);
-      const g=await rpc("sale.report","read_group",
-        [domReport([["date",">=",uDesde(desde)]]),["margin:sum","price_subtotal:sum"],["date:month"]],
-        Object.assign({lazy:false},CTX));
-      const meses=g.map(r=>{
-        const rg=r.__range&&r.__range["date:month"];
-        return {k:String(rg?rg.from:(r["date:month"]||"")).slice(0,10), m:r.margin||0, s:r.price_subtotal||0};
-      }).filter(x=>x.k).sort((a,b)=>a.k<b.k?-1:1);
-
-      const act=meses.find(x=>x.k===MES_INI)||{m:0,s:0};
-      /* Referencia = promedio ponderado de los meses YA CERRADOS. Ponderado y no
-         promedio de porcentajes: un mes flojo en venta no puede pesar igual que
-         uno fuerte. Se excluye el mes en curso para no compararlo contra sí mismo. */
-      const cerrados=meses.filter(x=>x.k<MES_INI && x.s>0);
-      const rm=cerrados.reduce((a,x)=>a+x.m,0), rs=cerrados.reduce((a,x)=>a+x.s,0);
-
-      /* Cuánta venta del mes no tiene costo cargado (margen falso del 100%). */
-      let sinCosto=0;
-      try{
-        const sc=await rpc("sale.order.line","read_group",
-          [domLineas([["order_id.date_order",">=",uDesde(MES_INI)],["purchase_price","<=",0]]),["price_subtotal:sum"],[]],
-          Object.assign({lazy:false},CTX));
-        sinCosto=(sc[0]&&sc[0].price_subtotal)||0;
-      }catch(e){}
-
-      return {ok:true, pct:act.s?act.m/act.s*100:null, monto:act.m, venta:act.s,
-              ref:rs?rm/rs*100:null, nRef:cerrados.length,
-              sinCostoPct:act.s?sinCosto/act.s*100:0};
+      const [mesFiel, mesTodo, ref] = await Promise.all([
+        margenPeriodo(MES_INI, null, true),
+        margenPeriodo(MES_INI, null, false),          // sólo para saber cuánto se dejó afuera
+        /* Referencia = los 12 meses cerrados, ponderado por venta (un mes flojo
+           no puede pesar igual que uno fuerte) y sin el mes en curso, para no
+           compararlo contra sí mismo. */
+        margenPeriodo(addM(MES_INI,-12), MES_INI, true),
+      ]);
+      const excluido = Math.max(0, mesTodo.s - mesFiel.s);
+      return {ok:true, pct:mesFiel.pct, monto:mesFiel.m, venta:mesFiel.s,
+              ref:ref.pct, nRef:12,
+              sinCostoPct: mesTodo.s ? excluido/mesTodo.s*100 : 0, sinCosto:excluido};
     }catch(e){ return {ok:false}; }
   }
 
@@ -283,20 +287,22 @@ window.EYGHome = (function(){
     if(!MG || !MG.ok || MG.pct==null)
       return `<div class="ktile gauge"><div class="ginfo"><div class="kl">📐 Margen del mes</div>
         <div class="ks" style="margin-top:8px">No pude leer el margen desde Odoo.</div></div></div>`;
-    const ayuda="Margen del mes = margen de las líneas de pedidos confirmados sobre su venta, sin IVA.&#10;"+
-      "El anillo se llena sobre una escala de 0 a 40% y la muesca marca el promedio de los meses cerrados.&#10;"+
-      "Tocá la tarjeta para ver la evolución.";
+    const ayuda="Margen BRUTO sobre mercadería: venta menos costo de compra, las dos cosas sin IVA "+
+      "(el IVA es crédito fiscal, no costo). No descuenta fletes, gastos operativos, impuestos ni costo financiero.&#10;"+
+      "El costo es el que tenía el producto al momento de la venta, no el de hoy.&#10;"+
+      "Se dejan afuera las líneas cuyo producto no tenía costo cargado: darían 100% de margen y lo inflarían.&#10;"+
+      "La muesca del anillo marca el promedio de los últimos 12 meses cerrados. Tocá la tarjeta para ver la evolución.";
     return `<div class="ktile gauge" onclick="EYGHome.verMargen()" role="button" tabindex="0"
                  onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();EYGHome.verMargen()}" title="${ayuda}">
       <div class="gring">${anilloMargen(MG.pct, MG.ref)}
         <div class="gtxt"><b data-to="${MG.pct}" data-fmt="p1">0%</b><span>margen</span></div>
       </div>
       <div class="ginfo">
-        <div class="kl">📐 Margen del mes</div>
+        <div class="kl">📐 Margen bruto del mes</div>
         <div class="ks" style="margin-top:4px"><b style="color:var(--ink);font-size:13px">${mc(MG.monto)}</b> sobre ${mc(MG.venta)}</div>
         <div class="ks" style="margin-top:5px">${MG.ref!=null?deltaPts(MG.pct,MG.ref,"vs promedio"):""}</div>
         ${MG.ref!=null?`<div class="ks">promedio ${MG.nRef} meses: <b>${p1(MG.ref)}</b></div>`:""}
-        ${MG.sinCostoPct>1?`<div class="gaviso" title="Esas líneas se computan con margen 100% porque el producto no tiene costo cargado en Odoo, así que el margen real es algo menor.">⚠ ${p1(MG.sinCostoPct)} de la venta sin costo cargado</div>`:""}
+        ${MG.sinCostoPct>0.5?`<div class="gaviso" title="Esas líneas darían 100% de margen porque el producto no tenía costo cargado en Odoo. Quedan fuera del cálculo para no inflarlo.">sin contar ${mc(MG.sinCosto)} (${p1(MG.sinCostoPct)}) de venta sin costo cargado</div>`:""}
         <div class="gcta">Ver evolución →</div>
       </div>
     </div>`;
@@ -533,35 +539,39 @@ window.EYGHome = (function(){
     modo = modo||MODO;
     const ck = modo+"|"+k;
     if(CACHE[ck]) return CACHE[ck];
+    if(modo==="margen") return (CACHE[ck]=await serieMargen(k));
+
     const g=GRAN[k], N=g.n, fin=bkt(k,HOY), ini=g.prev(fin, 2*N-1);
-    const esMg = modo==="margen";
-    const campoF = esMg ? "date" : "date_order";
-    const raw=await rpc(esMg?"sale.report":"sale.order","read_group",
-      [ (esMg?domReport:domVentas)([[campoF,">=",uDesde(ini)]]),
-        esMg?["margin:sum","price_subtotal:sum"]:["amount_untaxed:sum"],
-        [campoF+":"+g.g] ],
+    const raw=await rpc("sale.order","read_group",
+      [domVentas([["date_order",">=",uDesde(ini)]]),["amount_untaxed:sum"],["date_order:"+g.g]],
       Object.assign({lazy:false},CTX));
     /* Normalizo la clave que devuelve Odoo con mi propio inicio de bucket:
        así da igual si Odoo arranca la semana en domingo o en lunes. */
     const map={};
     for(const r of raw){
-      const rg=r.__range&&r.__range[campoF+":"+g.g];
-      const from=rg?rg.from:r[campoF+":"+g.g];
+      const rg=r.__range&&r.__range["date_order:"+g.g];
+      const from=rg?rg.from:r["date_order:"+g.g];
       if(!from) continue;
       const key=bkt(k,String(from));
-      const o=map[key]||(map[key]={v:0,n:0,m:0,s:0});
-      if(esMg){ o.m+=r.margin||0; o.s+=r.price_subtotal||0; }
-      else    { o.v+=r.amount_untaxed||0; o.n+=r.__count||0; }
+      const o=map[key]||(map[key]={v:0,n:0});
+      o.v+=r.amount_untaxed||0; o.n+=r.__count||0;
     }
     const pts=[];
-    for(let i=2*N-1;i>=0;i--){
-      const key=g.prev(fin,i), o=map[key]||{v:0,n:0,m:0,s:0};
-      /* En margen el valor graficado es el PORCENTAJE, pero se guardan también
-         margen y venta: el promedio del período hay que ponderarlo por venta,
-         no promediar porcentajes. */
-      pts.push(esMg ? {key, v:o.s?o.m/o.s*100:0, m:o.m, s:o.s} : {key, v:o.v, n:o.n});
-    }
-    return (CACHE[ck]={pts, N, margen:esMg});
+    for(let i=2*N-1;i>=0;i--){ const key=g.prev(fin,i), o=map[key]||{v:0,n:0}; pts.push({key,v:o.v,n:o.n}); }
+    return (CACHE[ck]={pts, N});
+  }
+
+  /* Margen: una consulta por período (ver el comentario largo en margenPeriodo).
+     Por eso son menos barras que en ventas y no hay ventana de comparación: cada
+     barra cuesta una llamada, y duplicarlas para comparar no lo vale. */
+  async function serieMargen(k){
+    const g=GRAN[k], N=g.nMg, fin=bkt(k,HOY);
+    const claves=[]; for(let i=N-1;i>=0;i--) claves.push(g.prev(fin,i));
+    const pts=await Promise.all(claves.map(async key=>{
+      const r=await margenPeriodo(key, g.prev(key,-1), true);
+      return {key, v:r.pct||0, m:r.m, s:r.s};
+    }));
+    return {pts, N, margen:true, sinComparacion:true};
   }
 
   function serieHora(){
@@ -583,7 +593,7 @@ window.EYGHome = (function(){
     pintarEvo();
   }
   /* Cambia la métrica del gráfico. "Hora" no existe para margen: el margen de
-     una hora suelta es ruido, y sale.report no agrupa por hora. */
+     una hora suelta es ruido, y cada barra de margen cuesta una consulta. */
   function verModo(m){
     if(MODO===m) return;
     MODO=m;
@@ -626,6 +636,7 @@ window.EYGHome = (function(){
       : arr.reduce((a,p)=>a+p.v,0);
 
     if(s.hora){ vis=s.pts; comp=null; tot=s.tot; compTot=s.prevTot; cmpTxt="vs ayer a esta hora"; }
+    else if(s.sinComparacion){ vis=s.pts; comp=null; tot=agrega(vis); compTot=0; }
     else{
       vis=s.pts.slice(s.N); comp=s.pts.slice(0,s.N);
       tot=agrega(vis); compTot=agrega(comp);
@@ -654,7 +665,9 @@ window.EYGHome = (function(){
              <div class="es sm"><div class="l">Sobre una venta de</div><div class="v" data-to="${vtTot}" title="${M(vtTot)}">$0</div></div>`
           : `<div class="es sm"><div class="l">Promedio por ${esc(uni)}</div><div class="v" data-to="${prom}" title="${M(prom)}">$0</div></div>`}
         <div class="es sm"><div class="l">Mejor ${esc(uni)}</div><div class="v" title="${fmtV(pico.v)}">${fmtV(pico.v)}<span style="font-size:11px;color:var(--gris2);font-weight:700"> · ${esc(s.hora?pico.key+" hs":etiqueta(GRA,pico.key))}</span></div></div>
-        <div class="es sm"><div class="l">${esc(cmpTxt)}</div><div class="v">${compTot?(esMg?deltaPts(tot,compTot,""):delta(tot,compTot,"")):'<span class="delta flat">—</span>'}</div></div>
+        ${esMg
+          ? (MG&&MG.ok&&MG.ref!=null?`<div class="es sm"><div class="l">vs promedio 12 meses</div><div class="v">${deltaPts(tot,MG.ref,"")}</div></div>`:"")
+          : `<div class="es sm"><div class="l">${esc(cmpTxt)}</div><div class="v">${compTot?delta(tot,compTot,""):'<span class="delta flat">—</span>'}</div></div>`}
         ${(!esMg&&nPed)?`<div class="es sm"><div class="l">Pedidos</div><div class="v">${ent(nPed)}</div></div>`:""}
         ${s.hora?`<div class="es sm"><div class="l">&nbsp;</div><div class="v" style="font-size:12px"><span class="chip-live" style="padding:5px 10px"><span class="dot"></span>en vivo</span></div></div>`:""}
       </div>
