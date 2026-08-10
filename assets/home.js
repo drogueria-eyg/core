@@ -50,6 +50,14 @@ window.EYGHome = (function(){
     const v=(hoy-base)/base*100, cls=v>=1?"up":(v<=-1?"dn":"flat"), ic=v>=1?"▲":(v<=-1?"▼":"=");
     return `<span class="delta ${cls}">${ic} ${pct(v)}${txt?" "+esc(txt):""}</span>`;
   }
+  /* Un margen no se compara en %, se compara en PUNTOS: pasar de 22% a 24% no es
+     "+9%", es "+2 puntos". Mezclar las dos lecturas es la confusión clásica. */
+  const p1 = n => (n==null?"—":(Math.round(n*10)/10).toFixed(1).replace(".",",")+"%");
+  function deltaPts(actual, base, txt){
+    if(base==null||actual==null) return `<span class="delta flat">— ${esc(txt||"sin base")}</span>`;
+    const d=actual-base, cls=d>=.2?"up":(d<=-.2?"dn":"flat"), ic=d>=.2?"▲":(d<=-.2?"▼":"=");
+    return `<span class="delta ${cls}">${ic} ${(d>0?"+":"")+(Math.round(d*10)/10).toFixed(1).replace(".",",")} pts${txt?" "+esc(txt):""}</span>`;
+  }
 
   /* Números que cuentan hacia arriba al aparecer. `data-to` + `data-fmt`.
      Ojo: requestAnimationFrame NO corre si la pestaña está en segundo plano.
@@ -61,7 +69,7 @@ window.EYGHome = (function(){
     const quieto = window.matchMedia && matchMedia("(prefers-reduced-motion:reduce)").matches;
     (root||document).querySelectorAll("[data-to]").forEach(el=>{
       const to=Number(el.dataset.to)||0, f=el.dataset.fmt||"mc";
-      const fmt = f==="money"?M : f==="ent"?ent : f==="pct"?(v=>Math.round(v)+"%") : mc;
+      const fmt = f==="money"?M : f==="ent"?ent : f==="pct"?(v=>Math.round(v)+"%") : f==="p1"?p1 : mc;
       el.removeAttribute("data-to");
       if(!to || quieto || document.hidden){ el.textContent=fmt(to); return; }
       const t0=performance.now(), ms=760;
@@ -86,6 +94,8 @@ window.EYGHome = (function(){
   let SC={tipo:"global", uid:null, cartera:null};
   let HOY, MES_INI, SEM_INI, ANO_INI;
   let ORD8=[], ORD8_OK=false;   // pedidos de los últimos 8 días (hoy / hora x hora / sparkline)
+  let MG=null;                  // resumen de margen (se cachea entre refrescos)
+  let MODO="ventas";            // métrica del gráfico de evolución: ventas | margen
   /* Las olas 2 y 3 arrancan en paralelo con la 1, pero algunos números ("compraron
      hoy", "quién vendió hoy") salen de ORD8, que llena la ola 1. Sin esta espera
      mostraban 0 según quién ganara la carrera. */
@@ -186,6 +196,119 @@ window.EYGHome = (function(){
         hoy:neto(HOY,HOY), sem:neto(SEM_INI), mes:neto(MES_INI), ano:neto(ANO_INI),
         ticketMes: facMes.n?facMes.m/facMes.n:0, nFacMes:facMes.n};
     }catch(e){ return {ok:false}; }
+  }
+
+  /* ---- Margen ------------------------------------------------------------
+     Fuente: `sale.report` (el modelo del informe "Análisis de ventas"). Es el
+     ÚNICO que se puede agrupar por fecha: `sale.order.line` no acepta agrupar
+     por `order_id.date_order` ("has to be used on a property field"), y no tiene
+     fecha propia. Verificado contra Odoo: sale.report da exactamente lo mismo
+     que sale.order.line para el mismo período, así que el anillo y el gráfico
+     de evolución muestran siempre el mismo número.
+     Contracara: sale.report NO expone `purchase_price`, así que no se pueden
+     excluir las líneas sin costo cargado (dan margen 100% y inflan el total).
+     Por eso se mide aparte cuánta venta está en esa situación y se avisa. */
+  const domReport = extra => [["state","in",["sale","done"]]]
+      .concat(SC.uid?[["user_id","=",SC.uid]]:[]).concat(extra||[]);
+
+  async function margenResumen(){
+    try{
+      const desde=addM(MES_INI,-12);
+      const g=await rpc("sale.report","read_group",
+        [domReport([["date",">=",uDesde(desde)]]),["margin:sum","price_subtotal:sum"],["date:month"]],
+        Object.assign({lazy:false},CTX));
+      const meses=g.map(r=>{
+        const rg=r.__range&&r.__range["date:month"];
+        return {k:String(rg?rg.from:(r["date:month"]||"")).slice(0,10), m:r.margin||0, s:r.price_subtotal||0};
+      }).filter(x=>x.k).sort((a,b)=>a.k<b.k?-1:1);
+
+      const act=meses.find(x=>x.k===MES_INI)||{m:0,s:0};
+      /* Referencia = promedio ponderado de los meses YA CERRADOS. Ponderado y no
+         promedio de porcentajes: un mes flojo en venta no puede pesar igual que
+         uno fuerte. Se excluye el mes en curso para no compararlo contra sí mismo. */
+      const cerrados=meses.filter(x=>x.k<MES_INI && x.s>0);
+      const rm=cerrados.reduce((a,x)=>a+x.m,0), rs=cerrados.reduce((a,x)=>a+x.s,0);
+
+      /* Cuánta venta del mes no tiene costo cargado (margen falso del 100%). */
+      let sinCosto=0;
+      try{
+        const sc=await rpc("sale.order.line","read_group",
+          [domLineas([["order_id.date_order",">=",uDesde(MES_INI)],["purchase_price","<=",0]]),["price_subtotal:sum"],[]],
+          Object.assign({lazy:false},CTX));
+        sinCosto=(sc[0]&&sc[0].price_subtotal)||0;
+      }catch(e){}
+
+      return {ok:true, pct:act.s?act.m/act.s*100:null, monto:act.m, venta:act.s,
+              ref:rs?rm/rs*100:null, nRef:cerrados.length,
+              sinCostoPct:act.s?sinCosto/act.s*100:0};
+    }catch(e){ return {ok:false}; }
+  }
+
+  /* Anillo de margen. La escala NO es 0-100%: un margen de droguería vive entre
+     el 12% y el 27%, así que sobre 100 el anillo se vería siempre casi vacío.
+     Se escala a 40% (por encima del piso más alto que define el motor de precios,
+     35%) y se marca la referencia con una muesca. */
+  function anilloMargen(pctVal, ref){
+    const ESC=Math.max(40, Math.ceil((pctVal||0)/10)*10);
+    const R=46, C=2*Math.PI*R, cx=60, cy=60;
+    const frac=Math.max(0,Math.min(1,(pctVal||0)/ESC));
+    const off=C*(1-frac);
+    const color = (ref==null||pctVal==null) ? "var(--teal)"
+                : pctVal>=ref ? "var(--ok)" : (pctVal>=ref-3 ? "var(--warn)" : "var(--bad)");
+    let muesca="";
+    if(ref!=null){
+      const a=(-90+360*Math.min(1,ref/ESC))*Math.PI/180;
+      const r1=R-9, r2=R+9;
+      muesca=`<line x1="${(cx+r1*Math.cos(a)).toFixed(1)}" y1="${(cy+r1*Math.sin(a)).toFixed(1)}"
+                    x2="${(cx+r2*Math.cos(a)).toFixed(1)}" y2="${(cy+r2*Math.sin(a)).toFixed(1)}"
+                    stroke="var(--ink)" stroke-width="2.5" stroke-linecap="round" opacity=".55"/>`;
+    }
+    /* La animación sólo se engancha si el navegador va a correr los frames: con
+       la pestaña en segundo plano se queda clavada en el fotograma inicial y el
+       anillo se dibujaría VACÍO aunque el número del centro sea correcto.
+       El atributo ya trae el valor final, así que sin animación queda bien. */
+    const quieto = window.matchMedia && matchMedia("(prefers-reduced-motion:reduce)").matches;
+    const anim = (!document.hidden && !quieto) ? " anim" : "";
+    return `<svg class="ring" viewBox="0 0 120 120" role="img" aria-label="Margen ${p1(pctVal)}">
+      <circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="#EDF2F1" stroke-width="12"/>
+      <circle class="arc${anim}" cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="${color}" stroke-width="12"
+              stroke-linecap="round" transform="rotate(-90 ${cx} ${cy})"
+              stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" style="--c:${C.toFixed(1)}"/>
+      ${muesca}
+    </svg>`;
+  }
+
+  function tileMargen(){
+    if(!V.margen) return "";
+    if(!MG || !MG.ok || MG.pct==null)
+      return `<div class="ktile gauge"><div class="ginfo"><div class="kl">📐 Margen del mes</div>
+        <div class="ks" style="margin-top:8px">No pude leer el margen desde Odoo.</div></div></div>`;
+    const ayuda="Margen del mes = margen de las líneas de pedidos confirmados sobre su venta, sin IVA.&#10;"+
+      "El anillo se llena sobre una escala de 0 a 40% y la muesca marca el promedio de los meses cerrados.&#10;"+
+      "Tocá la tarjeta para ver la evolución.";
+    return `<div class="ktile gauge" onclick="EYGHome.verMargen()" role="button" tabindex="0"
+                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();EYGHome.verMargen()}" title="${ayuda}">
+      <div class="gring">${anilloMargen(MG.pct, MG.ref)}
+        <div class="gtxt"><b data-to="${MG.pct}" data-fmt="p1">0%</b><span>margen</span></div>
+      </div>
+      <div class="ginfo">
+        <div class="kl">📐 Margen del mes</div>
+        <div class="ks" style="margin-top:4px"><b style="color:var(--ink);font-size:13px">${mc(MG.monto)}</b> sobre ${mc(MG.venta)}</div>
+        <div class="ks" style="margin-top:5px">${MG.ref!=null?deltaPts(MG.pct,MG.ref,"vs promedio"):""}</div>
+        ${MG.ref!=null?`<div class="ks">promedio ${MG.nRef} meses: <b>${p1(MG.ref)}</b></div>`:""}
+        ${MG.sinCostoPct>1?`<div class="gaviso" title="Esas líneas se computan con margen 100% porque el producto no tiene costo cargado en Odoo, así que el margen real es algo menor.">⚠ ${p1(MG.sinCostoPct)} de la venta sin costo cargado</div>`:""}
+        <div class="gcta">Ver evolución →</div>
+      </div>
+    </div>`;
+  }
+
+  /* Desde el anillo: lleva el gráfico grande a la métrica de margen. */
+  function verMargen(){
+    MODO="margen";
+    if(GRA==="hora") GRA="mes";
+    ver(GRA);
+    const z=document.getElementById("dz-evo");
+    if(z) z.scrollIntoView({behavior:"smooth", block:"center"});
   }
 
   async function sumaVentas(desde, hasta){
@@ -297,7 +420,7 @@ window.EYGHome = (function(){
     if(ok){ c.classList.remove("off"); t.textContent="al instante"; setTimeout(()=>{ if(t) t.textContent="hace un momento"; },8000); }
     else  { c.classList.add("off"); t.textContent="sin conexión"; }
   }
-  function refrescar(){ CACHE.hora=null; ola1(); ola2(); ola3(); }
+  function refrescar(){ CACHE.hora=null; MG=null; ola1(); ola2(); ola3(); }
 
   /* ======================= OLA 1 · ventas ======================= */
   async function ola1(opt){
@@ -307,7 +430,7 @@ window.EYGHome = (function(){
       if(mAntFin>=MES_INI) mAntFin=addD(MES_INI,-1);         // meses cortos (31 de marzo → 28 de febrero)
       const semAntIni=addD(SEM_INI,-7), semAntFin=addD(SEM_INI,-7+dow(HOY));
 
-      const [ord, sem, semAnt, mes, mesAnt, ano, FAC] = await Promise.all([
+      const [ord, sem, semAnt, mes, mesAnt, ano, FAC, FACMG] = await Promise.all([
         rpc("sale.order","search_read",[domVentas([["date_order",">=",uDesde(addD(HOY,-7))]]),
             ["name","partner_id","date_order","amount_untaxed","user_id"]],Object.assign({limit:0,order:"date_order desc"},CTX)),
         sumaVentas(SEM_INI), sumaVentas(semAntIni,semAntFin),
@@ -317,7 +440,11 @@ window.EYGHome = (function(){
            Pedidos y facturas NUNCA van a coincidir: el pedido se confirma un día
            y se factura otro. Si esto falla no debe tumbar los KPIs de venta. */
         facturacion(),
+        /* El margen se mueve por mes, no por minuto: se trae una vez y se reusa
+           en los refrescos de cada 60s (se recalcula sólo al tocar ↻). */
+        V.margen ? (MG || margenResumen()) : Promise.resolve({ok:false}),
       ]);
+      if(V.margen) MG=FACMG;
       ORD8 = ord.map(o=>Object.assign({
         id:o.id, name:o.name, cli:o.partner_id?o.partner_id[1]:"—",
         vend:o.user_id?o.user_id[1]:"", amt:o.amount_untaxed||0
@@ -348,7 +475,7 @@ window.EYGHome = (function(){
       const contra = (etq,val) => FAC.ok ? `<div class="ksplit"><span>${etq}</span><b title="${M(val)}">${mc(val)}</b></div>` : "";
       const tt = FAC.ok ? ` title="${AYUDA}"` : "";
 
-      put("dz-kpi",`<div class="kgrid">
+      put("dz-kpi",`<div class="kgrid${V.margen?"":" sin-margen"}">
         <div class="ktile big"${tt}>
           <div class="kl">⚡ ${V.propio?"Tus pedidos":"Pedidos"} de hoy</div>
           <div class="kv" data-to="${totHoy}" data-fmt="mc" title="${M(totHoy)}">$0</div>
@@ -356,6 +483,7 @@ window.EYGHome = (function(){
           <div class="kspark">${spark}</div>
           ${contra("Facturado neto hoy", FAC.hoy)}
         </div>
+        ${tileMargen()}
         <div class="ktile"${tt}>
           <div class="kl">Esta semana · pedidos</div>
           <div class="kv" data-to="${sem.m}" title="${M(sem.m)}">$0</div>
@@ -382,6 +510,11 @@ window.EYGHome = (function(){
         </div>
       </div>`);
 
+      /* Red de seguridad: si la pestaña se esconde MIENTRAS corre la animación,
+         quedaría congelada a mitad. Al terminar se saca la clase y manda el
+         atributo, que siempre tiene el valor real. */
+      setTimeout(()=>document.querySelectorAll(".ring .arc.anim").forEach(a=>a.classList.remove("anim")), 1500);
+
       if(GRA==="hora") pintarEvo(); else pintarEvo(true);
       sincronizado(true);
       pintarActividad();
@@ -394,26 +527,41 @@ window.EYGHome = (function(){
   }
 
   /* ======================= gráfico de evolución ======================= */
-  async function serie(k){
-    if(CACHE[k]) return CACHE[k];
+  /* Una serie por (métrica, granularidad). Se piden 2N períodos y se grafican
+     los últimos N: la primera mitad es la ventana de comparación. */
+  async function serie(k, modo){
+    modo = modo||MODO;
+    const ck = modo+"|"+k;
+    if(CACHE[ck]) return CACHE[ck];
     const g=GRAN[k], N=g.n, fin=bkt(k,HOY), ini=g.prev(fin, 2*N-1);
-    const raw=await rpc("sale.order","read_group",
-      [domVentas([["date_order",">=",uDesde(ini)]]),["amount_untaxed:sum"],["date_order:"+g.g]],
+    const esMg = modo==="margen";
+    const campoF = esMg ? "date" : "date_order";
+    const raw=await rpc(esMg?"sale.report":"sale.order","read_group",
+      [ (esMg?domReport:domVentas)([[campoF,">=",uDesde(ini)]]),
+        esMg?["margin:sum","price_subtotal:sum"]:["amount_untaxed:sum"],
+        [campoF+":"+g.g] ],
       Object.assign({lazy:false},CTX));
     /* Normalizo la clave que devuelve Odoo con mi propio inicio de bucket:
        así da igual si Odoo arranca la semana en domingo o en lunes. */
     const map={};
     for(const r of raw){
-      const rg=r.__range&&r.__range["date_order:"+g.g];
-      const from=rg?rg.from:r["date_order:"+g.g];
+      const rg=r.__range&&r.__range[campoF+":"+g.g];
+      const from=rg?rg.from:r[campoF+":"+g.g];
       if(!from) continue;
       const key=bkt(k,String(from));
-      const o=map[key]||(map[key]={v:0,n:0});
-      o.v+=r.amount_untaxed||0; o.n+=r.__count||0;
+      const o=map[key]||(map[key]={v:0,n:0,m:0,s:0});
+      if(esMg){ o.m+=r.margin||0; o.s+=r.price_subtotal||0; }
+      else    { o.v+=r.amount_untaxed||0; o.n+=r.__count||0; }
     }
     const pts=[];
-    for(let i=2*N-1;i>=0;i--){ const key=g.prev(fin,i); const o=map[key]||{v:0,n:0}; pts.push({key,v:o.v,n:o.n}); }
-    return (CACHE[k]={pts, N});
+    for(let i=2*N-1;i>=0;i--){
+      const key=g.prev(fin,i), o=map[key]||{v:0,n:0,m:0,s:0};
+      /* En margen el valor graficado es el PORCENTAJE, pero se guardan también
+         margen y venta: el promedio del período hay que ponderarlo por venta,
+         no promediar porcentajes. */
+      pts.push(esMg ? {key, v:o.s?o.m/o.s*100:0, m:o.m, s:o.s} : {key, v:o.v, n:o.n});
+    }
+    return (CACHE[ck]={pts, N, margen:esMg});
   }
 
   function serieHora(){
@@ -427,65 +575,96 @@ window.EYGHome = (function(){
 
   async function ver(k){
     GRA=k;
-    document.querySelectorAll("#evo-pills button").forEach(b=>b.classList.toggle("on", b.dataset.k===k));
-    if(k!=="hora" && !CACHE[k]){
+    if(k!=="hora" && !CACHE[MODO+"|"+k]){
       const w=document.getElementById("evo-body");
       if(w) w.innerHTML=`<div class="skel" style="height:230px;border-radius:12px"></div>`;
       try{ await serie(k); }catch(e){ if(w) w.innerHTML=`<div class="errmini">No pude traer la serie: ${esc(e.message)}</div>`; return; }
     }
     pintarEvo();
   }
+  /* Cambia la métrica del gráfico. "Hora" no existe para margen: el margen de
+     una hora suelta es ruido, y sale.report no agrupa por hora. */
+  function verModo(m){
+    if(MODO===m) return;
+    MODO=m;
+    if(m==="margen" && GRA==="hora") GRA="mes";
+    ver(GRA);
+  }
 
   function pintarEvo(soloSiHora){
     const z=document.getElementById("dz-evo"); if(!z) return;
     if(soloSiHora && GRA!=="hora") return;
-    const pills=`<div class="pills" id="evo-pills">${Object.keys(GRAN).map(k=>
-      `<button data-k="${k}" class="${k===GRA?"on":""}" onclick="EYGHome.ver('${k}')">${GRAN[k].lab}</button>`).join("")}</div>`;
+    const esMg = MODO==="margen";
+
+    /* "Hora" sólo existe para ventas (ver verModo). */
+    const grans = Object.keys(GRAN).filter(k=>!(esMg && k==="hora"));
+    const ctrl = (V.margen?`<div class="pills mini">
+        <button class="${esMg?"":"on"}" onclick="EYGHome.verModo('ventas')">Ventas</button>
+        <button class="${esMg?"on":""}" onclick="EYGHome.verModo('margen')">Margen</button>
+      </div>`:"")+
+      `<div class="pills">${grans.map(k=>
+        `<button data-k="${k}" class="${k===GRA?"on":""}" onclick="EYGHome.ver('${k}')">${GRAN[k].lab}</button>`).join("")}</div>`;
+    const titulo = esMg
+      ? `<h2>📐 Evolución del margen</h2><div class="hint">margen sobre venta de pedidos confirmados, sin IVA</div>`
+      : `<h2>📈 Evolución de ventas</h2><div class="hint">pedidos confirmados, sin IVA · por fecha de pedido</div>`;
     if(!z.dataset.armado){
-      z.innerHTML=`<div class="cx-h"><div><h2>📈 Evolución de ventas</h2><div class="hint">pedidos confirmados, sin IVA · por fecha de pedido</div></div>${pills}</div><div id="evo-body"></div>`;
+      z.innerHTML=`<div class="cx-h"><div id="evo-tit"></div><div class="evo-ctrl" id="evo-ctrl"></div></div><div id="evo-body"></div>`;
       z.dataset.armado="1";
-    }else{
-      const p=document.getElementById("evo-pills"); if(p) p.outerHTML=pills;
     }
+    document.getElementById("evo-tit").innerHTML=titulo;
+    document.getElementById("evo-ctrl").innerHTML=ctrl;
     const body=document.getElementById("evo-body"); if(!body) return;
 
-    const s = GRA==="hora" ? serieHora() : CACHE[GRA];
+    const s = (!esMg && GRA==="hora") ? serieHora() : CACHE[MODO+"|"+GRA];
     if(!s){ body.innerHTML=`<div class="skel" style="height:230px;border-radius:12px"></div>`; return; }
 
+    const fmtV = esMg ? p1 : mc;
     let vis, comp, tot, compTot, cmpTxt="vs período anterior";
+    /* En margen el "total" no se suma: es margen acumulado sobre venta acumulada. */
+    const agrega = arr => esMg
+      ? (arr.reduce((a,p)=>a+p.s,0) ? arr.reduce((a,p)=>a+p.m,0)/arr.reduce((a,p)=>a+p.s,0)*100 : 0)
+      : arr.reduce((a,p)=>a+p.v,0);
+
     if(s.hora){ vis=s.pts; comp=null; tot=s.tot; compTot=s.prevTot; cmpTxt="vs ayer a esta hora"; }
     else{
       vis=s.pts.slice(s.N); comp=s.pts.slice(0,s.N);
-      tot=vis.reduce((a,p)=>a+p.v,0); compTot=comp.reduce((a,p)=>a+p.v,0);
+      tot=agrega(vis); compTot=agrega(comp);
       /* Si el período anterior está mayormente vacío no es que las ventas se
          multiplicaran: es que Odoo todavía no tenía datos tan atrás. Mostrar
          un "+254%" ahí sería mentir. */
       if(comp.filter(p=>p.v>0).length < Math.ceil(s.N*0.6)){ compTot=0; cmpTxt="sin historial comparable"; }
     }
 
-    if(!tot && !compTot){ body.innerHTML=`<div class="evo-empty">Todavía no hay ventas registradas en este período.</div>`; return; }
+    if(!tot && !compTot){ body.innerHTML=`<div class="evo-empty">Todavía no hay ${esMg?"margen registrado":"ventas registradas"} en este período.</div>`; return; }
 
     const conDato=vis.filter(p=>p.v>0);
-    const prom = conDato.length?tot/conDato.length:0;
+    const prom = esMg ? tot : (conDato.length?tot/conDato.length:0);   // en margen, promedio = el total ponderado
     const pico = vis.reduce((a,p)=>p.v>a.v?p:a, vis[0]);
     const uni  = GRAN[GRA].uni;
     const nPed = vis.reduce((a,p)=>a+(p.n||0),0);
+    const mgTot= esMg?vis.reduce((a,p)=>a+p.m,0):0;
+    const vtTot= esMg?vis.reduce((a,p)=>a+p.s,0):0;
 
     body.innerHTML=`
       <div class="evo-stats">
-        <div class="es"><div class="l">${s.hora?"Acumulado de hoy":"Total del período"}</div><div class="v" data-to="${tot}" title="${M(tot)}">$0</div></div>
-        <div class="es sm"><div class="l">Promedio por ${esc(uni)}</div><div class="v" data-to="${prom}" title="${M(prom)}">$0</div></div>
-        <div class="es sm"><div class="l">Mejor ${esc(uni)}</div><div class="v" title="${M(pico.v)}">${mc(pico.v)}<span style="font-size:11px;color:var(--gris2);font-weight:700"> · ${esc(s.hora?pico.key+" hs":etiqueta(GRA,pico.key))}</span></div></div>
-        <div class="es sm"><div class="l">${esc(cmpTxt)}</div><div class="v">${compTot?delta(tot,compTot,""):'<span class="delta flat">—</span>'}</div></div>
-        ${nPed?`<div class="es sm"><div class="l">Pedidos</div><div class="v">${ent(nPed)}</div></div>`:""}
+        <div class="es"><div class="l">${esMg?"Margen del período":(s.hora?"Acumulado de hoy":"Total del período")}</div>
+          <div class="v" data-to="${tot}" data-fmt="${esMg?"p1":"mc"}" title="${esMg?p1(tot):M(tot)}">${esMg?"0%":"$0"}</div></div>
+        ${esMg
+          ? `<div class="es sm"><div class="l">Margen en pesos</div><div class="v" data-to="${mgTot}" title="${M(mgTot)}">$0</div></div>
+             <div class="es sm"><div class="l">Sobre una venta de</div><div class="v" data-to="${vtTot}" title="${M(vtTot)}">$0</div></div>`
+          : `<div class="es sm"><div class="l">Promedio por ${esc(uni)}</div><div class="v" data-to="${prom}" title="${M(prom)}">$0</div></div>`}
+        <div class="es sm"><div class="l">Mejor ${esc(uni)}</div><div class="v" title="${fmtV(pico.v)}">${fmtV(pico.v)}<span style="font-size:11px;color:var(--gris2);font-weight:700"> · ${esc(s.hora?pico.key+" hs":etiqueta(GRA,pico.key))}</span></div></div>
+        <div class="es sm"><div class="l">${esc(cmpTxt)}</div><div class="v">${compTot?(esMg?deltaPts(tot,compTot,""):delta(tot,compTot,"")):'<span class="delta flat">—</span>'}</div></div>
+        ${(!esMg&&nPed)?`<div class="es sm"><div class="l">Pedidos</div><div class="v">${ent(nPed)}</div></div>`:""}
         ${s.hora?`<div class="es sm"><div class="l">&nbsp;</div><div class="v" style="font-size:12px"><span class="chip-live" style="padding:5px 10px"><span class="dot"></span>en vivo</span></div></div>`:""}
       </div>
-      <div class="chartwrap" id="evo-chart">${svgBarras(vis, prom, s.hora)}<div class="tt" id="evo-tt"></div></div>`;
+      <div class="chartwrap" id="evo-chart">${svgBarras(vis, prom, s.hora, fmtV)}<div class="tt" id="evo-tt"></div></div>`;
     paintNums(body);
-    engancharTooltip(vis, s.hora);
+    engancharTooltip(vis, s.hora, esMg);
   }
 
-  function svgBarras(pts, prom, esHora){
+  function svgBarras(pts, prom, esHora, fmtV){
+    fmtV = fmtV || mc;
     /* El SVG escala uniforme, así que el viewBox define el tamaño REAL del texto:
        con 1000 de ancho metido en un celular de 340px, las etiquetas quedan en 3px.
        Por eso en pantalla chica se usa un lienzo más angosto y alto. */
@@ -503,12 +682,12 @@ window.EYGHome = (function(){
     let grid="";
     for(let i=0;i<=2;i++){ const v=top*i/2, y=Y(v);
       grid+=`<line x1="${x0}" y1="${y.toFixed(1)}" x2="${x1}" y2="${y.toFixed(1)}" stroke="#EBF2F1" stroke-width="1"/>`
-          + `<text x="${x0-8}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="${fsc}" font-weight="700" fill="#9AACA8">${i?mc(v):"0"}</text>`;
+          + `<text x="${x0-8}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="${fsc}" font-weight="700" fill="#9AACA8">${i?esc(fmtV(v)):"0"}</text>`;
     }
     /* referencia del promedio */
     const yP=Y(prom);
     const promL = prom>0 && yP>y0+6 ? `<line x1="${x0}" y1="${yP.toFixed(1)}" x2="${x1}" y2="${yP.toFixed(1)}" stroke="#EC8B5E" stroke-width="1.4" stroke-dasharray="6 5" opacity=".85"/>`
-      +`<text x="${x1}" y="${(yP-6).toFixed(1)}" text-anchor="end" font-size="${fsc}" font-weight="800" fill="#C9743F">promedio ${mc(prom)}</text>` : "";
+      +`<text x="${x1}" y="${(yP-6).toFixed(1)}" text-anchor="end" font-size="${fsc}" font-weight="800" fill="#C9743F">promedio ${esc(fmtV(prom))}</text>` : "";
 
     const cur = esHora ? Math.floor(EYG.argNowFrac()) : null;
     let bars="", hits="", labs="";
@@ -538,7 +717,7 @@ window.EYGHome = (function(){
     </svg>`;
   }
 
-  function engancharTooltip(pts, esHora){
+  function engancharTooltip(pts, esHora, esMg){
     const wrap=document.getElementById("evo-chart"), tt=document.getElementById("evo-tt");
     if(!wrap||!tt) return;
     const svg=wrap.querySelector("svg");
@@ -552,10 +731,12 @@ window.EYGHome = (function(){
       const bar=wrap.querySelector('.bar[data-i="'+i+'"]'); if(bar) bar.classList.add("sel");
       const r=t.getBoundingClientRect(), wr=wrap.getBoundingClientRect();
       const t1 = esHora ? `${p.key}:00 a ${p.key}:59` : etiquetaLarga(GRA,p.key);
-      const extra = esHora
+      const extra = esMg
+        ? (p.s?`${M(p.m)} de margen sobre ${M(p.s)}`:"sin ventas en el período")
+        : esHora
         ? (p.prev?`ayer a esta hora: ${M(p.prev)}`:"ayer no hubo ventas en esta hora")
         : (p.n?`${ent(p.n)} pedido${p.n===1?"":"s"} · ticket ${M(p.v/p.n)}`:"sin pedidos");
-      tt.innerHTML=`<div class="t1">${esc(t1)}</div><div>${M(p.v)}</div><div class="t3">${esc(extra)}</div>`;
+      tt.innerHTML=`<div class="t1">${esc(t1)}</div><div>${esc(esMg?p1(p.v):M(p.v))}</div><div class="t3">${esc(extra)}</div>`;
       tt.style.left=(r.left-wr.left+r.width/2)+"px";
       tt.style.top =(r.top -wr.top +r.height*0.35)+"px";
       tt.classList.add("on");
@@ -620,18 +801,16 @@ window.EYGHome = (function(){
   }
 
   async function cargarClientes(){
-    const desde60=addD(HOY,-60), desde180=addD(HOY,-180);
-    const [tot, nuevos, act60, mgr] = await Promise.all([
+    const desde60=addD(HOY,-60);
+    /* El margen ya no se consulta acá: tiene tarjeta propia con el anillo. */
+    const [tot, nuevos, act60] = await Promise.all([
       rpc("res.partner","search_count",[domSocios([["customer_rank",">",0]])]),
       rpc("res.partner","search_count",[domSocios([["customer_rank",">",0],["create_date",">=",MES_INI]])]),
       rpc("sale.order","read_group",[domVentas([["date_order",">=",uDesde(desde60)]]),["amount_untaxed:sum"],["partner_id"]],Object.assign({lazy:false,limit:6000},CTX)),
-      V.margen ? rpc("sale.order.line","read_group",[domLineas([["order_id.date_order",">=",uDesde(MES_INI)]]),["margin:sum","price_subtotal:sum"],[]],Object.assign({lazy:false},CTX))
-               : Promise.resolve([]),
     ]);
     const activos=act60.filter(g=>g.partner_id).length;
     const dormidos=Math.max(0,tot-activos);
     const cobertura=tot?activos/tot:0;
-    const mg=mgr[0]||{}, base=mg.price_subtotal||0, mgPct=base?(mg.margin||0)/base*100:null;
     await LISTO1;   // "compraron hoy" sale de los pedidos que carga la ola 1
     const compraronHoy=new Set(ORD8.filter(o=>o.date===HOY).map(o=>o.cli)).size;
 
@@ -645,7 +824,6 @@ window.EYGHome = (function(){
         <div class="lv"><span class="n">🆕 Nuevos este mes</span><span class="v ${nuevos?"ok":""}">${ent(nuevos)}</span></div>
         <div class="lv"><span class="n">😴 Sin comprar hace +60 días</span><span class="v ${dormidos?"warn":""}">${ent(dormidos)}</span></div>
         <div class="lv"><span class="n">🛒 Compraron hoy</span><span class="v">${ORD8_OK?ent(compraronHoy):"—"}</span></div>
-        ${mgPct!==null?`<div class="lv"><span class="n">📐 Margen del mes</span><span class="v ${mgPct>=20?"ok":mgPct>=12?"warn":"bad"}">${mgPct.toFixed(1)}%<span style="font-weight:600;color:var(--gris2);font-size:11px"> · ${mc(mg.margin||0)}</span></span></div>`:""}
       </div>`);
   }
 
@@ -792,5 +970,5 @@ window.EYGHome = (function(){
       :`<div class="nodata">Todavía no hay pedidos registrados.</div>`}`);
   }
 
-  return { main, init, ver, refrescar };
+  return { main, init, ver, verModo, verMargen, refrescar };
 })();
