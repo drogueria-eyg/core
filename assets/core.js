@@ -161,6 +161,7 @@ window.EYG = (function(){
     const ok = esSuper(p._h) || p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return new Promise(()=>{}); }
     if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return new Promise(()=>{}); }
+    try{ rail(p); }catch(e){}   // admin: menú lateral siempre visible (módulos de chrome propio)
     return p;
   }
 
@@ -359,6 +360,44 @@ window.EYG = (function(){
         const inner=`${badge}<div class="ico">${m.ico}</div><div class="cat">${esc(T(m.cat,perfil))}</div><h3>${esc(T(m.titulo,perfil))}</h3><p>${esc(T(m.desc,perfil))}</p>`;
         return dis?`<div class="card soon">${inner}</div>`:`<a class="card" href="${href}">${inner}</a>`;
       }).join("")}</div></div>`).join("")}`;
+  }
+
+  /* ---- Rail lateral para ADMIN en módulos de chrome propio (panel/cobranzas/precios/…) ----
+     Preferencia del usuario (2026-08-09): un administrador debe ver SIEMPRE el menú lateral
+     para saltar de un módulo a otro sin tener que volver al inicio. Los roles de acceso
+     especial (comercial, cobranzas, finanzas, inventario, maestro) conservan la vista simple
+     del módulo. Los módulos que ya dibujan su propio sidebar (EYG.layout → #eygSide) se saltean.
+     No reconstruye la maqueta del módulo: mueve su contenido a una columna que flexea a la
+     derecha del sidebar (se preservan nodos y listeners; getElementById sigue resolviendo). */
+  function railActiveKey(){
+    const path = (typeof location!=="undefined" ? location.pathname : "");
+    const file = (path.split("/").pop()||"").toLowerCase();
+    let key = "";
+    MODULOS.forEach(m=>{ try{ const pp=String(m.path({})).split("?")[0].split("/").pop().toLowerCase(); if(pp && file===pp) key=m.key; }catch(e){} });
+    return key;
+  }
+  function rail(perfil){
+    if(typeof document==="undefined" || !perfil) return;
+    const admin = esSuper(perfil._h) || perfil.rol==="admin" || perfil.rol==="direccion";
+    if(!admin) return;                                 // accesos especiales: sin cambios
+    if(document.getElementById("eygSide")) return;     // el módulo ya tiene menú lateral
+    if(document.getElementById("eygRailApp")) return;  // idempotente
+    const content = document.createElement("div");
+    content.className = "eyg-railmain";
+    while(document.body.firstChild){ content.appendChild(document.body.firstChild); }
+    const app = document.createElement("div");
+    app.className = "app"; app.id = "eygRailApp";
+    app.innerHTML = sidebar(perfil, railActiveKey());
+    app.appendChild(content);
+    const scrim = document.createElement("div");
+    scrim.className = "side-scrim";
+    scrim.onclick = ()=>{ const s=document.getElementById("eygSide"); if(s) s.classList.remove("open"); };
+    app.appendChild(scrim);
+    document.body.appendChild(app);
+    const ham = document.createElement("button");
+    ham.className = "eyg-railham"; ham.type = "button"; ham.setAttribute("aria-label","Menú"); ham.textContent = "☰";
+    ham.onclick = ()=>{ const s=document.getElementById("eygSide"); if(s) s.classList.toggle("open"); };
+    document.body.appendChild(ham);
   }
 
   /* ---- Tarjeta "Combos y ofertas de la semana" (compartida: panel comercial + lider) ----
@@ -608,7 +647,7 @@ window.EYG = (function(){
     document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="hidden") ping(true); });
   }
 
-  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
+  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA };
