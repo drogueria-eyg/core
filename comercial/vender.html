@@ -255,6 +255,7 @@ const rpc = EYG.rpc;
 const money = EYG.money;
 const esc = EYG.esc;
 const ES = {lang:"es_AR"};
+const PPAL_TAG = "[ENTREGA-PPAL]"; // marca reversible (chatter) de la dirección de entrega principal
 // Base pública de Odoo para servir imágenes de producto por <img src> (fuera del canal RPC).
 const ODOO_BASE = "https://drogueriaeyg.odoo.com";
 
@@ -417,7 +418,12 @@ async function elegirCliente(pid){
   document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Abriendo cliente…</div>';
   const dels = await cargarEntregas(pid);
   if(dels.length===1){ await crearOrden(pid, c, dels[0]); return; }  // una sola → directo
-  elegirEntrega(pid, c, dels, "create");                             // 0 ó 2+ → elegir / agregar
+  if(dels.length>=2){                                                // varias: si hay una marcada principal, va sola
+    const ppalId = await principalDe(dels.map(d=>d.id));
+    const ppal = ppalId && dels.find(d=>d.id===ppalId);
+    if(ppal){ await crearOrden(pid, c, ppal); return; }             // (se puede cambiar desde el encabezado)
+  }
+  elegirEntrega(pid, c, dels, "create");                             // 0, ó 2+ sin principal → elegir / agregar
 }
 
 // Direcciones de entrega (sucursales) de un cliente.
@@ -425,6 +431,19 @@ async function cargarEntregas(pid){
   try{ return await rpc("res.partner","search_read",[[["parent_id","=",pid],["type","=","delivery"]]],
     {fields:["id","name","street","city"], order:"name", context:ES}); }
   catch(e){ return []; }
+}
+// Dirección de entrega principal entre un set de ids (marca reversible en el chatter; gana la marca "in" más reciente).
+async function principalDe(delIds){
+  if(!delIds || !delIds.length) return null;
+  let msgs=[];
+  try{ msgs = await rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",delIds],["body","like",PPAL_TAG]]],{fields:["res_id","body","date"],limit:0}); }catch(e){}
+  const st={}, seen=new Set();
+  msgs.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  for(const m of msgs){ if(seen.has(m.res_id)) continue; seen.add(m.res_id);
+    const out=/salir/i.test((m.body||"").replace(/<[^>]+>/g," ")); st[m.res_id]={in:!out,date:m.date||""}; }
+  let ppal=null,best="";
+  for(const rid in st){ if(st[rid].in && st[rid].date>best){ best=st[rid].date; ppal=+rid; } }
+  return ppal;
 }
 
 // Paso "¿a dónde entregás?": elegir una existente, agregar una nueva, o la dirección fiscal.

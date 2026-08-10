@@ -291,9 +291,13 @@
   .lb-i{flex:1;min-width:0}
   .lb-n{font-weight:700;font-size:14px;line-height:1.2}
   .lb-f{font-size:12px;color:var(--gris);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .lb-a{display:flex;gap:6px;flex:none}
-  .lb-b{font-size:12px;font-weight:700;border:1px solid var(--line);border-radius:8px;padding:6px 10px;text-decoration:none;color:var(--teal-deep);white-space:nowrap}
+  .lb-a{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+  .lb-b{font-size:12px;font-weight:700;border:1px solid var(--line);border-radius:8px;padding:6px 10px;text-decoration:none;color:var(--teal-deep);white-space:nowrap;cursor:pointer;background:var(--surface);font-family:inherit}
+  .lb-b:hover{border-color:var(--teal)}
   .lb-b.wa{background:#25D366;border-color:#25D366;color:#fff}
+  .lb-b.del{color:var(--bad)}
+  .lb-tag{font-size:11.5px;font-weight:800;color:var(--teal-deep);background:var(--agua);border-radius:8px;padding:6px 9px;white-space:nowrap}
+  .fbtn.del2{background:#FBE4E3;color:#8A2E2B;border-color:#f0c4c2}
   .lb-notel{font-size:11.5px;color:var(--gris2)}
   .lb-empty{font-size:12.5px;color:var(--gris);padding:6px 0}
   .pform{display:flex;flex-direction:column;gap:8px}
@@ -405,6 +409,7 @@ async function rpc(model,method,args,kwargs={},intentos=3){
 // ===== Config / objetivos =====
 const OBJ={diarioContactos:10, mensualNuevos:3, semanalFact:10000000}; // semanalFact = objetivo de VENTA NETA semanal (sin IVA, ya descontadas las notas de crédito)
 const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador reversible en el chatter del contacto (misma bóveda que usa la líder en Contactos). La gerencia revisa lo archivado.
+const PPAL_TAG="[ENTREGA-PPAL]"; // marca reversible (chatter) de la dirección de entrega principal → Cargar Venta la usa por defecto
 // ===== Comisión: escalera marginal sobre FACTURADO NETO (base). El cobro NO es la base: es PREMIO → sube el nivel/multiplicador que agranda toda la comisión =====
 // 3 SISTEMAS · escalera 2 tramos con corte en el OBJETIVO (baseline facturado ×1,2), MARGINAL:
 //  🏥 Instituciones 2%/3% · 💊 Farmacias 2,5%/3,5% (× nivel) · 🔵 Externo (Samanta) 3%/4% @ $50M fijo, sin nivel.
@@ -1271,6 +1276,7 @@ function abrirForm(c,isNew){
     </div>
     <div class="dbody">
       ${intelHTML}
+      ${isNew?'':'<div class="libreta" id="entregas"><div class="libhead"><h4>📦 Direcciones de entrega</h4></div><div class="lb-empty">Cargando…</div></div>'}
       ${isNew?'':'<div class="libreta" id="libreta"><div class="libhead"><h4>👥 Contactos</h4></div><div class="lb-empty">Cargando…</div></div>'}
       <div class="form"><h4>${isNew?'Datos del contacto':'Completar / corregir ficha'}</h4>
         <div class="fld"><label>Tipo</label><select id="f_type" onchange="onTipo()">
@@ -1299,7 +1305,91 @@ function abrirForm(c,isNew){
     <div class="dfoot">${isNew?'':`<button class="btn arch" onclick="pedirArchivar(${c.id})">🔒 Archivar</button>`}<button class="btn save" id="btnSave" onclick="guardar()">${isNew?'Crear contacto':'Guardar ficha'}</button></div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
   prevTel(); prevDoc();
-  if(!isNew){ cargarIntel(c.id); cargarContactos(c.id); }
+  if(!isNew){ cargarIntel(c.id); cargarEntregasFicha(c.id); cargarContactos(c.id); }
+}
+
+/* ===== Nivel 2: direcciones de entrega gestionadas desde la ficha (ver/agregar/editar/eliminar/principal) ===== */
+async function cargarEntregasFicha(id){
+  let dels=[];
+  try{ dels=await rpc("res.partner","search_read",[[["parent_id","=",id],["type","=","delivery"]]],
+    {fields:["id","name","street","city"],order:"name",context:{lang:"es_AR"}}); }catch(e){}
+  const ppal = dels.length ? await principalDe(dels.map(d=>d.id)) : null;
+  ST._entregas={parent:id, dels, ppal};
+  pintarEntregas();
+}
+// principal entre un set de direcciones (marca reversible en el chatter; gana la marca "in" más reciente)
+async function principalDe(delIds){
+  if(!delIds||!delIds.length) return null;
+  let msgs=[];
+  try{ msgs=await rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",delIds],["body","like",PPAL_TAG]]],{fields:["res_id","body","date"],limit:0}); }catch(e){}
+  const st={}, seen=new Set();
+  msgs.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  for(const m of msgs){ if(seen.has(m.res_id)) continue; seen.add(m.res_id);
+    const out=/salir/i.test((m.body||"").replace(/<[^>]+>/g," ")); st[m.res_id]={in:!out,date:m.date||""}; }
+  let ppal=null,best=""; for(const rid in st){ if(st[rid].in && st[rid].date>best){ best=st[rid].date; ppal=+rid; } }
+  return ppal;
+}
+function pintarEntregas(){
+  const box=document.getElementById("entregas"); if(!box) return;
+  const E=ST._entregas||{dels:[]};
+  const rows=(E.dels||[]).map(d=>{
+    const dir=[d.street,d.city].filter(Boolean).join(", ");
+    const isP=E.ppal===d.id;
+    return `<div class="lb-row"><div class="lb-i"><div class="lb-n">${isP?'⭐ ':''}${esc(d.name||"Sucursal")}</div>
+      <div class="lb-f">${esc(dir)||"&nbsp;"}</div></div>
+      <div class="lb-a">${isP?'<span class="lb-tag">Principal</span>':`<button class="lb-b" onclick="setPrincipal(${d.id})">Hacer principal</button>`}
+        <button class="lb-b" onclick="editarEntregaF(${d.id})">Editar</button>
+        <button class="lb-b del" onclick="eliminarEntregaF(${d.id})">Eliminar</button></div></div>`;
+  }).join("");
+  box.innerHTML=`<div class="libhead"><h4>📦 Direcciones de entrega</h4><button class="fbtn" onclick="addEntregaF()">＋ Agregar</button></div>
+    ${(E.dels&&E.dels.length)?`<div class="lb-list">${rows}</div>`:'<div class="lb-empty">Sin direcciones de entrega. La mercadería iría a la dirección fiscal (que casi nunca es la de entrega).</div>'}`;
+}
+function addEntregaF(){ formEntregaF(null); }
+function editarEntregaF(id){ formEntregaF((ST._entregas.dels||[]).find(x=>x.id===id)); }
+function formEntregaF(d){
+  const box=document.getElementById("entregas"); if(!box) return;
+  box.innerHTML=`<div class="libhead"><h4>📦 ${d?'Editar dirección':'Nueva dirección de entrega'}</h4></div>
+    <div class="pform">
+      <input id="ne_name" placeholder="Nombre / referencia (Ej: Depósito Centro)" value="${d?esc(d.name||''):''}">
+      <input id="ne_street" placeholder="Calle y número" value="${d?esc(d.street||''):''}">
+      <input id="ne_city" placeholder="Localidad" value="${d?esc(d.city||''):''}">
+      <div class="pform-b"><button class="fbtn" onclick="pintarEntregas()">Cancelar</button>
+        <button class="fbtn go" onclick="guardarEntregaF(${d?d.id:0})">Guardar</button></div>
+    </div>`;
+  const i=document.getElementById("ne_name"); if(i) i.focus();
+}
+async function guardarEntregaF(id){
+  const E=ST._entregas||{}; const v=x=>{const el=document.getElementById(x);return el?el.value.trim():"";};
+  const name=v("ne_name"), street=v("ne_street"), city=v("ne_city");
+  if(!name && !street){ toast("Poné un nombre o la dirección"); return; }
+  try{
+    if(id) await rpc("res.partner","write",[[id],{name:name||city||"Entrega",street,city}],{context:{lang:"es_AR"}});
+    else   await rpc("res.partner","create",[{parent_id:E.parent,type:"delivery",name:name||city||"Entrega",street,city}],{context:{lang:"es_AR"}});
+    toast(id?"📦 Dirección actualizada":"📦 Dirección agregada"); await cargarEntregasFicha(E.parent);
+  }catch(e){ toast("⚠ No pude guardar: "+(e.message||e)); }
+}
+function eliminarEntregaF(id){
+  const box=document.getElementById("entregas"); if(!box) return;
+  const d=(ST._entregas.dels||[]).find(x=>x.id===id);
+  box.innerHTML=`<div class="libhead"><h4>Eliminar dirección</h4></div>
+    <div class="lb-empty">¿Eliminar <b>${esc(d?d.name:'')}</b>? Deja de estar disponible para entregas.</div>
+    <div class="pform-b" style="margin-top:8px"><button class="fbtn" onclick="pintarEntregas()">Cancelar</button>
+      <button class="fbtn del2" onclick="doEliminarEntregaF(${id})">Sí, eliminar</button></div>`;
+}
+async function doEliminarEntregaF(id){
+  const E=ST._entregas||{};
+  try{
+    try{ await rpc("res.partner","unlink",[[id]]); }                     // borrado real si no está en uso
+    catch(_){ await rpc("res.partner","write",[[id],{active:false}]); }  // si está en uso (pedidos), se archiva
+    toast("Dirección eliminada"); await cargarEntregasFicha(E.parent);
+  }catch(e){ toast("⚠ No pude eliminar: "+(e.message||e)); }
+}
+async function setPrincipal(id){
+  const E=ST._entregas||{};
+  try{
+    await rpc("res.partner","message_post",[[id]],{body:`⭐ ${PPAL_TAG}`,message_type:"comment"});
+    E.ppal=id; toast("⭐ Dirección principal"); pintarEntregas();
+  }catch(e){ toast("⚠ No pude marcarla: "+(e.message||e)); }
 }
 
 /* ===== Nivel 3: libreta de contactos (personas de la empresa, NO se les factura) ===== */
