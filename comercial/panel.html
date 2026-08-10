@@ -328,6 +328,17 @@
   .csrc{display:inline-block;font-size:10.5px;font-weight:800;border-radius:20px;padding:2px 8px;margin-left:7px;vertical-align:1px;white-space:nowrap}
   .csrc.web{background:#E9F0FF;color:#2C5AA8}
   .csrc.man{background:var(--agua);color:var(--teal-deep)}
+  .csrc.cerr{background:var(--badbg);color:var(--bad)}   /* web cerrado por el cliente: falta confirmar */
+  .csrc.abie{background:var(--warnbg);color:var(--warn)} /* carrito web abierto/abandonado */
+  .pprow.urge{border-color:var(--coral);box-shadow:0 0 0 1px var(--coral),var(--shadow)}
+  /* aviso de pedidos web que piden atención */
+  .ppalert{display:flex;align-items:center;gap:11px;background:var(--warnbg);border:1px solid #e6d3a3;border-radius:12px;padding:12px 15px;margin-bottom:14px;cursor:pointer;box-shadow:var(--shadow)}
+  .ppalert.urge{background:var(--badbg);border-color:#f0b6b3}
+  .ppalert:hover{filter:brightness(.99)}
+  .ppa-ic{font-size:20px;line-height:1}
+  .ppa-tx{flex:1;font-size:13px;color:var(--ink);line-height:1.4}
+  .ppa-go{font-size:12.5px;font-weight:800;color:var(--teal-deep);white-space:nowrap}
+  .ppalert.urge .ppa-go{color:var(--bad)}
   .ppempty{text-align:center;padding:26px 16px;color:var(--gris);background:var(--surface);border:1px dashed var(--line);border-radius:12px}
   @media(max-width:560px){ .pprow{grid-template-columns:1fr auto} .pprow .go{display:none} }
 </style>
@@ -532,11 +543,13 @@ async function cargar(){
     // ---- Baselines del NIVEL (dinámico, cualquier comercial): objetivo de cobro (prom 3m ×1,1), promedio de pedidos/clientes, perfil por ticket ----
     try{
       const [ordHist, cobro3, facHist, drafts]=await Promise.all([
-        rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["sale","done"]],["date_order",">=",hace(190)]]],{fields:["partner_id","date_order","amount_total","website_id","name"],limit:0}),
+        rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["sale","done"]],["date_order",">=",hace(190)]]],{fields:["partner_id","date_order","amount_total","amount_untaxed","website_id","name"],limit:0}),
         rpc("account.payment","read_group",[[["partner_id","in",ids],["payment_type","=","inbound"],["state","=","posted"],["date",">=",hace(100)]],["amount:sum"],[]],{lazy:false}),
         rpc("account.move","search_read",[[["partner_id","in",ids],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",hace(190)]]],{fields:["invoice_date","amount_untaxed","move_type"],limit:0}),
-        // Presupuestos abiertos del comercial (borradores + enviados). Volumen chico por comercial.
-        rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["draft","sent"]]]],{fields:["id","name","partner_id","amount_total","create_date","write_date","website_id","order_line"],order:"write_date desc",limit:0})
+        // Presupuestos abiertos del comercial. state draft=borrador/carrito web · sent=presupuesto enviado o
+        // pedido web CERRADO por el cliente (falta confirmar). website_id marca el origen; is_abandoned_cart/
+        // cart_quantity distinguen carritos web abiertos vs abandonados vs vacíos.
+        rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["draft","sent"]]]],{fields:["id","name","partner_id","amount_total","amount_untaxed","create_date","write_date","website_id","order_line","state","is_abandoned_cart","cart_quantity"],order:"write_date desc",limit:0})
       ]);
       const bk={}; let sumTot=0;
       for(const o of ordHist){ const m=(o.date_order||"").slice(0,7); if(!m)continue; (bk[m]=bk[m]||{ped:0,cli:new Set(),tot:0}); bk[m].ped++; if(o.partner_id)bk[m].cli.add(o.partner_id[0]); bk[m].tot+=o.amount_total||0; sumTot+=o.amount_total||0; }
@@ -558,22 +571,33 @@ async function cargar(){
       let ventasHoy=0; for(const x of facHist){ const dd=(x.invoice_date||"").slice(0,10); if(dd===hoy10)ventasHoy+=(x.move_type==="out_refund"?-1:1)*(x.amount_untaxed||0); }
       ST.diag={ ventasHoy, pedHoy, pedSem, cliSem:cliSemS.size };
       // ---- Presupuestos y pedidos (sección superior del panel) ----
+      // TODO en NETO SIN IVA (amount_untaxed), igual que "Tus ventas", para que el panel sea consistente.
       const esWeb=o=>!!(o.website_id&&o.website_id[0]);
+      const neto=o=>(o.amount_untaxed!=null?o.amount_untaxed:o.amount_total)||0;
       const desde=(f,d)=>(f||"").slice(0,10)>=d;
-      ST.drafts=drafts||[];
+      // Se descartan los carritos web VACÍOS (sin ítems ni monto): son ruido, no presupuestos reales.
+      const allDrafts=(drafts||[]).filter(o=> !esWeb(o) || (o.cart_quantity||0)>0 || (o.amount_total||0)>0 );
+      ST.drafts=allDrafts;
+      const esWebAbierto=o=>esWeb(o)&&o.state==="draft";   // carrito web sin cerrar
+      const esWebCerrado=o=>esWeb(o)&&o.state==="sent";    // el cliente cerró el pedido → falta confirmar
+      const webAbiertos=allDrafts.filter(esWebAbierto);
+      const webCerrados=allDrafts.filter(esWebCerrado);
       const pp={
-        presCurso:ST.drafts.length,
-        presWeb:ST.drafts.filter(esWeb).length,
-        presMan:ST.drafts.filter(o=>!esWeb(o)).length,
-        presMonto:ST.drafts.reduce((s,o)=>s+(o.amount_total||0),0),
-        presHoy:ST.drafts.filter(o=>desde(o.create_date,hoy10)).length,
-        presSem:ST.drafts.filter(o=>desde(o.create_date,sem7)).length,
-        presMes:ST.drafts.filter(o=>desde(o.create_date,inicioMes)).length
+        presCurso:allDrafts.length,
+        presMan:allDrafts.filter(o=>!esWeb(o)).length,
+        presWeb:webAbiertos.length+webCerrados.length,
+        webAbiertos:webAbiertos.length,
+        webCerrados:webCerrados.length,
+        webAbandonados:webAbiertos.filter(o=>o.is_abandoned_cart).length,
+        presMonto:allDrafts.reduce((s,o)=>s+neto(o),0),
+        presHoy:allDrafts.filter(o=>desde(o.create_date,hoy10)).length,
+        presSem:allDrafts.filter(o=>desde(o.create_date,sem7)).length,
+        presMes:allDrafts.filter(o=>desde(o.create_date,inicioMes)).length
       };
       const oMes=ordHist.filter(o=>desde(o.date_order,inicioMes));
       pp.pedHoy=pedHoy; pp.pedSem=pedSem; pp.pedMes=oMes.length;
       pp.pedWebMes=oMes.filter(esWeb).length; pp.pedManMes=oMes.length-pp.pedWebMes;
-      pp.pedMontoMes=oMes.reduce((s,o)=>s+(o.amount_total||0),0);
+      pp.pedMontoMes=oMes.reduce((s,o)=>s+neto(o),0);
       ST.pedMesList=oMes.slice().sort((a,b)=>String(b.date_order||"").localeCompare(String(a.date_order||"")));
       ST.pp=pp;
     }catch(e){ ST.base=ST.base||{objetivoCobro:0,promPed:1,promCli:1,perfil:"farm"}; ST.act=ST.act||{ped:0,cli:0}; ST.diag=ST.diag||{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}; }
@@ -677,18 +701,29 @@ const ppFecha=f=>{ if(!f) return ""; try{ const ap=EYG.argParts(f); return ap.da
 function ppRow(o,t){
   const cli=o.partner_id?o.partner_id[1]:"Sin cliente";
   const web=!!(o.website_id&&o.website_id[0]);
+  const monto=(o.amount_untaxed!=null?o.amount_untaxed:o.amount_total)||0;
   const f=ppFecha(t==="pres"?o.write_date:o.date_order);
+  // etiqueta de origen/estado (solo presupuestos): manual · carrito web abierto · web cerrado a confirmar
+  const cerrado = t==="pres" && web && o.state==="sent";
+  let tag;
+  if(!web) tag='<span class="csrc man">✍️ manual</span>';
+  else if(t!=="pres") tag='<span class="csrc web">🌐 web</span>';
+  else if(cerrado) tag='<span class="csrc cerr">📩 web cerrado · a confirmar</span>';
+  else tag='<span class="csrc abie">🛒 carrito web'+(o.is_abandoned_cart?' abandonado':' abierto')+'</span>';
   const extra=t==="pres"?((o.order_line||[]).length+" prod."):"";
   const click=t==="pres"?`location.href='${venderURL('reanudar='+o.id)}'`:`verOdoo('id=${o.id}&model=sale.order&view_type=form')`;
-  return `<div class="pprow" onclick="${click}">
-    <div><div class="cli">${esc(cli)}<span class="csrc ${web?'web':'man'}">${web?'🌐 web':'✍️ manual'}</span></div>
+  const go=t!=="pres"?'Ver →':(cerrado?'Confirmar →':'Retomar →');
+  return `<div class="pprow${cerrado?' urge':''}" onclick="${click}">
+    <div><div class="cli">${esc(cli)}${tag}</div>
     <div class="meta">${esc(o.name||'')}${extra?' · '+extra:''}${f?' · '+f:''}</div></div>
-    <div class="tot">${money(o.amount_total)}</div>
-    <div class="go">${t==="pres"?'Retomar →':'Ver →'}</div>
+    <div class="tot">${money(monto)}</div>
+    <div class="go">${go}</div>
   </div>`;
 }
+// Prioridad de un presupuesto para ordenar la lista: primero los que piden acción del comercial.
+const ppPrio=o=>{ const web=!!(o.website_id&&o.website_id[0]); if(web&&o.state==="sent") return 0; if(web&&o.is_abandoned_cart) return 1; return 2; };
 const ppArr=t=> t==="pres"
-  ? (ST.drafts||[]).slice().sort((a,b)=>String(b.write_date||"").localeCompare(String(a.write_date||"")))
+  ? (ST.drafts||[]).slice().sort((a,b)=> (ppPrio(a)-ppPrio(b)) || String(b.write_date||"").localeCompare(String(a.write_date||"")))
   : (ST.pedMesList||[]);
 function ppMini(t){
   const arr=ppArr(t);
@@ -697,18 +732,36 @@ function ppMini(t){
   const mas=arr.length>4?`<div class="ppmas">y ${arr.length-4} más…</div>`:"";
   return `<div class="pplist mini">${rows}</div>${mas}`;
 }
+// Aviso para el comercial: pedidos web que necesitan su atención.
+function ppAlertaHTML(){
+  const pp=ST.pp; if(!pp) return "";
+  const partes=[];
+  if(pp.webCerrados>0) partes.push(`<b>${pp.webCerrados}</b> pedido${pp.webCerrados===1?'':'s'} web <b>cerrado${pp.webCerrados===1?'':'s'} por el cliente</b> esperando que lo${pp.webCerrados===1?'':'s'} confirmes`);
+  if(pp.webAbandonados>0) partes.push(`<b>${pp.webAbandonados}</b> carrito${pp.webAbandonados===1?'':'s'} web <b>sin cerrar</b> (consultá al cliente si lo cierra o agrega algo)`);
+  if(!partes.length) return "";
+  const urge=pp.webCerrados>0;
+  return `<div class="ppalert ${urge?'urge':''}" onclick="mostrarVista('pres')">
+    <span class="ppa-ic">${urge?'⚠️':'🛒'}</span>
+    <span class="ppa-tx">${partes.join(" · ")}.</span>
+    <span class="ppa-go">Ver →</span></div>`;
+}
 // Sección de la pantalla principal: 2 tarjetas desplegables
 function ppSectionHTML(){
   const pp=ST.pp; if(!pp) return "";
+  const sub=[`✍️ ${pp.presMan} manual`];
+  if(pp.webCerrados>0) sub.push(`📩 ${pp.webCerrados} a confirmar`);
+  if(pp.webAbiertos>0) sub.push(`🛒 ${pp.webAbiertos} carrito${pp.webAbiertos===1?'':'s'}`);
   return `<div class="secrow"><h2 class="sec">🧾 Presupuestos y pedidos</h2></div>
+  ${ppAlertaHTML()}
   <div class="kpis" style="margin-bottom:24px">
-    <div class="kpi">
-      <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">🧾</span><div class="kmeta"><div class="kl">Presupuestos en curso</div><div class="kv">${pp.presCurso}</div><div class="ks">✍️ ${pp.presMan} manual · 🌐 ${pp.presWeb} web</div></div><span class="kchev">▾</span></div>
+    <div class="kpi${pp.webCerrados>0?' warn':''}">
+      <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">🧾</span><div class="kmeta"><div class="kl">Presupuestos en curso</div><div class="kv">${pp.presCurso}</div><div class="ks">${sub.join(" · ")}</div></div><span class="kchev">▾</span></div>
       <div class="acc"><div class="accw"><div class="accin">
-        <div class="drow"><span>Creados hoy</span><b>${pp.presHoy}</b></div>
-        <div class="drow"><span>Esta semana</span><b>${pp.presSem}</b></div>
-        <div class="drow"><span>Este mes</span><b>${pp.presMes}</b></div>
-        <div class="drow tot"><span>Monto en curso</span><b>${money(pp.presMonto)}</b></div>
+        <div class="drow"><span>✍️ Manuales (los cargás vos)</span><b>${pp.presMan}</b></div>
+        <div class="drow"><span>📩 Web cerrados · a confirmar</span><b style="${pp.webCerrados>0?'color:var(--coral)':''}">${pp.webCerrados}</b></div>
+        <div class="drow"><span>🛒 Carritos web abiertos${pp.webAbandonados>0?` (${pp.webAbandonados} abandonado${pp.webAbandonados===1?'':'s'})`:''}</span><b>${pp.webAbiertos}</b></div>
+        <div class="drow"><span>Creados hoy · semana · mes</span><b>${pp.presHoy} · ${pp.presSem} · ${pp.presMes}</b></div>
+        <div class="drow tot"><span>Monto en curso · neto</span><b>${money(pp.presMonto)}</b></div>
         <div class="ppinlist">${ppMini('pres')}</div>
         <button class="ppver" onclick="mostrarVista('pres')">📋 Ver todos los presupuestos →</button>
       </div></div></div>
@@ -720,7 +773,8 @@ function ppSectionHTML(){
         <div class="drow"><span>Esta semana</span><b>${pp.pedSem}</b></div>
         <div class="drow"><span>Este mes</span><b>${pp.pedMes}</b></div>
         <div class="drow"><span>✍️ Manuales / 🌐 Web (mes)</span><b>${pp.pedManMes} / ${pp.pedWebMes}</b></div>
-        <div class="drow tot"><span>Monto del mes</span><b>${money(pp.pedMontoMes)}</b></div>
+        <div class="drow tot"><span>Monto pedido · neto del mes</span><b>${money(pp.pedMontoMes)}</b></div>
+        <div style="font-size:11px;color:var(--gris2);margin:4px 0 2px;line-height:1.4">Es lo <b>pedido</b> este mes (neto sin IVA). No coincide con “Tus ventas”, que es lo <b>facturado</b> del mes: un pedido se factura al entregarse, a veces otro mes.</div>
         <div class="ppinlist">${ppMini('ped')}</div>
         <button class="ppver" onclick="mostrarVista('ped')">📦 Ver todos los pedidos →</button>
       </div></div></div>
@@ -741,7 +795,7 @@ function pintarVista(){
       <button class="vback" onclick="volverDash()">← Volver</button>
       <h1>${titulo} <span class="vcount">${arr.length}</span></h1>
       ${t==="pres"?`<a class="cta-venta" href="${venderURL('nuevo=1')}">🛒 Cargar una venta</a>`:''}
-    </div>${cuerpo}`;
+    </div>${t==="pres"?ppAlertaHTML():''}${cuerpo}`;
 }
 
 function render(){
