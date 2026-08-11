@@ -380,13 +380,26 @@
   .pf-load{font-size:12.5px;color:var(--gris)}
   .pf-head{display:flex;align-items:center;gap:11px;margin-bottom:11px}
   .pf-head .cf-circ{width:34px;height:34px}
-  .pf-t{font-size:15px;font-weight:800;color:var(--ink);line-height:1.2}
-  .pf-s{font-size:12px;color:var(--gris);line-height:1.4;margin-top:2px}
-  .pf-cruce{display:flex;flex-direction:column;gap:7px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
-  .pf-src{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--gris)}
-  .pf-src .pf-ico{font-size:14px}
-  .pf-src .pf-k{min-width:104px;font-weight:700;color:var(--gris2)}
+  .pf-t{font-size:16px;font-weight:800;color:var(--ink);line-height:1.2}
+  .pf-s{font-size:12.5px;color:var(--gris);line-height:1.45;margin-top:3px}
+  .pf-why{font-size:13px;color:var(--ink);line-height:1.45;border-radius:9px;padding:9px 12px;margin-bottom:11px;border:1px solid}
+  .pf-why b{font-weight:800}
+  .pf-why.pf-y{background:#FBF3E0;border-color:#ecd9a8} .pf-why.pf-y b{color:#9A6B12}
+  .pf-why.pf-o{background:#FBEEE2;border-color:#eccbb0} .pf-why.pf-o b{color:#B45816}
+  .pf-why.pf-r{background:#FBE7E6;border-color:#f0c3c1} .pf-why.pf-r b{color:#B0322F}
+  .pf-cruce{display:flex;flex-direction:column;gap:8px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+  .pf-src{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--gris)}
+  .pf-src .pf-ico{font-size:15px}
+  .pf-src .pf-k{min-width:108px;font-weight:700;color:var(--gris2)}
   .pf-src b{color:var(--ink);font-weight:700}
+  .pf-src b.mark{color:var(--coral)}
+  /* badge abreviado de la lista (sutil, no compite con el plazo) */
+  .cred-mini{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:800;border-radius:20px;padding:2px 8px;margin-right:6px;vertical-align:1px;border:1px solid;line-height:1.5}
+  .cred-mini .cm-dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+  .cred-mini.g{color:#1E7D46;border-color:#c4e4cf;background:#f2faf5}
+  .cred-mini.y{color:#9A6B12;border-color:#ecd9a8;background:#fdf8ea}
+  .cred-mini.o{color:#B45816;border-color:#eccbb0;background:#fdf2ea}
+  .cred-mini.r{color:#B0322F;border-color:#f0c6c4;background:#fdefee}
   /* ===== Situación crediticia (BCRA) en la ficha ===== */
   .cred-fic{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:12px;box-shadow:var(--shadow)}
   .cred-fic.nocuit{color:var(--gris);font-size:12.5px;background:var(--bg);box-shadow:none;border-style:dashed}
@@ -629,11 +642,11 @@ async function cargar(){
     let porCobrar=0, vencido=0, nDeud=0;
     for(const pid in porP){ const d=porP[pid].deuda; if(d>1){porCobrar+=d; vencido+=Math.max(0,porP[pid].vencido); nDeud++;} }
     ST.cc={ porP, porCobrar, vencido, cobradoMes:cobrado[0]?.amount||0, aFacturar:afSin, nDeud };
-    // Historial de pago interno (riesgoCartera) + config del umbral + cache BCRA: en 2º plano.
-    // Alimentan el "Perfil crediticio" que se ve al ENTRAR A LA FICHA (no en la lista).
-    EYG.riesgoCartera().then(m=>{ ST.riesgos=m||{}; refrescarPerfilFicha(); }).catch(()=>{});
-    EYG.creditoConfig().then(cfg=>{ CREDIT_CFG=cfg; }).catch(()=>{});
-    EYG.bcraCacheLeer().then(m=>{ ST.bcra=m||{}; }).catch(()=>{});
+    // Perfil crediticio: historial de pago interno (riesgoCartera) + umbral + cache BCRA. Alimentan
+    // el badge abreviado de la lista Y el detalle de la ficha. El BCRA se completa en 2º plano (trickle).
+    EYG.riesgoCartera().then(m=>{ ST.riesgos=m||{}; if(document.getElementById("lista")) lista(); refrescarPerfilFicha(); }).catch(()=>{});
+    EYG.creditoConfig().then(cfg=>{ CREDIT_CFG=cfg; if(document.getElementById("lista")) lista(); }).catch(()=>{});
+    EYG.bcraCacheLeer().then(m=>{ ST.bcra=m||{}; if(document.getElementById("lista")) lista(); trickleBCRA(); }).catch(()=>{});
     // ---- Baselines del NIVEL (dinámico, cualquier comercial): objetivo de cobro (prom 3m ×1,1), promedio de pedidos/clientes, perfil por ticket ----
     try{
       const [ordHist, cobro3, facHist, drafts]=await Promise.all([
@@ -1054,7 +1067,7 @@ function lista(){
     const e=estadoCli(c); const estBadge=`<span class="estado" style="color:${e.col};background:${e.bg}">${e.em} ${e.lab}</span>`;
     const rec = o ? `<div class="rec"><b>${d===0?'hoy':d+'d'}</b> sin comprar<div class="sub">${o.pedidos} ped · ${money(o.total)}</div></div>` : `<div class="rec"><span class="sub">sin compras</span></div>`;
     return `<div class="cc ${hoy?'hoy':''} ${sinTel?'st':''} ${enFondo?'alfondo':''}" onclick="abrir(${c.id})">
-      <div><div class="nm">${esc(c.name||"(sin nombre)")}</div><div class="mt">${esc(c.city||"—")} · ${c.customer_rank>0?'cliente':'contacto'}${hoy?' · ✅ hoy':''}</div>${estBadge}${sinTel?'<span class="notel">📞 Falta teléfono</span>':''}${plazoBadge(c)}${debtBadge}</div>
+      <div><div class="nm">${esc(c.name||"(sin nombre)")}</div><div class="mt">${esc(c.city||"—")} · ${c.customer_rank>0?'cliente':'contacto'}${hoy?' · ✅ hoy':''}</div>${estBadge}<span class="cred-slot" data-pid="${c.id}">${credListHTML(c)}</span>${sinTel?'<span class="notel">📞 Falta teléfono</span>':''}${plazoBadge(c)}${debtBadge}</div>
       ${rec}
       <div class="compbar"><div class="lab"><span>Ficha</span><span>${comp.pct}%</span></div><div class="track"><div class="fill" style="width:${comp.pct}%;background:${colorPct(comp.pct)}"></div></div></div>
       <div class="ccact">${hoy?'<span class="done-tag">Hoy ✓</span>':'<span class="go">Abrir →</span>'}<button class="fbtn" title="${enFondo?'Traer arriba':'Pasar al fondo y seguir'}" onclick="alFondo(event,${c.id})">${enFondo?'↑ subir':'⤓ al fondo'}</button></div>
@@ -1076,6 +1089,35 @@ function credVerdicto(c){
   const bb=(b&&!b.error)?b:null;
   return {v: EYG.evalCredito(bb, interno, CREDIT_CFG), sinCuit:!cu, bcraErr:!!(b&&b.error)};
 }
+// Badge ABREVIADO para la lista (sutil, no compite con el plazo; mismos colores que la ficha).
+function credListHTML(c){
+  const cu=cuitDe(c), iv=(ST.riesgos||{})[c.id]||null;
+  if(cu && ST.bcra[cu]===undefined) return "";                 // aún cargando → aparece al llegar
+  if(!cu && (!iv||iv.nivel==="ok")) return "";                 // no evaluable y sin señal interna → nada
+  const v=EYG.evalCredito((ST.bcra[cu]&&!ST.bcra[cu].error)?ST.bcra[cu]:null, iv, CREDIT_CFG);
+  const short=((EYG.CRED_NIV||{})[v.nivel]||{}).chip||v.titulo;
+  return `<span class="cred-mini ${v.luz}" title="Perfil crediticio: ${esc(v.titulo)}${v.motivo?(' — '+esc(v.motivo)):''}"><span class="cm-dot"></span>${esc(short)}</span>`;
+}
+function actualizarCredCuit(cu){
+  ST.contactos.filter(x=>cuitDe(x)===cu).forEach(x=>{ const el=document.querySelector('.cred-slot[data-pid="'+x.id+'"]'); if(el) el.innerHTML=credListHTML(x); });
+  refrescarPerfilFicha();
+}
+// Completa el BCRA en 2º plano (throttled ×3) para poblar los badges de la lista, y cachea.
+async function trickleBCRA(){
+  if(ST._bcraRun) return; ST._bcraRun=true;
+  const hoy=hoyStr.slice(0,10), vistos=new Set(), pend=[];
+  for(const c of ST.contactos){ const cu=cuitDe(c); if(!cu||vistos.has(cu)) continue; vistos.add(cu); if(bcraStale(ST.bcra[cu])) pend.push(cu); }
+  let i=0, activos=0, sinGuardar=0; const nuevos={};
+  await new Promise(res=>{
+    const flush=()=>{ if(sinGuardar>0){ EYG.bcraCacheMerge({...nuevos}); sinGuardar=0; } };
+    const paso=()=>{ if(i>=pend.length && activos===0){ flush(); res(); return; }
+      while(activos<3 && i<pend.length){ const cu=pend[i++]; activos++;
+        EYG.bcraResumen(cu).then(r=>{ if(r&&!r.error){ r.ts=hoy; ST.bcra[cu]=r; nuevos[cu]=r; sinGuardar++; actualizarCredCuit(cu); } })
+          .catch(()=>{}).finally(()=>{ activos--; if(sinGuardar>=12) flush(); paso(); }); }
+    }; paso();
+  });
+  ST._bcraRun=false;
+}
 // Estado cualitativo de cada fuente (sin montos), para el resumen contrastado.
 function bcraTexto(c){ const cu=cuitDe(c); if(!cu) return "falta el CUIT para consultar"; const b=ST.bcra[cu]; if(b===undefined) return "consultando…"; if(!b||b.error) return "no disponible ahora"; if(b.sin) return "sin deuda registrada"; return b.luz==="g"?"situación normal":b.luz==="y"?"con una marca menor":("situación irregular"+((b.chImpagos||0)>0?" · cheques impagos":"")); }
 function eygTexto(c){ const iv=(ST.riesgos||{})[c.id]; if(!iv||iv.nivel==="ok") return "paga al día"; if(iv.manual) return "marcado con problemas de pago"; if(iv.bovIncobrable) return "marcado incobrable"; if(iv.nivel==="alto") return "muy atrasado"; return "registra atrasos"; }
@@ -1092,11 +1134,16 @@ function perfilChipHTML(c){
 function perfilResumenHTML(c){
   const r=credVerdicto(c);
   if(r.loading) return `<div class="pf-load">Evaluando el perfil… (cruzando BCRA + pagos con EyG)</div>`;
-  const v=r.v, cobra=(v.nivel==="consultar"||v.nivel==="noapto");
+  const v=r.v, cu=cuitDe(c), b=cu?ST.bcra[cu]:null, iv=(ST.riesgos||{})[c.id]||null;
+  const cobra=(v.nivel==="consultar"||v.nivel==="noapto");
+  const bcraMark = !!(b && !b.error && !b.sin && (b.luz==="y"||b.luz==="r"));   // el BCRA aporta la marca
+  const eygMark  = !!(iv && iv.nivel!=="ok");                                   // los pagos aportan la marca
+  const motivo = v.motivo ? (v.motivo.charAt(0).toUpperCase()+v.motivo.slice(1)+".") : "";
   return `<div class="pf-head"><span class="cf-circ ${v.luz}"></span><div><div class="pf-t">${esc(v.titulo)}</div><div class="pf-s">${esc(v.sub)}</div></div></div>
+    ${(v.nivel!=="apto"&&motivo)?`<div class="pf-why pf-${v.luz}"><b>Por qué no es “Apto”:</b> ${esc(motivo)}</div>`:''}
     <div class="pf-cruce">
-      <div class="pf-src"><span class="pf-ico">🏦</span><span class="pf-k">Bancos (BCRA)</span><b>${esc(bcraTexto(c))}</b></div>
-      <div class="pf-src"><span class="pf-ico">🤝</span><span class="pf-k">Pagos con EyG</span><b>${esc(eygTexto(c))}</b></div>
+      <div class="pf-src"><span class="pf-ico">🏦</span><span class="pf-k">Bancos (BCRA)</span><b class="${bcraMark?'mark':''}">${esc(bcraTexto(c))}</b></div>
+      <div class="pf-src"><span class="pf-ico">🤝</span><span class="pf-k">Pagos con EyG</span><b class="${eygMark?'mark':''}">${esc(eygTexto(c))}</b></div>
     </div>
     ${cobra?'<div class="cf-cob">🤝 La evaluación final la hace Cobranzas.</div>':''}
     <button class="cf-info" onclick="toggleLeyenda(this)">ℹ️ ¿Qué significan los niveles?</button>
@@ -1680,7 +1727,7 @@ async function guardar(){
     render();
     // Situación crediticia: si el contacto tiene CUIT, calcularla y cachearla automáticamente
     // (contacto nuevo, o si acaban de cargar/corregir el CUIT). Queda "ligada" al contacto por CUIT.
-    const _cu=cuitDe(fresh); if(_cu){ EYG.bcraResumen(_cu).then(r=>{ if(r&&!r.error){ r.ts=hoyStr.slice(0,10); ST.bcra[_cu]=r; EYG.bcraCacheMerge({[_cu]:r}); refrescarPerfilFicha(); } }).catch(()=>{}); }
+    const _cu=cuitDe(fresh); if(_cu){ EYG.bcraResumen(_cu).then(r=>{ if(r&&!r.error){ r.ts=hoyStr.slice(0,10); ST.bcra[_cu]=r; EYG.bcraCacheMerge({[_cu]:r}); actualizarCredCuit(_cu); } }).catch(()=>{}); }
   }catch(e){ btn.disabled=false; btn.textContent=EDIT&&EDIT.isNew?"Crear contacto":"Guardar ficha"; toast("⚠️ No se pudo guardar: "+e.message); }
 }
 
