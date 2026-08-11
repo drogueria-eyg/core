@@ -347,10 +347,12 @@ async function cargarNuevos(){
     if(!ids.length){ NUEVOS=[]; if(filtro.tab==="nuevos") renderNuevos(); const t=document.getElementById("cntNuevos"); if(t)t.textContent="0"; return; }
     const [parts, contactMsgs, ventas]=await Promise.all([
       rpc("res.partner","read",[ids],{fields:["id","name","user_id","city","create_date",RUBRO_FIELD],context:{lang:"es_AR"}}),
-      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],"|","|","|",["body","like","[COBRO-CONTACTO]"],["body","like","EyGWA"],["body","like","EyGCRM"],["body","like","[EyGWA]"]]],{fields:["res_id","date"],limit:0}),
+      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],"|","|","|",["body","like","[COBRO-CONTACTO]"],["body","like","EyGWA"],["body","like","EyGCRM"],["body","like","[EyGWA]"]]],{fields:["res_id","date","body"],limit:0}),
       rpc("sale.order","read_group",[[["partner_id","in",ids],["state","in",["sale","done"]]],["amount_total:sum"],["partner_id"]],{lazy:false})
     ]);
-    const cont={}; contactMsgs.forEach(m=>{ if(!cont[m.res_id]||m.date>cont[m.res_id]) cont[m.res_id]=m.date; });
+    // último contacto por cliente: fecha/hora + quién lo hizo (del "· por X" del marcador del comercial)
+    const cont={};
+    contactMsgs.forEach(m=>{ const prev=cont[m.res_id]; if(!prev||m.date>prev.date){ const b=(m.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," "); const pm=b.match(/\bpor\s+([^<\n·]+?)\s*$/i); cont[m.res_id]={date:m.date, por:(pm&&pm[1]?pm[1].trim():"")}; } });
     const vt={}; ventas.forEach(g=>{ if(g.partner_id) vt[g.partner_id[0]]={tot:g.amount_total||0,n:g.__count||0}; });
     const byId={}; parts.forEach(p=>byId[p.id]=p);
     NUEVOS=ids.map(id=>{ const p=byId[id]||{}, cr=creado[id], v=vt[id]||{}; return {
@@ -363,6 +365,7 @@ async function cargarNuevos(){
   }catch(e){ console.warn("nuevos:",e.message); }
 }
 function fmtCuando(iso){ if(!iso) return "—"; const p=EYG.argParts(iso); return p.date===EYG.argToday()?("hoy "+p.hm):(p.date.slice(8,10)+"/"+p.date.slice(5,7)+"/"+p.date.slice(2,4)); }
+function fmtDiaHora(iso){ if(!iso) return "—"; const p=EYG.argParts(iso); const d=p.date===EYG.argToday()?"hoy":(p.date.slice(8,10)+"/"+p.date.slice(5,7)+"/"+p.date.slice(2,4)); return d+" "+p.hm; }
 function renderNuevos(){
   const tb=document.getElementById("tabbody"); if(!tb) return;
   const GC="grid-template-columns:2fr 1.1fr .9fr 1.2fr .9fr .9fr";
@@ -376,7 +379,7 @@ function renderNuevos(){
       <div class="hide-sm"><span class="muted trunc" title="${esc(n.creador)}">${esc(n.creador)}</span></div>
       <div class="muted">${fmtCuando(n.fecha)}</div>
       <div><span class="muted trunc" title="${esc(n.comercial)}">${esc(n.comercial)}</span></div>
-      <div class="hide-sm">${n.contactado?`<span class="badge ok">✓ ${fmtCuando(n.contactado)}</span>`:`<span class="badge bad">no</span>`}</div>
+      <div>${n.contactado?`<span class="badge ok" title="${esc(n.contactado.date||'')} (UTC)">✓ ${fmtDiaHora(n.contactado.date)}</span>${n.contactado.por?`<div class="cmeta">por ${esc(n.contactado.por)}</div>`:''}`:`<span class="badge bad">sin contactar</span>`}</div>
       <div class="num">${n.ventaTot>0?money(n.ventaTot):(n.nped>0?'<span class="badge ok">✓</span>':'<span class="muted">—</span>')}</div>
     </div>`).join("");
   tb.innerHTML=`
@@ -385,7 +388,7 @@ function renderNuevos(){
       ${kpi(NUEVOS.length,"Nuevos (total)")}${kpi(nHoy,"Hoy")}${kpi(nSem,"Últimos 7 días")}${kpi(nMes,"Este mes")}${kpi(nCont,"Ya contactados")}${kpi(nVend,"Con ventas")}
     </div>
     ${NUEVOS.length?`<div class="tablecard">
-      <div class="thead" style="${GC}"><div>Contacto</div><div class="hide-sm">Creado por</div><div>Cuándo</div><div>Comercial actual</div><div class="hide-sm">Contactado</div><div>Venta</div></div>
+      <div class="thead" style="${GC}"><div>Contacto</div><div class="hide-sm">Creado por</div><div>Cuándo</div><div>Comercial actual</div><div>Contactado</div><div>Venta</div></div>
       ${rows}${NUEVOS.length>500?'<div class="empty" style="padding:16px">Mostrando los primeros 500.</div>':''}
     </div>`:'<div class="tablecard"><div class="empty">Todavía no se crearon contactos nuevos desde el módulo. Andá a "Por conquistar" y creá el primero.</div></div>'}`;
 }
