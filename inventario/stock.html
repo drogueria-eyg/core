@@ -226,6 +226,34 @@ function familia(categ){ if(!categ) return "Sin categoría"; const p=categ[1].sp
 function mesesHasta(f){ if(!f) return null; const d=new Date(f.slice(0,10)); return (d-HOY)/(1000*3600*24*30.44); }
 const cleanName=n=>(n||"").replace(/@$/,"").replace(/@\s+\d+T?$/,"").trim();
 
+/* Duración legible: años / meses / semanas / días según la magnitud (nada de "0,4 meses").
+   fmtDur = versión larga (para textos), fmtDurC = compacta (para badges angostos). */
+function fmtDur(m){
+  if(m==null || m>=900) return "—";
+  const neg=m<0; m=Math.abs(m);
+  let s;
+  if(m>=24) s=Math.round(m/12)+" años";
+  else if(m>=2) s=Math.round(m)+" meses";
+  else if(m>=0.92) s="1 mes";
+  else { const semF=m*4.345;
+    if(semF>=1.5) s=Math.round(semF)+" semanas";
+    else if(semF>=0.75) s="1 semana";
+    else { const d=Math.max(1,Math.round(m*30.44)); s=d+(d>1?" días":" día"); } }
+  return neg?"hace "+s:s;
+}
+function fmtDurC(m){
+  if(m==null || m>=900) return "—";
+  const neg=m<0; m=Math.abs(m); let s;
+  if(m>=24) s=Math.round(m/12)+"a";
+  else if(m>=2) s=Math.round(m)+"m";
+  else if(m>=0.92) s="1m";
+  else { const semF=m*4.345;
+    if(semF>=1.5) s=Math.round(semF)+" sem";
+    else if(semF>=0.75) s="1 sem";
+    else s=Math.max(1,Math.round(m*30.44))+"d"; }
+  return neg?"-"+s:s;
+}
+
 let DATA=[], ARCH=[], LOTES={}, FLUJO={meses:[],ventas:[],compras:[]}, CAD={}, TOT=0, KPI={}, BUCKETS=[], FAMS=[];
 let TAB="repo";
 let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
@@ -616,7 +644,7 @@ function tabRevisar(){
       <div class="thead" style="grid-template-columns:2.4fr 0.7fr 0.9fr 0.6fr 1.9fr">
         <div>Producto</div><div class="tr-r">Unid.</div><div class="tr-r">Valor</div><div class="tr-r">Vence</div><div style="text-align:right">Acción</div>
       </div>
-      ${ARCH.map(r=>{const venc=r.min===null?'<span style="color:#CCD5D3">—</span>':r.min<0?'<b style="color:var(--red)">vencido</b>':r.min+'m';
+      ${ARCH.map(r=>{const venc=r.min===null?'<span style="color:#CCD5D3">—</span>':r.min<0?'<b style="color:var(--red)">vencido</b>':fmtDurC(r.min);
         return `<div class="row" style="grid-template-columns:2.4fr 0.7fr 0.9fr 0.6fr 1.9fr;cursor:default" id="arow${r.id}">
           <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">${r.code?esc(r.code)+" · ":""}archivado en Odoo</div></div>
           <div class="tr-r num">${r.qty.toLocaleString("es-AR")}</div>
@@ -688,7 +716,7 @@ function tabRepo(rd){
         return `<li class="li" onclick="abrirProd(${r.id})">
           <span class="pill ${c}">${URG_LBL[rp.urg]}</span>
           <div class="nm"><b>${esc(cleanName(r.name))}</b>
-            <span>${r.provName?esc(r.provName):(r.viaOtra?"reposición directa":"—")} · cobertura ${rp.cob>900?"—":rp.cob+"m"} · vende ${r.freq}×/año</span></div>
+            <span>${r.provName?esc(r.provName):(r.viaOtra?"reposición directa":"—")} · cobertura ${rp.cob>900?"—":fmtDur(rp.cob)} · vende ${r.freq}×/año</span></div>
           <div class="amt">${rp.sug} u<span style="display:block;font-size:11px;color:var(--gris);font-weight:600">${money(rp.costoLinea)}</span></div>
         </li>`}).join(""):'<div class="empty">Nada urgente con la política actual. 👌</div>'}</ul>
     </div>
@@ -705,7 +733,7 @@ function tabRepo(rd){
     ${rd.otra.length?`<h2 class="sec">Reposición directa (sin OC)<span class="hint">se reponen por otra vía · no generan documento</span></h2>
       <div class="pcard"><ul class="lst">${rd.otra.slice(0,30).map(x=>{const r=x.r,rp=x.rp;
         return `<li class="li" onclick="abrirProd(${r.id})"><span class="pill ${URG_COL[rp.urg]}">${URG_LBL[rp.urg]}</span>
-          <div class="nm"><b>${esc(cleanName(r.name))}</b><span>cobertura ${rp.cob>900?"—":rp.cob+"m"} · sugerido ${rp.sug} u</span></div>
+          <div class="nm"><b>${esc(cleanName(r.name))}</b><span>cobertura ${rp.cob>900?"—":fmtDur(rp.cob)} · sugerido ${rp.sug} u</span></div>
           <div class="amt">${money(rp.costoLinea)}</div></li>`}).join("")}</ul>
         ${rd.otra.length>30?`<div class="count-line" style="margin-top:8px">…y ${rd.otra.length-30} más.</div>`:""}</div>`:""}
 
@@ -745,12 +773,12 @@ function renderWin(){
   const arrow=key=>rfiltro.sortK===key?(rfiltro.dir<0?" ↓":" ↑"):"";
   el.innerHTML=`<div class="tablecard">
     <div class="thead g-win">
-      <div onclick="sortWin('name')">Producto${arrow('name')}</div>
-      <div class="tr-r" onclick="sortWin('freq')">Veces/año${arrow('freq')}</div>
-      <div class="tr-r hide-sm" onclick="sortWin('ventaU')">Unid/año${arrow('ventaU')}</div>
-      <div class="tr-r hide-sm" onclick="sortWin('margenPct')">Margen${arrow('margenPct')}</div>
-      <div class="tr-r" onclick="sortWin('margenAnual')">Margen $/año${arrow('margenAnual')}</div>
-      <div class="tr-r" onclick="sortWin('cob')">Cobertura${arrow('cob')}</div></div>
+      <div onclick="sortWin('name')" title="Nombre del producto y su proveedor o código. Tocá para ordenar A–Z.">Producto${arrow('name')}</div>
+      <div class="tr-r" onclick="sortWin('freq')" title="Veces por año: cuántas ventas distintas tuvo en los últimos 12 meses. Más veces = demanda más constante (no una venta grande y nada más).">Veces/año${arrow('freq')}</div>
+      <div class="tr-r hide-sm" onclick="sortWin('ventaU')" title="Unidades por año: total de unidades vendidas en los últimos 12 meses.">Unid/año${arrow('ventaU')}</div>
+      <div class="tr-r hide-sm" onclick="sortWin('margenPct')" title="Margen %: ganancia por unidad como % del precio de venta = (precio − costo) / precio. Sobre neto sin IVA.">Margen${arrow('margenPct')}</div>
+      <div class="tr-r" onclick="sortWin('margenAnual')" title="Margen $/año: la plata que te deja al año = unidades vendidas × ganancia por unidad. Es la métrica que más importa para saber en qué invertir.">Margen $/año${arrow('margenAnual')}</div>
+      <div class="tr-r" onclick="sortWin('cob')" title="Cobertura: para cuánto tiempo alcanza el stock actual (más lo que está en camino) al ritmo de venta actual. En naranja/rojo = se está por acabar.">Cobertura${arrow('cob')}</div></div>
     ${cap.map(x=>{const r=x.r,rp=x.rp;const c=rp.cob<pol.umbral?URG_COL[rp.urg]:rp.cob<pol.objetivo?"yel":"green";
       return `<div class="row g-win ${rp.necesita?'hot':''}" onclick="abrirProd(${r.id})">
         <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">${esc(r.provName||r.code||"")}</div></div>
@@ -758,7 +786,7 @@ function renderWin(){
         <div class="tr-r hide-sm num" style="font-weight:500">${r.ventaU.toLocaleString("es-AR")}</div>
         <div class="tr-r hide-sm num" style="font-weight:600">${r.margenPct!==null?r.margenPct.toFixed(0)+"%":"—"}</div>
         <div class="tr-r num" style="color:var(--green)">${money(r.margenAnual)}</div>
-        <div class="tr-r"><span class="rbadge" style="background:var(--${c}bg);color:var(--${c})">${rp.cob>900?"∞":rp.cob+"m"}</span></div>
+        <div class="tr-r"><span class="rbadge" style="background:var(--${c}bg);color:var(--${c})" title="Cobertura: ${rp.cob>900?"sin ventas":fmtDur(rp.cob)}">${rp.cob>900?"∞":fmtDurC(rp.cob)}</span></div>
       </div>`}).join("")}
     ${list.length>120?`<div class="empty" style="padding:16px">…y ${list.length-120} más.</div>`:""}
     ${!list.length?'<div class="empty">Sin resultados.</div>':""}
@@ -803,7 +831,7 @@ function tabStock(){
         <div style="font-weight:800;font-size:15px">🛑 Frenar compra</div>
         <p style="font-size:12.5px;color:var(--gris);margin:4px 0 8px">Ya hay stock para más de un año. No reponer hasta que baje.</p>
         <ul class="lst">${frenar.map(r=>`<li class="li" onclick="abrirProd(${r.id})"><div class="nm"><b>${esc(cleanName(r.name))}</b>
-          <span>${r.meses>900?"sin venta 12m":r.meses+" meses de stock"} · ${r.qty} u</span></div><div class="amt">${money(r.val)}</div></li>`).join("")}</ul>
+          <span>${r.meses>900?"sin venta 12m":fmtDur(r.meses)+" de stock"} · ${r.qty} u</span></div><div class="amt">${money(r.val)}</div></li>`).join("")}</ul>
       </div>
       <div class="pcard">
         <div style="font-weight:800;font-size:15px">🔥 Liquidar / ofertar ya</div>
@@ -850,21 +878,21 @@ function renderTabla(){
     <div class="count-line"><b>${d.length}</b> productos · ${fmtM(tot)} en stock</div>
     <div class="tablecard">
       <div class="thead g-stock">
-        <div onclick="sortBy('name')">Producto${arrow('name')}</div>
-        <div class="hide-sm" onclick="sortBy('fam')">Familia${arrow('fam')}</div>
-        <div class="tr-r" onclick="sortBy('val')">Valor${arrow('val')}</div>
-        <div class="tr-r hide-sm" onclick="sortBy('ventaU')">Vta/año${arrow('ventaU')}</div>
-        <div class="tr-r" onclick="sortBy('meses')">Meses${arrow('meses')}</div>
-        <div class="tr-r" onclick="sortBy('min')">Vence${arrow('min')}</div>
+        <div onclick="sortBy('name')" title="Nombre y código del producto.">Producto${arrow('name')}</div>
+        <div class="hide-sm" onclick="sortBy('fam')" title="Familia (rubro): primer nivel de la categoría de Odoo.">Familia${arrow('fam')}</div>
+        <div class="tr-r" onclick="sortBy('val')" title="Valor del stock: unidades × costo (valorización de Odoo).">Valor${arrow('val')}</div>
+        <div class="tr-r hide-sm" onclick="sortBy('ventaU')" title="Unidades vendidas en los últimos 12 meses.">Vta/año${arrow('ventaU')}</div>
+        <div class="tr-r" onclick="sortBy('meses')" title="Cobertura: para cuánto tiempo alcanza el stock al ritmo de venta actual.">Cobertura${arrow('meses')}</div>
+        <div class="tr-r" onclick="sortBy('min')" title="Cuánto falta para que venza el lote más próximo a vencer.">Vence${arrow('min')}</div>
       </div>
       ${cap.map(r=>{const c=rotCls(r.meses);
-        const venc=r.min===null?'<span style="color:#CCD5D3">—</span>':r.min<0?'<b style="color:var(--red)">vencido</b>':(r.min<6?'<b style="color:var(--org)">'+r.min+'m</b>':r.min+'m');
+        const venc=r.min===null?'<span style="color:#CCD5D3">—</span>':r.min<0?'<b style="color:var(--red)">vencido</b>':(r.min<6?'<b style="color:var(--org)">'+fmtDurC(r.min)+'</b>':fmtDurC(r.min));
         return `<div class="row g-stock" onclick="abrirProd(${r.id})">
           <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">${esc(r.code||"")}</div></div>
           <div class="hide-sm cmeta">${esc(r.fam)}</div>
           <div class="tr-r num">${money(r.val)}</div>
           <div class="tr-r hide-sm num" style="font-weight:500">${r.ventaU.toLocaleString("es-AR")}</div>
-          <div class="tr-r"><span class="rbadge" style="background:var(--${c}bg);color:var(--${c})">${r.meses>900?"—":r.meses+"m"}</span></div>
+          <div class="tr-r"><span class="rbadge" style="background:var(--${c}bg);color:var(--${c})" title="Meses de stock: para cuánto alcanza (${r.meses>900?"sin ventas":fmtDur(r.meses)})">${r.meses>900?"—":fmtDurC(r.meses)}</span></div>
           <div class="tr-r">${venc}</div>
         </div>`}).join("")}
       ${d.length>300?`<div class="empty" style="padding:16px">…y ${d.length-300} más. Afiná el filtro o el buscador.</div>`:""}
@@ -886,8 +914,8 @@ function abrirProd(id){
       <h2>${esc(cleanName(r.name))}</h2>
       <div class="deuda">${money(r.val)}</div>
       <div class="badges">
-        <span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${r.meses>900?"sin venta":r.meses+" meses de stock"}</span>
-        ${r.min!==null?`<span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${r.min<0?"vencido en depósito":"vence en "+r.min+"m"}</span>`:""}
+        <span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${r.meses>900?"sin venta":fmtDur(r.meses)+" de stock"}</span>
+        ${r.min!==null?`<span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${r.min<0?"vencido en depósito":"vence en "+fmtDur(r.min)}</span>`:""}
       </div>
     </div>
     <div class="dbody">
@@ -896,19 +924,19 @@ function abrirProd(id){
         <div class="kv"><span class="k">Familia</span><span class="v">${esc(r.fam)}</span></div>
         <div class="kv"><span class="k">Unidades en stock</span><span class="v">${r.qty.toLocaleString("es-AR")}${r.incoming?` (+${r.incoming} en camino)`:""}</span></div>
         <div class="kv"><span class="k">Vendidas último año</span><span class="v">${r.ventaU.toLocaleString("es-AR")} · en ${r.freq} ventas</span></div>
-        <div class="kv"><span class="k">Meses de stock</span><span class="v" style="color:var(--${c})">${r.meses>900?"sin ventas":r.meses+" meses"}</span></div>
+        <div class="kv"><span class="k">Alcanza para</span><span class="v" style="color:var(--${c})">${r.meses>900?"sin ventas":fmtDur(r.meses)}</span></div>
         <div class="kv"><span class="k">Costo unitario</span><span class="v">${money(r.costoU)}</span></div>
         <div class="kv"><span class="k">Precio de lista</span><span class="v">${money(r.pvp)}${r.margenPct!==null?` · ${r.margenPct.toFixed(0)}% margen`:""}</span></div>
         <div class="kv"><span class="k">Margen generado al año</span><span class="v" style="color:var(--green)">${money(r.margenAnual)}</span></div>
       </div>
       <div class="dsec"><h4>Reposición</h4>
         <div class="kv"><span class="k">Proveedor</span><span class="v">${r.provName?esc(r.provName):(r.viaOtra?"reposición directa (sin OC)":"sin proveedor cargado")}</span></div>
-        <div class="kv"><span class="k">Cobertura (stock + en camino)</span><span class="v">${rp.cob>900?"∞":rp.cob+" meses"}</span></div>
+        <div class="kv"><span class="k">Cobertura (stock + en camino)</span><span class="v">${rp.cob>900?"∞":fmtDur(rp.cob)}</span></div>
         <div class="kv"><span class="k">Estado</span><span class="v"><span class="pill ${URG_COL[rp.urg]}">${URG_LBL[rp.urg]}</span></span></div>
         ${rp.necesita?`<div class="kv"><span class="k">Sugerido comprar</span><span class="v" style="color:var(--teal-deep)">${rp.sug} u · ${money(rp.costoLinea)}</span></div>`:""}
       </div>
       <div class="dsec"><h4>Lotes y vencimiento (${lotes.length})</h4>
-        ${lotes.length?lotes.map(l=>{const vt=l.mh===null?"sin fecha":l.mh<0?'<b style="color:var(--red)">VENCIDO</b>':l.mh<6?'<b style="color:var(--org)">'+Math.round(l.mh*10)/10+'m</b>':Math.round(l.mh*10)/10+"m";
+        ${lotes.length?lotes.map(l=>{const vt=l.mh===null?"sin fecha":l.mh<0?'<b style="color:var(--red)">VENCIDO</b>':l.mh<6?'<b style="color:var(--org)">'+fmtDur(l.mh)+'</b>':fmtDur(l.mh);
           return `<div class="kv"><span class="k">Lote ${esc(l.lote)} · vence ${l.exp?l.exp.split("-").reverse().join("/"):"—"} · ${vt}</span><span class="v">${l.qty} u</span></div>`}).join(""):'<div class="cmeta">Sin lotes con trazabilidad.</div>'}
       </div>
       <div class="dsec"><h4>Sugerencia</h4>
@@ -919,11 +947,11 @@ function abrirProd(id){
 }
 function sugerencia(r,rp){
   if(r.valVenc>0) return `Hay <b>${money(r.valVenc)}</b> ya vencido en depósito: dar de baja contablemente y retirar del stock.`;
-  if(r.val6>0 && (r.min!==null && r.meses>r.min)) return `Vence en <b>${r.min} meses</b> pero al ritmo actual tardaría <b>${r.meses}</b> en venderse. Ofertar/liquidar ya.`;
+  if(r.val6>0 && (r.min!==null && r.meses>r.min)) return `Vence en <b>${fmtDur(r.min)}</b> pero al ritmo actual tardaría <b>${fmtDur(r.meses)}</b> en venderse. Ofertar/liquidar ya.`;
   if(rp.pos<=0 && rp.dm>0) return `<b>Quiebre:</b> se vende (${r.freq}×/año) y no hay stock. ${r.provName?`Pedir ~<b>${rp.sug} u</b> a ${esc(r.provName)}.`:"Reponer cuanto antes."}`;
-  if(rp.necesita) return `Quedan <b>${rp.cob} meses</b> de cobertura. ${r.provName?`Conviene pedir ~<b>${rp.sug} u</b> a ${esc(r.provName)} (${money(rp.costoLinea)}) para cubrir ${pol.objetivo} meses.`:"Reponer para cubrir "+pol.objetivo+" meses."}`;
+  if(rp.necesita) return `Quedan <b>${fmtDur(rp.cob)}</b> de cobertura. ${r.provName?`Conviene pedir ~<b>${rp.sug} u</b> a ${esc(r.provName)} (${money(rp.costoLinea)}) para cubrir ${pol.objetivo} meses.`:"Reponer para cubrir "+pol.objetivo+" meses."}`;
   if(r.ventaU===0) return `Sin ventas en el último año. Revisar si sigue vigente: liquidar, devolver o discontinuar.`;
-  if(r.meses>12) return `Stock para <b>${r.meses} meses</b>. Frenar la reposición hasta que baje.`;
+  if(r.meses>12) return `Stock para <b>${fmtDur(r.meses)}</b>. Frenar la reposición hasta que baje.`;
   return `Rotación saludable. Mantener el nivel de reposición actual.`;
 }
 function cerrar(){document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");}
@@ -949,7 +977,7 @@ async function abrirProveedor(provId){
         <div class="ord" style="border-bottom:2px solid var(--line);font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:700">
           <div>Producto</div><div style="text-align:center">Unid.</div><div style="text-align:right">Costo</div></div>
         ${PEDIDO.items.map((it,i)=>`<div class="ord">
-          <div class="on">${esc(cleanName(it.r.name))}<span>cobertura ${it.rp.cob>900?"—":it.rp.cob+"m"} · vende ${it.r.freq}×/año · <span class="pill ${URG_COL[it.rp.urg]}" style="font-size:9px">${URG_LBL[it.rp.urg]}</span></span></div>
+          <div class="on">${esc(cleanName(it.r.name))}<span>cobertura ${it.rp.cob>900?"—":fmtDur(it.rp.cob)} · vende ${it.r.freq}×/año · <span class="pill ${URG_COL[it.rp.urg]}" style="font-size:9px">${URG_LBL[it.rp.urg]}</span></span></div>
           <input class="q" type="number" min="0" step="1" value="${it.qty}" oninput="ordQty(${i},this.value)">
           <div class="lt" id="lt${i}">${money(it.qty*it.rp.precio)}</div>
         </div>`).join("")}
