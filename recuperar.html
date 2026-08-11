@@ -22,68 +22,115 @@
   .msg.ok{display:block;background:#e7f5f4;color:#046b62}
   .foot{margin-top:20px;text-align:center;font-size:13px}
   .foot a{color:#048782;text-decoration:none;font-weight:600}
+  .otptoggle{margin-top:14px;text-align:center;font-size:12.5px}
+  .otptoggle a{color:#8a9a97;text-decoration:none;font-weight:600;cursor:pointer}
 </style>
 </head>
 <body>
   <div class="card">
     <h1>Recuperar contraseña</h1>
-    <p class="sub">Ingresá tu email, el código de recuperación que te pasaron y tu contraseña nueva.</p>
+    <p class="sub" id="sub">Verificando el enlace…</p>
 
-    <label for="email">Email</label>
-    <input id="email" type="email" autocomplete="username" placeholder="nombre@drogueriaeyg.com.ar">
+    <!-- Modo ENLACE: la sesión ya viene del mail, solo pedimos la nueva clave -->
+    <div id="pane-link" style="display:none">
+      <label for="pwd">Contraseña nueva</label>
+      <input id="pwd" type="password" autocomplete="new-password" placeholder="mínimo 8 caracteres">
+      <label for="pwd2">Repetir contraseña nueva</label>
+      <input id="pwd2" type="password" autocomplete="new-password" placeholder="repetí la contraseña">
+      <button id="go">Guardar contraseña</button>
+    </div>
 
-    <label for="code">Código de recuperación</label>
-    <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="8 dígitos">
+    <!-- Modo MANUAL (respaldo): email + código de recuperación -->
+    <div id="pane-otp" style="display:none">
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username" placeholder="nombre@drogueriaeyg.com.ar">
+      <label for="code">Código de recuperación</label>
+      <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="código del mail">
+      <label for="pwdo">Contraseña nueva</label>
+      <input id="pwdo" type="password" autocomplete="new-password" placeholder="mínimo 8 caracteres">
+      <label for="pwdo2">Repetir contraseña nueva</label>
+      <input id="pwdo2" type="password" autocomplete="new-password" placeholder="repetí la contraseña">
+      <button id="goOtp">Guardar contraseña</button>
+    </div>
 
-    <label for="pwd">Contraseña nueva</label>
-    <input id="pwd" type="password" autocomplete="new-password" placeholder="mínimo 6 caracteres">
-
-    <label for="pwd2">Repetir contraseña nueva</label>
-    <input id="pwd2" type="password" autocomplete="new-password" placeholder="repetí la contraseña">
-
-    <button id="go">Guardar contraseña</button>
     <div id="msg" class="msg"></div>
-
+    <div class="otptoggle" id="toggle" style="display:none"><a id="linkOtp">Tengo un código de recuperación →</a></div>
     <div class="foot"><a href="index.html">← Volver al inicio</a></div>
   </div>
 
 <script>
   const SUPABASE_URL  = "https://yxotopoklgjowcudveoj.supabase.co";
   const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl4b3RvcG9rbGdqb3djdWR2ZW9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0OTE3OTAsImV4cCI6MjEwMDA2Nzc5MH0.39DqIenUuRZovmgG89R_JgHco4Lg6OvmP9AgF1Hd7rQ";
-  const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: false } });
+  const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON, { auth: { persistSession: false, detectSessionInUrl: true } });
 
   const $ = id => document.getElementById(id);
-  const msg = $("msg");
+  const msg = $("msg"), sub = $("sub");
   function show(t, ok){ msg.textContent = t; msg.className = "msg " + (ok ? "ok" : "err"); }
 
-  // prefill desde la URL: recuperar.html?email=...&code=...
-  const q = new URLSearchParams(location.search);
-  if (q.get("email")) $("email").value = q.get("email");
-  if (q.get("code"))  $("code").value  = q.get("code");
+  let modo = null;
+  function modoLink(){
+    modo = "link";
+    sub.textContent = "Elegí tu contraseña nueva.";
+    $("pane-link").style.display = "block";
+    $("pane-otp").style.display = "none";
+    $("toggle").style.display = "none";
+    $("pwd").focus();
+  }
+  function modoOtp(auto){
+    modo = "otp";
+    sub.textContent = "Ingresá tu email, el código que te llegó por mail y tu contraseña nueva.";
+    $("pane-otp").style.display = "block";
+    $("pane-link").style.display = "none";
+    $("toggle").style.display = "none";
+    const q = new URLSearchParams(location.search);
+    if (q.get("email")) $("email").value = q.get("email");
+    if (q.get("code"))  $("code").value  = q.get("code");
+    if (!auto) $("email").focus();
+  }
+
+  // La sesión de recuperación llega por el enlace del mail (detectSessionInUrl).
+  sb.auth.onAuthStateChange((ev, session) => { if (session && modo !== "link") modoLink(); });
+
+  (async () => {
+    await new Promise(r => setTimeout(r, 500));   // darle tiempo a procesar el hash del enlace
+    const { data } = await sb.auth.getSession();
+    if (data && data.session) { modoLink(); }
+    else {
+      // Sin sesión: seguramente entraron directo. Ofrecemos el modo manual.
+      sub.textContent = "Abrí el enlace del mail que te enviamos para restablecer la contraseña.";
+      $("toggle").style.display = "block";
+    }
+  })();
+
+  $("linkOtp").addEventListener("click", () => modoOtp(false));
 
   $("go").addEventListener("click", async () => {
+    const p = $("pwd").value, p2 = $("pwd2").value; msg.className = "msg";
+    if (p.length < 8) return show("La contraseña nueva debe tener al menos 8 caracteres.");
+    if (p !== p2)     return show("Las contraseñas no coinciden.");
+    $("go").disabled = true;
+    const { error } = await sb.auth.updateUser({ password: p });
+    if (error) { show("No se pudo guardar: " + error.message); $("go").disabled = false; return; }
+    await sb.auth.signOut();
+    show("¡Listo! Tu contraseña quedó actualizada. Ya podés entrar desde el inicio con tu nueva clave.", true);
+    $("go").textContent = "Contraseña guardada ✓";
+  });
+
+  $("goOtp").addEventListener("click", async () => {
     const email = $("email").value.trim().toLowerCase();
     const code  = $("code").value.trim().replace(/\s/g, "");
-    const pwd   = $("pwd").value;
-    const pwd2  = $("pwd2").value;
-    msg.className = "msg";
-
-    if (!email || !code)      return show("Completá email y código.");
-    if (pwd.length < 6)       return show("La contraseña nueva debe tener al menos 6 caracteres.");
-    if (pwd !== pwd2)         return show("Las contraseñas no coinciden.");
-
-    $("go").disabled = true;
-    try {
-      const { error: e1 } = await sb.auth.verifyOtp({ email, token: code, type: "recovery" });
-      if (e1) { show("El código no es válido o venció. Pedí uno nuevo. (" + e1.message + ")"); $("go").disabled = false; return; }
-      const { error: e2 } = await sb.auth.updateUser({ password: pwd });
-      if (e2) { show("No se pudo guardar la contraseña: " + e2.message); $("go").disabled = false; return; }
-      await sb.auth.signOut();
-      show("¡Listo! Tu contraseña quedó actualizada. Ya podés entrar desde el inicio con tu nueva clave.", true);
-      $("go").textContent = "Contraseña guardada ✓";
-    } catch (err) {
-      show("Error inesperado: " + err); $("go").disabled = false;
-    }
+    const p = $("pwdo").value, p2 = $("pwdo2").value; msg.className = "msg";
+    if (!email || !code) return show("Completá email y código.");
+    if (p.length < 8)    return show("La contraseña nueva debe tener al menos 8 caracteres.");
+    if (p !== p2)        return show("Las contraseñas no coinciden.");
+    $("goOtp").disabled = true;
+    const { error: e1 } = await sb.auth.verifyOtp({ email, token: code, type: "recovery" });
+    if (e1) { show("El código no es válido o venció. Pedí uno nuevo. (" + e1.message + ")"); $("goOtp").disabled = false; return; }
+    const { error: e2 } = await sb.auth.updateUser({ password: p });
+    if (e2) { show("No se pudo guardar la contraseña: " + e2.message); $("goOtp").disabled = false; return; }
+    await sb.auth.signOut();
+    show("¡Listo! Tu contraseña quedó actualizada. Ya podés entrar desde el inicio con tu nueva clave.", true);
+    $("goOtp").textContent = "Contraseña guardada ✓";
   });
 </script>
 </body>

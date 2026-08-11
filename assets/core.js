@@ -125,7 +125,7 @@ window.EYG = (function(){
   async function perfil(){
     const s = await session(); if(!s) return null;
     const email = (s.user.email||"").toLowerCase();
-    const {data} = await supa().from("core_users").select("email,nombre,rol,comercial_ref,activo,debe_cambiar_pwd").eq("email",email).maybeSingle();
+    const {data} = await supa().from("core_users").select("email,nombre,rol,comercial_ref,activo,debe_cambiar_pwd,modulos_extra,modulos_quita").eq("email",email).maybeSingle();
     if(data) data._h = await huella(data.email || email);
     return data;
   }
@@ -158,7 +158,12 @@ window.EYG = (function(){
       gateMsg("🚧","En preparación","Este módulo todavía se está construyendo. Va a estar disponible para todo el equipo cuando esté listo.",true);
       return new Promise(()=>{});
     }
-    const ok = esSuper(p._h) || p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
+    let ok = esSuper(p._h) || p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
+    /* Permisos por persona: mismo criterio que el menú (puedeVer). Resuelve el
+       módulo por el archivo actual y aplica extra/quita (los supers no se afectan). */
+    if(!esSuper(p._h)){ const mk=railActiveKey();
+      if(mk){ if((p.modulos_quita||[]).includes(mk)) ok=false;
+              else if(!ok && (p.modulos_extra||[]).includes(mk)) ok=true; } }
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return new Promise(()=>{}); }
     if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return new Promise(()=>{}); }
     try{ rail(p); }catch(e){}   // admin: menú lateral siempre visible (módulos de chrome propio)
@@ -187,6 +192,7 @@ window.EYG = (function(){
       <label>Contraseña</label><input id="lg-pwd" type="password" autocomplete="current-password" placeholder="••••••••">
       <button class="btn" id="lg-btn">Entrar</button>
       <div class="msg" id="lg-msg"></div>
+      <div style="text-align:center;margin-top:12px"><a href="#" id="lg-forgot" style="font-size:13px;color:var(--gris);text-decoration:none">¿Olvidaste tu contraseña?</a></div>
       <div class="hint">Panel interno de Droguería EyG · uso exclusivo del personal</div>
     </div></div>`;
     const em=document.getElementById("lg-email"), pw=document.getElementById("lg-pwd"), bt=document.getElementById("lg-btn"), ms=document.getElementById("lg-msg");
@@ -199,6 +205,20 @@ window.EYG = (function(){
       ms.className="msg ok"; ms.textContent="¡Listo!"; setTimeout(()=>location.reload(),300);
     }
     bt.onclick=go; pw.addEventListener("keydown",e=>{ if(e.key==="Enter") go(); });
+    /* Olvidé mi contraseña: manda el mail de restablecimiento (SMTP de Supabase)
+       que aterriza en recuperar.html con una sesión de recuperación. */
+    const fg=document.getElementById("lg-forgot");
+    if(fg) fg.onclick=async e=>{
+      e.preventDefault();
+      const email=(em.value||"").trim().toLowerCase();
+      ms.className="msg";
+      if(!email){ ms.className="msg err"; ms.textContent="Escribí tu email arriba y volvé a tocar el enlace."; em.focus(); return; }
+      const t0=fg.textContent; fg.textContent="Enviando…";
+      const {error}=await supa().auth.resetPasswordForEmail(email,{redirectTo:BASE+"recuperar.html"});
+      fg.textContent=t0;
+      if(error){ ms.className="msg err"; ms.textContent="No pude enviar el mail: "+error.message; return; }
+      ms.className="msg ok"; ms.textContent="Te enviamos un mail para restablecer la contraseña. Revisá tu casilla (y el spam).";
+    };
     em.focus();
   }
 
@@ -314,7 +334,7 @@ window.EYG = (function(){
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"direccion/tablero.html"},
     {key:"radiografia",dept:"direccion", cat:"Dirección", ico:"📊", titulo:"Radiografía", desc:"Ventas, facturación, márgenes, cobranza y stock de toda la droguería en un tablero.", roles:["direccion"], ready:false, path:()=>"direccion/radiografia.html"},
-    {key:"usuarios",  dept:"admin", cat:"Sistema", ico:"👤", titulo:"Usuarios y accesos", desc:"Altas de personal, roles y qué módulo puede ver cada uno.", roles:["admin"], ready:false, path:()=>"admin/usuarios.html"},
+    {key:"usuarios",  dept:"admin", cat:"Sistema", ico:"👤", titulo:"Usuarios y accesos", desc:"Altas de personal, roles y permisos por persona (qué módulos ve cada uno). Restablecé contraseñas por mail.", roles:["admin"], ready:true, path:()=>"admin/usuarios.html"},
   ];
   /* Acepta el perfil entero (o sólo el rol, por compatibilidad).
      `pruebas` = lista de huellas de email: mientras esté puesta, el módulo NO
@@ -332,7 +352,12 @@ window.EYG = (function(){
     const p = (typeof perfilORol === "string") ? {rol:perfilORol} : (perfilORol||{});
     if(esSuper(p._h)) return true;   // super-admins (German y Diego) ven todo
     if(m.pruebas && m.pruebas.length && !m.pruebas.includes(p._h) && !esSuper(p._h)) return false;
-    return p.rol==="admin"||p.rol==="direccion" ? true : m.roles.includes(p.rol);
+    /* Permisos POR PERSONA (los asigna el módulo "Usuarios y accesos"):
+       modulos_quita saca un módulo aunque el rol lo tenga; modulos_extra lo
+       concede aunque el rol no lo traiga. */
+    if((p.modulos_quita||[]).includes(m.key)) return false;
+    if(p.rol==="admin"||p.rol==="direccion") return true;
+    return m.roles.includes(p.rol) || (p.modulos_extra||[]).includes(m.key);
   }
   function T(v,p){ return typeof v==="function" ? v(p) : v; }  // título/desc pueden depender del rol
 
