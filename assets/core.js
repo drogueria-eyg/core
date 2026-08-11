@@ -935,10 +935,10 @@ window.EYG = (function(){
   let _credCfg=null;
   async function creditoConfig(force){ if(_credCfg && !force) return _credCfg; let o={}; try{ o=JSON.parse(await rpc("ir.config_parameter","get_param",[CRED_KEY])||"{}")||{}; }catch(e){} _credCfg=Object.assign({moraConsultar:30, moraNoApto:90, vencidoMin:1000}, o); return _credCfg; }
   const CRED_NIV={
-    apto:     {luz:"g", titulo:"Apto",                   sub:"Podés otorgar el beneficio."},
-    reparos:  {luz:"y", titulo:"Apto con reparos",       sub:"Podés otorgar, con criterio."},
-    consultar:{luz:"o", titulo:"Consultar con Cobranzas",sub:"Que Cobranzas evalúe antes de otorgar."},
-    noapto:   {luz:"r", titulo:"No apto",                sub:"Mejor no otorgar por ahora."},
+    apto:     {luz:"g", chip:"Apto",       titulo:"Apto",                    sub:"Apto para otorgar beneficios de pago (plazos, cheques, etc.)."},
+    reparos:  {luz:"y", chip:"Con reparos", titulo:"Apto con reparos",        sub:"Podés otorgar beneficios de pago, con criterio."},
+    consultar:{luz:"o", chip:"Consultar",  titulo:"Consultar con Cobranzas", sub:"Antes de otorgar un beneficio de pago (plazo, cheque), consultá con Cobranzas."},
+    noapto:   {luz:"r", chip:"No apto",     titulo:"No apto",                 sub:"No conviene otorgar beneficios de pago (plazos, cheques) por ahora."},
   };
   function _cred(nivel,mot){ const m=CRED_NIV[nivel]; return {nivel, luz:m.luz, titulo:m.titulo, sub:m.sub, motivo:(mot||[]).join(" · ")}; }
   /* interno = fila de riesgoCartera(): {nivel:'ok'|'atencion'|'alto', vencido, mora, bovIncobrable, manual}. */
