@@ -246,17 +246,21 @@ window.EYG = (function(){
   }
 
   /* ---- registro de módulos + navegación sidebar ---- */
+  /* Áreas del Core, en el orden en que se recorren (menú lateral + inicio).
+     Un depto sin módulos habilitados NO se dibuja (ver el .filter de sidebar/home):
+     "Depósito y Logística" y "Calidad" quedan creados y listos para llenar. */
   const DEPTS = [
-    {key:"comunicacion", nom:"Comunicación"},
     {key:"comercial", nom:"Comercial"},
-    {key:"finanzas",  nom:"Finanzas"},
-    {key:"inventario",nom:"Inventario"},
-    {key:"datos",     nom:"Datos"},
+    {key:"compras",   nom:"Compras y Abastecimiento"},
+    {key:"deposito",  nom:"Depósito y Logística"},
+    {key:"calidad",   nom:"Calidad"},
+    {key:"finanzas",  nom:"Administración y Finanzas"},
+    {key:"precios",   nom:"Precios y Rentabilidad"},
     {key:"direccion", nom:"Dirección"},
     {key:"admin",     nom:"Sistema"},
   ];
   const MODULOS = [
-    {key:"comunicaciones", dept:"comunicacion", cat:"Comunicación", ico:"📣",
+    {key:"comunicaciones", dept:"direccion", cat:"Dirección", ico:"📣",
       titulo:p=>(p.rol==="admin"||p.rol==="direccion"||p.rol==="lider")?"Comunicaciones":"Novedades",
       desc:p=>(p.rol==="admin"||p.rol==="direccion")?"Bajá novedades a toda la empresa o a un área y seguí quién las leyó."
              :(p.rol==="lider"?"Novedades para tu equipo y las bajadas de Gerencia, con acuse de lectura.":"Las novedades y bajadas que te llegan de Gerencia y de tu líder."),
@@ -269,34 +273,37 @@ window.EYG = (function(){
       path:p=>{ if(p.rol==="admin"||p.rol==="direccion") return "comercial/comerciales.html"; if(p.rol==="lider") return "comercial/lider.html"; return `comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`; }},
     /* "Cargar venta" (comercial/vender.html) NO va como módulo suelto del menú:
        se entra desde ADENTRO del panel del comercial (botón "Cargar una venta" en panel.html). */
-    {key:"crm",       dept:"comercial", cat:"Comercial", ico:"👥", titulo:"CRM · Clientes", desc:"Segmentá farmacias e instituciones por frecuencia y contactá por WhatsApp.", roles:["comercial"], ready:false, path:()=>"comercial/crm.html"},
-    {key:"precios",   dept:"comercial", cat:"Precios", ico:"🏷️", titulo:"Rentabilidad y Precios", desc:"Costo, escalera de precios por cantidad y margen por tramo, con salud por color.", roles:["comercial","finanzas","inventario"], ready:true, path:()=>"comercial/precios.html"},
-    {key:"config-precios", dept:"comercial", cat:"Precios", ico:"⚙️", titulo:"Motor de precios", desc:"Reglas del motor por categoría: recargo, cortes, descuentos, IVA al costo y piso de margen. Las ofertas se crean en Oportunidades y Ofertas.", roles:["comercial","finanzas"], ready:true, path:()=>"comercial/config-precios.html"},
-    {key:"cobranzas", dept:"finanzas", cat:"Finanzas", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","cobranzas"], ready:true, path:()=>"finanzas/cobranzas.html"},
+    /* "CRM · Clientes" (comercial/crm.html) se unificó en "Clientes (CRM)" — el módulo real
+       es datos/contactos.html (abajo, en Comercial). Se sacó la tarjeta placeholder duplicada. */
+    /* Precios y Rentabilidad: función de ADMINISTRACIÓN (define/analiza precios, escalas y
+       costos). NO la ve el comercial: cuando carga una venta, Odoo ya calcula el precio. */
+    {key:"precios",   dept:"precios", cat:"Precios y Rentabilidad", ico:"🏷️", titulo:"Costos y Rentabilidad", desc:"Costo, escalera de precios por cantidad y margen por tramo, con salud por color. Para definir y analizar los precios.", roles:["finanzas"], ready:true, path:()=>"comercial/precios.html"},
+    {key:"config-precios", dept:"precios", cat:"Precios y Rentabilidad", ico:"⚙️", titulo:"Motor de precios", desc:"Reglas del motor por categoría: recargo, cortes, descuentos, IVA al costo y piso de margen. Las ofertas se crean en Oportunidades y Ofertas.", roles:["finanzas"], ready:true, path:()=>"comercial/config-precios.html"},
+    {key:"cobranzas", dept:"finanzas", cat:"Administración", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","cobranzas"], ready:true, path:()=>"finanzas/cobranzas.html"},
     /* EN PRUEBAS: consulta crediticia por CUIT (Central de Deudores del BCRA, fuente pública/gratis).
        La página le pega directo al BCRA (no usa Supabase). Gateada al super-admin hasta revisarla.
        Para liberarla: borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/situacion-crediticia.html. */
-    {key:"credito", dept:"finanzas", cat:"Finanzas", ico:"🔎", titulo:"Situación crediticia", desc:"Consultá por CUIT la deuda en bancos, cheques rechazados y el historial de 2 años, directo del BCRA. Para decidir beneficios de pago sin pagar Veraz/Nosis.", roles:["finanzas","direccion","comercial","lider"], ready:true,
+    {key:"credito", dept:"finanzas", cat:"Administración", ico:"🔎", titulo:"Situación crediticia", desc:"Consultá por CUIT la deuda en bancos, cheques rechazados y el historial de 2 años, directo del BCRA. Para decidir beneficios de pago sin pagar Veraz/Nosis.", roles:["finanzas","direccion","comercial","lider"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/situacion-crediticia.html"},
     /* EN PRUEBAS: módulo de Egresos (espejo de Cobranzas). Oculto para todo el equipo
        hasta terminarlo — sólo la huella del dueño. Para liberarlo: borrar la línea
        `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/egresos.html. */
-    {key:"egresos", dept:"finanzas", cat:"Finanzas", ico:"💸", titulo:"Egresos", desc:"Todo lo que sale: compras de mercadería, gastos operativos, financieros, impuestos y pagos a proveedores. El panorama del egreso, por naturaleza y por proveedor.", roles:["finanzas","direccion"], ready:true,
+    {key:"egresos", dept:"finanzas", cat:"Administración", ico:"💸", titulo:"Egresos", desc:"Todo lo que sale: compras de mercadería, gastos operativos, financieros, impuestos y pagos a proveedores. El panorama del egreso, por naturaleza y por proveedor.", roles:["finanzas","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/egresos.html"},
     /* EN PRUEBAS: herramienta para cargar préstamos bancarios (comprobantes OC-X) en Odoo.
        Gateada al super-admin hasta terminarla. */
-    {key:"creditos-banc", dept:"finanzas", cat:"Finanzas", ico:"🏦", titulo:"Cargar crédito bancario", desc:"Cargá los préstamos que pedís a los bancos: pegás el PDF del banco y el neto acreditado, y genera el comprobante OC-X en Odoo con capital, interés, sellados, IVA y todas las cuotas.", roles:["finanzas","direccion"], ready:true,
+    {key:"creditos-banc", dept:"finanzas", cat:"Administración", ico:"🏦", titulo:"Cargar crédito bancario", desc:"Cargá los préstamos que pedís a los bancos: pegás el PDF del banco y el neto acreditado, y genera el comprobante OC-X en Odoo con capital, interés, sellados, IVA y todas las cuotas.", roles:["finanzas","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/creditos-bancarios.html"},
-    {key:"stock",     dept:"inventario", cat:"Inventario", ico:"📦", titulo:"Stock, Compras y Reposición", desc:"Qué conviene comprar y cuándo, pedido por proveedor (borrador en Odoo), productos ganadores, sobrestock y vencimientos. Con tarjeta de salud del abastecimiento.", roles:["finanzas","inventario"], ready:true, path:()=>"inventario/stock.html"},
-    {key:"nombres",   dept:"inventario", cat:"Inventario", ico:"🏷️", titulo:"Maestro de productos", desc:"Ordená el dato maestro de cada producto: nombre, unidades, embalaje y subcategoría. Detecta errores y completa lo que falta, con un clic.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/nombres.html"},
-    {key:"oportunidades", dept:"inventario", cat:"Inventario", ico:"💡", titulo:"Oportunidades y Ofertas", desc:"Cuando un costo baja, el sistema detecta una oportunidad de oferta. Confirmala (precio, stock, vigencia) o armá combos, y van a la tarjeta de los comerciales.", roles:["inventario"], ready:true, path:()=>"inventario/oportunidades.html"},
+    {key:"stock",     dept:"compras", cat:"Compras", ico:"📦", titulo:"Stock, Compras y Reposición", desc:"Qué conviene comprar y cuándo, pedido por proveedor (borrador en Odoo), productos ganadores, sobrestock y vencimientos. Con tarjeta de salud del abastecimiento.", roles:["finanzas","inventario"], ready:true, path:()=>"inventario/stock.html"},
+    {key:"nombres",   dept:"deposito", cat:"Depósito", ico:"🏷️", titulo:"Maestro de productos", desc:"Ordená el dato maestro de cada producto: nombre, unidades, embalaje y subcategoría. Detecta errores y completa lo que falta, con un clic.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/nombres.html"},
+    {key:"oportunidades", dept:"compras", cat:"Compras", ico:"💡", titulo:"Oportunidades y Ofertas", desc:"Cuando un costo baja, el sistema detecta una oportunidad de oferta. Confirmala (precio, stock, vigencia) o armá combos, y van a la tarjeta de los comerciales.", roles:["inventario"], ready:true, path:()=>"inventario/oportunidades.html"},
     /* EN PRUEBAS: CRM de contactos (existentes + por conquistar). Oculto para todo
        el equipo hasta terminarlo — sólo super-admins (Diego/German). Para liberarlo:
        borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de datos/contactos.html. */
-    {key:"contactos", dept:"datos", cat:"Datos", ico:"🗂️", titulo:"Contactos · CRM", desc:"Gestioná tus contactos y descubrí a quién falta conquistar: agrupá por comercial, corregí datos, reasigná comercial y cruzá con el padrón oficial de farmacias e instituciones.", roles:["comercial","lider","admin","direccion"], ready:true,
+    {key:"contactos", dept:"comercial", cat:"Comercial", ico:"👥", titulo:"Clientes (CRM)", desc:"Gestioná tus contactos y descubrí a quién falta conquistar: agrupá por comercial, corregí datos, reasigná comercial y cruzá con el padrón oficial de farmacias e instituciones.", roles:["comercial","lider","admin","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"datos/contactos.html"},
     /* EN PRUEBAS: oculto para todo el equipo hasta terminarlo. `pruebas` son
