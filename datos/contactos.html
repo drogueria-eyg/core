@@ -121,6 +121,8 @@
   .alert.alto{background:#FBE4E3;border:1px solid #F3B5B2;color:#8A2E2B}
   .alert.aten{background:#FBF0DA;border:1px solid #EAD6A6;color:#7A5B12}
   .alert.okk{background:#E4F5E9;border:1px solid #BFE3CB;color:#1E7D46}
+  .dupitem{border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin-bottom:9px;cursor:pointer;transition:border-color .12s}
+  .dupitem:hover{border-color:var(--teal-med);background:#F7FBFA}
 
   /* Drawer + edit form */
   .scrim{position:fixed;inset:0;background:rgba(6,65,62,.35);opacity:0;pointer-events:none;transition:opacity .2s;z-index:40}.scrim.on{opacity:1;pointer-events:auto}
@@ -419,19 +421,26 @@ async function cargarUniverso(){
     else { renderLista(); const tb=document.getElementById("cntConq"), cb=filtro.pProv?coberturaProv(filtro.pProv):null; if(tb) tb.textContent=cb?cb.falta.toLocaleString("es-AR"):"…"; }
   }catch(e){ console.warn("universo:",e.message); UNI=null; }
 }
+/* Dirección normalizada: número de puerta + palabras significativas de la calle.
+   Sirve para reconocer el MISMO lugar aunque el padrón lo nombre distinto
+   (ej. "Farmacia Porta" vs "Farmacia Alejandra Porta", ambas en Baigorria 1477). */
+function claveDir(s){ if(!s) return null; const num=((""+s).match(/\d{2,}/)||[])[0]; if(!num) return null;
+  const calle=NORM(s).replace(/[^A-Z0-9 ]/g," ").split(" ").filter(w=>w.length>=4 && !/^\d+$/.test(w) && !["CALLE","AVDA","AVENIDA","BULEVAR","BOULEVARD"].includes(w));
+  return {num, calle}; }
+function _coincideDir(a,b){ if(!a||!b) return false; if(a.num!==b.num) return false; if(!a.calle.length||!b.calle.length) return false; return a.calle.some(t=>b.calle.includes(t)); }
 function cruzar(){
   if(!UNI) return;
   // índice localidad "PROV|LOC" -> posición en locs
   const pos=new Map();
   UNI.locs.forEach((l,i)=>pos.set(NORM(l[1])+"|"+NORM(l[0]),i));
-  // nuestros contactos por localidad
+  // nuestros contactos por localidad (con nombre Y dirección normalizados)
   const mios=new Map();
-  DATA.forEach(c=>{ c.enPadron=false; c.nombreOficial=""; const loc=locKey(c.ciudad); if(!loc) return; const i=pos.get(NORM(c.prov)+"|"+loc); if(i===undefined) return; if(!mios.has(i)) mios.set(i,[]); mios.get(i).push({c,k:clave(c.nombre)}); });
+  DATA.forEach(c=>{ c.enPadron=false; c.nombreOficial=""; const loc=locKey(c.ciudad); if(!loc) return; const i=pos.get(NORM(c.prov)+"|"+loc); if(i===undefined) return; if(!mios.has(i)) mios.set(i,[]); mios.get(i).push({c,k:clave(c.nombre),dir:claveDir(c.part&&c.part.street)}); });
   UNI.est.forEach(e=>{ e[6]=0; });
   for(const e of UNI.est){
     const cands=mios.get(e[1]); if(!cands) continue;
-    const ke=clave(e[0]); if(!ke) continue;
-    for(const cd of cands){ if(_coincide(cd.k,ke)){ e[6]=cd.c.id; cd.c.enPadron=true; cd.c.nombreOficial=titulo(e[0]); break; } }
+    const ke=clave(e[0]); const edir=claveDir(e[3]); if(!ke && !edir) continue;
+    for(const cd of cands){ if((ke&&_coincide(cd.k,ke)) || _coincideDir(cd.dir,edir)){ e[6]=cd.c.id; cd.c.enPadron=true; cd.c.nombreOficial=titulo(e[0]); break; } }
   }
 }
 /* Establecimientos oficiales que NO son contacto nuestro (los "por conquistar") */
@@ -1001,7 +1010,7 @@ async function guardarContacto(id){
 
 /* ================= Crear contacto desde el padrón (prospecto) ================= */
 function crearProspecto(idx){
-  const e=UNI.est[idx]; if(!e) return; const L=UNI.locs[e[1]];
+  const e=UNI.est[idx]; if(!e) return; const L=UNI.locs[e[1]]; _forzarCrear=false;
   const nombre=titulo(e[0]); const rubro=e[2]===0?"FARMACIAS":"INSTITUCIONES";
   const provId=PROVIDX[NORM(L[1])]||"";
   const d=document.getElementById("drawer");
@@ -1030,11 +1039,60 @@ function crearProspecto(idx){
     <div class="dfoot"><button class="btn-save" id="btnNew" onclick="guardarProspecto(${idx})">Crear contacto en Odoo</button></div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
 }
+// Busca en Odoo posibles duplicados por NOMBRE o por DIRECCIÓN (nº de puerta + ciudad).
+// Incluye archivados (active_test:false) para no recrear algo que ya existe/dimos de baja.
+const FDUP=["id","name","city","user_id","active","street",RUBRO_FIELD];
+// nombres de pila comunes: un match SOLO por estos no alcanza para gritar "duplicado" (ej. "Alejandra")
+const NOMBRES_COMUNES=new Set(["MARIA","JOSE","JUAN","CARLOS","ANA","ALEJANDRA","ALEJANDRO","LAURA","SILVIA","GABRIELA","MARCELA","SANDRA","MONICA","PATRICIA","CLAUDIA","VERONICA","ANDREA","ANDRES","DANIEL","SERGIO","JORGE","LUIS","ROBERTO","MARTA","SUSANA","GRACIELA","NORMA","ELENA","ROSA","MIGUEL","PABLO","DIEGO","JAVIER","FERNANDO","GUSTAVO","ADRIANA","NATALIA","VALERIA","FLORENCIA","LUCIA","SOLEDAD","EDUARDO","RICARDO","OSCAR","HECTOR","RUBEN","RAUL","WALTER","CRISTINA","BEATRIZ","TERESA","NANCY","MIRTA"]);
+function dupFuerte(pTokens, pDir, cand){
+  if(_coincideDir(pDir, claveDir(cand.street))) return true;                 // misma dirección = casi seguro el mismo
+  const ct=clave(cand.name).split(" ").filter(x=>x.length>=4);
+  return ct.some(t=>pTokens.has(t) && !NOMBRES_COMUNES.has(t));              // comparten un token DISTINTIVO (no un nombre de pila)
+}
+async function buscarDuplicados(name, city, street){
+  const nk=[...new Set(clave(name).split(" ").filter(x=>x.length>=4))].slice(0,4);
+  const numero=((street||"").match(/\d{2,}/)||[])[0]; const cityW=NORM(city).split(" ")[0];
+  const tareas=[];
+  if(nk.length){ const dom=Array(Math.max(0,nk.length-1)).fill("|").concat(nk.map(t=>["name","ilike",t])).concat([["type","=","contact"]]); tareas.push(rpc("res.partner","search_read",[dom],{fields:FDUP,limit:40,context:{lang:"es_AR",active_test:false}})); }
+  if(numero && cityW){ tareas.push(rpc("res.partner","search_read",[[["type","=","contact"],["street","ilike",numero],["city","ilike",cityW]]],{fields:FDUP,limit:40,context:{lang:"es_AR",active_test:false}})); }
+  if(!tareas.length) return [];
+  const res=await Promise.all(tareas); const seen={}, todos=[];
+  res.flat().forEach(p=>{ if(!seen[p.id]){ seen[p.id]=1; todos.push(p); } });
+  const pTokens=new Set(clave(name).split(" ").filter(x=>x.length>=4)), pDir=claveDir(street);
+  // fuertes primero (misma dirección arriba), y solo los relevantes
+  return todos.filter(p=>dupFuerte(pTokens,pDir,p)).sort((a,b)=>(_coincideDir(pDir,claveDir(b.street))?1:0)-(_coincideDir(pDir,claveDir(a.street))?1:0));
+}
+function mostrarDuplicados(idx, dups){
+  const d=document.getElementById("drawer");
+  d.innerHTML=`
+    <div class="dhead" style="background:#8A2E2B"><span class="x" onclick="cerrar()">✕</span><h2>⚠ Ya podría existir</h2>
+      <div class="dsub" style="color:#FBD5D2">Encontré ${dups.length} contacto(s) parecido(s). Revisá antes de crear un duplicado.</div></div>
+    <div class="dbody">
+      <div class="alert alto" style="margin-bottom:12px">Coincidencias por <b>nombre</b> o <b>dirección</b>. Si es el mismo lugar, <b>no lo crees de nuevo</b>: tocalo para abrirlo y trabajá ese.</div>
+      ${dups.map(p=>`<div class="dupitem" onclick="abrir(${p.id})">
+        <div class="cname">${esc(p.name)} ${p.active?'':'<span class="badge bad" style="font-size:10px">archivado</span>'}</div>
+        <div class="cmeta">📍 ${esc(p.city||"—")}${p.street?" · "+esc(p.street):""}</div>
+        <div class="cmeta">${p.user_id?("👤 asignado a "+esc(p.user_id[1])):"sin comercial"}</div>
+      </div>`).join("")}
+    </div>
+    <div class="dfoot" style="display:flex;gap:8px">
+      <button class="abtn" style="flex:1;background:#EEF1F0;color:var(--gris)" onclick="crearProspecto(${idx})">← Volver a los datos</button>
+      <button class="abtn" style="flex:1;background:#FBE4E3;color:#B0322F" onclick="_forzarCrear=true;guardarProspecto(${idx})">No es el mismo · crear igual</button>
+    </div>`;
+}
+let _forzarCrear=false;
 async function guardarProspecto(idx){
   const btn=document.getElementById("btnNew"); if(!btn) return;
   const val=x=>{const el=document.getElementById(x);return el?el.value.trim():"";};
   const num=x=>{const v=val(x);return v?parseInt(v,10):false;};
   const name=val("np_name"); if(!name){ toast("⚠ Falta el nombre"); return; }
+  // CAPA 2: antes de crear, buscar duplicados en Odoo (nombre + dirección). Si hay, avisar.
+  if(!_forzarCrear){
+    btn.disabled=true; btn.textContent="Buscando duplicados…";
+    let dups=[]; try{ dups=await buscarDuplicados(name, val("np_city"), val("np_street")); }catch(e){}
+    btn.disabled=false; btn.textContent="Crear contacto en Odoo";
+    if(dups.length){ mostrarDuplicados(idx, dups); return; }
+  }
   btn.disabled=true; btn.textContent="Creando…";
   const tieneVat=!!val("np_vat");
   const vals={ name, company_type:"company", city:val("np_city")?oracion(val("np_city")):false,
@@ -1048,7 +1106,7 @@ async function guardarProspecto(idx){
     // marca de "contacto nuevo" con el creador real (el create_uid de Odoo es el conector, no el usuario del Core)
     const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
     try{ await rpc("res.partner","message_post",[[newId]],{body:"👤 "+NUEVO_TAG+" por="+quien,message_type:"comment"}); }catch(_){}
-    CREADOS.add(idx); if(UNI&&UNI.est[idx]) UNI.est[idx][6]=newId;
+    CREADOS.add(idx); if(UNI&&UNI.est[idx]) UNI.est[idx][6]=newId; _forzarCrear=false;
     toast("✅ Contacto creado en Odoo");
     cerrar(); render(); cargarNuevos();
   }catch(e){ btn.disabled=false; btn.textContent="Crear contacto en Odoo"; toast("⚠ No se pudo crear: "+(e.message||e)); }
