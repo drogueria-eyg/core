@@ -124,6 +124,7 @@
   .alert.okk{background:#E4F5E9;border:1px solid #BFE3CB;color:#1E7D46}
   .dupitem{border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin-bottom:9px;cursor:pointer;transition:border-color .12s}
   .dupitem:hover{border-color:var(--teal-med);background:#F7FBFA}
+  .linkbox{background:var(--bg);border:1px dashed var(--line);border-radius:9px;padding:9px 11px;font-size:12px;color:var(--gris);word-break:break-all;font-family:ui-monospace,Menlo,Consolas,monospace}
 
   /* Drawer + edit form */
   .scrim{position:fixed;inset:0;background:rgba(6,65,62,.35);opacity:0;pointer-events:none;transition:opacity .2s;z-index:40}.scrim.on{opacity:1;pointer-events:auto}
@@ -752,6 +753,7 @@ function abrir(id){
         <div class="kv"><span class="k">Ciudad</span><span class="v">${esc(c.ciudad||"—")}${c.prov?" · "+esc(c.prov):""}</span></div>
         ${c.enPadron&&c.nombreOficial?`<div class="kv"><span class="k">Nombre oficial (padrón)</span><span class="v">${esc(c.nombreOficial)}</span></div>`:""}
       </div>
+      <div class="dsec"><h4>🌐 Acceso al portal (web)</h4><div id="portalbox"><span class="muted">Verificando…</span></div></div>
       <div class="dsec"><h4>Compras</h4>
         <div class="kv"><span class="k">Total comprado</span><span class="v">${money(c.comprado)}</span></div>
         <div class="kv"><span class="k">Último mes</span><span class="v">${money(c.mesv)}</span></div>
@@ -786,6 +788,7 @@ function abrir(id){
       </div>
     </div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
+  cargarPortal(id);
 }
 function setWa(el,txt){ const t=document.getElementById("msg"); if(t){ t.value=txt; const b=document.getElementById("wabtn"); const d=document.getElementById("drawer"); const wa=(d.querySelector("#wabtn").href.match(/phone=(\d+)/)||[])[1]; if(b&&wa) b.href=`https://api.whatsapp.com/send?phone=${wa}&text=${encodeURIComponent(txt)}`; } }
 document.addEventListener("input",e=>{if(e.target&&e.target.id==="msg"){const b=document.getElementById("wabtn");if(b){const wa=(b.href.match(/phone=(\d+)/)||[])[1];if(wa)b.href=`https://api.whatsapp.com/send?phone=${wa}&text=${encodeURIComponent(e.target.value)}`;}}});
@@ -946,6 +949,74 @@ async function ponerRiesgo(id){
 }
 async function quitarRiesgo(id){
   try{ await EYG.sacarRiesgo(id); toast("✅ Marca de pago quitada"); await cargarRiesgos(); abrir(id); }
+  catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
+}
+
+/* ================= Acceso al portal (web de Odoo) =================
+   Crea el usuario portal (grupo 10) SIN mandar mail (no_reset_password) y genera un
+   link de invitación con token para pasar por WhatsApp; el cliente pone su propia clave. */
+const GRUPO_PORTAL=10;
+const emailValido=e=>/^[^\s;,@]+@[^\s;,@]+\.[^\s;,@]+$/.test((e||"").trim());
+async function cargarPortal(id){
+  const box=document.getElementById("portalbox"); if(!box) return;
+  const c=DATA.find(x=>x.id===id); if(!c) return;
+  if(!c.email){ box.innerHTML=`<p class="muted">Para el portal necesita un <b>email</b> (es su usuario). Cargalo con "✏️ Editar datos".</p>`; return; }
+  if(!emailValido(c.email)){ box.innerHTML=`<p class="muted">El email <b>${esc(c.email)}</b> no es válido (¿tiene varios juntos o falta algo?). Corregilo con "✏️ Editar datos" antes de dar acceso.</p>`; return; }
+  try{
+    const p=(await rpc("res.partner","read",[[id]],{fields:["user_ids"]}))[0];
+    const uids=(p&&p.user_ids)||[];
+    if(uids.length){
+      const us=await rpc("res.users","read",[uids],{fields:["id","login","share","active"]});
+      const interno=us.find(u=>!u.share);
+      if(interno){ box.innerHTML=`<p class="muted">Tiene un usuario <b>interno</b> de la empresa (no es un cliente del portal). No se toca desde acá.</p>`; return; }
+      const share=us.find(u=>u.share);
+      if(share){
+        box.innerHTML=`<div class="alert okk" style="margin-bottom:8px">✓ Ya tiene acceso al portal · login: <b>${esc(share.login)}</b>${share.active?'':' · <b>revocado</b>'}</div>
+          <button class="abtn" style="background:var(--agua);color:var(--teal-deep);width:100%" onclick="linkPortal(${id})">🔗 Generar link de acceso</button>
+          <div id="portallink"></div>
+          <button class="abtn" style="background:#EEF1F0;color:var(--gris);width:100%;margin-top:8px" onclick="revocarPortal(${id},${share.id})">Revocar acceso</button>`;
+        return;
+      }
+    }
+    box.innerHTML=`<p class="muted" style="margin-bottom:8px">Dale acceso a la web de Odoo (ve sus pedidos, facturas y saldo). Se crea su usuario y generás un link para que ponga su clave.</p>
+      <button class="abtn" style="background:var(--teal);color:#fff;width:100%" onclick="darAccesoPortal(${id})">🌐 Dar acceso al portal</button>`;
+  }catch(e){ box.innerHTML=`<p class="muted">No pude leer el estado del portal (${esc(e.message||e)}).</p>`; }
+}
+async function darAccesoPortal(id){
+  const c=DATA.find(x=>x.id===id); if(!c||!emailValido(c.email)) return;
+  const box=document.getElementById("portalbox"); if(box) box.innerHTML='<span class="muted">Creando acceso…</span>';
+  try{
+    const p=(await rpc("res.partner","read",[[id]],{fields:["user_ids","name","email"]}))[0];
+    if(!(p.user_ids&&p.user_ids.length)){
+      await rpc("res.users","create",[{login:(p.email||"").trim(),name:p.name||c.nombre,partner_id:id,groups_id:[[6,0,[GRUPO_PORTAL]]]}],{context:{no_reset_password:true,lang:"es_AR"}});
+    }
+    await rpc("res.partner","signup_prepare",[[id]]);
+    const p2=(await rpc("res.partner","read",[[id]],{fields:["signup_url"]}))[0];
+    toast("✅ Acceso al portal creado");
+    await cargarPortal(id); mostrarLinkPortal(id, p2.signup_url);
+  }catch(e){ toast("⚠ No se pudo dar acceso: "+(e.message||e)); await cargarPortal(id); }
+}
+async function linkPortal(id){
+  const cont=document.getElementById("portallink"); if(cont) cont.innerHTML='<span class="muted">Generando…</span>';
+  try{ await rpc("res.partner","signup_prepare",[[id]]); const p=(await rpc("res.partner","read",[[id]],{fields:["signup_url"]}))[0]; mostrarLinkPortal(id, p.signup_url); }
+  catch(e){ toast("⚠ No se pudo generar el link: "+(e.message||e)); }
+}
+function mostrarLinkPortal(id, url){
+  const box=document.getElementById("portallink"); if(!box||!url) return;
+  const c=DATA.find(x=>x.id===id);
+  const msg=`¡Hola! Te damos acceso a tu cuenta en Droguería EyG para ver tus pedidos, facturas y saldo. Entrá a este link y creá tu contraseña: ${url}`;
+  const wa=c&&c.wa?`https://api.whatsapp.com/send?phone=${c.wa}&text=${encodeURIComponent(msg)}`:"";
+  box.innerHTML=`<div class="linkbox">${esc(url)}</div>
+    <div class="actbtns" style="margin-top:8px">
+      <button class="abtn" style="background:var(--agua);color:var(--teal-deep)" onclick='copiarTexto(${JSON.stringify(url)})'>📋 Copiar link</button>
+      ${wa?`<a class="abtn wa" href="${wa}" target="_blank" rel="noopener">Enviar por WhatsApp</a>`:''}
+    </div>
+    <p class="muted" style="margin-top:6px">El cliente abre ese link y crea su propia contraseña. El link es de un solo uso.</p>`;
+}
+function copiarTexto(t){ try{ navigator.clipboard.writeText(t); toast("📋 Link copiado"); }catch(e){ toast("Copialo a mano del recuadro"); } }
+async function revocarPortal(id, uid){
+  if(!confirm("¿Revocar el acceso al portal de este contacto? Su usuario queda desactivado (reversible).")) return;
+  try{ await rpc("res.users","write",[[uid],{active:false}],{context:{lang:"es_AR"}}); toast("Acceso al portal revocado"); await cargarPortal(id); }
   catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
 }
 
