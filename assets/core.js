@@ -152,18 +152,20 @@ window.EYG = (function(){
     if(!s){ showLogin(); return new Promise(()=>{}); }
     const p = await perfil();
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso", accesoMsg(p,s), false); return new Promise(()=>{}); }
-    // Módulo EN PRUEBAS: sólo para las huellas de email listadas (ver puedeVer)
+    /* Permisos por persona: resolvemos el módulo actual por el archivo (mismo
+       criterio que el menú). Una concesión (extra) habilita incluso un módulo
+       EN PRUEBAS; una quita lo bloquea. Los supers no se ven afectados. */
+    const mk = railActiveKey();
+    const extra = !esSuper(p._h) && !!mk && (p.modulos_extra||[]).includes(mk);
+    const quita = !esSuper(p._h) && !!mk && (p.modulos_quita||[]).includes(mk);
+    // Módulo EN PRUEBAS: sólo huellas listadas, super, o concesión explícita
     const pr = opts && opts.pruebas;
-    if(pr && pr.length && !pr.includes(p._h) && !esSuper(p._h)){
+    if(pr && pr.length && !pr.includes(p._h) && !esSuper(p._h) && !extra){
       gateMsg("🚧","En preparación","Este módulo todavía se está construyendo. Va a estar disponible para todo el equipo cuando esté listo.",true);
       return new Promise(()=>{});
     }
     let ok = esSuper(p._h) || p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
-    /* Permisos por persona: mismo criterio que el menú (puedeVer). Resuelve el
-       módulo por el archivo actual y aplica extra/quita (los supers no se afectan). */
-    if(!esSuper(p._h)){ const mk=railActiveKey();
-      if(mk){ if((p.modulos_quita||[]).includes(mk)) ok=false;
-              else if(!ok && (p.modulos_extra||[]).includes(mk)) ok=true; } }
+    if(quita) ok=false; else if(!ok && extra) ok=true;
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return new Promise(()=>{}); }
     if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return new Promise(()=>{}); }
     try{ rail(p); }catch(e){}   // admin: menú lateral siempre visible (módulos de chrome propio)
@@ -323,7 +325,10 @@ window.EYG = (function(){
     /* EN PRUEBAS: CRM de contactos (existentes + por conquistar). Oculto para todo
        el equipo hasta terminarlo — sólo super-admins (Diego/German). Para liberarlo:
        borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de datos/contactos.html. */
-    {key:"contactos", dept:"comercial", cat:"Comercial", ico:"👥", titulo:"Clientes (CRM)", desc:"Gestioná los contactos del equipo y descubrí a quién falta conquistar: agrupá por comercial, corregí datos, reasigná comercial, cruzá con el padrón oficial y enviá prospectos a la carpeta 'A conquistar' de cada comercial.", roles:["lider","admin","direccion"], ready:true,
+    /* EN PRUEBAS: sólo super-admins (Diego/German). Desde acá German/Diego envían prospectos
+       del padrón a la carpeta "A conquistar" de cada comercial. Marcela (líder) NO accede. */
+    {key:"contactos", dept:"comercial", cat:"Comercial", ico:"👥", titulo:"Clientes (CRM)", desc:"Gestioná los contactos del equipo, cruzá con el padrón oficial y enviá prospectos a la carpeta 'A conquistar' de cada comercial.", roles:["comercial","lider","admin","direccion"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"datos/contactos.html"},
     /* EN PRUEBAS: oculto para todo el equipo hasta terminarlo. `pruebas` son
        huellas (SHA-256) de email — así no publicamos direcciones en el repo.
@@ -350,13 +355,15 @@ window.EYG = (function(){
   function puedeVer(m, perfilORol){
     const p = (typeof perfilORol === "string") ? {rol:perfilORol} : (perfilORol||{});
     if(esSuper(p._h)) return true;   // super-admins (German y Diego) ven todo
-    if(m.pruebas && m.pruebas.length && !m.pruebas.includes(p._h) && !esSuper(p._h)) return false;
-    /* Permisos POR PERSONA (los asigna el módulo "Usuarios y accesos"):
-       modulos_quita saca un módulo aunque el rol lo tenga; modulos_extra lo
-       concede aunque el rol no lo traiga. */
+    /* Permisos POR PERSONA (los asigna el módulo "Usuarios y accesos"). Se
+       resuelven ANTES que el candado "en pruebas": una concesión explícita
+       (modulos_extra) habilita el módulo aunque esté en pruebas o no sea de su
+       rol; una quita (modulos_quita) lo saca aunque el rol lo traiga. */
     if((p.modulos_quita||[]).includes(m.key)) return false;
+    if((p.modulos_extra||[]).includes(m.key)) return true;
+    if(m.pruebas && m.pruebas.length && !m.pruebas.includes(p._h)) return false;
     if(p.rol==="admin"||p.rol==="direccion") return true;
-    return m.roles.includes(p.rol) || (p.modulos_extra||[]).includes(m.key);
+    return m.roles.includes(p.rol);
   }
   function T(v,p){ return typeof v==="function" ? v(p) : v; }  // título/desc pueden depender del rol
 
