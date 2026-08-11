@@ -964,13 +964,16 @@ window.EYG = (function(){
     // Apto
     return _cred("apto",[]);
   }
-  function credStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-cred-css")) return; const s=document.createElement("style"); s.id="eyg-cred-css"; s.textContent=".eyg-cred{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;padding:2px 9px;border-radius:20px;white-space:nowrap}.eyg-cred .pt{width:7px;height:7px;border-radius:50%;background:currentColor}.eyg-cred.g{background:#E4F5E9;color:#1E7D46}.eyg-cred.y{background:#FBF0DA;color:#9A6B12}.eyg-cred.o{background:#FBE3D4;color:#B45816}.eyg-cred.r{background:#FBE4E3;color:#B0322F}.eyg-cred.load{background:#eef3f2;color:#8A9A97}"; document.head.appendChild(s); }
+  function credStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-cred-css")) return; const s=document.createElement("style"); s.id="eyg-cred-css"; s.textContent=".eyg-cred{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;padding:2px 9px;border-radius:20px;white-space:nowrap}.eyg-cred .pt{width:7px;height:7px;border-radius:50%;background:currentColor}.eyg-cred.g{background:#E4F5E9;color:#1E7D46}.eyg-cred.y{background:#FBF0DA;color:#9A6B12}.eyg-cred.o{background:#FBE3D4;color:#B45816}.eyg-cred.r{background:#FBE4E3;color:#B0322F}.eyg-cred.load{background:#eef3f2;color:#8A9A97}"+
+    ".eyg-credleg{display:flex;flex-direction:column;gap:7px;background:#F4F8F7;border:1px solid #DCE8E6;border-radius:10px;padding:11px 13px}.eyg-credleg .cl-row{display:flex;gap:9px;align-items:flex-start;font-size:12px;color:#3a4a47;line-height:1.35}.eyg-credleg .cl-dot{width:11px;height:11px;border-radius:50%;flex:none;margin-top:2px}.eyg-credleg .cl-dot.g{background:#1E7D46}.eyg-credleg .cl-dot.y{background:#B7791F}.eyg-credleg .cl-dot.o{background:#C4602A}.eyg-credleg .cl-dot.r{background:#B0322F}.eyg-credleg b{color:#0E1F1D}"; document.head.appendChild(s); }
   function badgeCredito(v){ credStyles(); if(!v) return ""; if(v.loading) return '<span class="eyg-cred load" title="Evaluando…"><span class="pt"></span>evaluando…</span>'; return `<span class="eyg-cred ${v.luz}" title="Evaluación para beneficios: ${esc(v.titulo)}${v.motivo?(' — '+esc(v.motivo)):''}"><span class="pt"></span>${esc(v.titulo)}</span>`; }
+  /* Leyenda de los 4 niveles (qué significa cada uno). Reutilizable en cualquier módulo. */
+  function credLeyendaHTML(){ credStyles(); return '<div class="eyg-credleg">'+["apto","reparos","consultar","noapto"].map(k=>{const m=CRED_NIV[k]; return `<div class="cl-row"><span class="cl-dot ${m.luz}"></span><div><b>${esc(m.titulo)}</b> — ${esc(m.sub)}</div></div>`;}).join("")+'</div>'; }
 
   return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
-    creditoConfig, evalCredito, badgeCredito, credStyles, CRED_NIV,
+    creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA,
