@@ -79,6 +79,9 @@
   .thead>div,.row>div{min-width:0}
   .trunc{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
   .cname{font-weight:700;font-size:13.5px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .nmrow{display:flex;align-items:center;gap:6px;min-width:0}.nmrow .cname{flex:0 1 auto}
+  .picon{flex:none;display:inline-flex;align-items:center;gap:1px;font-size:11px;font-weight:700;padding:1px 6px;border-radius:20px;line-height:1.4}
+  .picon.ok{background:#E4F5E9;border:1px solid #BFE3CB} .picon.pend{background:#FBF0DA;border:1px solid #EAD6A6}
   .cmeta{font-size:11.5px;color:var(--gris2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .flags{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
   .flag{font-size:10px;font-weight:700;padding:2px 6px;border-radius:5px;background:var(--badbg);color:var(--bad)}
@@ -323,6 +326,7 @@ async function cargar(silent){
     if(!UNI) cargarUniverso();   // el padrón (~900 KB) se trae 1 vez y actualiza los cruces al llegar
     if(!silent || Date.now()-_riesgoAt>180000) cargarRiesgos();   // alerta de crédito (más liviana: cada ~3 min)
     if(!silent) cargarNuevos();   // historial de contactos nuevos (se refresca al abrir la pestaña)
+    if(!silent) cargarPortalEstado();   // estado del acceso al portal por contacto (para el ícono de la fila)
   }catch(e){ if(!silent) document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar.</b><br>'+esc(e.message||e)+'</div>'; }
   finally{ _cargando=false; _lastLoad=Date.now(); }
 }
@@ -493,6 +497,8 @@ function visibles(){
     if(filtro.issue==="dup" && !(c.dupVat||c.dupName)) return false;
     if(filtro.issue==="pad" && !c.enPadron) return false;
     if(filtro.issue==="riesgo" && !(c.riesgo && c.riesgo.nivel && c.riesgo.nivel!=="ok")) return false;
+    if(filtro.issue==="portal" && !c.portal) return false;
+    if(filtro.issue==="portal-no" && !(c.portal && !c.portal.loggedIn)) return false;
     if(filtro.q){const q=filtro.q.toLowerCase(); if(!(c.nombre.toLowerCase().includes(q)||(c.cuit||"").includes(q)||(c.ciudad||"").toLowerCase().includes(q))) return false;}
     return true;
   });
@@ -551,6 +557,8 @@ function renderNuestros(){
       <select onchange="setIssue(this.value)">
         <option value="">Calidad: todos</option>
         <option value="riesgo" ${filtro.issue==="riesgo"?"selected":""}>⚠ Con alerta de crédito</option>
+        <option value="portal" ${filtro.issue==="portal"?"selected":""}>🌐 Con acceso al portal</option>
+        <option value="portal-no" ${filtro.issue==="portal-no"?"selected":""}>⏳ Portal: acceso pero no ingresó</option>
         <option value="pad" ${filtro.issue==="pad"?"selected":""}>En padrón oficial</option>
         <option value="tel0" ${filtro.issue==="tel0"?"selected":""}>Sin teléfono</option>
         <option value="telbad" ${filtro.issue==="telbad"?"selected":""}>Tel. formato dudoso</option>
@@ -606,8 +614,8 @@ function renderLista(){
     const chk = working?`<input type="checkbox" class="rowchk" ${SEL.has(c.id)?'checked':''} onclick="event.stopPropagation();toggleSel(${c.id})">`:'';
     return `<div class="row ${SEL.has(c.id)?'selrow':''}" onclick="abrir(${c.id})">
       <div style="display:flex;gap:9px;align-items:flex-start">${chk}<div style="min-width:0;flex:1">
-        <div class="cname">${esc(c.nombre)} ${(c.dupVat||c.dupName)?'<span class="badge warn" style="font-size:10px">⚠ dup</span>':''}</div>
-        <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">${EYG.badgeRiesgo(c.riesgo&&c.riesgo.nivel)}${rubroBadge(c.rubro)}${!c.empresa?'<span class="rub" style="background:#EEE9F6;color:#6B4FA0">👤 persona</span>':''}<span class="seg ${c.seg}">${SEG_LBL[c.seg]}</span>${c.enPadron?'<span class="pad">✓ padrón</span>':''}${c.proveedor?'<span class="rub" style="background:#EFE3D0;color:#8A6D1A">🏭 prov.</span>':''}</div>
+        <div class="nmrow"><span class="cname">${esc(c.nombre)}</span>${portalIcon(c)}${(c.dupVat||c.dupName)?'<span class="badge warn" style="font-size:10px">⚠ dup</span>':''}</div>
+        <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">${EYG.badgeRiesgo(c.riesgo&&c.riesgo.nivel)}${rubroBadge(c.rubro)}${!c.empresa?'<span class="rub" style="background:#EEE9F6;color:#6B4FA0">👤 persona</span>':''}${c.enPadron?'<span class="pad">✓ padrón</span>':''}${c.proveedor?'<span class="rub" style="background:#EFE3D0;color:#8A6D1A">🏭 prov.</span>':''}</div>
         <div class="cmeta">${esc(c.ciudad||"—")}</div>
         ${c.faltantes.length?`<div class="flags">${c.faltantes.map(f=>`<span class="flag">falta ${f}</span>`).join("")}</div>`:''}</div></div>
       <div class="hide-sm"><span class="muted trunc" title="${esc(c.comercial)}">${esc(c.comercial)}</span></div>
@@ -1023,6 +1031,23 @@ async function revocarPortal(id, uid){
   if(!confirm("¿Revocar el acceso al portal de este contacto? Su usuario queda desactivado (reversible).")) return;
   try{ await rpc("res.users","write",[[uid],{active:false}],{context:{lang:"es_AR"}}); toast("Acceso al portal revocado"); await cargarPortal(id); }
   catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
+}
+/* Estado del portal por contacto (para el ícono de la fila): 1 sola consulta de todos los
+   usuarios portal activos → {loggedIn} por partner. Se refresca en los recargas completos. */
+async function cargarPortalEstado(){
+  try{
+    const us=await rpc("res.users","search_read",[[["share","=",true]]],{fields:["partner_id","login_date"],limit:0});
+    const M={}; us.forEach(u=>{ if(u.partner_id) M[u.partner_id[0]]={loggedIn:!!u.login_date, login_date:u.login_date}; });
+    DATA.forEach(c=>{ c.portal=M[c.id]||null; });
+    if(filtro.tab==="nuestros" && !drawerAbierto() && !editando()){ const y=window.scrollY; renderLista(); window.scrollTo(0,y); }
+  }catch(e){ console.warn("portal estado:",e.message); }
+}
+// ícono de estado de portal para la fila (verde=ingresó · ámbar=tiene acceso pero no ingresó · nada=sin acceso)
+function portalIcon(c){
+  if(!c.portal) return "";
+  return c.portal.loggedIn
+    ? `<span class="picon ok" title="Portal: ya ingresó${c.portal.login_date?' · '+fmtDiaHora(c.portal.login_date):''}">🌐✓</span>`
+    : `<span class="picon pend" title="Portal: tiene acceso pero todavía no ingresó (no creó su clave)">🌐⏳</span>`;
 }
 
 /* ================= Editar ficha ================= */
