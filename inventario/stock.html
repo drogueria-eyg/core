@@ -84,6 +84,10 @@
   .kpi.warn{border-color:#F2C99B;background:#FFF8F1}.kpi.warn .n{color:var(--org)}
   .kpi.alert{border-color:#F0B3B0;background:#FDF3F2}.kpi.alert .n{color:var(--red)}
   .kpi.ok{border-color:#B7E0C4;background:#F3FBF6}.kpi.ok .n{color:var(--green)}
+  .kpi.clk{cursor:pointer;transition:transform .1s,box-shadow .1s} .kpi.clk:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(6,65,62,.12)}
+  .kpi .ver{font-size:11px;color:var(--teal);font-weight:700;margin-top:6px;display:flex;align-items:center;gap:3px}
+  .hm.clk{cursor:pointer;transition:transform .1s} .hm.clk:hover{transform:translateY(-2px)}
+  .rotbar div{cursor:pointer}
 
   .pcard{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px;box-shadow:var(--shadow)}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -624,7 +628,7 @@ function healthCard(rd){
   const col=s.st[0]==="g"?"var(--green)":s.st[0]==="y"?"var(--org)":"var(--red)";
   const vult=FLUJO.ventas.at(-1)||0, cult=FLUJO.compras.at(-1)||0;
   const ratio=vult>0?(cult/vult*100):0;
-  const hm=(k,v,cls,pct,pcol)=>`<div class="hm ${cls}"><div class="k">${k}</div><div class="v">${v}</div><div class="bar"><i style="width:${Math.min(100,pct)}%;background:${pcol}"></i></div></div>`;
+  const hm=(k,v,cls,pct,pcol,tipo)=>`<div class="hm ${cls}${tipo?" clk":""}" ${tipo?`onclick="abrirLista('${tipo}')" title="Tocá para ver los productos"`:""}><div class="k">${k}</div><div class="v">${v}</div><div class="bar"><i style="width:${Math.min(100,pct)}%;background:${pcol}"></i></div></div>`;
   return `<div class="health">
     <div class="hh">
       <div class="ring" style="--p:${s.score};--c:${col}"><div class="in"><b>${s.score}</b><span>salud</span></div></div>
@@ -644,11 +648,11 @@ function healthCard(rd){
       </div>
     </div>
     <div class="hmetrics">
-      ${hm("En quiebre", rd.quiebres, rd.quiebres===0?"good":rd.quiebres<8?"mid":"bad", s.quiebrePct*2, col)}
-      ${hm("A reponer", rd.necesita.filter(x=>x.r.provId||x.r.viaOtra).length, s.reponerPct<15?"good":s.reponerPct<30?"mid":"bad", s.reponerPct, "var(--teal)")}
-      ${hm("Sobrestock", KPI.sobrePct.toFixed(0)+"%", KPI.sobrePct<20?"good":KPI.sobrePct<35?"mid":"bad", KPI.sobrePct, "var(--org)")}
-      ${hm("En riesgo de tirar", fmtK(KPI.riesgo), s.vencPct<2?"good":s.vencPct<6?"mid":"bad", s.vencPct*8, "var(--red)")}
-      ${hm("Compra sugerida", fmtK(rd.valorCompra), "mid", 60, "var(--compra)")}
+      ${hm("En quiebre", rd.quiebres, rd.quiebres===0?"good":rd.quiebres<8?"mid":"bad", s.quiebrePct*2, col, "quiebre")}
+      ${hm("A reponer", rd.necesita.filter(x=>x.r.provId||x.r.viaOtra).length, s.reponerPct<15?"good":s.reponerPct<30?"mid":"bad", s.reponerPct, "var(--teal)", "reponer")}
+      ${hm("Sobrestock", KPI.sobrePct.toFixed(0)+"%", KPI.sobrePct<20?"good":KPI.sobrePct<35?"mid":"bad", KPI.sobrePct, "var(--org)", "sobre")}
+      ${hm("En riesgo de tirar", fmtK(KPI.riesgo), s.vencPct<2?"good":s.vencPct<6?"mid":"bad", s.vencPct*8, "var(--red)", "riesgo")}
+      ${hm("Compra sugerida", fmtK(rd.valorCompra), "mid", 60, "var(--compra)", "reponer")}
     </div>
   </div>`;
 }
@@ -737,12 +741,6 @@ function tabRepo(rd){
   const topUrg=[...rd.necesita].filter(x=>x.r.provId||x.r.viaOtra)
     .sort((a,b)=>(URG_ORD[a.rp.urg]-URG_ORD[b.rp.urg])||(b.r.margenAnual-a.r.margenAnual)).slice(0,12);
   return `
-    <div class="kpis">
-      <div class="kpi ${q?'alert':'ok'}"><div class="l">En quiebre hoy</div><div class="n">${q}</div><div class="d">con venta y sin stock</div></div>
-      <div class="kpi"><div class="l">Productos a reponer</div><div class="n">${rd.necesita.filter(x=>x.r.provId||x.r.viaOtra).length}</div><div class="d">bajo ${pol.umbral} mes de cobertura</div></div>
-      <div class="kpi warn"><div class="l">Compra sugerida</div><div class="n">${fmtM(valor)}</div><div class="d">para cubrir ${pol.objetivo} meses</div></div>
-      <div class="kpi"><div class="l">Proveedores a pedir</div><div class="n">${nprov}</div><div class="d">agrupá y armá el pedido</div></div>
-    </div>
 
     <div style="display:flex;justify-content:flex-end;margin:14px 0 2px">
       <button class="wa-send" style="width:auto;margin:0;padding:11px 20px" onclick="nuevaCompra()">➕ Cargar una compra nueva</button>
@@ -843,15 +841,10 @@ function renderWin(){
 // ---------- TAB: Cuidar el stock ----------
 function tabStock(){
   const mx=Math.max(1,...FLUJO.ventas,...FLUJO.compras);
-  const frenar=[...DATA].filter(r=>r.meses>12).sort((a,b)=>b.val-a.val).slice(0,25);
-  const liquidar=[...DATA].filter(r=>r.valVenc>0||r.val6>0||(r.ventaU===0&&r.val>200000))
-    .map(r=>({...r,prio:r.valVenc*4+r.val6*2+(r.ventaU===0?r.val:0)})).sort((a,b)=>b.prio-a.prio).slice(0,25);
   return `
     <div class="kpis">
-      <div class="kpi"><div class="l">Inventario valorizado</div><div class="n">${fmtM(KPI.inv)}</div><div class="d">${DATA.length} productos con stock</div></div>
-      <div class="kpi warn"><div class="l">Sobrestock (+1 año)</div><div class="n">${fmtM(KPI.sobre)}</div><div class="d">${KPI.sobrePct.toFixed(0)}% del inventario</div></div>
-      <div class="kpi warn"><div class="l">Plata liberable</div><div class="n">${fmtM(KPI.inmov)}</div><div class="d">sobre 3 meses de demanda</div></div>
-      <div class="kpi alert"><div class="l">En riesgo de tirar</div><div class="n">${fmtM(KPI.riesgo)}</div><div class="d">vence antes de venderse · ${money(KPI.vencido)} ya vencido</div></div>
+      <div class="kpi clk" onclick="abrirLista('inventario')"><div class="l">Inventario valorizado</div><div class="n">${fmtM(KPI.inv)}</div><div class="d">${DATA.length} productos con stock</div><div class="ver">Ver todos →</div></div>
+      <div class="kpi warn clk" onclick="abrirLista('liberable')"><div class="l">Plata liberable</div><div class="n">${fmtM(KPI.inmov)}</div><div class="d">sobre 3 meses de demanda que no vende</div><div class="ver">Ver cuáles →</div></div>
     </div>
 
     <h2 class="sec">Flujo de compra y venta · 12 meses<span class="hint">¿comprás en línea con lo que vendés?</span></h2>
@@ -876,28 +869,12 @@ function tabStock(){
       <div class="note">Neto sin IVA. Se excluye a <b>PROVEEDOR T</b> (compra informal). Tocá <b>Ver evolución</b> para el detalle día a día, semana o mes.</div>
     </div>
 
-    <h2 class="sec">En qué está parada la plata del inventario</h2>
+    <h2 class="sec">En qué está parada la plata del inventario<span class="hint">tocá un tramo para ver esos productos</span></h2>
     <div class="pcard">
-      <div class="rotbar">${BUCKETS.map(b=>{const p=b.val/TOT*100;return `<div style="background:var(--${b.col});width:${p}%" title="${b.lbl}: ${fmtM(b.val)}">${p>7?p.toFixed(0)+"%":""}</div>`}).join("")}</div>
-      <div class="rotleg">${BUCKETS.map(b=>`<div class="rl"><span class="dot" style="background:var(--${b.col})"></span>
+      <div class="rotbar">${BUCKETS.map((b,i)=>{const p=b.val/TOT*100;return `<div onclick="abrirBucket(${i})" style="background:var(--${b.col});width:${p}%" title="${b.lbl}: ${fmtM(b.val)} · tocá para ver">${p>7?p.toFixed(0)+"%":""}</div>`}).join("")}</div>
+      <div class="rotleg">${BUCKETS.map((b,i)=>`<div class="rl" onclick="abrirBucket(${i})" style="cursor:pointer"><span class="dot" style="background:var(--${b.col})"></span>
         <span class="lb"><b>${b.lbl}</b><span>${b.sub} · ${b.n} productos</span></span>
         <span class="vv">${fmtM(b.val)}<span>${(b.val/TOT*100).toFixed(0)}%</span></span></div>`).join("")}</div>
-    </div>
-
-    <h2 class="sec">Dos listas para actuar</h2>
-    <div class="grid2">
-      <div class="pcard">
-        <div style="font-weight:800;font-size:15px">🛑 Frenar compra</div>
-        <p style="font-size:12.5px;color:var(--gris);margin:4px 0 8px">Ya hay stock para más de un año. No reponer hasta que baje.</p>
-        <ul class="lst">${frenar.map(r=>`<li class="li" onclick="abrirProd(${r.id})"><div class="nm"><b>${esc(cleanName(r.name))}</b>
-          <span>${r.meses>900?"sin venta 12m":fmtDur(r.meses)+" de stock"} · ${r.qty} u</span></div><div class="amt">${money(r.val)}</div></li>`).join("")}</ul>
-      </div>
-      <div class="pcard">
-        <div style="font-weight:800;font-size:15px">🔥 Liquidar / ofertar ya</div>
-        <p style="font-size:12.5px;color:var(--gris);margin:4px 0 8px">Vencido, por vencer, o muerto. Recuperar algo antes de tirarlo.</p>
-        <ul class="lst">${liquidar.map(r=>{const tg=r.valVenc>0?`<span class="pill red">vencido ${money(r.valVenc)}</span>`:r.val6>0?`<span class="pill org">vence &lt;6m</span>`:`<span class="pill gray">sin venta</span>`;
-          return `<li class="li" onclick="abrirProd(${r.id})"><div class="nm"><b>${esc(cleanName(r.name))}</b><span>${tg}</span></div><div class="amt">${money(r.val)}</div></li>`}).join("")}</ul>
-      </div>
     </div>
 
     <h2 class="sec">Explorador de inventario</h2>
@@ -1114,6 +1091,60 @@ function sugerencia(r,rp){
 }
 function cerrar(){document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");}
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){cerrar();cerrarGraf();}});
+
+// ====== DRILL-DOWN: tocar una métrica/tarjeta abre la lista de productos detrás ======
+function liberableDe(r){ if(r.ventaU===0) return r.val; const ideal=(r.ventaU/12)*3, cu=r.qty>0?r.val/r.qty:0; return r.qty>ideal?Math.round((r.qty-ideal)*cu):0; }
+const LISTAS={
+  quiebre:{ t:"En quiebre hoy", d:"Se venden y hoy no hay stock. Reponé cuanto antes.",
+    sel:()=>DATA.filter(r=>{const rp=repo(r);return rp.dm>0&&rp.pos<=0;}).sort((a,b)=>b.margenAnual-a.margenAnual),
+    val:r=>r.margenAnual, meta:r=>`vende ${r.freq}×/año · ${r.provName||"sin proveedor"}` },
+  reponer:{ t:"Productos a reponer", d:`Cobertura por debajo de ${pol.umbral} mes. Sugerido para cubrir ${pol.objetivo} meses.`,
+    sel:()=>DATA.map(r=>({r,rp:repo(r)})).filter(x=>x.rp.necesita&&(x.r.provId||x.r.viaOtra)).sort((a,b)=>(URG_ORD[a.rp.urg]-URG_ORD[b.rp.urg])||(b.r.margenAnual-a.r.margenAnual)).map(x=>x.r),
+    val:r=>repo(r).costoLinea, meta:r=>{const rp=repo(r);return `cobertura ${rp.cob>900?"—":fmtDur(rp.cob)} · pedir ${rp.sug} u · ${r.provName||"—"}`;} },
+  sobre:{ t:"Sobrestock (+1 año)", d:"Ya hay stock para más de un año. Frená la compra hasta que baje.",
+    sel:()=>DATA.filter(r=>r.meses>12).sort((a,b)=>b.val-a.val),
+    val:r=>r.val, meta:r=>`${r.meses>900?"sin venta 12m":fmtDur(r.meses)+" de stock"} · ${r.qty} u` },
+  riesgo:{ t:"En riesgo de tirar", d:"Vencido o por vencer antes de alcanzar a venderse. Ofertá o liquidá para recuperar algo.",
+    sel:()=>DATA.filter(r=>r.valVenc>0||r.val6>0).sort((a,b)=>(b.valVenc+b.val6)-(a.valVenc+a.val6)),
+    val:r=>r.valVenc+r.val6, meta:r=>r.valVenc>0?`vencido en depósito · ${money(r.valVenc)}`:`vence en ${fmtDur(r.min)}` },
+  inventario:{ t:"Inventario valorizado", d:"Todo el stock activo, del que más plata tiene parada al que menos.",
+    sel:()=>[...DATA].sort((a,b)=>b.val-a.val),
+    val:r=>r.val, meta:r=>`${r.qty} u · ${r.meses>900?"sin venta":fmtDur(r.meses)+" de stock"}` },
+  liberable:{ t:"Plata liberable", d:"Lo que sobra por encima de 3 meses de demanda, más lo que no vende. Se puede desinmovilizar.",
+    sel:()=>DATA.map(r=>({r,l:liberableDe(r)})).filter(x=>x.l>0).sort((a,b)=>b.l-a.l).map(x=>x.r),
+    val:r=>liberableDe(r), meta:r=>r.ventaU===0?`sin venta 12m · ${r.qty} u`:`${fmtDur(r.meses)} de stock · sobra sobre 3m` },
+};
+function abrirLista(tipo){
+  const L=LISTAS[tipo]; if(!L) return;
+  const rows=L.sel(); const tot=rows.reduce((a,r)=>a+(L.val(r)||0),0);
+  const d=document.getElementById("drawer");
+  d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span>
+      <h2>${L.t}</h2><div class="deuda">${money(tot)}</div>
+      <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${rows.length} producto${rows.length===1?"":"s"}</span></div></div>
+    <div class="dbody">
+      ${L.d?`<p style="font-size:12.5px;color:var(--gris);margin:-4px 0 12px">${L.d}</p>`:""}
+      <ul class="lst">${rows.slice(0,150).map(r=>`<li class="li" onclick="abrirProd(${r.id})">
+        <div class="nm"><b>${esc(cleanName(r.name))}</b><span>${L.meta(r)}</span></div>
+        <div class="amt">${money(L.val(r))}</div></li>`).join("")}</ul>
+      ${rows.length>150?`<div class="count-line" style="margin-top:8px">…y ${rows.length-150} más. Usá el explorador para verlos todos.</div>`:""}
+      ${!rows.length?'<div class="empty">Nada acá. 👌</div>':""}
+    </div>`;
+  d.classList.add("on"); document.getElementById("scrim").classList.add("on");
+}
+function abrirBucket(i){
+  const b=B_DEF[i]; if(!b) return; const [lbl,sub,lo,hi]=b;
+  const rows=DATA.filter(r=>r.meses>=lo&&r.meses<hi).sort((a,b)=>b.val-a.val);
+  const tot=rows.reduce((a,r)=>a+r.val,0);
+  const d=document.getElementById("drawer");
+  d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span>
+      <h2>Rotación: ${lbl}</h2><div class="deuda">${money(tot)}</div>
+      <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${sub} · ${rows.length} productos</span></div></div>
+    <div class="dbody"><ul class="lst">${rows.slice(0,150).map(r=>`<li class="li" onclick="abrirProd(${r.id})">
+        <div class="nm"><b>${esc(cleanName(r.name))}</b><span>${r.meses>900?"sin venta 12m":fmtDur(r.meses)+" de stock"} · ${r.qty} u</span></div>
+        <div class="amt">${money(r.val)}</div></li>`).join("")}</ul>
+      ${rows.length>150?`<div class="count-line" style="margin-top:8px">…y ${rows.length-150} más.</div>`:""}</div>`;
+  d.classList.add("on"); document.getElementById("scrim").classList.add("on");
+}
 
 // ---------- drawer proveedor: armar pedido + borrador Odoo ----------
 let PEDIDO={id:null,name:"",items:[]};
