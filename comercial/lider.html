@@ -311,6 +311,18 @@ function argParts(s){ const d=new Date(s.replace(" ","T")+"Z");
   const p=new Intl.DateTimeFormat("en-CA",{timeZone:"America/Argentina/Buenos_Aires",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(d);
   const g={}; p.forEach(x=>g[x.type]=x.value); return {date:`${g.year}-${g.month}-${g.day}`, hour:+g.hour, frac:(+g.hour)+(+g.minute)/60}; }
 function nowFrac(){ const p=new Intl.DateTimeFormat("en-CA",{timeZone:"America/Argentina/Buenos_Aires",hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(new Date()); const g={}; p.forEach(x=>g[x.type]=x.value); return (+g.hour)+(+g.minute)/60; }
+// Monto ABREVIADO para las tarjetas (millones → "$X,X M") para que no se desborden.
+function Mabbr(n){ n=Math.round(n||0); if(Math.abs(n)>=1e6) return "$"+(n/1e6).toLocaleString("es-AR",{minimumFractionDigits:1,maximumFractionDigits:1})+" M"; return "$"+n.toLocaleString("es-AR"); }
+// Lunes de la semana actual EN HORA ARGENTINA (acotado al 1º del mes), como "YYYY-MM-DD".
+function inicioSemanaART(){ const t=argToday(); const base=new Date(t+"T12:00:00Z"); const dow=(base.getUTCDay()+6)%7; base.setUTCDate(base.getUTCDate()-dow); const lun=base.toISOString().slice(0,10); const im=t.slice(0,7)+"-01"; return lun<im?im:lun; }
+// Traer pedidos desde `iniART` con buffer y devolverlos ya filtrados por FECHA ARGENTINA.
+async function pedidosDesdeART(iniART, fields){
+  const desde=new Date(new Date(iniART+"T00:00:00-03:00").getTime()-6*3600*1000).toISOString().slice(0,19).replace("T"," ");
+  const ord=await EYG.rpc("sale.order","search_read",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],fields||["user_id","date_order","amount_untaxed"]],{limit:0});
+  return ord.filter(o=>argParts(o.date_order).date>=iniART);
+}
+// Suma por comercial de la SEMANA (fecha Argentina): en lunes la semana = hoy y coincide con "Hoy".
+async function periodoSemana(){ const ini=inicioSemanaART(); const ord=await pedidosDesdeART(ini); const m={}; for(const o of ord){ const u=o.user_id&&o.user_id[0]; if(u) m[u]=(m[u]||0)+(o.amount_untaxed||0); } return m; }
 
 async function periodo(desde){
   const g=await EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],["amount_untaxed:sum"],["user_id"]],{lazy:false});
@@ -320,8 +332,7 @@ async function init(){
   try{
     // COM y UIDS ya vienen resueltos por boot() con el equipo del líder (organigrama Odoo).
     const y=argToday().slice(0,4), m=argToday().slice(0,7);
-    const d=new Date(); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow); const _lun=lun.toISOString().slice(0,10); const inicioSem=_lun<(m+"-01")?(m+"-01"):_lun;   // semana calendario, acotada al mes
-    const [aA,aM,aS]=await Promise.all([periodo(y+"-01-01"), periodo(m+"-01"), periodo(inicioSem)]);
+    const [aA,aM,aS]=await Promise.all([periodo(y+"-01-01"), periodo(m+"-01"), periodoSemana()]);
     DATA=COM.map(c=>({...c, ano:aA[c.uid]||0, mes:aM[c.uid]||0, sem:aS[c.uid]||0, hoy:0, horas:new Array(24).fill(0)}));
     await refreshHoy();
     render();
@@ -417,7 +428,7 @@ function renderProds(){
   if(!PRODS.length){ box.innerHTML=`<div class="prodsbox"><h2>🏆 Productos más vendidos</h2><div class="floading"><span class="spin-sm"></span> cargando el año…</div></div>`; return; }
   box.innerHTML=`<div class="prodsbox"><h2>🏆 Productos más vendidos <span class="muted" style="font-weight:600;font-size:12px">· del año</span></h2>
     <div class="prow h"><div class="rk">#</div><div>Producto</div><div class="pq">Unidades</div><div class="pv">Facturado</div></div>
-    ${PRODS.map((p,i)=>`<div class="prow"><div class="rk">${i+1}</div><div class="pn">${esc(p.name)}</div><div class="pq">${Math.round(p.qty).toLocaleString("es-AR")}</div><div class="pv">${M(p.monto)}</div></div>`).join("")}
+    ${PRODS.map((p,i)=>`<div class="prow"><div class="rk">${i+1}</div><div class="pn">${esc(p.name)}</div><div class="pq">${Math.round(p.qty).toLocaleString("es-AR")}</div><div class="pv">${Mabbr(p.monto)}</div></div>`).join("")}
   </div>`;
 }
 function tot(k){ return DATA.reduce((s,d)=>s+d[k],0); }
@@ -427,12 +438,11 @@ function renderKpis(){
     <span class="pick">${PERIODO===k?'📊 en el gráfico':'ver gráfico'}</span>
     <div class="l">${lab}</div><div class="v">${val}</div><div class="s">${sub||'&nbsp;'}</div></div>`;
   box.innerHTML=`<div class="kpis">
-    ${card("hoy","Hoy · equipo",M(tot("hoy")),TODAY.length+" pedidos")}
-    ${card("sem","Esta semana",M(tot("sem")),"por día")}
-    ${card("mes","Este mes",M(tot("mes")),"por día")}
-    ${card("ano","Este año",M(tot("ano")),"por mes")}
-    <div class="kpi"><div class="l">Comerciales activos hoy</div><div class="v">${DATA.filter(d=>d.hoy>0).length}<span style="font-size:14px;color:var(--gris2)"> / ${DATA.length}</span></div></div>
-    ${(()=>{ const on=presOnline(); const names=on&&on.length?on.map(uid=>{const c=COM.find(x=>x.uid===uid);return c?c.name.split(" ")[0]:"";}).filter(Boolean).join(", "):""; return `<div class="kpi" onclick="setVista('actividad')" style="cursor:pointer" title="Ver detalle en Actividad"><div class="l">🟢 Conectados ahora</div><div class="v">${on==null?'…':on.length}<span style="font-size:14px;color:var(--gris2)"> / ${UIDS.length}</span></div>${names?`<div class="s" style="font-size:11px;color:var(--gris2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(names)}</div>`:'<div class="s" style="font-size:11px;color:var(--gris2)">tocá para el detalle</div>'}</div>`; })()}
+    ${card("hoy","Hoy · equipo",Mabbr(tot("hoy")),TODAY.length+" pedidos")}
+    ${card("sem","Esta semana",Mabbr(tot("sem")),"por día")}
+    ${card("mes","Este mes",Mabbr(tot("mes")),"por día")}
+    ${card("ano","Este año",Mabbr(tot("ano")),"por mes")}
+    ${(()=>{ const on=presOnline(); const vend=DATA.filter(d=>d.hoy>0).length; const names=on&&on.length?on.map(uid=>{const c=COM.find(x=>x.uid===uid);return c?c.name.split(" ")[0]:"";}).filter(Boolean).join(", "):""; return `<div class="kpi" onclick="setVista('actividad')" style="cursor:pointer" title="Ver detalle en Actividad"><div class="l">🟢 Equipo ahora</div><div class="v">${on==null?'…':on.length}<span style="font-size:14px;color:var(--gris2)"> / ${UIDS.length}</span> <span style="font-size:12px;color:var(--gris2);font-weight:600">conectados</span></div><div class="s" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${vend} de ${DATA.length} vendieron hoy${names?' · 🟢 '+esc(names):''}</div></div>`; })()}
   </div>
   <div class="scopenote">🔒 Estos totales son <b>sólo de tus ${COM.length} comerciales</b> (${COM.map(c=>esc(c.name.split(" ")[0])).join(", ")}), no de toda la droguería. Son la suma de sus ventas en Odoo.</div>`;
 }
@@ -450,9 +460,11 @@ async function cargarSerie(p){
   const dom=(desde,gran)=>EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde+" 00:00:00"]],["amount_untaxed:sum"],["date_order:"+gran]],{lazy:false});
   const bucket=(g,gran)=>{ const m={}; g.forEach(r=>{ const rg=r.__range&&r.__range["date_order:"+gran]; const f=rg?rg.from.slice(0,10):null; if(f) m[f]=(m[f]||0)+(r.amount_untaxed||0); }); return m; };
   if(p==="sem"){
-    const d=new Date(t+"T00:00:00"); const dow=(d.getDay()+6)%7; const lun=new Date(d); lun.setDate(d.getDate()-dow);
-    const _l=lun.toISOString().slice(0,10), _im=t.slice(0,7)+"-01"; const ini=_l<_im?_im:_l; const m=bucket(await dom(ini,"day"),"day"); const arr=[];
-    for(let i=0;i<7;i++){ const dd=new Date(lun); dd.setDate(lun.getDate()+i); const k=dd.toISOString().slice(0,10); arr.push({label:DIASSEM[i], val:m[k]||0, cur:k===t}); }
+    // Bucketeamos por FECHA ARGENTINA (evita el corrimiento UTC que descuadraba los días).
+    const ini=inicioSemanaART(); const ord=await pedidosDesdeART(ini,["date_order","amount_untaxed"]);
+    const m={}; for(const o of ord){ const k=argParts(o.date_order).date; m[k]=(m[k]||0)+(o.amount_untaxed||0); }
+    const base=new Date(ini+"T12:00:00Z"); const arr=[];
+    for(let i=0;i<7;i++){ const dd=new Date(base); dd.setUTCDate(base.getUTCDate()+i); const k=dd.toISOString().slice(0,10); const wd=(dd.getUTCDay()+6)%7; arr.push({label:DIASSEM[wd], val:m[k]||0, cur:k===t}); }
     return SERIES.sem=arr;
   }
   if(p==="mes"){
@@ -829,11 +841,11 @@ function renderEquipo(){
         <div class="who"><div class="nm">${esc(d.name)}</div><div class="lv">${lv||'&nbsp;'}</div></div>
         ${saludHTML}
       </div>
-      <div class="big"><span class="v">${M(d.mes)}</span>${trend}</div>
+      <div class="big"><span class="v">${Mabbr(d.mes)}</span>${trend}</div>
       ${prog}
       ${wamini}
       <div class="foot">
-        <div class="hoy">Hoy <b>${M(d.hoy)}</b></div>
+        <div class="hoy">Hoy <b>${Mabbr(d.hoy)}</b></div>
         <div class="spark" title="Hoy, hora por hora (7–21h)">${spark}</div>
       </div>
     </div>`;
@@ -1016,9 +1028,9 @@ function ventasHTML(d, opts){
   return `<div class="ventas">
       <div class="vhead"><div class="vt">${titulo}</div><button class="vinfo" onclick="toggleDesg('${id}')">🧮 Ver la cuenta</button></div>
       <div class="vmain">
-        <div class="vcol"><div class="vlab">Pedidos <span class="mut2">(neto)</span></div><div class="vbig">${M(d.pedMes)}</div><div class="vsrc">${cargaLbl}</div></div>
+        <div class="vcol"><div class="vlab">Pedidos <span class="mut2">(neto)</span></div><div class="vbig">${Mabbr(d.pedMes)}</div><div class="vsrc">${cargaLbl}</div></div>
         <div class="vsep">vs</div>
-        <div class="vcol"><div class="vlab">Facturado <span class="mut2">(neto)</span></div><div class="vbig2">${M(d.factMes)}</div><div class="vsrc">${factLbl}</div></div>
+        <div class="vcol"><div class="vlab">Facturado <span class="mut2">(neto)</span></div><div class="vbig2">${Mabbr(d.factMes)}</div><div class="vsrc">${factLbl}</div></div>
       </div>
       <div id="${id}" class="desg" style="display:none">
         <div class="desgh">Pedidos (por vendedor de la orden)</div>
@@ -1168,11 +1180,11 @@ function fichaHTML(d){
   const nom1=esc((d.nombre||"").split(" ")[0]);
   return `<div class="fichin">
     <div class="fgrid">
-      <div class="fstat"><div class="l">Comisión estimada</div><div class="v" style="color:var(--teal-deep)">${M(d.com.total)}</div><div class="s">${d.perfil==="externo"?"3/4% fijo sobre facturado":"motor: facturado neto × tramos × nivel"}</div></div>
+      <div class="fstat"><div class="l">Comisión estimada</div><div class="v" style="color:var(--teal-deep)">${Mabbr(d.com.total)}</div><div class="s">${d.perfil==="externo"?"3/4% fijo sobre facturado":"motor: facturado neto × tramos × nivel"}</div></div>
       <div class="fstat"><div class="l">Rentabilidad</div><div class="v">${rent}</div><div class="s">margen ÷ ventas (line.margin, año)</div></div>
-      <div class="fstat"><div class="l">Ticket promedio</div><div class="v">${M(d.avgTicket)}</div><div class="s">facturado ÷ pedidos (~6 meses)</div></div>
-      <div class="fstat"><div class="l">Cobrado del mes</div><div class="v">${M(d.cobradoMes)}</div><div class="s">pagos entrantes (account.payment)</div></div>
-      <div class="fstat"><div class="l">Vencido</div><div class="v" style="color:${vencPct>=40?'var(--coral)':vencPct>=25?'var(--gold)':'var(--ink)'}">${M(d.vencido)}</div><div class="s">${vencPct}% de ${M(d.porCobrar)} · saldos a cobrar vencidos</div></div>
+      <div class="fstat"><div class="l">Ticket promedio</div><div class="v">${Mabbr(d.avgTicket)}</div><div class="s">facturado ÷ pedidos (~6 meses)</div></div>
+      <div class="fstat"><div class="l">Cobrado del mes</div><div class="v">${Mabbr(d.cobradoMes)}</div><div class="s">pagos entrantes (account.payment)</div></div>
+      <div class="fstat"><div class="l">Vencido</div><div class="v" style="color:${vencPct>=40?'var(--coral)':vencPct>=25?'var(--gold)':'var(--ink)'}">${Mabbr(d.vencido)}</div><div class="s">${vencPct}% de ${Mabbr(d.porCobrar)} · saldos a cobrar vencidos</div></div>
       <div class="fstat"><div class="l">Clientes nuevos</div><div class="v">${d.nuevos}</div><div class="s">contactos creados este mes</div></div>
       <div class="fstat"><div class="l">📤 WhatsApp hoy</div><div class="v">${d.waHoyMsg||0}<span style="font-size:12px;color:var(--gris2)"> msg</span></div><div class="s">${d.waHoyCont||0} contactos · ${d.waHoyNuevo||0} nuevos · ${d.waSemMsg||0} sem</div></div>
       <div class="fstat"><div class="l">🎁 Ofertas del mes</div><div class="v">${d.ofVendidas||0}<span style="font-size:12px;color:var(--gris2)"> vendidas</span></div><div class="s">${d.ofEnviadas||0}/30 enviadas · ${d.ofVendidas||0}/10 vendidas</div></div>
