@@ -418,6 +418,11 @@ window.EYG = (function(){
     if(typeof document==="undefined" || !perfil) return;
     const admin = esSuper(perfil._h) || perfil.rol==="admin" || perfil.rol==="direccion";
     if(!admin) return;                                 // accesos especiales: sin cambios
+    /* Módulos "kiosco" (pantalla completa, chrome propio) se bajan del riel con
+       <body data-eyg-rail="no">. Sin esto, el rail se lleva el body ANTES de que
+       el módulo arme su pantalla, y ésta queda fuera de la vista: el admin ve
+       negro. Le pasó al Tablero en vivo. */
+    if(document.body.getAttribute("data-eyg-rail")==="no") return;
     if(document.getElementById("eygSide")) return;     // el módulo ya tiene menú lateral
     if(document.getElementById("eygRailApp")) return;  // idempotente
     const content = document.createElement("div");
