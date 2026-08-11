@@ -348,7 +348,7 @@ async function cargarNuevos(){
     const ids=Object.keys(creado).map(x=>+x);
     if(!ids.length){ NUEVOS=[]; if(filtro.tab==="nuevos") renderNuevos(); const t=document.getElementById("cntNuevos"); if(t)t.textContent="0"; return; }
     const [parts, contactMsgs, ventas]=await Promise.all([
-      rpc("res.partner","read",[ids],{fields:["id","name","user_id","city","create_date",RUBRO_FIELD],context:{lang:"es_AR"}}),
+      rpc("res.partner","read",[ids],{fields:["id","name","user_id","city","create_date","active",RUBRO_FIELD],context:{lang:"es_AR"}}),
       rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],"|","|","|",["body","like","[COBRO-CONTACTO]"],["body","like","EyGWA"],["body","like","EyGCRM"],["body","like","[EyGWA]"]]],{fields:["res_id","date","body"],limit:0}),
       rpc("sale.order","read_group",[[["partner_id","in",ids],["state","in",["sale","done"]]],["amount_total:sum"],["partner_id"]],{lazy:false})
     ]);
@@ -357,7 +357,9 @@ async function cargarNuevos(){
     contactMsgs.forEach(m=>{ const prev=cont[m.res_id]; if(!prev||m.date>prev.date){ const b=(m.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," "); const pm=b.match(/\bpor\s+([^<\n·]+?)\s*$/i); cont[m.res_id]={date:m.date, por:(pm&&pm[1]?pm[1].trim():"")}; } });
     const vt={}; ventas.forEach(g=>{ if(g.partner_id) vt[g.partner_id[0]]={tot:g.amount_total||0,n:g.__count||0}; });
     const byId={}; parts.forEach(p=>byId[p.id]=p);
-    NUEVOS=ids.map(id=>{ const p=byId[id]||{}, cr=creado[id], v=vt[id]||{}; return {
+    // Solo cuentan como NUEVOS los que existen y están activos: si un "creado" resultó
+    // ser duplicado (se archivó) o se dio de baja, NO es un contacto nuevo → fuera.
+    NUEVOS=ids.filter(id=>byId[id] && byId[id].active!==false).map(id=>{ const p=byId[id], cr=creado[id], v=vt[id]||{}; return {
       id, nombre:p.name||"(sin nombre)", creador:cr.creador, fecha:p.create_date||cr.fecha,
       comercial:p.user_id?p.user_id[1]:"Sin asignar", rubro:p[RUBRO_FIELD]||"",
       contactado:cont[id]||null, ventaTot:v.tot||0, nped:v.n||0 };
