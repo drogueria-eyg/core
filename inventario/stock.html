@@ -213,6 +213,13 @@
   .cstep .s.on .d{background:var(--teal)} .cstep .s.done .d{background:var(--green)} .cstep .s.on{color:var(--ink);font-weight:700}
   .cstep .ln{flex:1;height:2px;background:var(--line);min-width:12px}
   .cprice{width:92px;font-family:inherit;font-size:13px;text-align:right;border:1px solid var(--line);border-radius:8px;padding:7px 8px;font-weight:700;color:var(--ink)}
+  /* multi-proveedor */
+  .provrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line)}
+  .provrow:last-child{border-bottom:0}
+  .provrow .pnm{flex:1;min-width:0;font-size:13px;font-weight:600;color:var(--ink)}
+  .provrow .pnm .psub{display:block;font-size:11.5px;color:var(--gris);font-weight:500;margin-top:1px}
+  .tagmini{display:inline-block;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;padding:1px 6px;border-radius:20px;background:var(--agua);color:var(--teal-deep);vertical-align:1px}
+  .tagmini.cheap{background:var(--greenbg);color:var(--green)}
 
   @media(max-width:860px){ .grid2{grid-template-columns:1fr} .rotleg{grid-template-columns:1fr}
     .g-stock{grid-template-columns:2fr 1fr 0.9fr} .g-repo{grid-template-columns:2fr 1fr 0.9fr} .g-win{grid-template-columns:2fr 0.9fr 1fr}
@@ -334,6 +341,11 @@ async function cargar(){
       const sellers=(m.seller_ids||[]).map(sid=>SI[sid]).filter(Boolean).sort((a,b)=>(a.sequence||0)-(b.sequence||0));
       const formal=sellers.find(x=>x.partner_id && x.partner_id[0]!==PROVEEDOR_T);
       const hayT=sellers.some(x=>x.partner_id && x.partner_id[0]===PROVEEDOR_T);
+      // TODOS los proveedores del producto (dedup por partner, precio base = menor min_qty), en orden de preferencia de Odoo
+      const provMap={};
+      for(const x of sellers){ if(!x.partner_id||x.partner_id[0]===PROVEEDOR_T) continue; const pid=x.partner_id[0];
+        if(!provMap[pid] || (x.min_qty||1)<provMap[pid].minQty) provMap[pid]={id:pid,name:x.partner_id[1],price:x.price>0?x.price:0,minQty:x.min_qty||1}; }
+      const provs=Object.values(provMap);
       const costoU=m.standard_price||0, pvp=m.list_price||0;
       return {id, code:m.default_code||"", archivado:m.active===false, name:s.product_id[1], fam:familia(m.categ_id),
         categ:m.categ_id?m.categ_id[1]:"", val, qty, ventaU, venta3, freq,
@@ -342,7 +354,7 @@ async function cargar(){
         costoU, pvp, margenU:Math.max(0,pvp-costoU), margenPct:pvp>0?(pvp-costoU)/pvp*100:null,
         margenAnual: (ventaU>0 && pvp>costoU) ? ventaU*(pvp-costoU) : 0,
         provId:formal?formal.partner_id[0]:null, provName:formal?formal.partner_id[1]:null,
-        provPrice:formal&&formal.price>0?formal.price:0, minQty:formal?(formal.min_qty||1):1,
+        provPrice:formal&&formal.price>0?formal.price:0, minQty:formal?(formal.min_qty||1):1, provs,
         uomPo:m.uom_po_id?m.uom_po_id[0]:1, viaOtra:!formal&&hayT,
         min:(vp.min!==undefined&&vp.min<9999)?Math.round(vp.min*10)/10:null,
         valVenc:Math.round(vp.venc||0), val6:Math.round(vp.v6||0), val12:Math.round(vp.v12||0)};
@@ -946,8 +958,16 @@ function abrirProd(id){
         <div class="kv"><span class="k">Precio de lista</span><span class="v">${money(r.pvp)}${r.margenPct!==null?` · ${r.margenPct.toFixed(0)}% margen`:""}</span></div>
         <div class="kv"><span class="k">Margen generado al año</span><span class="v" style="color:var(--green)">${money(r.margenAnual)}</span></div>
       </div>
+      <div class="dsec"><h4>Proveedores${r.provs.length>1?` · le comprás a ${r.provs.length}`:""}</h4>
+        ${r.provs.length? (()=>{ const conP=r.provs.filter(p=>p.price>0).map(p=>p.price); const minP=conP.length?Math.min(...conP):null;
+          return r.provs.map((p,i)=>`<div class="provrow">
+            <div class="pnm">${esc(p.name)}${i===0?' <span class="tagmini">preferido</span>':''}${r.provs.length>1&&minP!==null&&p.price===minP?' <span class="tagmini cheap">más barato</span>':''}
+              <span class="psub">${p.price>0?money(p.price)+"/u":"sin precio"}${p.minQty>1?" · mín "+p.minQty+" u":""}</span></div>
+            <button class="mini-btn" onclick="compraDesdeProd(${r.id},${p.id},'${esc(p.name).replace(/'/g,"")}',${p.price})">Pedir →</button>
+          </div>`).join(""); })()
+        : `<div class="cmeta">${r.viaOtra?"Se repone por otra vía (sin OC).":"Sin proveedor cargado en Odoo — asignale uno para poder pedirle."}</div>`}
+      </div>
       <div class="dsec"><h4>Reposición</h4>
-        <div class="kv"><span class="k">Proveedor</span><span class="v">${r.provName?esc(r.provName):(r.viaOtra?"reposición directa (sin OC)":"sin proveedor cargado")}</span></div>
         <div class="kv"><span class="k">Cobertura (stock + en camino)</span><span class="v">${rp.cob>900?"∞":fmtDur(rp.cob)}</span></div>
         <div class="kv"><span class="k">Estado</span><span class="v"><span class="pill ${URG_COL[rp.urg]}">${URG_LBL[rp.urg]}</span></span></div>
         ${rp.necesita?`<div class="kv"><span class="k">Sugerido comprar</span><span class="v" style="color:var(--teal-deep)">${rp.sug} u · ${money(rp.costoLinea)}</span></div>`:""}
@@ -1040,6 +1060,12 @@ async function crearOC(){
 // ---------- CARGAR COMPRA: arma una OC desde cero (proveedor + productos) → borrador Odoo → confirmar ----------
 let COMPRA={prov:null,provName:"",items:[],poId:null,poName:"",estado:"draft"};
 function nuevaCompra(){ COMPRA={prov:null,provName:"",items:[],poId:null,poName:"",estado:"draft"}; renderCompra(); document.getElementById("drawer").classList.add("on"); document.getElementById("scrim").classList.add("on"); }
+// Abre "cargar compra" ya arrancada: proveedor elegido + este producto como primera línea (cantidad sugerida)
+function compraDesdeProd(prodId,provId,provName,price){
+  const r=DATA.find(x=>x.id===prodId); const sug=r?Math.max(1,repo(r).sug||r.minQty||1):1;
+  COMPRA={prov:provId,provName,items:[{id:prodId,code:r?r.code:"",name:r?cleanName(r.name):("#"+prodId),qty:sug,precio:price>0?price:(r?r.costoU:0)}],poId:null,poName:"",estado:"draft"};
+  renderCompra(); document.getElementById("drawer").classList.add("on"); document.getElementById("scrim").classList.add("on");
+}
 function pasos(){
   const p = COMPRA.estado==="sent"?4 : COMPRA.poId?3 : COMPRA.prov?2 : 1;
   const S=(n,t)=>`<div class="s ${p>n?'done':p===n?'on':''}"><span class="d">${p>n?'✓':n}</span>${t}</div>`;
