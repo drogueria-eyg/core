@@ -279,6 +279,11 @@ let TAB="repo";
 let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
 let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
 let rfiltro={q:"",soloRepo:true,sortK:"margenAnual",dir:-1};
+let CAT={loaded:false,loading:false,rows:[],fams:[],labs:[],provs:[]};
+let cfil={q:"",fam:"",lab:"",prov:"",stock:"",sortK:"name",dir:1};
+// laboratorio fabricante = segmento después de "ETICOS" en la categoría (los éticos se ordenan por lab)
+function labDe(categ){ if(!categ) return ""; const p=categ[1].split("/").map(s=>s.trim());
+  const i=p.findIndex(s=>s.toUpperCase()==="ETICOS"); return (i>=0&&p[i+1])?p[i+1]:""; }
 
 const B_DEF=[["Sano","menos de 3 meses",0,3,"green"],["Elevado","3 a 6 meses",3,6,"lime"],["Alto","6 a 12 meses",6,12,"yel"],["Sobrestock","1 a 3 años",12,36,"org"],["Muerto / crítico","más de 3 años o sin venta",36,1e12,"red"]];
 
@@ -643,6 +648,7 @@ function tabsBar(rd){
     <button class="tab ${TAB==="repo"?"on":""}" onclick="setTab('repo')">🛒 Reponer / Comprar ${nrep?`<span class="b">${nrep}</span>`:""}</button>
     <button class="tab ${TAB==="win"?"on":""}" onclick="setTab('win')">⭐ Ganadores</button>
     <button class="tab ${TAB==="stock"?"on":""}" onclick="setTab('stock')">📦 Cuidar el stock</button>
+    <button class="tab ${TAB==="cat"?"on":""}" onclick="setTab('cat')">🔎 Catálogo · ver todo</button>
     ${ARCH.length?`<button class="tab ${TAB==="revisar"?"on":""}" onclick="setTab('revisar')">🗃️ A revisar <span class="b">${ARCH.length}</span></button>`:""}
   </div>`;
 }
@@ -652,6 +658,7 @@ function renderTab(rd){
   if(TAB==="repo") c.innerHTML=tabRepo(rd);
   else if(TAB==="win") { c.innerHTML=tabWin(rd); renderWin(); }
   else if(TAB==="revisar") c.innerHTML=tabRevisar();
+  else if(TAB==="cat") { c.innerHTML=tabCat(); if(CAT.loaded) renderCatTabla(); }
   else { c.innerHTML=tabStock(); renderTabla(); }
 }
 
@@ -931,6 +938,97 @@ let sT; function onSearch(v){filtro.q=v;clearTimeout(sT);sT=setTimeout(renderTab
 function setChip(c,el){const on=filtro.chip===c;document.querySelectorAll(".chip").forEach(x=>x.classList.remove("on"));filtro.chip=on?"":c;if(!on)el.classList.add("on");renderTabla();}
 function sortBy(k){if(filtro.sortK===k)filtro.dir*=-1;else{filtro.sortK=k;filtro.dir=(k==="name"||k==="fam")?1:-1;}renderTabla();}
 
+// ---------- TAB: Catálogo (TODOS los productos, carga diferida) ----------
+function tabCat(){
+  if(!CAT.loaded){
+    if(!CAT.loading) setTimeout(loadCatalogo,10);
+    return `<div class="pcard empty"><div class="spinner" style="margin:6px auto 14px"></div>Cargando el catálogo completo… son ~21.800 productos, tarda unos segundos. Se carga una sola vez.</div>`;
+  }
+  const CG="grid-template-columns:2.4fr 1.1fr 1.2fr .7fr .9fr .8fr 96px";
+  return `<div class="note info">Todos los productos activos (${CAT.rows.length.toLocaleString("es-AR")}), tengan stock o no. Filtrá por <b>laboratorio</b> (fabricante) o por <b>proveedor</b> (a quién le comprás), buscá y pedí en un clic.</div>
+    <div class="toolbar" style="margin-top:12px">
+      <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="cq" placeholder="Buscar producto o código…" value="${esc(cfil.q)}" oninput="onCatSearch(this.value)"></div>
+      <select onchange="cfil.fam=this.value;renderCatTabla()"><option value="">Todas las familias</option>${CAT.fams.map(f=>`<option ${cfil.fam===f?"selected":""}>${esc(f)}</option>`).join("")}</select>
+      <select onchange="cfil.lab=this.value;renderCatTabla()"><option value="">Todos los laboratorios</option>${CAT.labs.map(l=>`<option ${cfil.lab===l?"selected":""}>${esc(l)}</option>`).join("")}</select>
+      <select onchange="cfil.prov=this.value;renderCatTabla()"><option value="">Todos los proveedores</option>${CAT.provs.map(p=>`<option ${cfil.prov===p?"selected":""}>${esc(p)}</option>`).join("")}</select>
+      <span class="chip ${cfil.stock==='con'?'on':''}" onclick="setCatChip('con',this)">Con stock</span>
+      <span class="chip ${cfil.stock==='sin'?'on':''}" onclick="setCatChip('sin',this)">Sin stock</span>
+    </div>
+    <div id="cattabla" data-cg="${CG}"></div>`;
+}
+async function loadCatalogo(){
+  CAT.loading=true;
+  try{
+    const [prods, si] = await Promise.all([
+      rpc("product.product","search_read",[[["active","=",true]]],{fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","list_price"],limit:100000}),
+      rpc("product.supplierinfo","search_read",[[]],{fields:["product_tmpl_id","product_id","partner_id","price","min_qty"],limit:100000}),
+    ]);
+    const byTmpl={};
+    for(const s of si){ if(!s.partner_id||s.partner_id[0]===PROVEEDOR_T) continue; const t=s.product_tmpl_id?s.product_tmpl_id[0]:null; if(!t) continue;
+      const m=(byTmpl[t]=byTmpl[t]||{}), pid=s.partner_id[0], cur=m[pid];
+      if(!cur || (s.min_qty||1)<cur.minQty) m[pid]={id:pid,name:s.partner_id[1],price:s.price>0?s.price:0,minQty:s.min_qty||1}; }
+    const stQty={}; DATA.forEach(r=>stQty[r.id]=r.qty); ARCH.forEach(r=>stQty[r.id]=r.qty);
+    CAT.rows=prods.map(p=>{ const t=p.product_tmpl_id?p.product_tmpl_id[0]:null;
+      const provs=t&&byTmpl[t]?Object.values(byTmpl[t]):[];
+      const costoU=p.standard_price||0, pvp=p.list_price||0;
+      return {id:p.id, code:p.default_code||"", name:cleanName(p.name||""), fam:familia(p.categ_id), lab:labDe(p.categ_id),
+        qty:Math.round(stQty[p.id]||0), costoU, pvp, margenPct:pvp>0?(pvp-costoU)/pvp*100:null,
+        provs, provName:provs.length?provs[0].name:"", provId:provs.length?provs[0].id:null, provPrice:provs.length?provs[0].price:0}; });
+    CAT.fams=[...new Set(CAT.rows.map(r=>r.fam).filter(Boolean))].sort();
+    CAT.labs=[...new Set(CAT.rows.map(r=>r.lab).filter(Boolean))].sort();
+    CAT.provs=[...new Set(CAT.rows.flatMap(r=>r.provs.map(p=>p.name)))].sort();
+    CAT.loaded=true; CAT.loading=false;
+    if(TAB==="cat") render();
+  }catch(e){ CAT.loading=false; const c=document.getElementById("tabc"); if(c)c.innerHTML='<div class="errbox">No pude cargar el catálogo: '+esc(e.message)+'</div>'; }
+}
+let ctS; function onCatSearch(v){cfil.q=v;clearTimeout(ctS);ctS=setTimeout(renderCatTabla,160);}
+function setCatChip(c,el){const on=cfil.stock===c;document.querySelectorAll("#tabc .chip").forEach(x=>x.classList.remove("on"));cfil.stock=on?"":c;if(!on&&el)el.classList.add("on");renderCatTabla();}
+function sortCat(k){if(cfil.sortK===k)cfil.dir*=-1;else{cfil.sortK=k;cfil.dir=(k==="name"||k==="lab"||k==="provName")?1:-1;}renderCatTabla();}
+function catVisibles(){
+  return CAT.rows.filter(r=>{
+    if(cfil.q){const q=cfil.q.toLowerCase(); if(!(r.name.toLowerCase().includes(q)||(r.code||"").toLowerCase().includes(q))) return false;}
+    if(cfil.fam && r.fam!==cfil.fam) return false;
+    if(cfil.lab && r.lab!==cfil.lab) return false;
+    if(cfil.prov && !r.provs.some(p=>p.name===cfil.prov)) return false;
+    if(cfil.stock==="con" && !(r.qty>0)) return false;
+    if(cfil.stock==="sin" && r.qty>0) return false;
+    return true;
+  });
+}
+function renderCatTabla(){
+  const el=document.getElementById("cattabla"); if(!el) return;
+  const CG=el.getAttribute("data-cg");
+  let d=catVisibles();
+  const k=cfil.sortK;
+  d=[...d].sort((a,b)=>{let x=a[k],y=b[k];if(typeof x==="string")return cfil.dir*x.localeCompare(y);return cfil.dir*((x??-1)-(y??-1));});
+  const cap=d.slice(0,300);
+  const arrow=key=>cfil.sortK===key?(cfil.dir<0?" ↓":" ↑"):"";
+  el.innerHTML=`<div class="count-line"><b>${d.length.toLocaleString("es-AR")}</b> productos${cfil.lab?` · lab ${esc(cfil.lab)}`:""}${cfil.prov?` · prov ${esc(cfil.prov)}`:""}</div>
+    <div class="tablecard">
+      <div class="thead" style="${CG}">
+        <div onclick="sortCat('name')" title="Nombre y código del producto.">Producto${arrow('name')}</div>
+        <div class="hide-sm" onclick="sortCat('lab')" title="Laboratorio fabricante (subcategoría de Éticos).">Laboratorio${arrow('lab')}</div>
+        <div onclick="sortCat('provName')" title="Proveedor preferido (a quién le comprás). Puede haber más de uno.">Proveedor${arrow('provName')}</div>
+        <div class="tr-r" onclick="sortCat('qty')" title="Unidades en stock hoy.">Stock${arrow('qty')}</div>
+        <div class="tr-r hide-sm" onclick="sortCat('costoU')" title="Costo unitario (standard_price de Odoo).">Costo${arrow('costoU')}</div>
+        <div class="tr-r hide-sm" onclick="sortCat('margenPct')" title="Margen sobre venta = (precio − costo) / precio.">Margen${arrow('margenPct')}</div>
+        <div style="text-align:right"></div>
+      </div>
+      ${cap.map(r=>`<div class="row" style="${CG};cursor:default">
+        <div><div class="cname">${esc(r.name)}</div><div class="cmeta">${esc(r.code||"")}${r.provs.length>1?` · ${r.provs.length} prov.`:""}</div></div>
+        <div class="hide-sm cmeta">${esc(r.lab||"—")}</div>
+        <div class="cmeta">${esc(r.provName||"—")}</div>
+        <div class="tr-r num">${r.qty>0?r.qty.toLocaleString("es-AR"):'<span style="color:var(--gris2)">0</span>'}</div>
+        <div class="tr-r hide-sm num" style="font-weight:500">${r.costoU?money(r.costoU):"—"}</div>
+        <div class="tr-r hide-sm num">${r.margenPct!==null?r.margenPct.toFixed(0)+"%":"—"}</div>
+        <div style="text-align:right">${r.provId?`<button class="mini-btn" onclick="compraDesdeProd(${r.id},${r.provId},'${esc(r.provName).replace(/'/g,"")}',${r.provPrice},'${esc(r.name).replace(/'/g,"")}')">Pedir</button>`:""}</div>
+      </div>`).join("")}
+      ${d.length>300?`<div class="empty" style="padding:16px">…y ${(d.length-300).toLocaleString("es-AR")} más. Afiná los filtros o el buscador.</div>`:""}
+      ${!d.length?'<div class="empty">Sin resultados con esos filtros.</div>':""}
+    </div>`;
+}
+
 // ---------- drawer producto ----------
 function abrirProd(id){
   const r=DATA.find(x=>x.id===id); if(!r) return;
@@ -1061,9 +1159,13 @@ async function crearOC(){
 let COMPRA={prov:null,provName:"",items:[],poId:null,poName:"",estado:"draft"};
 function nuevaCompra(){ COMPRA={prov:null,provName:"",items:[],poId:null,poName:"",estado:"draft"}; renderCompra(); document.getElementById("drawer").classList.add("on"); document.getElementById("scrim").classList.add("on"); }
 // Abre "cargar compra" ya arrancada: proveedor elegido + este producto como primera línea (cantidad sugerida)
-function compraDesdeProd(prodId,provId,provName,price){
-  const r=DATA.find(x=>x.id===prodId); const sug=r?Math.max(1,repo(r).sug||r.minQty||1):1;
-  COMPRA={prov:provId,provName,items:[{id:prodId,code:r?r.code:"",name:r?cleanName(r.name):("#"+prodId),qty:sug,precio:price>0?price:(r?r.costoU:0)}],poId:null,poName:"",estado:"draft"};
+function compraDesdeProd(prodId,provId,provName,price,nameFallback){
+  const r=DATA.find(x=>x.id===prodId); const cr=!r&&CAT.loaded?CAT.rows.find(x=>x.id===prodId):null;
+  const sug=r?Math.max(1,repo(r).sug||r.minQty||1):1;
+  const nm=r?cleanName(r.name):(nameFallback||(cr?cr.name:("#"+prodId)));
+  const code=r?r.code:(cr?cr.code:"");
+  const precio=price>0?price:(r?r.costoU:(cr?cr.costoU:0));
+  COMPRA={prov:provId,provName,items:[{id:prodId,code,name:nm,qty:sug,precio}],poId:null,poName:"",estado:"draft"};
   renderCompra(); document.getElementById("drawer").classList.add("on"); document.getElementById("scrim").classList.add("on");
 }
 function pasos(){
