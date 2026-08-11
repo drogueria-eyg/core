@@ -323,8 +323,7 @@ window.EYG = (function(){
     /* EN PRUEBAS: CRM de contactos (existentes + por conquistar). Oculto para todo
        el equipo hasta terminarlo — sólo super-admins (Diego/German). Para liberarlo:
        borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de datos/contactos.html. */
-    {key:"contactos", dept:"comercial", cat:"Comercial", ico:"👥", titulo:"Clientes (CRM)", desc:"Gestioná tus contactos y descubrí a quién falta conquistar: agrupá por comercial, corregí datos, reasigná comercial y cruzá con el padrón oficial de farmacias e instituciones.", roles:["comercial","lider","admin","direccion"], ready:true,
-      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+    {key:"contactos", dept:"comercial", cat:"Comercial", ico:"👥", titulo:"Clientes (CRM)", desc:"Gestioná los contactos del equipo y descubrí a quién falta conquistar: agrupá por comercial, corregí datos, reasigná comercial, cruzá con el padrón oficial y enviá prospectos a la carpeta 'A conquistar' de cada comercial.", roles:["lider","admin","direccion"], ready:true,
       path:()=>"datos/contactos.html"},
     /* EN PRUEBAS: oculto para todo el equipo hasta terminarlo. `pruebas` son
        huellas (SHA-256) de email — así no publicamos direcciones en el repo.
@@ -1002,10 +1001,37 @@ window.EYG = (function(){
   /* Leyenda de los 4 niveles (qué significa cada uno). Reutilizable en cualquier módulo. */
   function credLeyendaHTML(){ credStyles(); return '<div class="eyg-credleg">'+["apto","reparos","consultar","noapto"].map(k=>{const m=CRED_NIV[k]; return `<div class="cl-row"><span class="cl-dot ${m.luz}"></span><div><b>${esc(m.titulo)}</b> — ${esc(m.sub)}</div></div>`;}).join("")+'</div>'; }
 
+  /* ===== CONTACTOS A CONQUISTAR (bolsillo del comercial) =====
+     El líder asigna establecimientos del padrón oficial (módulo Contactos) a la carpeta de un
+     comercial para que los trabaje y los convierta en clientes nuevos. Se guardan los DATOS del
+     ítem (no el idx del padrón, que no existe fuera de Contactos) en ir.config_parameter
+     `eyg.conquistar`: [{id, com(comercial_ref), nombre, tipo(0 farmacia/1 institución), loc, prov,
+     dom, por(asignó), ts, partnerId(null hasta que el comercial lo crea)}]. El estado se DERIVA:
+     sin partnerId=pendiente; con partnerId=creado; convertido cuando la ficha llega a 90% + mensaje
+     inicial (lo evalúa el panel con los datos vivos del contacto). */
+  const CONQ_KEY="eyg.conquistar";
+  async function conquistarLeer(){ try{ return JSON.parse(await rpc("ir.config_parameter","get_param",[CONQ_KEY])||"[]")||[]; }catch(e){ return []; } }
+  async function conquistarGuardar(arr){ return rpc("ir.config_parameter","set_param",[CONQ_KEY, JSON.stringify(arr||[])]); }
+  const _cqKey=it=>((it.nombre||"")+"|"+(it.loc||"")).toLowerCase().replace(/\s+/g," ").trim();
+  /* Asigna ítems a la carpeta de un comercial (por su nombre/ref). Evita duplicar el mismo
+     establecimiento (nombre+localidad) en la misma carpeta si sigue pendiente. Devuelve cuántos entraron. */
+  async function conquistarAsignar(items, comRef, por){
+    const arr=await conquistarLeer();
+    const yaKeys=new Set(arr.filter(x=>x&&x.com===comRef&&!x.partnerId).map(_cqKey));
+    let n=0;
+    (items||[]).forEach(it=>{ if(!it||!it.nombre) return; const k=_cqKey(it); if(yaKeys.has(k)) return; yaKeys.add(k);
+      arr.push({ id:"cq_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,7), com:comRef, nombre:it.nombre, tipo:it.tipo||0, loc:it.loc||"", prov:it.prov||"", dom:it.dom||"", por:por||"", ts:new Date().toISOString(), partnerId:null }); n++; });
+    if(n) await conquistarGuardar(arr); return n;
+  }
+  function conquistarDeComercial(arr, comRef){ return (arr||[]).filter(x=>x && x.com===comRef); }
+  async function conquistarSetPartner(id, partnerId){ const arr=await conquistarLeer(); const it=arr.find(x=>x&&x.id===id); if(it){ it.partnerId=partnerId; await conquistarGuardar(arr); } return arr; }
+  async function conquistarQuitar(id){ const arr=(await conquistarLeer()).filter(x=>x&&x.id!==id); await conquistarGuardar(arr); return arr; }
+
   return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
     creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
+    conquistarLeer, conquistarGuardar, conquistarAsignar, conquistarDeComercial, conquistarSetPartner, conquistarQuitar,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA,
