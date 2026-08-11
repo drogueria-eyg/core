@@ -200,6 +200,19 @@
   .ordfoot b{font-size:20px;font-weight:800}
   .okbox{background:var(--greenbg);border:1px solid #B7E0C4;color:#155C33;padding:13px 15px;border-radius:10px;font-size:13.5px;margin-top:12px;line-height:1.5}
   .okbox b{color:var(--green)}
+  /* cargar compra */
+  .cinput{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;font-family:inherit;color:var(--ink)}
+  .cpick{border:1px solid var(--line);border-radius:9px;margin-top:5px;max-height:210px;overflow:auto}
+  .cpick .r{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 11px;font-size:12.5px;cursor:pointer;border-bottom:1px solid var(--line)}
+  .cpick .r:last-child{border-bottom:0} .cpick .r:hover{background:var(--bg)}
+  .cpick .r .rp{color:var(--gris2);font-size:11.5px;white-space:nowrap}
+  .cchip{display:inline-flex;align-items:center;gap:8px;background:var(--agua);color:var(--teal-deep);font-weight:700;font-size:13px;border-radius:20px;padding:6px 12px}
+  .cchip b{cursor:pointer;font-size:15px;line-height:1}
+  .cstep{display:flex;gap:8px;align-items:center;font-size:11.5px;color:var(--gris);margin:2px 0 14px}
+  .cstep .s{display:flex;align-items:center;gap:6px} .cstep .s .d{width:20px;height:20px;border-radius:50%;background:var(--line);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:11px}
+  .cstep .s.on .d{background:var(--teal)} .cstep .s.done .d{background:var(--green)} .cstep .s.on{color:var(--ink);font-weight:700}
+  .cstep .ln{flex:1;height:2px;background:var(--line);min-width:12px}
+  .cprice{width:92px;font-family:inherit;font-size:13px;text-align:right;border:1px solid var(--line);border-radius:8px;padding:7px 8px;font-weight:700;color:var(--ink)}
 
   @media(max-width:860px){ .grid2{grid-template-columns:1fr} .rotleg{grid-template-columns:1fr}
     .g-stock{grid-template-columns:2fr 1fr 0.9fr} .g-repo{grid-template-columns:2fr 1fr 0.9fr} .g-win{grid-template-columns:2fr 0.9fr 1fr}
@@ -701,6 +714,10 @@ function tabRepo(rd){
       <div class="kpi"><div class="l">Proveedores a pedir</div><div class="n">${nprov}</div><div class="d">agrupá y armá el pedido</div></div>
     </div>
 
+    <div style="display:flex;justify-content:flex-end;margin:14px 0 2px">
+      <button class="wa-send" style="width:auto;margin:0;padding:11px 20px" onclick="nuevaCompra()">➕ Cargar una compra nueva</button>
+    </div>
+
     <div class="policy">
       <div class="pol"><label>Avisar cuando la cobertura baje de <b id="lbU">${pol.umbral} mes</b></label>
         <input type="range" min="0.25" max="3" step="0.25" value="${pol.umbral}" oninput="setUmbral(this.value)"></div>
@@ -1020,6 +1037,110 @@ async function crearOC(){
     btn.disabled=false; btn.textContent="📝 Crear borrador en Odoo";
   }
 }
+// ---------- CARGAR COMPRA: arma una OC desde cero (proveedor + productos) → borrador Odoo → confirmar ----------
+let COMPRA={prov:null,provName:"",items:[],poId:null,poName:"",estado:"draft"};
+function nuevaCompra(){ COMPRA={prov:null,provName:"",items:[],poId:null,poName:"",estado:"draft"}; renderCompra(); document.getElementById("drawer").classList.add("on"); document.getElementById("scrim").classList.add("on"); }
+function pasos(){
+  const p = COMPRA.estado==="sent"?4 : COMPRA.poId?3 : COMPRA.prov?2 : 1;
+  const S=(n,t)=>`<div class="s ${p>n?'done':p===n?'on':''}"><span class="d">${p>n?'✓':n}</span>${t}</div>`;
+  return `<div class="cstep">${S(1,"Proveedor")}<span class="ln"></span>${S(2,"Productos")}<span class="ln"></span>${S(3,"Borrador")}<span class="ln"></span>${S(4,"Enviar")}</div>`;
+}
+function renderCompra(){
+  const d=document.getElementById("drawer");
+  const total=COMPRA.items.reduce((a,it)=>a+it.qty*it.precio,0);
+  let body;
+  if(!COMPRA.prov){
+    body=`<div class="dsec"><h4>1 · ¿A qué proveedor le comprás?</h4>
+      <input class="cinput" id="cprov" placeholder="Buscar proveedor por nombre o CUIT…" oninput="buscarProvCompra(this.value)" autocomplete="off">
+      <div class="cpick" id="cpickProv" style="display:none"></div></div>`;
+  } else if(!COMPRA.poId){
+    body=`<div class="dsec"><h4>Proveedor</h4><span class="cchip">${esc(COMPRA.provName)} <b onclick="cambiarProv()" title="Cambiar">✕</b></span></div>
+      <div class="dsec"><h4>2 · Agregá productos</h4>
+        <input class="cinput" id="cprod" placeholder="Buscar producto por nombre o código…" oninput="buscarProdCompra(this.value)" autocomplete="off">
+        <div class="cpick" id="cpickProd" style="display:none"></div>
+        ${COMPRA.items.length?`<div style="margin-top:12px">
+          <div class="ord" style="border-bottom:2px solid var(--line);font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:700"><div>Producto</div><div style="text-align:center">Unid.</div><div style="text-align:right">Precio u.</div></div>
+          ${COMPRA.items.map((it,i)=>`<div class="ord">
+            <div class="on">${esc(it.name)}<span>${it.code?esc(it.code)+" · ":""}<a onclick="quitarLineaCompra(${i})" style="color:var(--red);cursor:pointer">quitar</a></span></div>
+            <input class="q" type="number" min="0" step="1" value="${it.qty}" oninput="compraQty(${i},this.value)">
+            <input class="cprice" type="number" min="0" step="0.01" value="${it.precio}" oninput="compraPrecio(${i},this.value)"></div>`).join("")}
+          <div class="ordfoot"><span>Total estimado</span><b id="cTot">${money(total)}</b></div>
+        </div>`:'<div class="cmeta" style="margin-top:10px">Todavía no agregaste productos.</div>'}
+      </div>
+      <div id="cMsg"></div>
+      <button class="wa-send" id="cBtn" onclick="crearOCCompra()" ${COMPRA.items.length?"":"disabled style=opacity:.5"}>📝 Crear borrador en Odoo</button>`;
+  } else {
+    body=`<div class="dsec"><h4>Proveedor</h4><span class="cchip">${esc(COMPRA.provName)}</span></div>
+      <div class="okbox">✓ Borrador <b>${esc(COMPRA.poName)}</b> creado en Odoo con ${COMPRA.items.filter(i=>i.qty>0).length} líneas por ${money(total)}.</div>
+      ${COMPRA.estado==="sent"
+        ? `<div class="okbox" style="margin-top:8px">✓ Orden <b>confirmada y enviada</b> al proveedor. Ahora queda esperar la mercadería.<br><b>La recepción se hace en el módulo de Depósito.</b></div>`
+        : `<div class="dsec" style="margin-top:14px"><h4>3 · Revisá y enviá</h4>
+            <p style="font-size:13px;color:var(--gris);line-height:1.55">El borrador quedó en Odoo sin confirmar. Podés revisarlo en <b>Compras → Órdenes de compra</b>. Cuando esté ok, confirmalo para enviarlo al proveedor.</p>
+            <button class="wa-send" id="cConf" onclick="confirmarOCCompra()" style="background:var(--teal)">✅ Confirmar y enviar al proveedor</button>
+            <button class="wa-send ghost" onclick="copiarCompra()">Copiar pedido (texto)</button></div>`}
+      <button class="wa-send ghost" onclick="nuevaCompra()" style="margin-top:14px">➕ Cargar otra compra</button>`;
+  }
+  d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span><h2>Cargar una compra</h2>
+      <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${money(total)}</span></div></div>
+    <div class="dbody">${pasos()}${body}</div>`;
+}
+let tProv=null;
+function buscarProvCompra(q){ clearTimeout(tProv); tProv=setTimeout(async()=>{
+  const box=document.getElementById("cpickProv"); if(!box) return;
+  if(!q||q.length<2){ box.style.display="none"; return; }
+  try{ const r=await rpc("res.partner","search_read",[["&",["supplier_rank",">",0],"|",["name","ilike",q],["vat","ilike",q]]],{fields:["id","name","vat"],limit:12});
+    box.style.display="block";
+    box.innerHTML=r.length?r.map(x=>`<div class="r" onclick="setProvCompra(${x.id},'${esc((x.name||'')).replace(/'/g,'')}')"><span>${esc(x.name)}</span><span class="rp">${esc(x.vat||'')}</span></div>`).join(""):'<div class="r">Sin proveedores. Probá otro nombre.</div>';
+  }catch(e){ box.style.display="block"; box.innerHTML='<div class="r">Error: '+esc(e.message)+'</div>'; }
+},260); }
+function setProvCompra(id,name){ COMPRA.prov=id; COMPRA.provName=name; renderCompra(); }
+function cambiarProv(){ COMPRA.prov=null; COMPRA.provName=""; renderCompra(); }
+let tProd=null;
+function buscarProdCompra(q){ clearTimeout(tProd); tProd=setTimeout(async()=>{
+  const box=document.getElementById("cpickProd"); if(!box) return;
+  if(!q||q.length<2){ box.style.display="none"; return; }
+  try{ const r=await rpc("product.product","search_read",[["&",["active","=",true],"|",["name","ilike",q],["default_code","ilike",q]]],{fields:["id","default_code","name","product_tmpl_id","standard_price"],limit:14});
+    box.style.display="block";
+    box.innerHTML=r.length?r.map(x=>`<div class="r" onclick="addLineaCompra(${x.id},'${esc((x.default_code||'')).replace(/'/g,'')}','${esc((x.name||'').slice(0,70)).replace(/'/g,'')}',${x.product_tmpl_id?x.product_tmpl_id[0]:0},${x.standard_price||0})"><span>${esc(x.name)}</span><span class="rp">${esc(x.default_code||'')}</span></div>`).join(""):'<div class="r">Sin resultados.</div>';
+  }catch(e){ box.style.display="block"; box.innerHTML='<div class="r">Error: '+esc(e.message)+'</div>'; }
+},260); }
+async function addLineaCompra(id,code,name,tmpl,sp){
+  if(COMPRA.items.some(it=>it.id===id)){ toast("Ese producto ya está en la lista"); return; }
+  let precio=Math.round((sp||0)*100)/100;
+  try{ const si=await rpc("product.supplierinfo","search_read",[["&",["partner_id","=",COMPRA.prov],"|",["product_tmpl_id","=",tmpl],["product_id","=",id]]],{fields:["price"],limit:1}); if(si.length&&si[0].price>0) precio=si[0].price; }catch(e){}
+  COMPRA.items.push({id,code,name,qty:1,precio}); renderCompra();
+}
+function quitarLineaCompra(i){ COMPRA.items.splice(i,1); renderCompra(); }
+function compraQty(i,v){ COMPRA.items[i].qty=Math.max(0,parseInt(v)||0); const t=COMPRA.items.reduce((a,it)=>a+it.qty*it.precio,0); const e=document.getElementById("cTot"); if(e)e.textContent=money(t); }
+function compraPrecio(i,v){ COMPRA.items[i].precio=Math.max(0,parseFloat(v)||0); const t=COMPRA.items.reduce((a,it)=>a+it.qty*it.precio,0); const e=document.getElementById("cTot"); if(e)e.textContent=money(t); }
+async function crearOCCompra(){
+  const its=COMPRA.items.filter(it=>it.qty>0); if(!its.length){ toast("Agregá productos con cantidad"); return; }
+  const total=its.reduce((a,it)=>a+it.qty*it.precio,0);
+  if(!confirm(`¿Crear borrador de compra a ${COMPRA.provName} con ${its.length} productos por ${money(total)}?\n\nQueda en borrador en Odoo, sin confirmar.`)) return;
+  const btn=document.getElementById("cBtn"); if(btn){btn.disabled=true;btn.textContent="Creando en Odoo…";}
+  try{
+    const dp=new Date(HOY); dp.setDate(dp.getDate()+7);
+    const lines=its.map(it=>[0,0,{product_id:it.id, product_qty:it.qty, price_unit:Math.round(it.precio*100)/100, name:it.name, date_planned:iso(dp)+" 00:00:00"}]);
+    const poId=await rpc("purchase.order","create",[{partner_id:COMPRA.prov, order_line:lines}]);
+    const info=await rpc("purchase.order","read",[[poId],["name"]]);
+    COMPRA.poId=poId; COMPRA.poName=(info&&info[0])?info[0].name:("#"+poId);
+    renderCompra();
+  }catch(e){ if(btn){btn.disabled=false;btn.textContent="📝 Crear borrador en Odoo";} const m=document.getElementById("cMsg"); if(m)m.innerHTML=`<div class="errbox">No pude crear el borrador: ${esc(e.message)}</div>`; }
+}
+async function confirmarOCCompra(){
+  if(!confirm(`¿Confirmar la orden ${COMPRA.poName} y enviarla al proveedor?\n\nPasa de borrador a orden de compra confirmada en Odoo.`)) return;
+  const btn=document.getElementById("cConf"); if(btn){btn.disabled=true;btn.textContent="Confirmando…";}
+  try{ await rpc("purchase.order","button_confirm",[[COMPRA.poId]]); COMPRA.estado="sent"; renderCompra(); toast("✓ Orden confirmada y enviada"); }
+  catch(e){ if(btn){btn.disabled=false;btn.textContent="✅ Confirmar y enviar al proveedor";} alert("No se pudo confirmar: "+(e.message||e)); }
+}
+function copiarCompra(){
+  const its=COMPRA.items.filter(it=>it.qty>0);
+  let t=`Pedido de compra · Droguería EyG\nProveedor: ${COMPRA.provName}\nOrden: ${COMPRA.poName}\n\n`;
+  its.forEach(it=>t+=`• ${it.qty} u — ${it.name}${it.code?" ("+it.code+")":""} · ${money(it.precio)}/u\n`);
+  t+=`\nTotal estimado: ${money(its.reduce((a,it)=>a+it.qty*it.precio,0))}`;
+  navigator.clipboard.writeText(t).then(()=>toast("✓ Pedido copiado"));
+}
+
 let toastT; function toast(msg){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";
   t.style.cssText="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:600;z-index:99;box-shadow:0 8px 30px rgba(0,0,0,.25)";document.body.appendChild(t);}
   t.textContent=msg;t.style.opacity="1";clearTimeout(toastT);toastT=setTimeout(()=>t.style.opacity="0",1800);}
