@@ -726,6 +726,13 @@ function renderTab(rd){
   else { c.innerHTML=tabStock(); renderTabla(); }
 }
 
+// recomendación de qué hacer con un producto de valorización rota
+function sugerenciaRoto(r){
+  if(r.qty<0)  return {ico:"⚠️", txt:"Debe más de lo que tiene: ajustá el stock a lo real y revalorizá en Odoo."};
+  if(r.qty===0) return {ico:"📥", txt:"Sin stock real. Archivalo hasta la próxima compra."};
+  if(r.ventaU===0) return {ico:"📥", txt:"Con stock pero sin ventas hace 1 año. Archivalo o destruilo si ya no existe."};
+  return {ico:"🔧", txt:"Tiene stock y rota. Revalorizá en Odoo al costo actual (botón Odoo →)."};
+}
 // ---------- TAB: A revisar (valorización rota + archivados con stock) ----------
 function tabRevisar(){
   if(!ARCH.length && !VALROTO.length) return `<div class="pcard empty">Nada para revisar. 👌</div>`;
@@ -734,18 +741,25 @@ function tabRevisar(){
     <div class="note" style="border-left-color:var(--red);background:#FDF3F2;color:#7a2320">⚠️ <b>${VALROTO.length} producto${VALROTO.length===1?"":"s"} que Odoo valoriza en NEGATIVO</b> por stock negativo (se entregó más de lo que se ingresó en el sistema): un valor imposible que suma <b>${fmtM(totRoto)}</b>. Los <b>saqué de las listas normales</b> para que no ensucien el inventario, y los junté acá con el número tal cual está en Odoo. Hay que <b>regularizarlos en Odoo</b> (ajustar el stock / revalorizar). De raíz: ingresar la mercadería antes de entregarla.</div>
     <div class="toolbar" style="margin-top:10px"><button class="mini-btn" onclick="copiarValRoto()">📋 Copiar lista</button></div>
     <div class="tablecard" style="margin-top:8px">
-      <div class="thead" style="grid-template-columns:2.6fr 0.9fr 1.3fr 1.6fr">
-        <div>Producto</div><div class="tr-r">Stock (u)</div><div class="tr-r">Valor en Odoo</div><div style="text-align:right">Corregir</div>
+      <div class="thead" style="grid-template-columns:2fr 0.7fr 1fr 1.5fr 1.7fr">
+        <div title="Nombre y código del producto.">Producto</div>
+        <div class="tr-r" title="Unidades reales en stock hoy (on-hand). Negativo = se entregó más de lo que se ingresó.">Stock (u)</div>
+        <div class="tr-r" title="Valor contable que Odoo le tiene puesto al stock (roto, en negativo). No es el costo unitario.">Valor en Odoo</div>
+        <div title="Qué conviene hacer con este producto para regularizarlo.">💡 Sugerencia</div>
+        <div style="text-align:right" title="Acciones para corregir en Odoo desde acá.">Corregir</div>
       </div>
-      ${VALROTO.map(r=>`<div class="row" style="grid-template-columns:2.6fr 0.9fr 1.3fr 1.6fr;cursor:default">
+      ${VALROTO.map(r=>{const s=sugerenciaRoto(r); return `<div class="row" style="grid-template-columns:2fr 0.7fr 1fr 1.5fr 1.7fr;cursor:default">
         <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">${r.code?esc(r.code):""}</div></div>
-        <div class="tr-r num">${r.qty.toLocaleString("es-AR")}</div>
+        <div class="tr-r num" style="${r.qty<0?'color:var(--red);font-weight:700':''}">${r.qty.toLocaleString("es-AR")}</div>
         <div class="tr-r num" style="color:var(--red);font-weight:700">${money(r.val)}</div>
-        <div class="actions" style="display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap">
-          <a class="mini-btn" href="${odooProd(r.id)}" target="_blank" rel="noopener" style="text-decoration:none;border-color:#BFE0DC;color:var(--teal-deep)">Abrir en Odoo →</a>
-          <button class="mini-btn" onclick="accionCero(${r.id})" style="border-color:#F0B3B0;color:var(--red)" title="Ajuste de inventario a 0 (regulariza el stock)">Poner en 0</button>
+        <div class="cmeta" style="line-height:1.35">${s.ico} ${s.txt}</div>
+        <div class="actions" style="display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap">
+          <button class="mini-btn" onclick="accionArchivar(${r.id})" style="border-color:#CBBF8E;color:#8a6d17" title="Dar de baja en Odoo hasta que haya un nuevo movimiento (ej. compra)">📥 Archivar</button>
+          <button class="mini-btn" onclick="accionCero(${r.id})" title="Ajuste de inventario a 0 (regulariza la cantidad)">Poner en 0</button>
+          <button class="mini-btn" onclick="accionDestruir(${r.id})" style="border-color:#F0B3B0;color:var(--red)" title="Scrap: saca las unidades del stock">Destruir</button>
+          <a class="mini-btn" href="${odooProd(r.id)}" target="_blank" rel="noopener" style="text-decoration:none;border-color:#BFE0DC;color:var(--teal-deep)" title="Abrir la ficha en Odoo para revalorizar (ajustar el valor al costo actual)">Odoo →</a>
         </div>
-      </div>`).join("")}
+      </div>`}).join("")}
     </div>` : "";
   const totA=ARCH.reduce((a,r)=>a+r.val,0);
   const seccionArch = ARCH.length ? `
@@ -753,11 +767,15 @@ function tabRevisar(){
     <div class="note info">Estos <b>${ARCH.length} productos están archivados en Odoo</b> (dados de baja) pero todavía figuran con stock (${fmtM(totA)}). Por eso los saqué de las listas, la reposición y los ganadores, y los junté acá. La droguería dice que ya no existen: hay que regularizar ese stock fantasma.</div>
     <div class="tablecard" style="margin-top:14px">
       <div class="thead" style="grid-template-columns:2.4fr 0.7fr 0.9fr 0.6fr 1.9fr">
-        <div>Producto</div><div class="tr-r">Unid.</div><div class="tr-r">Valor</div><div class="tr-r">Vence</div><div style="text-align:right">Acción</div>
+        <div title="Nombre y código. Están dados de baja (archivados) en Odoo.">Producto</div>
+        <div class="tr-r" title="Unidades que todavía figuran con stock aunque el producto esté archivado.">Unid.</div>
+        <div class="tr-r" title="Valor de ese stock fantasma según Odoo.">Valor</div>
+        <div class="tr-r" title="Cuánto falta para que venza el lote más próximo.">Vence</div>
+        <div style="text-align:right" title="Acciones para regularizar en Odoo.">Acción</div>
       </div>
       ${ARCH.map(r=>{const venc=r.min===null?'<span style="color:#CCD5D3">—</span>':r.min<0?'<b style="color:var(--red)">vencido</b>':fmtDurC(r.min);
         return `<div class="row" style="grid-template-columns:2.4fr 0.7fr 0.9fr 0.6fr 1.9fr;cursor:default" id="arow${r.id}">
-          <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">${r.code?esc(r.code)+" · ":""}archivado en Odoo</div></div>
+          <div><div class="cname">${esc(cleanName(r.name))} <span class="tagmini" style="background:#EEF2F1;color:var(--gris)">Archivado</span></div><div class="cmeta">${r.code?esc(r.code):""}</div></div>
           <div class="tr-r num">${r.qty.toLocaleString("es-AR")}</div>
           <div class="tr-r num">${money(r.val)}</div>
           <div class="tr-r">${venc}</div>
@@ -790,7 +808,7 @@ async function accionCero(id){
   }catch(e){ alert("No se pudo poner en 0: "+(e.message||e)); }
 }
 async function accionDestruir(id){
-  const r=ARCH.find(x=>x.id===id); if(!r) return;
+  const r=ARCH.find(x=>x.id===id)||VALROTO.find(x=>x.id===id); if(!r) return;
   if(!confirm(`¿Marcar para DESTRUIR "${cleanName(r.name)}" (${r.qty} u)?\n\nCrea un scrap en Odoo: las unidades pasan a la ubicación Scrap y salen del stock. Queda registrado.`)) return;
   try{
     const qs=await _quantsInternos(id,true);
@@ -804,6 +822,12 @@ async function accionDesarchivar(id){
   if(!confirm(`¿Desarchivar "${cleanName(r.name)}"?\n\nVuelve al catálogo activo y reaparece en las listas normales.`)) return;
   try{ await rpc("product.product","write",[[id],{active:true}]); toast("✓ Desarchivado"); await cargar(); }
   catch(e){ alert("No se pudo desarchivar: "+(e.message||e)); }
+}
+async function accionArchivar(id){
+  const r=VALROTO.find(x=>x.id===id)||DATA.find(x=>x.id===id); if(!r) return;
+  if(!confirm(`¿Archivar "${cleanName(r.name)}"?\n\nSe da de baja en Odoo (active=false): deja de aparecer en las listas y en "A revisar". Vuelve solo si hay un nuevo movimiento (ej. una compra) o si lo desarchivás.`)) return;
+  try{ await rpc("product.product","write",[[id],{active:false}]); toast("✓ Archivado"); await cargar(); }
+  catch(e){ alert("No se pudo archivar: "+(e.message||e)); }
 }
 
 // ---------- TAB: Reponer / Comprar ----------
