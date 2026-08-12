@@ -350,7 +350,7 @@ async function cargar(){
 
     prog("stock, ventas y compras…");
     const [stock, ventas, ventas3, so, po, cad] = await Promise.all([
-      rpc("stock.quant","read_group",[[["location_id.usage","=","internal"],["quantity",">",0]],["value:sum","quantity:sum"],["product_id"]],{lazy:false,limit:5000}),
+      rpc("stock.quant","read_group",[[["location_id.usage","=","internal"],["quantity","!=",0]],["value:sum","quantity:sum"],["product_id"]],{lazy:false,limit:6000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini12)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini3)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
       rpc("sale.order","read_group",[[["state","in",["sale","done"]],["date_order",">=",iso(ini12)],["date_order","<",iso(curIni)]],["amount_untaxed:sum"],["date_order:month"]],{lazy:false}),
@@ -398,12 +398,9 @@ async function cargar(){
       const id=s.product_id[0], m=M[id]||{}, vp=vencP[id]||{};
       const ventaU=Math.round(V[id]||0), venta3=Math.round(V3[id]||0), freq=Math.round(F[id]||0);
       const cost=m.standard_price||0, qa=Math.round(m.qty_available||0);
-      const valOdoo=Math.round(s.value||0);        // lo que Odoo dice (para la advertencia)
-      let qty=qa;                                   // cantidad = on-hand REAL (evita el inflado por quants partidos)
-      let val=s.value||0, valRoto=false;
-      // Odoo corrompe la valorización con stock negativo histórico → queda NEGATIVA (imposible). Esos productos
-      // se apartan a "A revisar"; acá los valuamos con on-hand × costo para poder mostrarlos con un número real.
-      if(val<0){ valRoto=true; val=Math.round(qa*cost); }
+      const qty=qa;                                 // cantidad = on-hand real (neto, como en Odoo)
+      const val=Math.round(s.value||0);             // valor NETO de Odoo (suma de todos los quants) — sin inventar nada
+      const valRoto = val<0;                        // Odoo lo valoriza en negativo (roto por stock negativo) → a "A revisar"
       const meses = ventaU>0 ? qty/(ventaU/12) : 999;
       const sellers=(m.seller_ids||[]).map(sid=>SI[sid]).filter(Boolean).sort((a,b)=>(a.sequence||0)-(b.sequence||0));
       const formal=sellers.find(x=>x.partner_id && x.partner_id[0]!==PROVEEDOR_T);
@@ -414,7 +411,7 @@ async function cargar(){
         if(!provMap[pid] || (x.min_qty||1)<provMap[pid].minQty) provMap[pid]={id:pid,name:x.partner_id[1],price:x.price>0?x.price:0,minQty:x.min_qty||1}; }
       const provs=Object.values(provMap);
       const costoU=cost, pvp=m.list_price||0;
-      return {id, code:m.default_code||"", archivado:m.active===false, valRoto, valOdoo, qa, name:s.product_id[1], fam:familia(m.categ_id),
+      return {id, code:m.default_code||"", archivado:m.active===false, valRoto, qa, name:s.product_id[1], fam:familia(m.categ_id),
         categ:m.categ_id?m.categ_id[1]:"", val, qty, ventaU, venta3, freq,
         incoming:Math.round(m.incoming_qty||0),
         meses: meses>900?999:Math.round(meses*10)/10,
@@ -429,7 +426,7 @@ async function cargar(){
     // apartar de las listas normales: archivados, valorización rota y los que no tienen stock real (on-hand<=0)
     const TODOS=DATA;
     ARCH=TODOS.filter(r=>r.archivado).sort((a,b)=>b.val-a.val);
-    VALROTO=TODOS.filter(r=>!r.archivado && r.valRoto).sort((a,b)=>a.valOdoo-b.valOdoo);   // más negativo (peor) primero
+    VALROTO=TODOS.filter(r=>!r.archivado && r.valRoto).sort((a,b)=>a.val-b.val);   // más negativo (peor) primero
     DATA=TODOS.filter(r=>!r.archivado && !r.valRoto && r.qty>0);                            // sólo productos con stock real
 
     const monK=g=>g.__range?g.__range["date_order:month"].from:g["date_order:month"];
@@ -732,19 +729,18 @@ function renderTab(rd){
 // ---------- TAB: A revisar (valorización rota + archivados con stock) ----------
 function tabRevisar(){
   if(!ARCH.length && !VALROTO.length) return `<div class="pcard empty">Nada para revisar. 👌</div>`;
-  const totRoto=VALROTO.reduce((a,r)=>a+r.valOdoo,0);
+  const totRoto=VALROTO.reduce((a,r)=>a+r.val,0);
   const seccionRoto = VALROTO.length ? `
-    <div class="note" style="border-left-color:var(--red);background:#FDF3F2;color:#7a2320">⚠️ <b>${VALROTO.length} producto${VALROTO.length===1?"":"s"} con la valorización ROTA en Odoo</b> por stock negativo (se entregó más de lo que se ingresó en el sistema). Odoo les pone un valor <b>imposible</b> (negativo) que suma <b>${fmtM(totRoto)}</b> — por eso el inventario se iba a cualquier lado. Los <b>saqué de las listas normales</b> y los junté acá. Hay que <b>regularizarlos en Odoo</b> (revalorizar o ajustar el stock). De raíz: ingresar la mercadería antes de entregarla.</div>
+    <div class="note" style="border-left-color:var(--red);background:#FDF3F2;color:#7a2320">⚠️ <b>${VALROTO.length} producto${VALROTO.length===1?"":"s"} que Odoo valoriza en NEGATIVO</b> por stock negativo (se entregó más de lo que se ingresó en el sistema): un valor imposible que suma <b>${fmtM(totRoto)}</b>. Los <b>saqué de las listas normales</b> para que no ensucien el inventario, y los junté acá con el número tal cual está en Odoo. Hay que <b>regularizarlos en Odoo</b> (ajustar el stock / revalorizar). De raíz: ingresar la mercadería antes de entregarla.</div>
     <div class="toolbar" style="margin-top:10px"><button class="mini-btn" onclick="copiarValRoto()">📋 Copiar lista</button></div>
     <div class="tablecard" style="margin-top:8px">
-      <div class="thead" style="grid-template-columns:2.2fr 0.7fr 1fr 1.1fr 1.6fr">
-        <div>Producto</div><div class="tr-r">Stock (u)</div><div class="tr-r">Valor real</div><div class="tr-r">Odoo dice</div><div style="text-align:right">Corregir</div>
+      <div class="thead" style="grid-template-columns:2.6fr 0.9fr 1.3fr 1.6fr">
+        <div>Producto</div><div class="tr-r">Stock (u)</div><div class="tr-r">Valor en Odoo</div><div style="text-align:right">Corregir</div>
       </div>
-      ${VALROTO.map(r=>`<div class="row" style="grid-template-columns:2.2fr 0.7fr 1fr 1.1fr 1.6fr;cursor:default">
+      ${VALROTO.map(r=>`<div class="row" style="grid-template-columns:2.6fr 0.9fr 1.3fr 1.6fr;cursor:default">
         <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">${r.code?esc(r.code):""}</div></div>
         <div class="tr-r num">${r.qty.toLocaleString("es-AR")}</div>
-        <div class="tr-r num">${money(r.val)}</div>
-        <div class="tr-r num" style="color:var(--red);font-weight:700">${money(r.valOdoo)}</div>
+        <div class="tr-r num" style="color:var(--red);font-weight:700">${money(r.val)}</div>
         <div class="actions" style="display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap">
           <a class="mini-btn" href="${odooProd(r.id)}" target="_blank" rel="noopener" style="text-decoration:none;border-color:#BFE0DC;color:var(--teal-deep)">Abrir en Odoo →</a>
           <button class="mini-btn" onclick="accionCero(${r.id})" style="border-color:#F0B3B0;color:var(--red)" title="Ajuste de inventario a 0 (regulariza el stock)">Poner en 0</button>
@@ -777,7 +773,7 @@ function tabRevisar(){
 }
 function copiarValRoto(){
   let t=`Productos con valorización rota (stock negativo) · Droguería EyG\nRegularizar en Odoo (revalorizar / ajustar stock):\n\n`;
-  VALROTO.forEach(r=>t+=`• ${r.code?r.code+" — ":""}${cleanName(r.name)} · on-hand ${r.qty} u · real ${money(r.val)} · Odoo dice ${money(r.valOdoo)}\n`);
+  VALROTO.forEach(r=>t+=`• ${r.code?r.code+" — ":""}${cleanName(r.name)} · on-hand ${r.qty} u · Odoo valoriza ${money(r.val)}\n`);
   navigator.clipboard.writeText(t).then(()=>toast("📋 Lista copiada"));
 }
 async function _quantsInternos(pid, pos){
@@ -921,7 +917,7 @@ function tabStock(){
       <div class="kpi clk" onclick="abrirLista('inventario')"><div class="l">Inventario valorizado</div><div class="n">${fmtM(KPI.inv)}</div><div class="d">${DATA.length} productos con stock</div><div class="ver">Ver todos →</div></div>
       <div class="kpi warn clk" onclick="abrirLista('liberable')"><div class="l">Plata liberable</div><div class="n">${fmtM(KPI.inmov)}</div><div class="d">sobre 3 meses de demanda que no vende</div><div class="ver">Ver cuáles →</div></div>
     </div>
-    ${VALROTO.length?`<div class="note" style="margin-top:12px">⚠️ <b>${VALROTO.length} producto${VALROTO.length===1?"":"s"} con la valorización rota en Odoo</b> (típico de <b>stock negativo</b>: se descargó más de lo que se ingresó). Acá los valué con <b>cantidad on-hand × costo</b> para que los números cierren, pero conviene <b>regularizarlos en Odoo</b> (revalorizar / ajustar stock). El que más pesa: <b>${esc(cleanName(VALROTO[0].name))}</b>${VALROTO.length>1?` y ${VALROTO.length-1} más`:""}. <a onclick="setTab('revisar')" style="color:var(--teal);cursor:pointer;font-weight:700">Ver en «A revisar» →</a></div>`:""}
+    ${VALROTO.length?`<div class="note" style="margin-top:12px">⚠️ <b>${VALROTO.length} producto${VALROTO.length===1?"":"s"} que Odoo valoriza en negativo</b> (por <b>stock negativo</b>: se descargó más de lo que se ingresó). Los aparté de estas listas para que no ensucien el inventario; están en <b>A revisar</b> para regularizarlos en Odoo. El que más pesa: <b>${esc(cleanName(VALROTO[0].name))}</b>${VALROTO.length>1?` y ${VALROTO.length-1} más`:""}. <a onclick="setTab('revisar')" style="color:var(--teal);cursor:pointer;font-weight:700">Ver en «A revisar» →</a></div>`:""}
 
     <h2 class="sec">Flujo de compra y venta · 12 meses<span class="hint">¿comprás en línea con lo que vendés?</span></h2>
     <div class="pcard">
@@ -1221,19 +1217,6 @@ function abrirBucket(i){
         <div class="nm"><b>${esc(cleanName(r.name))}</b><span>${r.meses>900?"sin venta 12m":fmtDur(r.meses)+" de stock"} · ${r.qty} u</span></div>
         <div class="amt">${money(r.val)}</div></li>`).join("")}</ul>
       ${rows.length>150?`<div class="count-line" style="margin-top:8px">…y ${rows.length-150} más.</div>`:""}</div>`;
-  d.classList.add("on"); document.getElementById("scrim").classList.add("on");
-}
-function abrirValRoto(){
-  const d=document.getElementById("drawer");
-  d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span>
-      <h2>Valorización a revisar en Odoo</h2>
-      <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${VALROTO.length} productos</span></div></div>
-    <div class="dbody">
-      <p style="font-size:12.5px;color:var(--gris);margin:-4px 0 12px">Odoo tiene la valorización rota por <b>stock negativo</b> (se descargó más de lo que se ingresó → el costo unitario se dispara). Acá los valué con <b>cantidad on-hand × costo</b> para que cierren los números. En Odoo hay que <b>regularizar el stock y revalorizar</b> cada uno.</p>
-      <ul class="lst">${VALROTO.map(r=>`<li class="li" onclick="abrirProd(${r.id})">
-        <div class="nm"><b>${esc(cleanName(r.name))}</b><span>${r.code?esc(r.code)+" · ":""}on-hand ${r.qty} u × ${money(r.costoU)}</span></div>
-        <div class="amt">${money(r.val)}</div></li>`).join("")}</ul>
-    </div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
 }
 
