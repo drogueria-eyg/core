@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=23"></script>
+<script src="../assets/core.js?v=25"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -404,7 +404,23 @@
   .conq-links{display:flex;gap:9px;margin-top:8px}
   .conq-links a{font-size:12px;font-weight:700;color:var(--teal);text-decoration:none;background:var(--agua);border-radius:7px;padding:4px 10px}
   .conq-links a:hover{background:#d3ece7}
-  .conq-act{flex:none;display:flex;align-items:center}
+  .conq-act{flex:none;display:flex;flex-direction:column;gap:6px;align-items:stretch;justify-content:center}
+  .conq-descartar{background:var(--surface);color:var(--gris);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}
+  .conq-descartar:hover{border-color:var(--bad);color:var(--bad)}
+  /* modal de motivo al descartar */
+  .cq-ov{position:fixed;inset:0;background:rgba(6,40,38,.5);z-index:10001;display:flex;justify-content:center;align-items:center;padding:16px;animation:fadeup .2s both}
+  .cq-card{background:#fff;border-radius:16px;max-width:440px;width:100%;box-shadow:0 24px 70px rgba(0,0,0,.35);overflow:hidden;font-family:inherit}
+  .cq-hd{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line)}
+  .cq-hd b{font-size:16px} .cq-x{background:none;border:0;font-size:19px;color:var(--gris);cursor:pointer;line-height:1}
+  .cq-bd{padding:16px 18px}
+  .cq-nm{font-size:16px;font-weight:800;color:var(--ink)}
+  .cq-sub{font-size:12.5px;color:var(--gris);margin:3px 0 12px}
+  .cq-motivos{display:flex;flex-direction:column;gap:8px}
+  .cq-mot{text-align:left;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 13px;font-family:inherit;font-size:13.5px;font-weight:600;color:var(--ink);cursor:pointer}
+  .cq-mot:hover{border-color:var(--teal-med);background:var(--agua)}
+  .cq-otro{width:100%;margin-top:12px;font-family:inherit;font-size:14px;border:1px solid var(--line);border-radius:9px;padding:10px 12px;box-sizing:border-box}
+  .cq-otrob{width:100%;margin-top:8px;background:#FBE4E3;color:#B0322F;border:1px solid #f0c3c1;border-radius:10px;padding:11px;font-family:inherit;font-size:13.5px;font-weight:800;cursor:pointer}
+  .cq-otrob:hover{filter:brightness(.98)}
   .conq-tomar{background:var(--teal);color:#fff;border:0;border-radius:10px;padding:10px 16px;font-family:inherit;font-size:13px;font-weight:800;cursor:pointer;white-space:nowrap}
   .conq-tomar:hover{filter:brightness(1.06)}
   .conq-abrir{background:var(--surface);color:var(--teal-deep);border:1px solid var(--line);border-radius:10px;padding:9px 13px;font-family:inherit;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap}
@@ -1228,65 +1244,84 @@ async function credFichaFetch(c){
   refrescarPerfilFicha();
 }
 /* ===== Carpeta "A conquistar" (bolsillo del comercial) ===== */
-function conqEstado(it){
-  if(!it.partnerId) return "pendiente";
-  const c=ST.contactos.find(x=>x.id===it.partnerId); if(!c) return "creado";
-  const pct=completar(c).pct, msg=(ST.msgs||[]).some(m=>m.res_id===it.partnerId);
-  return (pct>=90 && msg) ? "convertido" : "proceso";
-}
 function conqRubro(t){ return t===1 ? {e:"🏥",l:"Institución"} : {e:"💊",l:"Farmacia"}; }
-function conqRow(it, e){
+// PENDIENTES = lo que todavía hay que trabajar: ni creado (ya pasó a la cartera) ni descartado.
+function conqPendientes(){ return (ST.conquistar||[]).filter(it=>!it.partnerId && !it.descartado); }
+function conqTrabajados(){ return (ST.conquistar||[]).filter(it=>it.partnerId && !it.descartado).length; }
+function conqRow(it){
   const q=[it.nombre, it.loc, it.prov].filter(Boolean).join(" ");
   const g="https://www.google.com/search?q="+encodeURIComponent(q+" teléfono");
   const mp="https://www.google.com/maps/search/?api=1&query="+encodeURIComponent([it.nombre,it.dom,it.loc,it.prov].filter(Boolean).join(" "));
   const rub=conqRubro(it.tipo);
-  let tag="", accion;
-  if(e==="pendiente"){ accion=`<button class="conq-tomar" onclick="tomar('${it.id}')">＋ Tomar</button>`; }
-  else{ const c=ST.contactos.find(x=>x.id===it.partnerId); const pct=c?completar(c).pct:0; const msg=(ST.msgs||[]).some(m=>m.res_id===it.partnerId);
-    tag=`<span class="conq-prog">📝 ficha ${pct}%${pct>=90?" ✓":""} · ${msg?"mensaje ✓":"falta mensaje"}</span>`;
-    accion=`<button class="conq-abrir" onclick="abrir(${it.partnerId})">Abrir ficha →</button>`;
-  }
-  return `<div class="conq-item ${e}">
+  return `<div class="conq-item">
     <div class="conq-main">
       <div class="conq-nm">${esc(it.nombre)} <span class="conq-rub">${rub.e} ${rub.l}</span></div>
       <div class="conq-dir">📍 ${esc(it.dom||"sin dirección")}</div>
       <div class="conq-loc">${esc(it.loc||"")}${it.prov?" · "+esc(it.prov):""}${it.por?" · asignó "+esc(it.por):""}</div>
-      ${tag?`<div style="margin-top:5px">${tag}</div>`:""}
       <div class="conq-links"><a href="${g}" target="_blank" rel="noopener">🔎 Google</a><a href="${mp}" target="_blank" rel="noopener">📍 Maps</a></div>
     </div>
-    <div class="conq-act">${accion}</div>
+    <div class="conq-act">
+      <button class="conq-tomar" onclick="tomar('${it.id}')">＋ Tomar</button>
+      <button class="conq-descartar" onclick="descartarConquistar('${it.id}')">Descartar</button>
+    </div>
   </div>`;
 }
 // Tarjeta COMPACTA en la vista principal (no lista los contactos para no tapar la cartera).
 // Se toca para abrir la vista completa ("pestaña"). Se muestra siempre, con contador.
 function conquistarCardHTML(){
-  const arr=ST.conquistar||[];
-  const items=arr.map(it=>({it, e:conqEstado(it)}));
-  const conv=items.filter(x=>x.e==="convertido").length;
-  const pend=items.filter(x=>x.e!=="convertido").length;
+  const pend=conqPendientes().length, trab=conqTrabajados();
   return `<div class="conqcard" onclick="mostrarVista('conq')">
       <span class="cc-ic">🎯</span>
-      <div class="cc-tx"><b>Contactos a conquistar</b><span>${pend?(pend+" para trabajar"):"sin asignaciones por ahora"}${conv?" · ✅ "+conv+" convertido"+(conv>1?"s":""):""}</span></div>
+      <div class="cc-tx"><b>Contactos a conquistar</b><span>${pend?(pend+" para trabajar"):"sin pendientes por ahora"}${trab?" · ✅ "+trab+" ya trabajado"+(trab>1?"s":""):""}</span></div>
       <span class="cc-go">${pend?('<b>'+pend+'</b> '):''}Abrir →</span>
     </div>`;
 }
-// Vista completa (pestaña) — se abre desde la tarjeta.
+// Vista completa (pestaña) — se abre desde la tarjeta. Solo PENDIENTES (los creados ya están en tu cartera).
 function pintarConquistar(app){
-  const arr=ST.conquistar||[];
-  const items=arr.map(it=>({it, e:conqEstado(it)}));
-  const conv=items.filter(x=>x.e==="convertido");
-  const abiertos=items.filter(x=>x.e!=="convertido").sort((a,b)=> (a.e==="pendiente"?0:1)-(b.e==="pendiente"?0:1));
-  const cuerpo = abiertos.length
-    ? '<div class="conq-list">'+abiertos.map(x=>conqRow(x.it,x.e)).join("")+'</div>'
-    : (arr.length ? '<div class="conq-empty">¡Trabajaste todos los asignados! 🎉</div>'
+  const pend=conqPendientes(), trab=conqTrabajados();
+  const cuerpo = pend.length
+    ? '<div class="conq-list">'+pend.map(conqRow).join("")+'</div>'
+    : ((ST.conquistar||[]).length ? '<div class="conq-empty">¡Trabajaste todos los asignados! 🎉</div>'
                   : '<div class="conq-empty">Todavía no tenés contactos asignados.<br><span style="font-size:12px">Te van a ir apareciendo acá para que los conviertas en clientes nuevos.</span></div>');
   app.innerHTML=`<div class="vhead">
       <button class="vback" onclick="volverDash()">← Volver</button>
-      <h1>🎯 A conquistar <span class="vcount">${abiertos.length}</span></h1>
-      ${conv.length?`<span class="conq-conv">✅ ${conv.length} convertido${conv.length>1?"s":""}</span>`:""}
+      <h1>🎯 A conquistar <span class="vcount">${pend.length}</span></h1>
+      ${trab?`<span class="conq-conv">✅ ${trab} ya en tu cartera</span>`:""}
     </div>
-    <div class="conq-intro" style="margin-bottom:12px">Contactos que te asigna la empresa para convertir en <b>clientes nuevos</b>. Tomá uno, completá su ficha (90%) y mandale el primer mensaje: ahí se convierte.</div>
+    <div class="conq-intro" style="margin-bottom:12px">Contactos que te asigna la empresa para convertir en <b>clientes nuevos</b>. <b>Tomá</b> uno (pasa a tu cartera, completá su ficha y mandale el primer mensaje) o <b>Descartá</b> el que no sirva (tu líder lo revisa).</div>
     ${cuerpo}`;
+}
+// ===== Descartar un contacto a conquistar (con motivo → lo revisa el líder) =====
+const MOTIVOS_DESCARTE=["Ya no existe / cerró","No se pudo comunicar","No le interesa","Datos incorrectos"];
+function descartarConquistar(id){
+  const it=(ST.conquistar||[]).find(x=>x.id===id); if(!it) return;
+  let host=document.getElementById("conqModal"); if(!host){ host=document.createElement("div"); host.id="conqModal"; document.body.appendChild(host); }
+  host.innerHTML=`<div class="cq-ov" onclick="if(event.target===this)cerrarDescartar()"><div class="cq-card">
+    <div class="cq-hd"><b>Descartar contacto</b><button class="cq-x" onclick="cerrarDescartar()">✕</button></div>
+    <div class="cq-bd">
+      <div class="cq-nm">${esc(it.nombre)}</div>
+      <div class="cq-sub">¿Por qué lo descartás? Tu líder lo va a revisar.</div>
+      <div class="cq-motivos">${MOTIVOS_DESCARTE.map((m,i)=>`<button class="cq-mot" onclick="doDescartar('${id}',${i})">${esc(m)}</button>`).join("")}</div>
+      <input id="cqOtro" class="cq-otro" placeholder="Otro motivo (opcional)…" onkeydown="if(event.key==='Enter')doDescartarOtro('${id}')">
+      <button class="cq-otrob" onclick="doDescartarOtro('${id}')">Descartar con este motivo</button>
+    </div></div></div>`;
+}
+function cerrarDescartar(){ const h=document.getElementById("conqModal"); if(h) h.innerHTML=""; }
+function doDescartar(id, i){ _descartar(id, MOTIVOS_DESCARTE[i]||"Sin motivo"); }
+function doDescartarOtro(id){ const el=document.getElementById("cqOtro"); const v=(el&&el.value||"").trim()||"Otro motivo"; _descartar(id, v); }
+async function _descartar(id, motivo){
+  cerrarDescartar();
+  const it=(ST.conquistar||[]).find(x=>x.id===id); if(!it) return;
+  it.descartado={motivo, por:COMERCIAL, ts:new Date().toISOString()};   // sale del bolsillo al instante
+  render();
+  try{
+    await EYG.conquistarPatch(id, {descartado:it.descartado});
+    await EYG.notificarRoles(["lider","admin","direccion"], {
+      titulo:"Contacto descartado · A conquistar",
+      cuerpo:`${COMERCIAL} descartó "${it.nombre}"${it.loc?(" ("+it.loc+")"):""}.\nMotivo: ${motivo}.\nRevisalo para archivarlo o eliminarlo.`,
+      autor:COMERCIAL });
+    toast("Descartado. Le avisamos a tu líder.");
+  }catch(e){ toast("Se descartó (no pude avisar al líder)"); }
 }
 // Provincia del padrón → id de res.country.state (para prellenar el formulario)
 function matchProvId(prov){ if(!prov) return false; const n=prov.toLowerCase().trim();

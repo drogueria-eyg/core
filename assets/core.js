@@ -533,6 +533,21 @@ window.EYG = (function(){
     return _roster;
   }
 
+  /* Crea una NOVEDAD (aparece en la campanita) dirigida a los usuarios con esos roles.
+     Usa el roster del Core para resolver emails y la manda por alcance personas. */
+  async function notificarRoles(roles, opts){
+    opts=opts||{}; roles=roles||[];
+    let emails=[];
+    try{ const r=await rosterCore(); emails=(r||[]).filter(u=>roles.includes(u.rol)).map(u=>(u.email||"").toLowerCase()).filter(Boolean); }catch(e){}
+    emails=[...new Set(emails)];
+    if(!emails.length) return false;
+    const arr=await comsLeer();
+    arr.push({ id:"nv_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,6),
+      clase:"novedad", alcance:"personas", personas:emails,
+      titulo:opts.titulo||"Novedad", cuerpo:opts.cuerpo||"", autor:opts.autor||"Sistema",
+      prioridad:opts.prioridad||"", ts:new Date().toISOString(), activo:true, leidoPor:[] });
+    await comsGuardar(arr); return true;
+  }
   /* Novedades vigentes dirigidas a este perfil. admin/dirección ven todas (supervisión). */
   function comsParaMi(perfil, arr){
     const hoy = argToday(), dept = comDeptDeRol(perfil.rol), ref = perfil.comercial_ref || "", email=(perfil.email||"").toLowerCase();
@@ -1062,12 +1077,14 @@ window.EYG = (function(){
   function conquistarDeComercial(arr, comRef){ return (arr||[]).filter(x=>x && x.com===comRef); }
   async function conquistarSetPartner(id, partnerId){ const arr=await conquistarLeer(); const it=arr.find(x=>x&&x.id===id); if(it){ it.partnerId=partnerId; await conquistarGuardar(arr); } return arr; }
   async function conquistarQuitar(id){ const arr=(await conquistarLeer()).filter(x=>x&&x.id!==id); await conquistarGuardar(arr); return arr; }
+  /* Aplica campos a un item (ej. {descartado:{motivo,por,ts}} o {archivado:true}). RMW. */
+  async function conquistarPatch(id, patch){ const arr=await conquistarLeer(); const it=arr.find(x=>x&&x.id===id); if(it){ Object.assign(it, patch||{}); await conquistarGuardar(arr); } return arr; }
 
   return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
     creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
-    conquistarLeer, conquistarGuardar, conquistarAsignar, conquistarDeComercial, conquistarSetPartner, conquistarQuitar,
+    conquistarLeer, conquistarGuardar, conquistarAsignar, conquistarDeComercial, conquistarSetPartner, conquistarQuitar, conquistarPatch, notificarRoles,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA,
