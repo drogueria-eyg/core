@@ -112,6 +112,10 @@
   .archrow .aa button{font-family:inherit;font-size:12.5px;font-weight:700;border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:8px 13px;cursor:pointer}
   .archrow .aa .rest{color:var(--teal-deep);border-color:#BFE2DD} .archrow .aa .rest:hover{background:#EAF7F5}
   .archrow .aa .del{color:#B0413E} .archrow .aa .del:hover{background:#FDECEA;border-color:#F0C4BE}
+  .dtag{font-size:10.5px;font-weight:800;border-radius:20px;padding:1px 7px;background:#E2F1EF;color:#04635F;white-space:nowrap}
+  .desctabs{display:flex;gap:6px;margin:0 0 10px}
+  .desctabs button{font-family:inherit;font-size:12px;font-weight:700;border:1px solid var(--line);background:#fff;color:var(--gris);border-radius:20px;padding:5px 11px;cursor:pointer}
+  .desctabs button.on{background:var(--teal);border-color:var(--teal);color:#fff}
 </style>
 </head>
 <body>
@@ -141,6 +145,15 @@ EYG.requireAuth(["admin","direccion"], perfil=>{
         </div>
         <div class="foldbody" style="display:none"><div id="org"></div></div>
       </div>
+      <div class="foldrow" id="fold-desc">
+        <div class="foldhead" onclick="toggleFold('desc')">
+          <div class="fi">🚫</div>
+          <div class="ft"><b>Descartados de "A conquistar"</b><span>Prospectos que los comerciales descartaron: archivá o eliminá.</span></div>
+          <span class="pill" id="desc-pill" style="display:none"></span>
+          <div class="chev" style="margin-left:12px">▾</div>
+        </div>
+        <div class="foldbody" style="display:none"><div id="desc"></div></div>
+      </div>
       <div class="foldrow" id="fold-arch">
         <div class="foldhead" onclick="toggleFold('arch')">
           <div class="fi">🗂️</div>
@@ -154,17 +167,18 @@ EYG.requireAuth(["admin","direccion"], perfil=>{
   document.body.innerHTML = EYG.layout(perfil, "panel", main, "Panel comerciales");
   document.body.insertAdjacentHTML("beforeend",'<div class="otoast" id="otoast"></div>');
   cargar();
+  cargarConqPill();   // contador de descartados a revisar (sin abrir la sección)
 });
 let otoastT;
 function otoast(msg, ok){ const t=document.getElementById("otoast"); if(!t)return; t.textContent=msg; t.className="otoast on"+(ok?" ok":""); clearTimeout(otoastT); otoastT=setTimeout(()=>t.className="otoast",2600); }
 
 /* ===== plegables de gestión (carga perezosa: sólo consulta Odoo al abrir) ===== */
-let FOLD_LOADED={org:false,arch:false};
+let FOLD_LOADED={org:false,arch:false,desc:false};
 function toggleFold(k){
   const row=document.getElementById("fold-"+k); if(!row)return;
   const body=row.querySelector(".foldbody"); const open=row.classList.toggle("open");
   body.style.display=open?"block":"none";
-  if(open && !FOLD_LOADED[k]){ FOLD_LOADED[k]=true; if(k==="org") montarOrg(); else montarArchivados(); }
+  if(open && !FOLD_LOADED[k]){ FOLD_LOADED[k]=true; if(k==="org") montarOrg(); else if(k==="desc") montarDescartados(); else montarArchivados(); }
 }
 
 /* ===== carga principal: organigrama → líderes + comerciales + resumen ===== */
@@ -464,6 +478,40 @@ async function eliminarArch(id){
     renderArch(); updArchPill();
   }
 }
+
+/* ===== Descartados de "A conquistar" (revisión de la gerencia) =====
+   Los comerciales descartan prospectos (con motivo); acá el nivel superior decide:
+   archivar (guardar el registro), eliminar (definitivo) o reactivar (vuelve al comercial). */
+let CONQ=[], DESC_ARCH=false;
+function descActivos(){ return (CONQ||[]).filter(x=>x&&x.descartado&&!x.archivado); }
+function updDescPill(){ const p=document.getElementById("desc-pill"); if(!p)return; const n=descActivos().length; if(n){ p.textContent=n; p.style.display="inline-block"; } else p.style.display="none"; }
+async function cargarConqPill(){ try{ CONQ=await EYG.conquistarLeer(); }catch(e){ CONQ=[]; } updDescPill(); }
+async function montarDescartados(){
+  const box=document.getElementById("desc"); if(!box)return;
+  box.innerHTML='<div class="floading" style="padding:12px 0;color:var(--gris)"><span class="spin-sm"></span> Leyendo descartados…</div>';
+  try{ CONQ=await EYG.conquistarLeer(); }catch(e){ CONQ=[]; }
+  renderDesc(); updDescPill();
+}
+function renderDesc(){
+  const box=document.getElementById("desc"); if(!box)return;
+  const act=descActivos(), arch=(CONQ||[]).filter(x=>x&&x.descartado&&x.archivado);
+  const list=DESC_ARCH?arch:act;
+  const fD=s=>s?(String(s).slice(8,10)+"/"+String(s).slice(5,7)):"";
+  const item=x=>`<div class="archrow">
+      <div class="ai"><div class="an">${esc(x.nombre)} <span class="dtag">${x.tipo===1?"🏥 Institución":"💊 Farmacia"}</span></div>
+        <div class="am">${esc(x.loc||"")}${x.prov?" · "+esc(x.prov):""}${x.dom?" · "+esc(x.dom):""}</div>
+        <div class="am2">🚫 <b>${esc((x.descartado&&x.descartado.motivo)||"")}</b> · descartó ${esc((x.descartado&&x.descartado.por)||x.com||"")}${(x.descartado&&x.descartado.ts)?" · "+fD(x.descartado.ts.slice(0,10)):""}</div></div>
+      <div class="aa">
+        ${DESC_ARCH?`<button class="rest" onclick="reactivarDesc('${x.id}')">↩ Reactivar</button>`:`<button class="rest" onclick="archivarDescA('${x.id}')">🗂️ Archivar</button>`}
+        <button class="del" onclick="eliminarDescA('${x.id}')">🗑 Eliminar</button>
+      </div></div>`;
+  box.innerHTML=`<div class="archsub">Contactos que los comerciales descartaron de "A conquistar". Revisá el motivo y decidí: <b>Archivar</b> (guardar el registro), <b>Eliminar</b> (definitivo) o <b>Reactivar</b> (vuelve como pendiente al comercial).</div>
+    <div class="desctabs"><button class="${!DESC_ARCH?"on":""}" onclick="DESC_ARCH=false;renderDesc()">A revisar (${act.length})</button><button class="${DESC_ARCH?"on":""}" onclick="DESC_ARCH=true;renderDesc()">Archivados (${arch.length})</button></div>
+    ${list.length?`<div class="archlist">${list.map(item).join("")}</div>`:`<div class="archsub">${DESC_ARCH?"No hay archivados.":"Nada para revisar. 👌"}</div>`}`;
+}
+async function archivarDescA(id){ try{ await EYG.conquistarPatch(id,{archivado:true}); }catch(e){} try{ CONQ=await EYG.conquistarLeer(); }catch(e){} renderDesc(); updDescPill(); otoast("Archivado ✓", true); }
+async function reactivarDesc(id){ try{ await EYG.conquistarPatch(id,{descartado:null,archivado:false}); }catch(e){} try{ CONQ=await EYG.conquistarLeer(); }catch(e){} renderDesc(); updDescPill(); otoast("Reactivado ✓ — vuelve al comercial", true); }
+async function eliminarDescA(id){ const x=(CONQ||[]).find(y=>y&&y.id===id); if(!confirm('¿ELIMINAR definitivamente «'+((x&&x.nombre)||"este prospecto")+'»?\n\nNo se puede deshacer.')) return; try{ await EYG.conquistarQuitar(id); }catch(e){} try{ CONQ=await EYG.conquistarLeer(); }catch(e){} renderDesc(); updDescPill(); otoast("Eliminado ✓", true); }
 </script>
 </body>
 </html>
