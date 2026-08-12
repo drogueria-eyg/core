@@ -548,6 +548,49 @@ window.EYG = (function(){
       prioridad:opts.prioridad||"", ts:new Date().toISOString(), activo:true, leidoPor:[] });
     await comsGuardar(arr); return true;
   }
+  /* ===== Organigrama (hr.employee.parent_id) para acotar por equipo ===== */
+  const _normNom = s => (s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().replace(/\s+/g," ").trim();
+  let _org=null;
+  async function orgCargar(force){
+    if(_org && !force) return _org;
+    try{ const e=await rpc("hr.employee","search_read",[[]],{fields:["id","name","parent_id"]}); _org=(e||[]).map(x=>({name:x.name, parent:x.parent_id?x.parent_id[1]:null})); }
+    catch(e){ _org=[]; }
+    return _org;
+  }
+  function _empByName(org,nombre){ const n=_normNom(nombre); return org.find(x=>_normNom(x.name)===n)||null; }
+  // Nombres del subárbol de `nombre` (subordinados directos e indirectos; sin incluirlo).
+  async function orgDescendientes(nombre){
+    const org=await orgCargar(); const start=_empByName(org,nombre); const out=new Set(); if(!start) return out;
+    let front=[start.name], guard=0;
+    while(front.length && guard++<20){ const fn=front.map(_normNom), next=[];
+      org.forEach(x=>{ if(x.parent && fn.includes(_normNom(x.parent)) && !out.has(x.name)){ out.add(x.name); next.push(x.name); } });
+      front=next; }
+    return out;
+  }
+  // Nombres de los jefes hacia arriba (líder directo y sus superiores).
+  async function orgAncestros(nombre){
+    const org=await orgCargar(); let cur=_empByName(org,nombre); const out=[]; let guard=0;
+    while(cur && cur.parent && guard++<10){ out.push(cur.parent); cur=_empByName(org,cur.parent); }
+    return out;
+  }
+  /* Notifica (campanita) a los LÍDERES del comercial (su cadena de jefes del organigrama).
+     Así el descarte de un comercial sólo le llega a SUS líderes, no a los de otros equipos. */
+  async function notificarLideresDe(nombreComercial, opts){
+    const anc=await orgAncestros(nombreComercial);
+    let emails=[];
+    try{ const r=await rosterCore(); emails=(r||[]).filter(u=>anc.some(a=>_normNom(a)===_normNom(u.nombre))).map(u=>(u.email||"").toLowerCase()).filter(Boolean); }catch(e){}
+    emails=[...new Set(emails)];
+    if(!emails.length) return false;
+    opts=opts||{};
+    const arr=await comsLeer();
+    arr.push({ id:"nv_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,6),
+      clase:"novedad", alcance:"personas", personas:emails,
+      titulo:opts.titulo||"Novedad", cuerpo:opts.cuerpo||"", autor:opts.autor||"Sistema",
+      prioridad:opts.prioridad||"", ts:new Date().toISOString(), activo:true, leidoPor:[] });
+    await comsGuardar(arr); return true;
+  }
+
+
   /* Novedades vigentes dirigidas a este perfil. admin/dirección ven todas (supervisión). */
   function comsParaMi(perfil, arr){
     const hoy = argToday(), dept = comDeptDeRol(perfil.rol), ref = perfil.comercial_ref || "", email=(perfil.email||"").toLowerCase();
@@ -1085,6 +1128,7 @@ window.EYG = (function(){
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
     creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
     conquistarLeer, conquistarGuardar, conquistarAsignar, conquistarDeComercial, conquistarSetPartner, conquistarQuitar, conquistarPatch, notificarRoles,
+    orgCargar, orgDescendientes, orgAncestros, notificarLideresDe,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA,

@@ -120,7 +120,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=25"></script>
+<script src="../assets/core.js?v=26"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const MESES=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
@@ -482,19 +482,24 @@ async function eliminarArch(id){
 /* ===== Descartados de "A conquistar" (revisión de la gerencia) =====
    Los comerciales descartan prospectos (con motivo); acá el nivel superior decide:
    archivar (guardar el registro), eliminar (definitivo) o reactivar (vuelve al comercial). */
-let CONQ=[], DESC_ARCH=false;
-function descActivos(){ return (CONQ||[]).filter(x=>x&&x.descartado&&!x.archivado); }
+let CONQ=[], DESC_ARCH=false, MIS_COM=null;
+// Sólo los descartes de comerciales de MI equipo (subárbol del organigrama del que mira).
+const _nrm=s=>(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().replace(/\s+/g," ").trim();
+function enMiEquipo(com){ if(!MIS_COM||!MIS_COM.size) return true; const n=_nrm(com); for(const x of MIS_COM){ if(_nrm(x)===n) return true; } return false; }
+async function cargarMiEquipo(){ if(MIS_COM!==null) return; try{ MIS_COM=await EYG.orgDescendientes((PERFIL&&(PERFIL.nombre||PERFIL.comercial_ref))||""); }catch(e){ MIS_COM=new Set(); } }
+function descActivos(){ return (CONQ||[]).filter(x=>x&&x.descartado&&!x.archivado&&enMiEquipo(x.com)); }
 function updDescPill(){ const p=document.getElementById("desc-pill"); if(!p)return; const n=descActivos().length; if(n){ p.textContent=n; p.style.display="inline-block"; } else p.style.display="none"; }
-async function cargarConqPill(){ try{ CONQ=await EYG.conquistarLeer(); }catch(e){ CONQ=[]; } updDescPill(); }
+async function cargarConqPill(){ await cargarMiEquipo(); try{ CONQ=await EYG.conquistarLeer(); }catch(e){ CONQ=[]; } updDescPill(); }
 async function montarDescartados(){
   const box=document.getElementById("desc"); if(!box)return;
   box.innerHTML='<div class="floading" style="padding:12px 0;color:var(--gris)"><span class="spin-sm"></span> Leyendo descartados…</div>';
+  await cargarMiEquipo();
   try{ CONQ=await EYG.conquistarLeer(); }catch(e){ CONQ=[]; }
   renderDesc(); updDescPill();
 }
 function renderDesc(){
   const box=document.getElementById("desc"); if(!box)return;
-  const act=descActivos(), arch=(CONQ||[]).filter(x=>x&&x.descartado&&x.archivado);
+  const act=descActivos(), arch=(CONQ||[]).filter(x=>x&&x.descartado&&x.archivado&&enMiEquipo(x.com));
   const list=DESC_ARCH?arch:act;
   const fD=s=>s?(String(s).slice(8,10)+"/"+String(s).slice(5,7)):"";
   const item=x=>`<div class="archrow">
