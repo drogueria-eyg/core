@@ -858,7 +858,7 @@ async function accionDesarchivar(id){
   catch(e){ alert("No se pudo desarchivar: "+(e.message||e)); }
 }
 async function accionArchivar(id){
-  const r=VALROTO.find(x=>x.id===id)||DATA.find(x=>x.id===id); if(!r) return;
+  const r=VALROTO.find(x=>x.id===id)||DATA.find(x=>x.id===id)||(CAT.loaded?CAT.rows.find(x=>x.id===id):null); if(!r) return;
   if(!confirm(`¿Archivar "${cleanName(r.name)}"?\n\nSe da de baja en Odoo (active=false): deja de aparecer en las listas y en "A revisar". Vuelve solo si hay un nuevo movimiento (ej. una compra) o si lo desarchivás.`)) return;
   try{ await rpc("product.product","write",[[id],{active:false}]); toast("✓ Archivado"); await cargar(); }
   catch(e){ alert("No se pudo archivar: "+(e.message||e)); }
@@ -1086,6 +1086,7 @@ function tabCat(){
       <select onchange="cfil.prov=this.value;renderCatTabla()"><option value="">Todos los proveedores</option>${CAT.provs.map(p=>`<option ${cfil.prov===p?"selected":""}>${esc(p)}</option>`).join("")}</select>
       <span class="chip ${cfil.stock==='con'?'on':''}" onclick="setCatChip('con',this)">Con stock</span>
       <span class="chip ${cfil.stock==='sin'?'on':''}" onclick="setCatChip('sin',this)">Sin stock</span>
+      <span class="chip ${cfil.raro?'on':''}" onclick="cfil.raro=!cfil.raro;this.classList.toggle('on');renderCatTabla()" title="Productos sin código o con nombre raro (números, ajustes) — probablemente no son productos: revisá y archivá">🚩 Raros / sin código</span>
     </div>
     <div id="cattabla" data-cg="${CG}"></div>`;
 }
@@ -1125,9 +1126,12 @@ function catVisibles(){
     if(cfil.prov && !r.provs.some(p=>p.name===cfil.prov)) return false;
     if(cfil.stock==="con" && !(r.qty>0)) return false;
     if(cfil.stock==="sin" && r.qty>0) return false;
+    if(cfil.raro && !esRaro(r)) return false;
     return true;
   });
 }
+// producto "raro": sin código, o nombre puramente numérico/símbolos, o muy corto → probablemente no es un producto real
+function esRaro(r){ const n=(r.name||"").trim(); return !r.code || /^[\d.,\-*#/\s]+$/.test(n) || n.length<=3; }
 function renderCatTabla(){
   const el=document.getElementById("cattabla"); if(!el) return;
   const CG=el.getAttribute("data-cg");
@@ -1148,7 +1152,7 @@ function renderCatTabla(){
         <div style="text-align:right"></div>
       </div>
       ${cap.map(r=>`<div class="row" style="${CG};cursor:default">
-        <div><div class="cname">${esc(r.name)}</div><div class="cmeta">${esc(r.code||"")}${r.provs.length>1?` · ${r.provs.length} prov.`:""}</div></div>
+        <div style="cursor:pointer" onclick="abrirFicha(${r.id})" title="Ver ficha y acciones"><div class="cname" style="color:var(--teal-deep)">${esc(r.name)}</div><div class="cmeta">${esc(r.code||"")}${r.provs.length>1?` · ${r.provs.length} prov.`:""}</div></div>
         <div class="hide-sm cmeta">${esc(r.lab||"—")}</div>
         <div class="cmeta">${esc(r.provName||"—")}</div>
         <div class="tr-r num">${r.qty>0?r.qty.toLocaleString("es-AR"):'<span style="color:var(--gris2)">0</span>'}</div>
@@ -1161,6 +1165,43 @@ function renderCatTabla(){
     </div>`;
 }
 
+// ---------- ficha de producto (desde el catálogo): datos + acciones sin ir a Odoo ----------
+function abrirFicha(id){
+  const cr=CAT.loaded?CAT.rows.find(x=>x.id===id):null, dr=DATA.find(x=>x.id===id);
+  const r=cr||dr; if(!r) return;
+  const provs=r.provs||[]; const conP=provs.filter(p=>p.price>0).map(p=>p.price), minP=conP.length?Math.min(...conP):null;
+  const cartActivo=COMPRA.prov&&!COMPRA.poId;
+  const d=document.getElementById("drawer");
+  d.innerHTML=`
+    <div class="dhead"><span class="x" onclick="cerrar()">✕</span>
+      <h2>${esc(cleanName(r.name))}</h2>
+      <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${esc(r.code||"—")}</span>
+        <span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${r.qty>0?r.qty.toLocaleString("es-AR")+" u en stock":"sin stock"}</span></div>
+    </div>
+    <div class="dbody">
+      ${cartActivo?`<button class="wa-send" style="margin-top:0" onclick="agregarLinea(${r.id})">＋ Agregar a este pedido (${esc(COMPRA.provName)})</button>`
+        :(r.provId?`<button class="wa-send" style="margin-top:0;background:var(--gold)" onclick="pedirCat(${r.id});cerrar()">🛒 Empezar un pedido con este producto</button>`:"")}
+      <div class="dsec"><h4>Datos</h4>
+        <div class="kv"><span class="k">Código</span><span class="v">${esc(r.code||"—")}</span></div>
+        <div class="kv"><span class="k">Rubro</span><span class="v">${esc(r.fam||"—")}</span></div>
+        ${r.lab?`<div class="kv"><span class="k">Laboratorio</span><span class="v">${esc(r.lab)}</span></div>`:""}
+        <div class="kv"><span class="k">Stock</span><span class="v">${r.qty.toLocaleString("es-AR")} u</span></div>
+        <div class="kv"><span class="k">Costo</span><span class="v">${r.costoU?money(r.costoU):"—"}</span></div>
+        <div class="kv"><span class="k">Precio de venta</span><span class="v">${r.pvp?money(r.pvp):"—"}${r.margenPct!==null&&r.margenPct!==undefined?` · ${r.margenPct.toFixed(0)}% margen`:""}</span></div>
+      </div>
+      <div class="dsec"><h4>Proveedores${provs.length>1?` · ${provs.length}`:""}</h4>
+        ${provs.length?provs.map((p,i)=>`<div class="provrow"><div class="pnm">${esc(p.name)}${i===0?' <span class="tagmini">preferido</span>':''}${provs.length>1&&minP!=null&&p.price===minP?' <span class="tagmini cheap">más barato</span>':''}<span class="psub">${p.price>0?money(p.price)+"/u":"sin precio"}${p.minQty>1?" · mín "+p.minQty+" u":""}</span></div><button class="mini-btn" onclick="compraDesdeProd(${r.id},${p.id},'${esc(p.name).replace(/'/g,"")}')">Pedir →</button></div>`).join(""):'<div class="cmeta">Sin proveedor cargado en Odoo.</div>'}
+      </div>
+      <div class="dsec"><h4>Acciones</h4>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${dr?`<button class="mini-btn" onclick="abrirProd(${r.id})">📦 Rotación y vencimiento</button>`:""}
+          <button class="mini-btn" onclick="accionArchivar(${r.id})" style="border-color:#CBBF8E;color:#8a6d17">📥 Archivar</button>
+          <a class="mini-btn" href="${odooProd(r.id)}" target="_blank" rel="noopener" style="text-decoration:none;border-color:#BFE0DC;color:var(--teal-deep)">Abrir en Odoo →</a>
+        </div>
+      </div>
+    </div>`;
+  d.classList.add("on"); document.getElementById("scrim").classList.add("on");
+}
 // ---------- drawer producto ----------
 function abrirProd(id){
   const r=DATA.find(x=>x.id===id); if(!r) return;
