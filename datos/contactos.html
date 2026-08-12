@@ -171,7 +171,7 @@
   <div class="drawer" id="drawer"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=24"></script>
+<script src="../assets/core.js?v=26"></script>
 <script>
 /* ===== EyG Core · Contactos (CRM): gestionar existentes + prospectar el padrón oficial ===== */
 const money=EYG.money, esc=EYG.esc;
@@ -234,7 +234,7 @@ let CAT={fiscal:[],idt:[],prov:[]}, PROVIDX={};
 let UNI=null, CREADOS=new Set(), BOVEDA={}, SEL=new Set(), _bajaTag=null, _riesgoAt=0, NUEVOS=[];
 // Prospectos YA ASIGNADOS a la carpeta "A conquistar" de algún comercial (eyg.conquistar): no
 // vuelven a mostrarse en "Por conquistar" (para no reasignarlos). Clave = nombre|localidad.
-let ASIGNADOS=new Set();
+let ASIGNADOS=new Set(), PSEL=new Set();   // PSEL = prospectos tildados para enviar en lote
 const cqKey=(nombre,loc)=>((nombre||"")+"|"+(loc||"")).toLowerCase().replace(/\s+/g," ").trim();
 async function cargarAsignados(){ try{ const c=await EYG.conquistarLeer(); ASIGNADOS=new Set((c||[]).map(x=>cqKey(x.nombre,x.loc))); }catch(e){} }
 const NUEVO_TAG="[CONTACTO-NUEVO]"; // marca de contacto creado desde el Core (guarda el creador real)
@@ -656,13 +656,13 @@ function renderConquistar(){
       <div class="kpi"><div class="n" style="color:var(--coral)">${cob?cob.falta.toLocaleString("es-AR"):"—"}</div><div class="l">Por conquistar</div></div>
     </div>
     <div class="toolbar">
-      <select onchange="filtro.pProv=this.value;filtro.pLoc='';render()">${provs.map(p=>`<option ${filtro.pProv===p?"selected":""}>${esc(p)}</option>`).join("")}</select>
-      <select onchange="filtro.pTipo=this.value;render()">
+      <select onchange="PSEL.clear();filtro.pProv=this.value;filtro.pLoc='';render()">${provs.map(p=>`<option ${filtro.pProv===p?"selected":""}>${esc(p)}</option>`).join("")}</select>
+      <select onchange="PSEL.clear();filtro.pTipo=this.value;render()">
         <option value="" ${filtro.pTipo===""?"selected":""}>Farmacias e instituciones</option>
         <option value="farm" ${filtro.pTipo==="farm"?"selected":""}>Solo farmacias</option>
         <option value="inst" ${filtro.pTipo==="inst"?"selected":""}>Solo instituciones</option>
       </select>
-      <select onchange="filtro.pLoc=this.value;render()">
+      <select onchange="PSEL.clear();filtro.pLoc=this.value;render()">
         <option value="">Todas las localidades (${locs.length})</option>
         ${locs.slice(0,400).map(l=>`<option ${filtro.pLoc===l?"selected":""}>${esc(l)}</option>`).join("")}
       </select>
@@ -680,8 +680,8 @@ function renderProspectos(){
   const rows=list.slice(0,600).map(p=>{
     const g=`https://www.google.com/search?q=${encodeURIComponent(p.nombre+" "+p.loc+" "+p.prov+" teléfono")}`;
     const mp=`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.nombre+" "+(p.dom||"")+" "+p.loc+" "+p.prov)}`;
-    return `<div class="row" style="cursor:default;grid-template-columns:2.4fr 1.5fr 1fr">
-      <div><div class="cname">${esc(p.nombre)}</div><div class="padr">📍 <b>${esc(p.dom||"sin dirección")}</b></div><div class="cmeta">${esc(p.loc)}${p.prov?" · "+esc(p.prov):""}</div></div>
+    return `<div class="row ${PSEL.has(p.idx)?'selrow':''}" style="cursor:default;grid-template-columns:2.4fr 1.5fr 1fr">
+      <div style="display:flex;gap:9px;align-items:flex-start"><input type="checkbox" class="rowchk" ${PSEL.has(p.idx)?'checked':''} onclick="event.stopPropagation();togglePSel(${p.idx})"><div style="min-width:0;flex:1"><div class="cname">${esc(p.nombre)}</div><div class="padr">📍 <b>${esc(p.dom||"sin dirección")}</b></div><div class="cmeta">${esc(p.loc)}${p.prov?" · "+esc(p.prov):""}</div></div></div>
       <div><span class="badge ${p.tipo===0?'teal':'warn'}">${p.tipo===0?'💊 Farmacia':'🏥 Institución'}</span>
         <div style="margin-top:6px;display:flex;gap:7px;flex-wrap:wrap"><a class="plink" href="${g}" target="_blank" rel="noopener">🔎 Google</a><a class="plink" href="${mp}" target="_blank" rel="noopener">📍 Maps</a></div>
         <div style="margin-top:6px;display:flex;gap:5px;align-items:center">
@@ -699,7 +699,33 @@ function renderProspectos(){
     </div>`;
   }).join("");
   const more=list.length>600?'<div class="empty" style="padding:16px">Mostrando los primeros 600. Elegí una localidad para acotar.</div>':'';
-  w.innerHTML=head+`<div class="tablecard"><div class="thead" style="grid-template-columns:2.4fr 1.5fr 1fr"><div>Establecimiento · dirección (padrón oficial)</div><div>Tipo · buscar contacto</div><div>Acción</div></div>${rows}${more}</div>`;
+  w.innerHTML=pBulkBarHTML()+head+`<div class="tablecard"><div class="thead" style="grid-template-columns:2.4fr 1.5fr 1fr"><div>Establecimiento · dirección (padrón oficial)</div><div>Tipo · buscar contacto</div><div>Acción</div></div>${rows}${more}</div>`;
+}
+/* Barra de acciones en lote de prospectos (enviar a comercial los tildados). */
+function pBulkBarHTML(){
+  const list=porConquistar(); const vis=list.slice(0,600); const allSel=vis.length>0 && vis.every(p=>PSEL.has(p.idx)); const n=PSEL.size;
+  return `<div id="pbulkwrap" class="bulkbar">
+    <label class="ba"><input type="checkbox" ${allSel?'checked':''} onchange="pselAll(this.checked)"> Seleccionar los ${vis.length}</label>
+    ${n?`<span class="bcount">${n} seleccionados</span>
+      <select class="bsel" onchange="enviarAConquistarLote(this.value);this.selectedIndex=0"><option value="">📨 Enviar a comercial…</option>${COMLIST.filter(o=>o.name && rolRank(o.name)>=2).map(o=>`<option value="${esc(o.name)}">${esc(o.name)}</option>`).join("")}</select>
+      <button class="bbtn ghost" onclick="PSEL.clear();renderProspectos()">✕ Limpiar</button>`
+    :`<span class="muted" style="font-size:12px">Tildá establecimientos y enviálos en lote a la carpeta "A conquistar" de un comercial.</span>`}
+  </div>`;
+}
+function togglePSel(idx){ if(PSEL.has(idx))PSEL.delete(idx); else PSEL.add(idx); const bw=document.getElementById("pbulkwrap"); if(bw) bw.outerHTML=pBulkBarHTML(); }
+function pselAll(on){ const ids=porConquistar().slice(0,600).map(p=>p.idx); if(on) ids.forEach(i=>PSEL.add(i)); else ids.forEach(i=>PSEL.delete(i)); renderProspectos(); }
+async function enviarAConquistarLote(comName){
+  if(!comName || !PSEL.size) return;
+  const items=[...PSEL].map(idx=>{ const e=UNI.est[idx]; if(!e) return null; const L=UNI.locs[e[1]]||[]; return {nombre:titulo(e[0]),tipo:e[2],loc:L[0]||"",prov:L[1]||"",dom:e[3]?titulo(e[3]):""}; }).filter(Boolean);
+  if(!items.length) return;
+  if(!confirm(`¿Enviar ${items.length} establecimiento(s) a la carpeta "A conquistar" de ${comName}?`)) return;
+  try{
+    const por=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
+    await EYG.conquistarAsignar(items, comName, por);
+    items.forEach(it=>ASIGNADOS.add(cqKey(it.nombre,it.loc)));
+    PSEL.clear(); toast(`📨 ${items.length} enviado(s) a la carpeta de ${comName}`);
+    renderProspectos();
+  }catch(e){ toast("⚠ No se pudo enviar: "+(e.message||e)); }
 }
 
 /* Enviar un establecimiento del padrón a la carpeta "A conquistar" de un comercial (bolsillo del panel). */
