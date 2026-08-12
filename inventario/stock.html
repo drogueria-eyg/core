@@ -366,7 +366,7 @@ async function cargar(){
 
     prog("categorías, proveedores y en camino…");
     const [meta, quantsLote] = await Promise.all([
-      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price","incoming_qty","seller_ids","uom_po_id","active","qty_available"]]),
+      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price","incoming_qty","seller_ids","uom_po_id","active","qty_available","x_costo_manual","x_costo_manual_date"]]),
       rpc("stock.quant","search_read",[[["location_id.usage","=","internal"],["quantity",">",0],["lot_id","!=",false]],["product_id","lot_id","quantity","value"]],{limit:5000}),
     ]);
     const M={}; for(const m of meta) M[m.id]=m;
@@ -411,7 +411,7 @@ async function cargar(){
         if(!provMap[pid] || (x.min_qty||1)<provMap[pid].minQty) provMap[pid]={id:pid,name:x.partner_id[1],price:x.price>0?x.price:0,minQty:x.min_qty||1}; }
       const provs=Object.values(provMap);
       const costoU=cost, pvp=m.list_price||0;
-      return {id, code:m.default_code||"", archivado:m.active===false, valRoto, qa, name:s.product_id[1], fam:familia(m.categ_id),
+      return {id, code:m.default_code||"", archivado:m.active===false, valRoto, qa, manualC:m.x_costo_manual||0, manualD:m.x_costo_manual_date||null, name:s.product_id[1], fam:familia(m.categ_id),
         categ:m.categ_id?m.categ_id[1]:"", val, qty, ventaU, venta3, freq,
         incoming:Math.round(m.incoming_qty||0),
         meses: meses>900?999:Math.round(meses*10)/10,
@@ -428,6 +428,12 @@ async function cargar(){
     ARCH=TODOS.filter(r=>r.archivado).sort((a,b)=>b.val-a.val);
     VALROTO=TODOS.filter(r=>!r.archivado && r.valRoto).sort((a,b)=>a.val-b.val);   // más negativo (peor) primero
     DATA=TODOS.filter(r=>!r.archivado && !r.valRoto && r.qty>0);                            // sólo productos con stock real
+    // costo actual del motor para los rotos (para revalorizar): última compra vs costo manual, gana el más reciente
+    if(VALROTO.length){ try{
+      const pol2=await rpc("purchase.order.line","search_read",[[["product_id","in",VALROTO.map(r=>r.id)],["order_id.state","in",["purchase","done"]]]],{fields:["product_id","price_unit","date_planned"],order:"date_planned desc",limit:3000});
+      const ucm={}; for(const l of pol2){ const pid=l.product_id[0]; if(!ucm[pid]) ucm[pid]={p:l.price_unit,f:(l.date_planned||"").slice(0,10)}; }
+      for(const r of VALROTO){ const u=ucm[r.id]; r.ucC=u?u.p:0; r.ucF=u?u.f:null; r.costoMotor=costoMotorDe(r); }
+    }catch(e){ for(const r of VALROTO) r.costoMotor=r.costoU; } }
 
     const monK=g=>g.__range?g.__range["date_order:month"].from:g["date_order:month"];
     const label=fromStr=>{const d=new Date(fromStr); return MESES_ES[d.getMonth()]+"'"+String(d.getFullYear()).slice(2);};
@@ -726,12 +732,38 @@ function renderTab(rd){
   else { c.innerHTML=tabStock(); renderTabla(); }
 }
 
+// costo actual del motor (como Costos y Rentabilidad): gana el más reciente entre costo manual y última compra; si no, standard_price
+function costoMotorDe(r){
+  const m=r.manualC||0, md=r.manualD, uc=r.ucC||0, uf=r.ucF;
+  if(m>0 && (!uf || (md && md>=uf))) return m;
+  if(uc>0) return uc;
+  return r.costoU||0;
+}
+// Revalorizar un producto con el ASISTENTE NATIVO de Odoo (stock.valuation.layer.revaluation): lleva el valor a
+// cantidad on-hand × costo actual. Verificado: no toca la contabilidad (todo el catálogo es valorización manual_periodic).
+async function accionRevalorizar(id){
+  const r=VALROTO.find(x=>x.id===id); if(!r) return;
+  if(!(r.qty>0)){ alert("Este producto no tiene stock positivo para revalorizar. Primero regularizá la cantidad (Poner en 0 / Destruir / Archivar)."); return; }
+  const costo=r.costoMotor||r.costoU||0;
+  if(!(costo>0)){ alert("No hay un costo definido para este producto (ni manual, ni última compra, ni costo Odoo). Cargale el costo primero en Costos y Rentabilidad."); return; }
+  const objetivo=Math.round(r.qty*costo);
+  if(!confirm(`Revalorizar "${cleanName(r.name)}" con la herramienta oficial de Odoo:\n\n• Valor de hoy en Odoo:  ${money(r.val)}   (roto)\n• Va a quedar:  ${money(objetivo)}   (= ${r.qty} u × ${money(costo)} costo actual)\n\nNo toca la contabilidad. ¿Confirmás?`)) return;
+  try{
+    const wiz=await rpc("stock.valuation.layer.revaluation","create",[{product_id:id, company_id:1, added_value:0, reason:"Revalorización desde EyG Core — corregir stock negativo histórico"}]);
+    const w=(await rpc("stock.valuation.layer.revaluation","read",[[wiz],["current_value_svl","current_quantity_svl"]]))[0];
+    const added=Math.round((((w.current_quantity_svl>0?w.current_quantity_svl:r.qty)*costo) - (w.current_value_svl||0))*100)/100;
+    await rpc("stock.valuation.layer.revaluation","write",[[wiz],{added_value:added}]);
+    await rpc("stock.valuation.layer.revaluation","action_validate_revaluation",[[wiz]]);
+    toast("✓ Revalorizado a "+money(objetivo)); await cargar();
+  }catch(e){ alert("No se pudo revalorizar: "+(e.message||e)); }
+}
 // recomendación de qué hacer con un producto de valorización rota
 function sugerenciaRoto(r){
-  if(r.qty<0)  return {ico:"⚠️", txt:"Debe más de lo que tiene: ajustá el stock a lo real y revalorizá en Odoo."};
+  const costo=r.costoMotor||r.costoU||0, obj=Math.round(r.qty*costo);
+  if(r.qty>0 && costo>0) return {ico:"🔧", txt:`Revalorizá a <b>${money(obj)}</b> (${r.qty} u × ${money(costo)} costo actual).`};
+  if(r.qty<0)  return {ico:"⚠️", txt:"Debe más de lo que tiene: ajustá el stock a lo real (Poner en 0) primero."};
   if(r.qty===0) return {ico:"📥", txt:"Sin stock real. Archivalo hasta la próxima compra."};
-  if(r.ventaU===0) return {ico:"📥", txt:"Con stock pero sin ventas hace 1 año. Archivalo o destruilo si ya no existe."};
-  return {ico:"🔧", txt:"Tiene stock y rota. Revalorizá en Odoo al costo actual (botón Odoo →)."};
+  return {ico:"📥", txt:"Sin costo cargado: archivalo, o cargá el costo en Costos y Rentabilidad."};
 }
 // ---------- TAB: A revisar (valorización rota + archivados con stock) ----------
 function tabRevisar(){
@@ -739,10 +771,7 @@ function tabRevisar(){
   const totRoto=VALROTO.reduce((a,r)=>a+r.val,0);
   const seccionRoto = VALROTO.length ? `
     <div class="note" style="border-left-color:var(--red);background:#FDF3F2;color:#7a2320">⚠️ <b>${VALROTO.length} producto${VALROTO.length===1?"":"s"} que Odoo valoriza en NEGATIVO</b> por stock negativo (se entregó más de lo que se ingresó en el sistema): un valor imposible que suma <b>${fmtM(totRoto)}</b>. Los aparté de las listas normales para que no ensucien el inventario, y acá los muestro <b>con el número tal cual está en Odoo (sin inventar nada)</b>.
-      <div style="margin-top:8px"><b>Qué se puede hacer y qué no:</b><br>
-      • <b>Desde acá</b> podés regularizar el <b>stock físico</b> (Poner en 0 / Destruir / Archivar) — son acciones reales y seguras.<br>
-      • <b>El valor</b> NO se puede tocar desde acá: en Odoo es un dato <b>de solo lectura</b> (lo calcula la contabilidad, las "capas de valorización"). Corregirlo es una <b>revalorización contable</b> que se hace en Odoo (botón <b>Odoo →</b>) — no lo automatizo para no romper los libros.<br>
-      • De raíz: <b>ingresar la mercadería antes de entregarla</b> para que no vuelva a pasar.</div></div>
+      <div style="margin-top:8px">Corregilo desde acá con el botón <b>🔧 Revalorizar</b>: usa la <b>herramienta oficial de Odoo</b> para llevar el valor a <b>cantidad × costo actual</b> (el del motor de Costos y Rentabilidad). Verificado: <b>no toca la contabilidad</b> (el catálogo usa valorización manual). Si un producto tiene stock negativo o no tiene costo, primero regularizá la cantidad (Poner en 0 / Destruir / Archivar). De raíz: <b>ingresar la mercadería antes de entregarla</b>.</div></div>
     <div class="toolbar" style="margin-top:10px"><button class="mini-btn" onclick="copiarValRoto()">📋 Copiar lista</button></div>
     <div class="tablecard" style="margin-top:8px">
       <div class="thead" style="grid-template-columns:2fr 0.7fr 1fr 1.5fr 1.7fr">
@@ -758,10 +787,11 @@ function tabRevisar(){
         <div class="tr-r num" style="color:var(--red);font-weight:700">${money(r.val)}</div>
         <div class="cmeta" style="line-height:1.35">${s.ico} ${s.txt}</div>
         <div class="actions" style="display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap">
+          ${(r.qty>0&&(r.costoMotor||r.costoU))?`<button class="mini-btn" onclick="accionRevalorizar(${r.id})" style="background:var(--teal);color:#fff;border-color:var(--teal)" title="Corrige el valor al costo actual con la herramienta oficial de Odoo. No toca la contabilidad.">🔧 Revalorizar</button>`:""}
           <button class="mini-btn" onclick="accionArchivar(${r.id})" style="border-color:#CBBF8E;color:#8a6d17" title="Dar de baja en Odoo hasta que haya un nuevo movimiento (ej. compra)">📥 Archivar</button>
           <button class="mini-btn" onclick="accionCero(${r.id})" title="Ajuste de inventario a 0 (regulariza la cantidad)">Poner en 0</button>
           <button class="mini-btn" onclick="accionDestruir(${r.id})" style="border-color:#F0B3B0;color:var(--red)" title="Scrap: saca las unidades del stock">Destruir</button>
-          <a class="mini-btn" href="${odooProd(r.id)}" target="_blank" rel="noopener" style="text-decoration:none;border-color:#BFE0DC;color:var(--teal-deep)" title="Abrir la ficha en Odoo para revalorizar (ajustar el valor al costo actual)">Odoo →</a>
+          <a class="mini-btn" href="${odooProd(r.id)}" target="_blank" rel="noopener" style="text-decoration:none;border-color:#BFE0DC;color:var(--teal-deep)" title="Abrir la ficha del producto en Odoo">Odoo</a>
         </div>
       </div>`}).join("")}
     </div>` : "";
