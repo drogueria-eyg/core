@@ -398,12 +398,12 @@ async function cargar(){
       const id=s.product_id[0], m=M[id]||{}, vp=vencP[id]||{};
       const ventaU=Math.round(V[id]||0), venta3=Math.round(V3[id]||0), freq=Math.round(F[id]||0);
       const cost=m.standard_price||0, qa=Math.round(m.qty_available||0);
-      const valOdoo=Math.round(s.value||0), qtyQuant=s.quantity||0;   // lo que Odoo dice (para la advertencia)
-      let val=s.value||0, qty=s.quantity||0, valRoto=false;
-      // Odoo corrompe la valorización cacheada del quant con stock negativo (parte el stock en quants +/−
-      // enormes; el panel, al filtrar cantidad>0, agarra sólo el positivo). Si el valor es negativo o la
-      // cantidad no cuadra con el on-hand, saneamos con cantidad neta (qty_available) × costo.
-      if(val<0 || (qa>=0 && qty>0 && Math.abs(qty-qa)>Math.max(5,qty*0.5))){ valRoto=true; qty=Math.max(0,qa); val=Math.round(qty*cost); }
+      const valOdoo=Math.round(s.value||0);        // lo que Odoo dice (para la advertencia)
+      let qty=qa;                                   // cantidad = on-hand REAL (evita el inflado por quants partidos)
+      let val=s.value||0, valRoto=false;
+      // Odoo corrompe la valorización con stock negativo histórico → queda NEGATIVA (imposible). Esos productos
+      // se apartan a "A revisar"; acá los valuamos con on-hand × costo para poder mostrarlos con un número real.
+      if(val<0){ valRoto=true; val=Math.round(qa*cost); }
       const meses = ventaU>0 ? qty/(ventaU/12) : 999;
       const sellers=(m.seller_ids||[]).map(sid=>SI[sid]).filter(Boolean).sort((a,b)=>(a.sequence||0)-(b.sequence||0));
       const formal=sellers.find(x=>x.partner_id && x.partner_id[0]!==PROVEEDOR_T);
@@ -414,7 +414,7 @@ async function cargar(){
         if(!provMap[pid] || (x.min_qty||1)<provMap[pid].minQty) provMap[pid]={id:pid,name:x.partner_id[1],price:x.price>0?x.price:0,minQty:x.min_qty||1}; }
       const provs=Object.values(provMap);
       const costoU=cost, pvp=m.list_price||0;
-      return {id, code:m.default_code||"", archivado:m.active===false, valRoto, valOdoo, qtyQuant, name:s.product_id[1], fam:familia(m.categ_id),
+      return {id, code:m.default_code||"", archivado:m.active===false, valRoto, valOdoo, qa, name:s.product_id[1], fam:familia(m.categ_id),
         categ:m.categ_id?m.categ_id[1]:"", val, qty, ventaU, venta3, freq,
         incoming:Math.round(m.incoming_qty||0),
         meses: meses>900?999:Math.round(meses*10)/10,
@@ -426,10 +426,11 @@ async function cargar(){
         min:(vp.min!==undefined&&vp.min<9999)?Math.round(vp.min*10)/10:null,
         valVenc:valRoto?0:Math.round(vp.venc||0), val6:valRoto?0:Math.round(vp.v6||0), val12:valRoto?0:Math.round(vp.v12||0)};
     });
-    // separar archivados (dados de baja en Odoo pero con stock): van a un panel aparte
-    ARCH=DATA.filter(r=>r.archivado).sort((a,b)=>b.val-a.val);
-    DATA=DATA.filter(r=>!r.archivado);
-    VALROTO=DATA.filter(r=>r.valRoto).sort((a,b)=>b.qty-a.qty);
+    // apartar de las listas normales: archivados, valorización rota y los que no tienen stock real (on-hand<=0)
+    const TODOS=DATA;
+    ARCH=TODOS.filter(r=>r.archivado).sort((a,b)=>b.val-a.val);
+    VALROTO=TODOS.filter(r=>!r.archivado && r.valRoto).sort((a,b)=>a.valOdoo-b.valOdoo);   // más negativo (peor) primero
+    DATA=TODOS.filter(r=>!r.archivado && !r.valRoto && r.qty>0);                            // sólo productos con stock real
 
     const monK=g=>g.__range?g.__range["date_order:month"].from:g["date_order:month"];
     const label=fromStr=>{const d=new Date(fromStr); return MESES_ES[d.getMonth()]+"'"+String(d.getFullYear()).slice(2);};
@@ -733,17 +734,21 @@ function tabRevisar(){
   if(!ARCH.length && !VALROTO.length) return `<div class="pcard empty">Nada para revisar. 👌</div>`;
   const totRoto=VALROTO.reduce((a,r)=>a+r.valOdoo,0);
   const seccionRoto = VALROTO.length ? `
-    <div class="note" style="border-left-color:var(--red);background:#FDF3F2;color:#7a2320">⚠️ <b>${VALROTO.length} producto${VALROTO.length===1?"":"s"} con la valorización ROTA en Odoo por stock negativo</b> (se entregó más de lo que se ingresó en el sistema). Odoo los muestra con valores irreales que suman <b>${fmtM(totRoto)}</b> — por eso el inventario daba negativo. Acá los valué con <b>cantidad real (on-hand) × costo</b> para que los números cierren, pero <b>hay que regularizarlos en Odoo</b> (revalorizar / ajustar stock). De raíz: ingresar la mercadería antes de entregarla.</div>
-    <div class="toolbar" style="margin-top:10px"><button class="mini-btn" onclick="copiarValRoto()">📋 Copiar lista para Odoo/Depósito</button></div>
+    <div class="note" style="border-left-color:var(--red);background:#FDF3F2;color:#7a2320">⚠️ <b>${VALROTO.length} producto${VALROTO.length===1?"":"s"} con la valorización ROTA en Odoo</b> por stock negativo (se entregó más de lo que se ingresó en el sistema). Odoo les pone un valor <b>imposible</b> (negativo) que suma <b>${fmtM(totRoto)}</b> — por eso el inventario se iba a cualquier lado. Los <b>saqué de las listas normales</b> y los junté acá. Hay que <b>regularizarlos en Odoo</b> (revalorizar o ajustar el stock). De raíz: ingresar la mercadería antes de entregarla.</div>
+    <div class="toolbar" style="margin-top:10px"><button class="mini-btn" onclick="copiarValRoto()">📋 Copiar lista</button></div>
     <div class="tablecard" style="margin-top:8px">
-      <div class="thead" style="grid-template-columns:2.4fr 0.8fr 1fr 1.4fr">
-        <div>Producto</div><div class="tr-r">On-hand</div><div class="tr-r">Valor real</div><div class="tr-r">Odoo dice (irreal)</div>
+      <div class="thead" style="grid-template-columns:2.2fr 0.7fr 1fr 1.1fr 1.6fr">
+        <div>Producto</div><div class="tr-r">Stock (u)</div><div class="tr-r">Valor real</div><div class="tr-r">Odoo dice</div><div style="text-align:right">Corregir</div>
       </div>
-      ${VALROTO.map(r=>`<div class="row" style="grid-template-columns:2.4fr 0.8fr 1fr 1.4fr;cursor:pointer" onclick="abrirProd(${r.id})">
-        <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">${r.code?esc(r.code)+" · ":""}stock negativo en Odoo</div></div>
+      ${VALROTO.map(r=>`<div class="row" style="grid-template-columns:2.2fr 0.7fr 1fr 1.1fr 1.6fr;cursor:default">
+        <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">${r.code?esc(r.code):""}</div></div>
         <div class="tr-r num">${r.qty.toLocaleString("es-AR")}</div>
         <div class="tr-r num">${money(r.val)}</div>
         <div class="tr-r num" style="color:var(--red);font-weight:700">${money(r.valOdoo)}</div>
+        <div class="actions" style="display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap">
+          <a class="mini-btn" href="${odooProd(r.id)}" target="_blank" rel="noopener" style="text-decoration:none;border-color:#BFE0DC;color:var(--teal-deep)">Abrir en Odoo →</a>
+          <button class="mini-btn" onclick="accionCero(${r.id})" style="border-color:#F0B3B0;color:var(--red)" title="Ajuste de inventario a 0 (regulariza el stock)">Poner en 0</button>
+        </div>
       </div>`).join("")}
     </div>` : "";
   const totA=ARCH.reduce((a,r)=>a+r.val,0);
@@ -778,8 +783,9 @@ function copiarValRoto(){
 async function _quantsInternos(pid, pos){
   return await rpc("stock.quant","search_read",[[["product_id","=",pid],["location_id.usage","=","internal"],["quantity",pos?">":"!=",0]]],{fields:["id","quantity","lot_id","location_id"]});
 }
+const odooProd=id=>"https://drogueriaeyg.odoo.com/web#id="+id+"&model=product.product&view_type=form";  // abre la ficha del producto en Odoo
 async function accionCero(id){
-  const r=ARCH.find(x=>x.id===id); if(!r) return;
+  const r=ARCH.find(x=>x.id===id)||VALROTO.find(x=>x.id===id); if(!r) return;
   if(!confirm(`¿Poner en CERO el stock de "${cleanName(r.name)}" (${r.qty} u)?\n\nAjuste de inventario a 0 en Odoo. Es reversible.`)) return;
   try{
     const qs=await _quantsInternos(id,false);
@@ -985,19 +991,19 @@ function renderTabla(){
     <div class="tablecard">
       <div class="thead g-stock">
         <div onclick="sortBy('name')" title="Nombre y código del producto.">Producto${arrow('name')}</div>
-        <div class="hide-sm" onclick="sortBy('fam')" title="Familia (rubro): primer nivel de la categoría de Odoo.">Familia${arrow('fam')}</div>
-        <div class="tr-r" onclick="sortBy('qty')" title="Unidades en stock hoy (on-hand).">Stock${arrow('qty')}</div>
-        <div class="tr-r" onclick="sortBy('val')" title="Valor del stock: unidades × costo.">Valor${arrow('val')}</div>
-        <div class="tr-r hide-sm" onclick="sortBy('ventaU')" title="Unidades vendidas en los últimos 12 meses.">Vta/año${arrow('ventaU')}</div>
-        <div class="tr-r" onclick="sortBy('meses')" title="Cobertura: para cuánto tiempo alcanza el stock al ritmo de venta actual.">Cobertura${arrow('meses')}</div>
-        <div class="tr-r" onclick="sortBy('min')" title="Cuánto falta para que venza el lote más próximo a vencer.">Vence${arrow('min')}</div>
+        <div class="hide-sm" onclick="sortBy('fam')" title="Rubro: primer nivel de la categoría de Odoo.">Rubro${arrow('fam')}</div>
+        <div class="tr-r" onclick="sortBy('qty')" title="Unidades en stock hoy (on-hand).">Stock (u)${arrow('qty')}</div>
+        <div class="tr-r" onclick="sortBy('val')" title="Valor del stock: unidades × costo.">Valor stock${arrow('val')}</div>
+        <div class="tr-r hide-sm" onclick="sortBy('ventaU')" title="Unidades vendidas en los últimos 12 meses.">Vendido/año${arrow('ventaU')}</div>
+        <div class="tr-r" onclick="sortBy('meses')" title="Cobertura: para cuánto tiempo alcanza el stock al ritmo de venta actual.">Alcanza para${arrow('meses')}</div>
+        <div class="tr-r" onclick="sortBy('min')" title="Cuánto falta para que venza el lote más próximo a vencer.">Vence en${arrow('min')}</div>
       </div>
       ${cap.map(r=>{const c=rotCls(r.meses);
         const venc=r.min===null?'<span style="color:#CCD5D3">—</span>':r.min<0?'<b style="color:var(--red)">vencido</b>':(r.min<6?'<b style="color:var(--org)">'+fmtDurC(r.min)+'</b>':fmtDurC(r.min));
         return `<div class="row g-stock" onclick="abrirProd(${r.id})">
           <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">${esc(r.code||"")}</div></div>
           <div class="hide-sm cmeta">${esc(r.fam)}</div>
-          <div class="tr-r num" style="font-weight:600">${r.qty.toLocaleString("es-AR")}${r.valRoto?' <span title="Stock negativo en Odoo — revisar" style="color:var(--red)">⚠️</span>':''}</div>
+          <div class="tr-r num" style="font-weight:600">${r.qty.toLocaleString("es-AR")}</div>
           <div class="tr-r num">${money(r.val)}</div>
           <div class="tr-r hide-sm num" style="font-weight:500">${r.ventaU.toLocaleString("es-AR")}</div>
           <div class="tr-r"><span class="rbadge" style="background:var(--${c}bg);color:var(--${c})" title="Meses de stock: para cuánto alcanza (${r.meses>900?"sin ventas":fmtDur(r.meses)})">${r.meses>900?"—":fmtDurC(r.meses)}</span></div>
