@@ -224,12 +224,17 @@ const PFIELDS=["id","name","company_type","is_company","phone","mobile","email",
 const ROLES={"German Banquero":{label:"Gerente",cls:"gerente"},"Diego Velazquez":{label:"Dirección",cls:"gerente"},"Marcela Carranza":{label:"Líder Comercial",cls:"lider"}};
 const rolRank=n=>(n==="German Banquero"||n==="Diego Velazquez")?0:n==="Marcela Carranza"?1:n==="Sin asignar"?9:2;
 // Equipo comercial: siempre se muestran como tarjeta, aunque tengan 0 contactos (ej. las nuevas Lucía y Marianela).
-const COMERCIALES=["German Banquero","Diego Velazquez","Marcela Carranza","Natividad Sanchez","Claudia Dominguez","Samanta Luna","Ruth Aguayo","Antonella Infanti","Maricruz Finochietti","Lucía Oviedo","Marianela Soto"];
+const COMERCIALES=["German Banquero","Diego Velazquez","Marcela Carranza","Natividad Sanchez","Claudia Dominguez","Samanta Luna","Ruth Aguayo","Antonella Infanti","Maricruz Finochietti","Lucia Oviedo","Marianela Soto"];
 
 let PERFIL=null;
 let DATA=[], COMS=[], COMLIST=[], VENTA={}, DUPVAT={}, DUPNAME={};
 let CAT={fiscal:[],idt:[],prov:[]}, PROVIDX={};
 let UNI=null, CREADOS=new Set(), BOVEDA={}, SEL=new Set(), _bajaTag=null, _riesgoAt=0, NUEVOS=[];
+// Prospectos YA ASIGNADOS a la carpeta "A conquistar" de algún comercial (eyg.conquistar): no
+// vuelven a mostrarse en "Por conquistar" (para no reasignarlos). Clave = nombre|localidad.
+let ASIGNADOS=new Set();
+const cqKey=(nombre,loc)=>((nombre||"")+"|"+(loc||"")).toLowerCase().replace(/\s+/g," ").trim();
+async function cargarAsignados(){ try{ const c=await EYG.conquistarLeer(); ASIGNADOS=new Set((c||[]).map(x=>cqKey(x.nombre,x.loc))); }catch(e){} }
 const NUEVO_TAG="[CONTACTO-NUEVO]"; // marca de contacto creado desde el Core (guarda el creador real)
 let filtro={tab:"nuestros", com:"", seg:"", issue:"", rubro:"", boveda:false, proveedores:false, q:"", ocultarRuido:true, pTipo:"", pProv:"", pLoc:"", pQ:""};
 const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador en el chatter del contacto (fuente de verdad, reversible)
@@ -324,6 +329,7 @@ async function cargar(silent){
     recalcComs();
     if(silent){ const y=window.scrollY; render(); window.scrollTo(0,y); } else render();
     if(!UNI) cargarUniverso();   // el padrón (~900 KB) se trae 1 vez y actualiza los cruces al llegar
+    cargarAsignados().then(()=>{ if(filtro.tab==="conquistar") renderProspectos(); });   // ocultar los ya asignados
     if(!silent || Date.now()-_riesgoAt>180000) cargarRiesgos();   // alerta de crédito (más liviana: cada ~3 min)
     if(!silent) cargarNuevos();   // historial de contactos nuevos (se refresca al abrir la pestaña)
     if(!silent) cargarPortalEstado();   // estado del acceso al portal por contacto (para el ícono de la fila)
@@ -459,6 +465,7 @@ function porConquistar(){
   UNI.est.forEach((e,idx)=>{
     if(e[6]) return; if(CREADOS.has(idx)) return;
     const L=UNI.locs[e[1]]; if(!L) return;
+    if(ASIGNADOS.size && ASIGNADOS.has(cqKey(titulo(e[0]), L[0]))) return;   // ya asignado a un comercial
     if(provOk && NORM(L[1])!==provOk) return;
     if(filtro.pTipo==="farm" && e[2]!==0) return;
     if(filtro.pTipo==="inst" && e[2]!==1) return;
@@ -695,7 +702,8 @@ function enviarAConquistar(idx, comName){
   const it={ nombre:titulo(e[0]), tipo:e[2], loc:L[0]||"", prov:L[1]||"", dom:e[3]?titulo(e[3]):"" };
   const por=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
   EYG.conquistarAsignar([it], comName, por)
-    .then(n=>toast(n?("📨 Enviado a la carpeta de "+comName):("Ya estaba en la carpeta de "+comName)))
+    .then(n=>{ ASIGNADOS.add(cqKey(it.nombre, it.loc)); if(filtro.tab==="conquistar") renderProspectos();   // sale de la lista al toque
+      toast(n?("📨 Enviado a la carpeta de "+comName):("Ya estaba en la carpeta de "+comName)); })
     .catch(()=>toast("⚠ No se pudo enviar"));
 }
 
