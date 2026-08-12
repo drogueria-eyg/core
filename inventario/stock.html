@@ -327,7 +327,7 @@ function fmtDurC(m){
   return neg?"-"+s:s;
 }
 
-let DATA=[], ARCH=[], LOTES={}, FLUJO={meses:[],ventas:[],compras:[]}, CAD={}, TOT=0, KPI={}, BUCKETS=[], FAMS=[];
+let DATA=[], ARCH=[], VALROTO=[], LOTES={}, FLUJO={meses:[],ventas:[],compras:[]}, CAD={}, TOT=0, KPI={}, BUCKETS=[], FAMS=[];
 let TAB="repo";
 let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
 let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
@@ -366,7 +366,7 @@ async function cargar(){
 
     prog("categorías, proveedores y en camino…");
     const [meta, quantsLote] = await Promise.all([
-      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price","incoming_qty","seller_ids","uom_po_id","active"]]),
+      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price","incoming_qty","seller_ids","uom_po_id","active","qty_available"]]),
       rpc("stock.quant","search_read",[[["location_id.usage","=","internal"],["quantity",">",0],["lot_id","!=",false]],["product_id","lot_id","quantity","value"]],{limit:5000}),
     ]);
     const M={}; for(const m of meta) M[m.id]=m;
@@ -396,7 +396,13 @@ async function cargar(){
 
     DATA=stock.filter(s=>s.product_id).map(s=>{
       const id=s.product_id[0], m=M[id]||{}, vp=vencP[id]||{};
-      const val=s.value||0, qty=s.quantity||0, ventaU=Math.round(V[id]||0), venta3=Math.round(V3[id]||0), freq=Math.round(F[id]||0);
+      const ventaU=Math.round(V[id]||0), venta3=Math.round(V3[id]||0), freq=Math.round(F[id]||0);
+      const cost=m.standard_price||0, qa=Math.round(m.qty_available||0);
+      let val=s.value||0, qty=s.quantity||0, valRoto=false;
+      // Odoo corrompe la valorización cacheada del quant con stock negativo (parte el stock en quants +/−
+      // enormes; el panel, al filtrar cantidad>0, agarra sólo el positivo). Si el valor es negativo o la
+      // cantidad no cuadra con el on-hand, saneamos con cantidad neta (qty_available) × costo.
+      if(val<0 || (qa>=0 && qty>0 && Math.abs(qty-qa)>Math.max(5,qty*0.5))){ valRoto=true; qty=Math.max(0,qa); val=Math.round(qty*cost); }
       const meses = ventaU>0 ? qty/(ventaU/12) : 999;
       const sellers=(m.seller_ids||[]).map(sid=>SI[sid]).filter(Boolean).sort((a,b)=>(a.sequence||0)-(b.sequence||0));
       const formal=sellers.find(x=>x.partner_id && x.partner_id[0]!==PROVEEDOR_T);
@@ -406,8 +412,8 @@ async function cargar(){
       for(const x of sellers){ if(!x.partner_id||x.partner_id[0]===PROVEEDOR_T) continue; const pid=x.partner_id[0];
         if(!provMap[pid] || (x.min_qty||1)<provMap[pid].minQty) provMap[pid]={id:pid,name:x.partner_id[1],price:x.price>0?x.price:0,minQty:x.min_qty||1}; }
       const provs=Object.values(provMap);
-      const costoU=m.standard_price||0, pvp=m.list_price||0;
-      return {id, code:m.default_code||"", archivado:m.active===false, name:s.product_id[1], fam:familia(m.categ_id),
+      const costoU=cost, pvp=m.list_price||0;
+      return {id, code:m.default_code||"", archivado:m.active===false, valRoto, name:s.product_id[1], fam:familia(m.categ_id),
         categ:m.categ_id?m.categ_id[1]:"", val, qty, ventaU, venta3, freq,
         incoming:Math.round(m.incoming_qty||0),
         meses: meses>900?999:Math.round(meses*10)/10,
@@ -417,11 +423,12 @@ async function cargar(){
         provPrice:formal&&formal.price>0?formal.price:0, minQty:formal?(formal.min_qty||1):1, provs,
         uomPo:m.uom_po_id?m.uom_po_id[0]:1, viaOtra:!formal&&hayT,
         min:(vp.min!==undefined&&vp.min<9999)?Math.round(vp.min*10)/10:null,
-        valVenc:Math.round(vp.venc||0), val6:Math.round(vp.v6||0), val12:Math.round(vp.v12||0)};
+        valVenc:valRoto?0:Math.round(vp.venc||0), val6:valRoto?0:Math.round(vp.v6||0), val12:valRoto?0:Math.round(vp.v12||0)};
     });
     // separar archivados (dados de baja en Odoo pero con stock): van a un panel aparte
     ARCH=DATA.filter(r=>r.archivado).sort((a,b)=>b.val-a.val);
     DATA=DATA.filter(r=>!r.archivado);
+    VALROTO=DATA.filter(r=>r.valRoto).sort((a,b)=>b.qty-a.qty);
 
     const monK=g=>g.__range?g.__range["date_order:month"].from:g["date_order:month"];
     const label=fromStr=>{const d=new Date(fromStr); return MESES_ES[d.getMonth()]+"'"+String(d.getFullYear()).slice(2);};
@@ -889,6 +896,7 @@ function tabStock(){
       <div class="kpi clk" onclick="abrirLista('inventario')"><div class="l">Inventario valorizado</div><div class="n">${fmtM(KPI.inv)}</div><div class="d">${DATA.length} productos con stock</div><div class="ver">Ver todos →</div></div>
       <div class="kpi warn clk" onclick="abrirLista('liberable')"><div class="l">Plata liberable</div><div class="n">${fmtM(KPI.inmov)}</div><div class="d">sobre 3 meses de demanda que no vende</div><div class="ver">Ver cuáles →</div></div>
     </div>
+    ${VALROTO.length?`<div class="note" style="margin-top:12px">⚠️ <b>${VALROTO.length} producto${VALROTO.length===1?"":"s"} con la valorización rota en Odoo</b> (típico de <b>stock negativo</b>: se descargó más de lo que se ingresó). Acá los valué con <b>cantidad on-hand × costo</b> para que los números cierren, pero conviene <b>regularizarlos en Odoo</b> (revalorizar / ajustar stock). El que más pesa: <b>${esc(cleanName(VALROTO[0].name))}</b>${VALROTO.length>1?` y ${VALROTO.length-1} más`:""}. <a onclick="abrirValRoto()" style="color:var(--teal);cursor:pointer;font-weight:700">Ver la lista →</a></div>`:""}
 
     <h2 class="sec">Flujo de compra y venta · 12 meses<span class="hint">¿comprás en línea con lo que vendés?</span></h2>
     <div class="pcard">
@@ -1186,6 +1194,19 @@ function abrirBucket(i){
         <div class="nm"><b>${esc(cleanName(r.name))}</b><span>${r.meses>900?"sin venta 12m":fmtDur(r.meses)+" de stock"} · ${r.qty} u</span></div>
         <div class="amt">${money(r.val)}</div></li>`).join("")}</ul>
       ${rows.length>150?`<div class="count-line" style="margin-top:8px">…y ${rows.length-150} más.</div>`:""}</div>`;
+  d.classList.add("on"); document.getElementById("scrim").classList.add("on");
+}
+function abrirValRoto(){
+  const d=document.getElementById("drawer");
+  d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span>
+      <h2>Valorización a revisar en Odoo</h2>
+      <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${VALROTO.length} productos</span></div></div>
+    <div class="dbody">
+      <p style="font-size:12.5px;color:var(--gris);margin:-4px 0 12px">Odoo tiene la valorización rota por <b>stock negativo</b> (se descargó más de lo que se ingresó → el costo unitario se dispara). Acá los valué con <b>cantidad on-hand × costo</b> para que cierren los números. En Odoo hay que <b>regularizar el stock y revalorizar</b> cada uno.</p>
+      <ul class="lst">${VALROTO.map(r=>`<li class="li" onclick="abrirProd(${r.id})">
+        <div class="nm"><b>${esc(cleanName(r.name))}</b><span>${r.code?esc(r.code)+" · ":""}on-hand ${r.qty} u × ${money(r.costoU)}</span></div>
+        <div class="amt">${money(r.val)}</div></li>`).join("")}</ul>
+    </div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
 }
 
