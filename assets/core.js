@@ -132,6 +132,27 @@ window.EYG = (function(){
   async function login(email,pwd){ return await supa().auth.signInWithPassword({email:(email||"").trim().toLowerCase(),password:pwd}); }
   async function logout(){ try{ await supa().auth.signOut(); }catch(e){} location.href=BASE; }
 
+  /* ---- Encierro del rol "comercial" ------------------------------------
+     Un comercial vive dentro de su sesión de venta y nada más: puede estar en
+     su panel y en "Cargar venta" (que se abre desde adentro del panel). Cualquier
+     otra página del Core (inicio, precios, comunicaciones, etc.) lo devuelve a su
+     panel. Su menú/tarjetas quedan sólo con "Mi Panel" (ver puedeVer). Convive con
+     los permisos por persona: si a un comercial se le concede un módulo suelto
+     (modulos_extra), esa página SÍ lo deja entrar. Se aplica en requireAuth y en
+     guard, apenas se confirma el perfil. Reversible: borrar este bloque y sus dos
+     llamadas + la línea de puedeVer. */
+  const COMERCIAL_OK = ["panel.html","vender.html"];
+  function comercialLock(p){
+    if(!p || p.rol!=="comercial") return false;
+    if(typeof location==="undefined") return false;
+    const file = (location.pathname.split("/").pop()||"").toLowerCase();
+    if(COMERCIAL_OK.includes(file)) return false;   // ya está donde puede estar
+    const mk = railActiveKey();                     // ¿esta página es un módulo concedido?
+    if(mk && (p.modulos_extra||[]).includes(mk)) return false;
+    location.replace(abs("comercial/panel.html"));  // el resto → a su panel
+    return true;
+  }
+
   /* Portón: requireAuth(rolesPermitidos, cb). [] = cualquier logueado. admin/direccion pueden todo. */
   async function requireAuth(roles, cb){
     document.body.innerHTML = '<div class="gate"><div class="spinner"></div><div>Verificando acceso…</div></div>';
@@ -139,6 +160,7 @@ window.EYG = (function(){
     if(!s){ showLogin(); return; }
     const p = await perfil();
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso", accesoMsg(p,s), false); return; }
+    if(comercialLock(p)) return;   // comercial fuera de su panel → a su panel
     const ok = esSuper(p._h) || p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return; }
     if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return; }
@@ -152,6 +174,7 @@ window.EYG = (function(){
     if(!s){ showLogin(); return new Promise(()=>{}); }
     const p = await perfil();
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso", accesoMsg(p,s), false); return new Promise(()=>{}); }
+    if(comercialLock(p)) return new Promise(()=>{});   // comercial fuera de su panel → a su panel
     /* Permisos por persona: resolvemos el módulo actual por el archivo (mismo
        criterio que el menú). Una concesión (extra) habilita incluso un módulo
        EN PRUEBAS; una quita lo bloquea. Los supers no se ven afectados. */
@@ -361,6 +384,7 @@ window.EYG = (function(){
        rol; una quita (modulos_quita) lo saca aunque el rol lo traiga. */
     if((p.modulos_quita||[]).includes(m.key)) return false;
     if((p.modulos_extra||[]).includes(m.key)) return true;
+    if(p.rol==="comercial") return m.key==="panel";   // comercial: sólo su panel (salvo concesión explícita, ya resuelta arriba)
     if(m.pruebas && m.pruebas.length && !m.pruebas.includes(p._h)) return false;
     if(p.rol==="admin"||p.rol==="direccion") return true;
     return m.roles.includes(p.rol);
