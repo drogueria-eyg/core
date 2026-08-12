@@ -247,6 +247,23 @@
   .cbtn.ghost{background:rgba(255,255,255,.16);color:#fff}
   .cbtn.x{background:transparent;color:#fff;padding:9px 10px;font-size:15px;opacity:.85}
   @media(max-width:620px){ .cartbar{left:16px;right:16px;transform:none;max-width:none} .cbtn.ghost{display:none} .cartbar .ci b{max-width:40vw} }
+  /* presupuestos */
+  .presgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+  .prescard{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:14px 15px;cursor:pointer;transition:transform .1s,box-shadow .1s}
+  .prescard:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(6,65,62,.13);border-color:var(--teal-med)}
+  .prescard .ph{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .prescard .pnm{font-weight:800;font-size:15px}
+  .prescard .pest{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;padding:2px 8px;border-radius:20px}
+  .pest.pe-draft{background:#EEF2F1;color:var(--gris)} .pest.pe-sent{background:var(--agua);color:var(--teal-deep)}
+  .prescard .pprov{font-size:13px;color:var(--gris);margin:6px 0 10px;overflow-wrap:anywhere}
+  .prescard .pfoot{display:flex;justify-content:space-between;align-items:baseline;border-top:1px solid var(--line);padding-top:9px;font-size:12.5px;color:var(--gris)}
+  .prescard .pfoot b{font-size:16px;color:var(--ink)}
+  .cotrow{display:grid;grid-template-columns:1fr 66px 92px 88px;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+  .cotrow.cothead{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:700;border-bottom:2px solid var(--line)}
+  .cotrow .cn{font-size:12.5px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+  .cotrow .cn span{display:block;font-size:11px;font-weight:500}
+  .cotrow .q,.cotrow .cprice{width:100%;font-family:inherit;font-size:13px;text-align:right;border:1px solid var(--line);border-radius:7px;padding:6px 7px;font-weight:700;color:var(--ink)}
+  .cotrow .cst{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;font-size:12.5px}
 
   @media(max-width:860px){ .grid2{grid-template-columns:1fr} .rotleg{grid-template-columns:1fr}
     .g-stock{grid-template-columns:2fr 1fr 0.9fr} .g-repo{grid-template-columns:2fr 1fr 0.9fr} .g-win{grid-template-columns:2fr 0.9fr 1fr}
@@ -307,6 +324,8 @@ let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
 let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
 let rfiltro={q:"",soloRepo:true,sortK:"margenAnual",dir:-1};
 let CAT={loaded:false,loading:false,rows:[],fams:[],labs:[],provs:[]};
+let PRES={loaded:false,loading:false,rows:[],base:""};   // presupuestos (RFQ borrador/enviado de Odoo)
+let COT={po:null,lines:[]};                              // presupuesto que se está cotizando
 let cfil={q:"",fam:"",lab:"",prov:"",stock:"",sortK:"name",dir:1};
 // laboratorio fabricante = segmento después de "ETICOS" en la categoría (los éticos se ordenan por lab)
 function labDe(categ){ if(!categ) return ""; const p=categ[1].split("/").map(s=>s.trim());
@@ -677,6 +696,7 @@ function tabsBar(rd){
     <button class="tab ${TAB==="win"?"on":""}" onclick="setTab('win')">⭐ Ganadores</button>
     <button class="tab ${TAB==="stock"?"on":""}" onclick="setTab('stock')">📦 Cuidar el stock</button>
     <button class="tab ${TAB==="cat"?"on":""}" onclick="setTab('cat')">🔎 Catálogo · ver todo</button>
+    <button class="tab ${TAB==="pres"?"on":""}" onclick="setTab('pres')">📄 Presupuestos${PRES.loaded&&PRES.rows.length?` <span class="b">${PRES.rows.length}</span>`:""}</button>
     ${ARCH.length?`<button class="tab ${TAB==="revisar"?"on":""}" onclick="setTab('revisar')">🗃️ A revisar <span class="b">${ARCH.length}</span></button>`:""}
   </div>`;
 }
@@ -687,6 +707,7 @@ function renderTab(rd){
   else if(TAB==="win") { c.innerHTML=tabWin(rd); renderWin(); }
   else if(TAB==="revisar") c.innerHTML=tabRevisar();
   else if(TAB==="cat") { c.innerHTML=tabCat(); if(CAT.loaded) renderCatTabla(); }
+  else if(TAB==="pres") { c.innerHTML=tabPres(); if(PRES.loaded) renderPresList(); }
   else { c.innerHTML=tabStock(); renderTabla(); }
 }
 
@@ -1311,13 +1332,10 @@ function renderCompra(){
   } else {
     body=`<div class="dsec"><h4>Proveedor</h4><span class="cchip">${esc(COMPRA.provName)}</span></div>
       <div class="okbox">✓ Borrador <b>${esc(COMPRA.poName)}</b> creado en Odoo con ${COMPRA.items.filter(i=>i.qty>0).length} líneas por ${money(total)}.</div>
-      ${COMPRA.estado==="sent"
-        ? `<div class="okbox" style="margin-top:8px">✓ Orden <b>confirmada y enviada</b> al proveedor. Ahora queda esperar la mercadería.<br><b>La recepción se hace en el módulo de Depósito.</b></div>`
-        : `<div class="dsec" style="margin-top:14px"><h4>3 · Revisá y enviá</h4>
-            <p style="font-size:13px;color:var(--gris);line-height:1.55">El borrador quedó en Odoo sin confirmar. Podés revisarlo en <b>Compras → Órdenes de compra</b>. Cuando esté ok, confirmalo para enviarlo al proveedor.</p>
-            <button class="wa-send" id="cConf" onclick="confirmarOCCompra()" style="background:var(--teal)">✅ Confirmar y enviar al proveedor</button>
-            <button class="wa-send ghost" onclick="copiarCompra()">Copiar pedido (texto)</button></div>`}
-      <button class="wa-send ghost" onclick="nuevaCompra()" style="margin-top:14px">➕ Cargar otra compra</button>`;
+      <div class="dsec" style="margin-top:14px"><h4>3 · Cotizalo con el proveedor</h4>
+        <p style="font-size:13px;color:var(--gris);line-height:1.55">Quedó como presupuesto en Odoo. Ajustá precios y descuentos en vivo, mandáselo por WhatsApp o mail, y confirmalo cuando cierren.</p>
+        <button class="wa-send" onclick="irACotizar(${COMPRA.poId})" style="background:var(--teal)">📄 Cotizar / negociar y enviar →</button></div>
+      <button class="wa-send ghost" onclick="nuevaCompra()" style="margin-top:12px">➕ Otro presupuesto</button>`;
   }
   d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span><h2>Cargar una compra</h2>
       <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${money(total)}</span></div></div>
@@ -1380,6 +1398,114 @@ function copiarCompra(){
   t+=`\nTotal estimado: ${money(its.reduce((a,it)=>a+it.qty*it.precio,0))}`;
   navigator.clipboard.writeText(t).then(()=>toast("✓ Pedido copiado"));
 }
+
+// ===================== PRESUPUESTOS · RFQ de Odoo (cotizar / enviar / confirmar) =====================
+function tabPres(){
+  if(!PRES.loaded){ if(!PRES.loading) setTimeout(loadPres,10);
+    return `<div class="pcard empty"><div class="spinner" style="margin:6px auto 14px"></div>Cargando los presupuestos abiertos…</div>`; }
+  return `<div class="note info">Pedidos de <b>presupuesto abiertos</b> (borradores de Odoo). Abrí uno para <b>cotizar</b> con el proveedor —editás cantidades y precios en vivo—, <b>enviarlo</b> por WhatsApp o mail (preview de Odoo), y cuando cierran, <b>confirmarlo</b>. Al confirmar, la recepción de la mercadería se hace en el módulo de Depósito.</div>
+    <div class="toolbar" style="margin-top:12px">
+      <button class="wa-send" style="width:auto;margin:0;padding:10px 18px" onclick="nuevaCompra()">➕ Nuevo presupuesto</button>
+      <button class="mini-btn" onclick="loadPres()">🔄 Actualizar</button>
+    </div>
+    <div id="preslist" style="margin-top:14px"></div>`;
+}
+async function loadPres(){
+  PRES.loading=true;
+  try{
+    if(!PRES.base){ try{ PRES.base=(await rpc("ir.config_parameter","get_param",["web.base.url"]))||"https://drogueriaeyg.odoo.com"; }catch(e){ PRES.base="https://drogueriaeyg.odoo.com"; } }
+    PRES.rows=await rpc("purchase.order","search_read",[["|",["state","=","draft"],["state","=","sent"]]],
+      {fields:["id","name","partner_id","amount_untaxed","date_order","state","order_line"],limit:200,order:"write_date desc"});
+    PRES.loaded=true; PRES.loading=false;
+    if(TAB==="pres") render(); else pintarCarrito();
+  }catch(e){ PRES.loading=false; const c=document.getElementById("tabc"); if(c&&TAB==="pres")c.innerHTML='<div class="errbox">No pude cargar los presupuestos: '+esc(e.message)+'</div>'; }
+}
+function renderPresList(){
+  const el=document.getElementById("preslist"); if(!el) return;
+  if(!PRES.rows.length){ el.innerHTML='<div class="pcard empty">No hay presupuestos abiertos. Armá uno con "Nuevo presupuesto" o desde el catálogo.</div>'; return; }
+  el.innerHTML=`<div class="presgrid">${PRES.rows.map(p=>{ const n=(p.order_line||[]).length; const est=p.state==="sent"?["Enviado","pe-sent"]:["Borrador","pe-draft"];
+    return `<div class="prescard" onclick="abrirCotizar(${p.id})">
+      <div class="ph"><span class="pnm">${esc(p.name)}</span><span class="pest ${est[1]}">${est[0]}</span></div>
+      <div class="pprov">${esc(p.partner_id?p.partner_id[1]:"—")}</div>
+      <div class="pfoot"><span>${n} producto${n===1?"":"s"}</span><b>${money(p.amount_untaxed||0)}</b></div>
+    </div>`; }).join("")}</div>`;
+}
+async function abrirCotizar(poId){
+  const d=document.getElementById("drawer");
+  d.innerHTML=`<div class="dbody"><div class="loading" style="padding:50px"><div class="spinner"></div>Abriendo el presupuesto…</div></div>`;
+  d.classList.add("on"); document.getElementById("scrim").classList.add("on");
+  try{
+    const [po]=await rpc("purchase.order","read",[[poId],["name","partner_id","state","amount_untaxed"]]);
+    const lines=await rpc("purchase.order.line","search_read",[[["order_id","=",poId]]],{fields:["id","product_id","name","product_qty","price_unit"],order:"sequence,id"});
+    try{ po._purl=await rpc("purchase.order","get_portal_url",[[poId]]); }catch(e){ po._purl="/my/purchase/"+poId; }
+    try{ const pt=po.partner_id?await rpc("res.partner","read",[[po.partner_id[0]],["email"]]):null; po._email=pt&&pt[0]?pt[0].email:""; }catch(e){}
+    COT={po,lines}; renderCot();
+  }catch(e){ d.innerHTML=`<div class="dbody"><div class="errbox" style="margin:16px">No pude abrir el presupuesto: ${esc(e.message)}</div></div>`; }
+}
+function cotTotal(){ return COT.lines.reduce((a,l)=>a+(l.product_qty*l.price_unit),0); }
+function cotLink(){ return (PRES.base||"https://drogueriaeyg.odoo.com").replace(/\/$/,"")+(COT.po._purl||("/my/purchase/"+COT.po.id)); }
+function renderCot(){
+  const d=document.getElementById("drawer"); const p=COT.po; const est=p.state==="sent"?"Enviado":"Borrador";
+  d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span>
+      <h2>${esc(p.name)}</h2><div class="deuda" id="cotTot">${money(cotTotal())}</div>
+      <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${esc(p.partner_id?p.partner_id[1]:"")}</span>
+        <span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${est} · ${COT.lines.length} líneas</span></div></div>
+    <div class="dbody">
+      <div class="dsec"><h4>Cotización · editá cantidad y precio con el proveedor</h4>
+        <div class="cotrow cothead"><div>Producto</div><div>Cant.</div><div>Precio u.</div><div>Subtotal</div></div>
+        ${COT.lines.length?COT.lines.map((l,i)=>`<div class="cotrow">
+          <div class="cn">${esc(l.product_id?cleanName(l.product_id[1]):l.name)}<span><a onclick="cotQuitar(${i})" style="color:var(--red);cursor:pointer">quitar</a></span></div>
+          <input class="q" type="number" min="0" step="1" value="${l.product_qty}" onchange="cotQty(${i},this.value)">
+          <input class="cprice" type="number" min="0" step="0.01" value="${l.price_unit}" onchange="cotPrecio(${i},this.value)">
+          <div class="cst" id="cotst${i}">${money(l.product_qty*l.price_unit)}</div>
+        </div>`).join(""):'<div class="cmeta">Sin líneas. Agregá productos abajo.</div>'}
+        <div class="ordfoot"><span>Total (neto sin IVA)</span><b id="cotFoot">${money(cotTotal())}</b></div>
+      </div>
+      <div class="dsec"><h4>Agregar producto</h4>
+        <input class="cinput" id="cotBuscar" placeholder="Buscar producto por nombre o código…" oninput="cotBuscarProd(this.value)" autocomplete="off">
+        <div class="cpick" id="cotPick" style="display:none"></div></div>
+      <div class="dsec"><h4>Enviar al proveedor</h4>
+        <p style="font-size:12.5px;color:var(--gris);margin-bottom:8px">Se abre la vista de Odoo con el presupuesto (preview).</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="cbtn" style="background:var(--wa)" onclick="cotWhatsApp()">🟢 WhatsApp</button>
+          <button class="cbtn ghost" style="background:#eef6f5;color:var(--teal-deep)" onclick="cotMail()">✉️ Mail</button>
+          <button class="cbtn ghost" style="background:#eef6f5;color:var(--teal-deep)" onclick="cotCopiarLink()">🔗 Copiar link</button>
+        </div></div>
+      <button class="wa-send" onclick="cotConfirmar()">✅ Confirmar pedido</button>
+      <p style="font-size:11.5px;color:var(--gris);margin-top:8px;line-height:1.55">Al confirmar pasa a orden de compra. La <b>recepción</b> (lote, vencimiento, control) se hará en el <b>módulo de Depósito</b> — se ancla acá cuando esté. · <a onclick="cotCancelar()" style="color:var(--red);cursor:pointer">Cancelar presupuesto</a></p>
+    </div>`;
+}
+function cotPintarTot(i){ const l=COT.lines[i]; const st=document.getElementById("cotst"+i); if(st)st.textContent=money(l.product_qty*l.price_unit);
+  const t=money(cotTotal()); ["cotTot","cotFoot"].forEach(id=>{const e=document.getElementById(id);if(e)e.textContent=t;}); }
+async function cotQty(i,v){ const q=Math.max(0,parseFloat(v)||0); COT.lines[i].product_qty=q; cotPintarTot(i);
+  try{ await rpc("purchase.order.line","write",[[COT.lines[i].id],{product_qty:q}]); }catch(e){ toast("No se guardó la cantidad: "+e.message); } }
+async function cotPrecio(i,v){ const pr=Math.max(0,parseFloat(v)||0); COT.lines[i].price_unit=pr; cotPintarTot(i);
+  try{ await rpc("purchase.order.line","write",[[COT.lines[i].id],{price_unit:pr}]); }catch(e){ toast("No se guardó el precio: "+e.message); } }
+async function cotQuitar(i){ const l=COT.lines[i]; if(!confirm(`¿Quitar "${l.product_id?cleanName(l.product_id[1]):l.name}" del presupuesto?`)) return;
+  try{ await rpc("purchase.order.line","unlink",[[l.id]]); COT.lines.splice(i,1); renderCot(); toast("Quitado"); }catch(e){ alert("No se pudo quitar: "+(e.message||e)); } }
+let tCot=null;
+function cotBuscarProd(q){ clearTimeout(tCot); tCot=setTimeout(async()=>{ const box=document.getElementById("cotPick"); if(!box)return;
+  if(!q||q.length<2){box.style.display="none";return;}
+  try{ const r=await rpc("product.product","search_read",[["&",["active","=",true],"|",["name","ilike",q],["default_code","ilike",q]]],{fields:["id","default_code","name","standard_price"],limit:14});
+    box.style.display="block"; box.innerHTML=r.length?r.map(x=>`<div class="r" onclick="cotAddProd(${x.id},'${esc((x.name||'')).replace(/'/g,'')}',${x.standard_price||0})"><span>${esc(x.name)}</span><span class="rp">${esc(x.default_code||'')}</span></div>`).join(""):'<div class="r">Sin resultados.</div>';
+  }catch(e){ box.style.display="block"; box.innerHTML='<div class="r">Error</div>'; } },260); }
+async function cotAddProd(id,name,sp){
+  if(COT.lines.some(l=>l.product_id&&l.product_id[0]===id)){ toast("Ya está en el presupuesto"); return; }
+  try{ await rpc("purchase.order","write",[[COT.po.id],{order_line:[[0,0,{product_id:id,product_qty:1,price_unit:sp||0,name}]]}]);
+    COT.lines=await rpc("purchase.order.line","search_read",[[["order_id","=",COT.po.id]]],{fields:["id","product_id","name","product_qty","price_unit"],order:"sequence,id"});
+    renderCot(); toast("✓ Agregado al presupuesto");
+  }catch(e){ alert("No se pudo agregar: "+(e.message||e)); } }
+function cotCopiarLink(){ navigator.clipboard.writeText(cotLink()).then(()=>toast("🔗 Link copiado")); }
+function cotWhatsApp(){ const t=`Hola, te paso el presupuesto de Droguería EyG (${COT.po.name}): ${cotLink()}`; window.open("https://wa.me/?text="+encodeURIComponent(t),"_blank"); }
+function cotMail(){ const to=COT.po._email||""; const sub=`Presupuesto Droguería EyG · ${COT.po.name}`; const body=`Hola,\n\nTe paso el presupuesto para tu revisión:\n${cotLink()}\n\nSaludos.`; window.location.href=`mailto:${to}?subject=${encodeURIComponent(sub)}&body=${encodeURIComponent(body)}`; }
+async function cotConfirmar(){ if(!confirm(`¿Confirmar ${COT.po.name}? Pasa a orden de compra confirmada en Odoo.\nLa recepción de la mercadería se hará en Depósito.`)) return;
+  try{ await rpc("purchase.order","button_confirm",[[COT.po.id]]); toast("✓ Pedido confirmado"); cerrar(); PRES.loaded=false; loadPres(); }
+  catch(e){ alert("No se pudo confirmar: "+(e.message||e)); } }
+async function cotCancelar(){ if(!confirm(`¿Cancelar el presupuesto ${COT.po.name}?`)) return;
+  try{ await rpc("purchase.order","button_cancel",[[COT.po.id]]); toast("Presupuesto cancelado"); cerrar(); PRES.loaded=false; loadPres(); }
+  catch(e){ alert("No se pudo cancelar: "+(e.message||e)); } }
+// Desde el carrito recién creado → abrir a cotizar (limpia el carrito y marca la lista para refrescar)
+function irACotizar(id){ COMPRA={prov:null,provName:"",items:[],poId:null,poName:"",estado:"draft"}; pintarCarrito(); PRES.loaded=false; abrirCotizar(id); }
 
 let toastT; function toast(msg){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";
   t.style.cssText="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:600;z-index:99;box-shadow:0 8px 30px rgba(0,0,0,.25)";document.body.appendChild(t);}
