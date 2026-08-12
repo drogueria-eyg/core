@@ -258,6 +258,15 @@
   .prescard .pprov{font-size:13px;color:var(--gris);margin:6px 0 10px;overflow-wrap:anywhere}
   .prescard .pfoot{display:flex;justify-content:space-between;align-items:baseline;border-top:1px solid var(--line);padding-top:9px;font-size:12.5px;color:var(--gris)}
   .prescard .pfoot b{font-size:16px;color:var(--ink)}
+  .prow{display:grid;grid-template-columns:2.2fr 1.5fr 0.6fr 1fr 0.95fr;gap:12px;align-items:center;padding:11px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
+  .prow:hover{background:#F7FBFA} .prow:last-child{border-bottom:0}
+  .prow.prhead{background:#F0F6F5;font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--gris);cursor:default;border-radius:14px 14px 0 0}
+  .prow.prhead:hover{background:#F0F6F5}
+  .prow .pn{font-weight:700;font-size:13.5px;overflow-wrap:anywhere}
+  .prow .cmeta.hide-lg{display:none}
+  @media(max-width:860px){ .prow{grid-template-columns:2fr 0.6fr 1fr 0.9fr} .prow .cmeta.hide-lg{display:block;margin-top:2px} }
+  .delx{background:none;border:0;cursor:pointer;font-size:14px;line-height:1;padding:3px 5px;opacity:.5;border-radius:6px;flex-shrink:0}
+  .delx:hover{opacity:1;background:var(--badbg)}
   .cotrow{display:grid;grid-template-columns:1fr 66px 92px 88px;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
   .cotrow.cothead{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:700;border-bottom:2px solid var(--line)}
   .cotrow .cn{font-size:12.5px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
@@ -324,7 +333,7 @@ let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
 let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
 let rfiltro={q:"",soloRepo:true,sortK:"margenAnual",dir:-1};
 let CAT={loaded:false,loading:false,rows:[],fams:[],labs:[],provs:[]};
-let PRES={loaded:false,loading:false,rows:[],base:""};   // presupuestos (RFQ borrador/enviado de Odoo)
+let PRES={loaded:false,loading:false,rows:[],base:"",vista:"lista"};   // presupuestos (RFQ borrador/enviado de Odoo)
 let COT={po:null,lines:[]};                              // presupuesto que se está cotizando
 let cfil={q:"",fam:"",lab:"",prov:"",stock:"",sortK:"name",dir:1};
 // laboratorio fabricante = segmento después de "ETICOS" en la categoría (los éticos se ordenan por lab)
@@ -1407,6 +1416,7 @@ function tabPres(){
     <div class="toolbar" style="margin-top:12px">
       <button class="wa-send" style="width:auto;margin:0;padding:10px 18px" onclick="nuevaCompra()">➕ Nuevo presupuesto</button>
       <button class="mini-btn" onclick="loadPres()">🔄 Actualizar</button>
+      <div class="segs" style="margin-left:auto"><button class="${PRES.vista==='lista'?'on':''}" onclick="setPresVista('lista')">☰ Lista</button><button class="${PRES.vista==='grid'?'on':''}" onclick="setPresVista('grid')">▦ Tarjetas</button></div>
     </div>
     <div id="preslist" style="margin-top:14px"></div>`;
 }
@@ -1420,15 +1430,31 @@ async function loadPres(){
     if(TAB==="pres") render(); else pintarCarrito();
   }catch(e){ PRES.loading=false; const c=document.getElementById("tabc"); if(c&&TAB==="pres")c.innerHTML='<div class="errbox">No pude cargar los presupuestos: '+esc(e.message)+'</div>'; }
 }
+function setPresVista(v){ PRES.vista=v; document.querySelectorAll("#tabc .segs button").forEach(b=>b.classList.toggle("on",b.textContent.toLowerCase().includes(v==="lista"?"lista":"tarjetas"))); renderPresList(); }
 function renderPresList(){
   const el=document.getElementById("preslist"); if(!el) return;
   if(!PRES.rows.length){ el.innerHTML='<div class="pcard empty">No hay presupuestos abiertos. Armá uno con "Nuevo presupuesto" o desde el catálogo.</div>'; return; }
-  el.innerHTML=`<div class="presgrid">${PRES.rows.map(p=>{ const n=(p.order_line||[]).length; const est=p.state==="sent"?["Enviado","pe-sent"]:["Borrador","pe-draft"];
-    return `<div class="prescard" onclick="abrirCotizar(${p.id})">
-      <div class="ph"><span class="pnm">${esc(p.name)}</span><span class="pest ${est[1]}">${est[0]}</span></div>
-      <div class="pprov">${esc(p.partner_id?p.partner_id[1]:"—")}</div>
-      <div class="pfoot"><span>${n} producto${n===1?"":"s"}</span><b>${money(p.amount_untaxed||0)}</b></div>
-    </div>`; }).join("")}</div>`;
+  const est=p=>p.state==="sent"?["Enviado","pe-sent"]:["Borrador","pe-draft"];
+  if(PRES.vista==="grid"){
+    el.innerHTML=`<div class="presgrid">${PRES.rows.map(p=>{ const n=(p.order_line||[]).length, e=est(p);
+      return `<div class="prescard" onclick="abrirCotizar(${p.id})">
+        <div class="ph"><span class="pnm">${esc(p.name)}</span><div style="display:flex;align-items:center;gap:7px"><span class="pest ${e[1]}">${e[0]}</span><button class="delx" onclick="eliminarPres(${p.id},'${p.state}',event)" title="Eliminar presupuesto">🗑</button></div></div>
+        <div class="pprov">${esc(p.partner_id?p.partner_id[1]:"—")}</div>
+        <div class="pfoot"><span>${n} producto${n===1?"":"s"}</span><b>${money(p.amount_untaxed||0)}</b></div>
+      </div>`; }).join("")}</div>`;
+    return;
+  }
+  el.innerHTML=`<div class="tablecard">
+    <div class="prow prhead"><div>Presupuesto</div><div class="hide-sm">Proveedor</div><div class="tr-r">Prod.</div><div class="tr-r">Total</div><div class="tr-r">Estado</div></div>
+    ${PRES.rows.map(p=>{ const n=(p.order_line||[]).length, e=est(p);
+      return `<div class="prow" onclick="abrirCotizar(${p.id})">
+        <div><div class="pn">${esc(p.name)}</div><div class="cmeta hide-lg">${esc(p.partner_id?p.partner_id[1]:"—")}</div></div>
+        <div class="hide-sm cmeta">${esc(p.partner_id?p.partner_id[1]:"—")}</div>
+        <div class="tr-r num" style="font-weight:500">${n}</div>
+        <div class="tr-r num">${money(p.amount_untaxed||0)}</div>
+        <div class="tr-r" style="display:flex;align-items:center;justify-content:flex-end;gap:7px"><span class="pest ${e[1]}">${e[0]}</span><button class="delx" onclick="eliminarPres(${p.id},'${p.state}',event)" title="Eliminar presupuesto">🗑</button></div>
+      </div>`; }).join("")}
+  </div>`;
 }
 async function abrirCotizar(poId){
   const d=document.getElementById("drawer");
@@ -1472,7 +1498,7 @@ function renderCot(){
           <button class="cbtn ghost" style="background:#eef6f5;color:var(--teal-deep)" onclick="cotCopiarLink()">🔗 Copiar link</button>
         </div></div>
       <button class="wa-send" onclick="cotConfirmar()">✅ Confirmar pedido</button>
-      <p style="font-size:11.5px;color:var(--gris);margin-top:8px;line-height:1.55">Al confirmar pasa a orden de compra. La <b>recepción</b> (lote, vencimiento, control) se hará en el <b>módulo de Depósito</b> — se ancla acá cuando esté. · <a onclick="cotCancelar()" style="color:var(--red);cursor:pointer">Cancelar presupuesto</a></p>
+      <p style="font-size:11.5px;color:var(--gris);margin-top:8px;line-height:1.55">Al confirmar pasa a orden de compra. La <b>recepción</b> (lote, vencimiento, control) se hará en el <b>módulo de Depósito</b> — se ancla acá cuando esté. · <a onclick="cotCancelar()" style="color:var(--red);cursor:pointer">Cancelar</a> · <a onclick="eliminarPres(COT.po.id,COT.po.state)" style="color:var(--red);cursor:pointer">🗑 Eliminar</a></p>
     </div>`;
 }
 function cotPintarTot(i){ const l=COT.lines[i]; const st=document.getElementById("cotst"+i); if(st)st.textContent=money(l.product_qty*l.price_unit);
@@ -1504,6 +1530,20 @@ async function cotConfirmar(){ if(!confirm(`¿Confirmar ${COT.po.name}? Pasa a o
 async function cotCancelar(){ if(!confirm(`¿Cancelar el presupuesto ${COT.po.name}?`)) return;
   try{ await rpc("purchase.order","button_cancel",[[COT.po.id]]); toast("Presupuesto cancelado"); cerrar(); PRES.loaded=false; loadPres(); }
   catch(e){ alert("No se pudo cancelar: "+(e.message||e)); } }
+// Eliminar un presupuesto. Odoo EXIGE cancelar antes de borrar (incluso borradores): cancelamos y borramos en un paso.
+async function eliminarPres(id, state, ev){ if(ev){ ev.stopPropagation(); }
+  const p=PRES.rows.find(x=>x.id===id); const nm=p?p.name:("#"+id);
+  const msg = state==="draft"
+    ? `¿Eliminar el presupuesto "${nm}"? Se borra de Odoo y no se puede deshacer.`
+    : `"${nm}" está ${state==="sent"?"enviado":"confirmado"}. Para borrarlo primero se cancela. ¿Cancelar y eliminar?`;
+  if(!confirm(msg)) return;
+  try{
+    await rpc("purchase.order","button_cancel",[[id]]);   // Odoo pide cancelar antes de eliminar, sea cual sea el estado
+    await rpc("purchase.order","unlink",[[id]]);
+    PRES.rows=PRES.rows.filter(x=>x.id!==id); toast("🗑 Presupuesto eliminado"); renderPresList();
+    if(document.getElementById("drawer").classList.contains("on")&&COT.po&&COT.po.id===id) cerrar();
+  }catch(e){ alert("No se pudo eliminar: "+(e.message||e)); }
+}
 // Desde el carrito recién creado → abrir a cotizar (limpia el carrito y marca la lista para refrescar)
 function irACotizar(id){ COMPRA={prov:null,provName:"",items:[],poId:null,poName:"",estado:"draft"}; pintarCarrito(); PRES.loaded=false; abrirCotizar(id); }
 
