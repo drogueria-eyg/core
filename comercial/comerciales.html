@@ -56,6 +56,23 @@
   .lidcard .vaciobox b{color:#fff}
   .lidcard .vercartera{display:inline-block;margin-top:12px;background:var(--gold);color:#3a2c07;font-weight:800;font-size:13px;text-decoration:none;border-radius:10px;padding:9px 15px;transition:filter .13s}
   .lidcard .vercartera:hover{filter:brightness(1.06)}
+  /* Tarjeta dividida del líder-que-vende (mis ventas | mi equipo) */
+  .lidcard.split{padding:0;cursor:default;display:block}
+  .lidcard.split .lhead{padding:16px 20px 12px;display:flex;align-items:center;gap:12px;margin:0}
+  .splitrow{display:flex;border-top:1px solid rgba(255,255,255,.16)}
+  .split .half{flex:1;min-width:0;display:flex;flex-direction:column;padding:15px 18px;text-decoration:none;color:#fff;transition:background .12s}
+  .split .half:hover{background:rgba(255,255,255,.08)}
+  .split .half+.half{border-left:1px solid rgba(255,255,255,.16)}
+  .split .half.team{background:rgba(255,255,255,.05)}
+  .hhd{font-size:12px;font-weight:800;color:#d9f1ee;display:flex;align-items:center;gap:6px}
+  .hhd .tn{background:rgba(255,255,255,.18);color:#fff;border-radius:20px;padding:0 8px;font-size:11px;font-weight:800}
+  .hbig{font-size:21px;font-weight:900;letter-spacing:-.5px;margin-top:7px;color:#fff}
+  .hlbl{font-size:11px;color:#a9d8d3}
+  .hmini{display:flex;justify-content:space-between;gap:8px;font-size:11.5px;color:#cdeae6;margin-top:7px}
+  .hmini b{font-weight:800;color:#fff}
+  .hgo{margin-top:auto;padding-top:12px;font-size:12px;font-weight:800;color:#eafcfa}
+  .hvacio{font-size:12px;color:#cdeae6;line-height:1.45;margin-top:8px}
+  @media(max-width:560px){.splitrow{flex-direction:column}.split .half+.half{border-left:0;border-top:1px solid rgba(255,255,255,.16)}}
   .lidnote{font-size:13px;color:var(--gris2);background:var(--surface);border:1px dashed var(--line);border-radius:14px;padding:16px 18px;margin-bottom:24px}
   /* ===== 3 · grilla comerciales ===== */
   .ovgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:15px;margin-bottom:34px}
@@ -228,10 +245,13 @@ async function cargar(){
 
   // Métricas por comercial (uid): cartera + facturado/NC/cobrado del mes + deuda/vencido.
   // ~5 consultas TOTALES agrupadas por partner_id (no una por vendedor). Mismo criterio que antes.
+  // Métricas también para los LÍDERES que venden (sus ventas PROPIAS), no sólo los comerciales.
+  const leaderUids=[...new Set(leaders.map(L=>L.user_id&&L.user_id[0]).filter(Boolean))];
+  const metricUids=[...new Set([...comUids, ...leaderUids])];
   const fac={},nc={},cob={},deuda={},venc={},cartera={},hoyU={};
-  comUids.forEach(u=>{fac[u]=0;nc[u]=0;cob[u]=0;deuda[u]=0;venc[u]=0;cartera[u]=0;hoyU[u]=0;});
+  metricUids.forEach(u=>{fac[u]=0;nc[u]=0;cob[u]=0;deuda[u]=0;venc[u]=0;cartera[u]=0;hoyU[u]=0;});
   try{
-    const parts=await EYG.rpc("res.partner","search_read",[[["user_id","in",comUids],["customer_rank",">",0]]],{fields:["id","user_id"]});
+    const parts=await EYG.rpc("res.partner","search_read",[[["user_id","in",metricUids],["customer_rank",">",0]]],{fields:["id","user_id"]});
     const sellerOf={}, allIds=[];
     for(const p of parts){ const u=p.user_id&&p.user_id[0]; if(u==null||!(u in cartera))continue; sellerOf[p.id]=u; cartera[u]++; allIds.push(p.id); }
     const [facG,ncG,cobG,mlAll,hoyG,...series] = await Promise.all([
@@ -239,7 +259,7 @@ async function cargar(){
       allIds.length?EYG.rpc("account.move","read_group",[[["partner_id","in",allIds],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],["partner_id"]],{lazy:false}):[],
       allIds.length?EYG.rpc("account.payment","read_group",[[["partner_id","in",allIds],["payment_type","=","inbound"],["state","=","posted"],["date",">=",inicioMes]],["amount:sum"],["partner_id"]],{lazy:false}):[],
       allIds.length?EYG.rpc("account.move.line","search_read",[[["partner_id","in",allIds],["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false]]],{fields:["partner_id","amount_residual","date_maturity"],limit:0}):[],
-      EYG.rpc("sale.order","read_group",[[["user_id","in",comUids],["state","in",["sale","done"]],["date_order",">=",hoy+" 00:00:00"]],["amount_untaxed:sum"],["user_id"]],{lazy:false}),
+      EYG.rpc("sale.order","read_group",[[["user_id","in",metricUids],["state","in",["sale","done"]],["date_order",">=",hoy+" 00:00:00"]],["amount_untaxed:sum"],["user_id"]],{lazy:false}),
       ...leaders.map(L=>{ const tu=comEmps.filter(e=>e.parent_id&&e.parent_id[0]===L.id).map(e=>e.user_id[0]);
         return tu.length?EYG.rpc("sale.order","read_group",[[["user_id","in",tu],["state","in",["sale","done"]],["date_order",">=",desde12+" 00:00:00"]],["amount_untaxed:sum"],["date_order:month"]],{lazy:false}):Promise.resolve([]); }),
     ]);
@@ -268,11 +288,15 @@ async function cargar(){
     const deu=s("deuda"), ven=s("venc");
     const serie=STATE._serieByLeader[L.id]||[];
     const cur=serie.length?serie[serie.length-1]:0, prev=serie.length>1?serie[serie.length-2]:0;
-    return { empId:L.id, uid:L.user_id[0], name:L.user_id[1], teamN:tu.length,
+    const lu=L.user_id[0];
+    return { empId:L.id, uid:lu, name:L.user_id[1], teamN:tu.length,
       factMes, cobMes:s("cob"), deuda:deu, venc:ven, vencPct:deu>0?Math.round(ven/deu*100):0,
       cartera:tu.reduce((a,u)=>a+(cartera[u]||0),0),
       activosHoy:tu.filter(u=>(hoyU[u]||0)>0).length, hoyMonto:tu.reduce((a,u)=>a+(hoyU[u]||0),0),
-      serie, trend:(prev>0)?Math.round((cur-prev)/prev*100):null };
+      serie, trend:(prev>0)?Math.round((cur-prev)/prev*100):null,
+      // ventas PROPIAS del líder (como vendedor)
+      ownFactMes:(fac[lu]||0)-(nc[lu]||0), ownCobMes:cob[lu]||0, ownVenc:venc[lu]||0, ownDeuda:deuda[lu]||0,
+      ownVencPct:(deuda[lu]||0)>0?Math.round((venc[lu]||0)/deuda[lu]*100):0, ownCartera:cartera[lu]||0, ownHoy:hoyU[lu]||0 };
   });
 
   lcards.sort((a,b)=>((b.teamN>0)-(a.teamN>0))||(b.factMes-a.factMes));   // primero los líderes con equipo
@@ -301,30 +325,43 @@ function sparkSVG(serie){
 }
 function renderLideres(){
   const box=document.getElementById("lideres"); if(!box)return;
-  // Líderes que además venden: su tarjeta abre el panel estilo comercial (panel.html?modo=lider),
-  // con sus ventas + el rendimiento de su equipo. El resto (ej. Marcela) va al panel del líder clásico.
+  // Germán/Diego = líderes que ADEMÁS venden → tarjeta UNIFICADA dividida: mis ventas | mi equipo.
+  // Marcela (por ahora no vende) → tarjeta de equipo clásica → panel del líder.
   const PANEL_VENDE=new Set(["German Banquero","Diego Velazquez"]);
   if(!STATE.leaders.length){ box.innerHTML='<div class="lidnote">No hay líderes definidos en el organigrama de Odoo todavía. Los comerciales aparecen abajo.</div>'; return; }
+  const vc=(p)=>p>=40?'#FFB49A':p>=25?'var(--gold)':'#cdeae6';
   box.innerHTML=`<div class="lidgrid">${STATE.leaders.map(l=>{
-    const ini=(l.name||"?").trim().charAt(0).toUpperCase();
-    // Líder sin comerciales a cargo (ej. Germán, dirección): tarjeta apagada, sin link ni gráfico.
-    if(!l.teamN){
-      return `<a class="lidcard vacio" href="panel.html?c=${encodeURIComponent(l.name)}&modo=lider" style="text-decoration:none;color:inherit">
-        <div class="accent"></div>
-        <div class="lhead"><div class="av">${esc(ini)}</div>
-          <div class="who"><div class="role">Líder</div><div class="nm">${esc(l.name.split(" ")[0])}</div>
-            <div class="team">Vende y coordina · su propio panel</div></div></div>
-        <div class="vaciobox">Sin comerciales a cargo. Entrá para ver <b>tus ventas, presupuestos, pedidos y cartera</b>. Si le asignás gente, además vas a ver a su equipo.</div>
-        <span class="vercartera">🎯 Abrir mi panel →</span>
-      </a>`;
+    const ini=(l.name||"?").trim().charAt(0).toUpperCase(); const nombre=esc(l.name.split(" ")[0]);
+    if(PANEL_VENDE.has(l.name)){
+      return `<div class="lidcard split">
+        <div class="lhead"><div class="av">${esc(ini)}</div><div class="who"><div class="role">Líder · vende</div><div class="nm">${nombre}</div></div></div>
+        <div class="splitrow">
+          <a class="half" href="panel.html?c=${encodeURIComponent(l.name)}">
+            <div class="hhd">🛒 Mis ventas</div>
+            <div class="hbig">${M(l.ownFactMes)}</div><div class="hlbl">facturado del mes</div>
+            <div class="hmini"><span>Cobrado <b>${M(l.ownCobMes)}</b></span><span>Clientes <b>${l.ownCartera}</b></span></div>
+            <div class="hmini"><span>Vencido <b style="color:${vc(l.ownVencPct)}">${M(l.ownVenc)}</b></span><span>Hoy <b>${M(l.ownHoy)}</b></span></div>
+            <span class="hgo">Abrir mi panel de venta →</span>
+          </a>
+          <a class="half team" href="lider.html?lider=${encodeURIComponent(l.name)}">
+            <div class="hhd">👥 Mi equipo <span class="tn">${l.teamN}</span></div>
+            ${l.teamN?`<div class="hbig">${M(l.factMes)}</div><div class="hlbl">facturado del equipo</div>
+              <div class="hmini"><span>Cobrado <b>${M(l.cobMes)}</b></span><span>Clientes <b>${l.cartera}</b></span></div>
+              <div class="hmini"><span>Vencido <b style="color:${vc(l.vencPct)}">${M(l.venc)}</b></span><span>Hoy <b>${l.activosHoy} vend.</b></span></div>
+              <span class="hgo">Ver a mis comerciales →</span>`
+             :`<div class="hvacio">Todavía no tenés comerciales a cargo.<br>Cuando te asignen, vas a ver acá sus estadísticas.</div>
+              <span class="hgo">Preparado para tu equipo →</span>`}
+          </a>
+        </div>
+      </div>`;
     }
+    // Marcela: tarjeta de equipo clásica → panel del líder
     const vcol=l.vencPct>=40?'#FFB49A':l.vencPct>=25?'var(--gold)':'#fff';
     const trend=l.trend==null?'':`<span class="trend ${l.trend>=0?'up':'down'}">${l.trend>=0?'▲':'▼'} ${Math.abs(l.trend)}%</span>`;
-    const lhref = PANEL_VENDE.has(l.name)?`panel.html?c=${encodeURIComponent(l.name)}&modo=lider`:`lider.html?lider=${encodeURIComponent(l.name)}`;
-    return `<a class="lidcard" href="${lhref}">
+    return `<a class="lidcard" href="lider.html?lider=${encodeURIComponent(l.name)}">
       <div class="accent"></div>
       <div class="lhead"><div class="av">${esc(ini)}</div>
-        <div class="who"><div class="role">Líder</div><div class="nm">${esc(l.name.split(" ")[0])}</div>
+        <div class="who"><div class="role">Líder</div><div class="nm">${nombre}</div>
           <div class="team">${l.teamN} comercial${l.teamN===1?'':'es'} a cargo</div></div>
         <div class="go">→</div></div>
       <div class="big"><div class="v">${M(l.factMes)}</div></div>

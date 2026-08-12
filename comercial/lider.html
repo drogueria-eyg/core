@@ -314,8 +314,8 @@ async function boot(){
       else return selectorLider(lideres);
     }
     LIDER = await resolverLider(liderName);
-    if(!LIDER.team.length){ ldErr('El líder <b>'+esc(LIDER.name)+'</b> no tiene comerciales asignados. Asignáselos desde el panel superior.'); return; }
-    COM = LIDER.team.map((c,i)=>({...c, color:COLORS[i%COLORS.length]}));
+    // Equipo en 0 (ej. Germán, todavía sin comerciales): NO es error, se muestra preparado en 0.
+    COM = (LIDER.team||[]).map((c,i)=>({...c, color:COLORS[i%COLORS.length]}));
     UIDS = COM.map(c=>c.uid);
     init();
   }catch(e){ ldErr("No pude armar el equipo: "+esc(e.message)); }
@@ -359,10 +359,12 @@ async function init(){
     await refreshHoy();
     render();
     chartTimer=setInterval(tick, 180000);   // 180s (era 60s): menos carga recurrente sobre Odoo
-    cargarVentasEq();     // ventas del equipo con consultas propias (rápido, no espera a las fichas)
-    cargarFichas();       // análisis por comercial (nivel/salud/comparativas) en segundo plano
-    cargarProductos();
-    cargarPresencia();    // conectados X/X en la vista principal (async, no bloquea)
+    if(UIDS.length){        // sin comerciales (ej. Germán): panel preparado en 0, sin cargas por-comercial
+      cargarVentasEq();     // ventas del equipo con consultas propias (rápido, no espera a las fichas)
+      cargarFichas();       // análisis por comercial (nivel/salud/comparativas) en segundo plano
+      cargarProductos();
+      cargarPresencia();    // conectados X/X en la vista principal (async, no bloquea)
+    }
   }catch(e){ const el=document.getElementById("ld"); if(el) el.innerHTML='<div class="errbox">No pude cargar el tablero: '+esc(e.message)+'</div>'; }
 }
 async function refreshHoy(){
@@ -452,7 +454,7 @@ async function cargarDescartados(){ try{ CONQ=await EYG.conquistarLeer(); }catch
 function renderDescartados(){
   const box=document.getElementById("descartados"); if(!box) return;
   const team=new Set((COM||[]).map(c=>c.name));
-  const desc=(CONQ||[]).filter(x=>x&&x.descartado && (team.size?team.has(x.com):true));
+  const desc=(CONQ||[]).filter(x=>x&&x.descartado && team.has(x.com));   // solo los de MI equipo (si no tengo, ninguno)
   if(!desc.length){ box.innerHTML=""; return; }
   const activos=desc.filter(x=>!x.archivado), arch=desc.filter(x=>x.archivado);
   const list=VER_ARCH?arch:activos;
@@ -482,6 +484,7 @@ async function eliminarDesc(id){ if(!confirm("¿Eliminar definitivamente este pr
 
 function renderProds(){
   const box=document.getElementById("prods"); if(!box)return;
+  if(!UIDS.length){ box.innerHTML=""; return; }   // líder sin comerciales
   if(!PRODS.length){ box.innerHTML=`<div class="prodsbox"><h2>🏆 Productos más vendidos</h2><div class="floading"><span class="spin-sm"></span> cargando el año…</div></div>`; return; }
   box.innerHTML=`<div class="prodsbox"><h2>🏆 Productos más vendidos <span class="muted" style="font-weight:600;font-size:12px">· del año</span></h2>
     <div class="prow h"><div class="rk">#</div><div>Producto</div><div class="pq">Unidades</div><div class="pv">Facturado</div></div>
@@ -865,6 +868,7 @@ function ringSVG(pct,color,size){ size=size||38; const r=(size-6)/2, c=2*Math.PI
 
 function renderEquipo(){
   const box=document.getElementById("equipo"); if(!box)return;
+  if(!DATA.length){ box.innerHTML=`<div class="eqhead"><h2>👥 Rendimiento por comercial</h2></div><div class="floading" style="padding:26px;text-align:center;color:var(--gris);background:var(--surface);border:1px dashed var(--line);border-radius:14px">Todavía no tenés comerciales a cargo.<br><span style="font-size:12px">Cuando te asignen, vas a ver acá el rendimiento de cada uno.</span></div>`; return; }
   const curH=Math.floor(nowFrac());
   const ranks=rankMap();
   const cards=DATA.slice().sort((a,b)=>b.mes-a.mes).map(d=>{
@@ -1141,6 +1145,7 @@ async function cargarVentasEq(p){
 }
 function renderVentasEq(){
   const box=document.getElementById("ventasEq"); if(!box) return;
+  if(!UIDS.length){ box.innerHTML=""; return; }   // líder sin comerciales
   const lbl=periodoRango(PERIODO).lbl, v=VENTASEQ[PERIODO];
   if(!v){ box.innerHTML=`<div class="ventas"><div class="floading"><span class="spin-sm"></span> sumando ventas del equipo (${lbl})…</div></div>`; return; }
   box.innerHTML = ventasHTML(
