@@ -142,7 +142,18 @@ function cargarTab(){
    (visitantes), res.users share=true (clientes con acceso) y sale.order con
    website_id (los pedidos que entran POR el portal, no los que carga el
    comercial). Se compara contra el período anterior de igual largo. */
-let MET=null, DIAS=30;
+let MET=null, DIAS=30, INTERNOS=[];
+/* La gente de EyG entra al portal todo el día (para mirar precios, cargar pedidos o
+   probar cosas): si no los sacamos, la mitad de las visitas son nuestras. Internos =
+   usuarios de Odoo que NO son del portal (share=false). */
+async function cargarInternos(){
+  if(INTERNOS.length) return INTERNOS;
+  try{
+    const u=await EYG.rpc("res.users","search_read",[[["share","=",false],["active","=",true]]],{fields:["partner_id"],limit:300});
+    INTERNOS=[...new Set((u||[]).map(x=>x.partner_id&&x.partner_id[0]).filter(Boolean))];
+  }catch(e){ INTERNOS=[]; }
+  return INTERNOS;
+}
 const DESDE=d=>nDias(d);
 /* La URL viene entera (https://drogueriaeyg.odoo.com/shop/…): mostramos sólo el camino,
    y le ponemos nombre a las páginas conocidas para que se lea de un vistazo.
@@ -168,21 +179,24 @@ function linda(u){
 async function metricas(){
   const cont=document.getElementById("body"); if(cont) cont.innerHTML='<div class="spin"></div>';
   const d0=DESDE(DIAS), dPrev=DESDE(DIAS*2);
-  const web=[["website_id","!=",false]];
+  const ints=await cargarInternos();
+  const noEquipoTrack=["visitor_id.partner_id","not in",ints];
+  const noEquipoVis=["partner_id","not in",ints];
+  const web=[["website_id","!=",false],["partner_id","not in",ints]];
   const pedidos=(desde,hasta)=>{ const d=web.concat([["state","in",["sale","done"]],["date_order",">=",desde]]); if(hasta) d.push(["date_order","<",hasta]); return d; };
   try{
     const [vis, visPrev, visitantes, users, usersAct, ped, pedPrev, carritos, porMes, topPag, topProd] = await Promise.all([
-      EYG.rpc("website.track","search_count",[[["visit_datetime",">=",d0]]]),
-      EYG.rpc("website.track","search_count",[[["visit_datetime",">=",dPrev],["visit_datetime","<",d0]]]),
-      EYG.rpc("website.visitor","search_count",[[["last_connection_datetime",">=",d0]]]),
+      EYG.rpc("website.track","search_count",[[["visit_datetime",">=",d0],noEquipoTrack]]),
+      EYG.rpc("website.track","search_count",[[["visit_datetime",">=",dPrev],["visit_datetime","<",d0],noEquipoTrack]]),
+      EYG.rpc("website.visitor","search_count",[[["last_connection_datetime",">=",d0],noEquipoVis]]),
       EYG.rpc("res.users","search_count",[[["share","=",true],["active","=",true]]]),
       EYG.rpc("res.users","search_count",[[["share","=",true],["active","=",true],["login_date",">=",d0]]]),
       EYG.rpc("sale.order","read_group",[pedidos(d0),["amount_total:sum"],[]]),
       EYG.rpc("sale.order","read_group",[pedidos(dPrev,d0),["amount_total:sum"],[]]),
       EYG.rpc("sale.order","search_count",[web.concat([["state","=","draft"],["date_order",">=",d0]])]),
       EYG.rpc("sale.order","read_group",[pedidos(DESDE(365)),["amount_total:sum"],["date_order:month"]]),
-      EYG.rpc("website.track","read_group",[[["visit_datetime",">=",d0],["url","!=",false]],["id"],["url"]],{limit:400}),
-      EYG.rpc("website.track","read_group",[[["visit_datetime",">=",d0],["product_id","!=",false]],["id"],["product_id"]],{limit:400}),
+      EYG.rpc("website.track","read_group",[[["visit_datetime",">=",d0],["url","!=",false],noEquipoTrack],["id"],["url"]],{limit:400}),
+      EYG.rpc("website.track","read_group",[[["visit_datetime",">=",d0],["product_id","!=",false],noEquipoTrack],["id"],["product_id"]],{limit:400}),
     ]);
     const cnt=g=>(g&&g[0])?(g[0].__count||g[0].date_order_count||0):0;
     const sum=g=>(g&&g[0])?(g[0].amount_total||0):0;
@@ -210,7 +224,7 @@ function vistaResumen(){
     <select onchange="MET=null;DIAS=+this.value;render();metricas()">
       ${[[7,"Últimos 7 días"],[30,"Últimos 30 días"],[90,"Últimos 90 días"]].map(([v,l])=>`<option value="${v}" ${DIAS===v?"selected":""}>${l}</option>`).join("")}
     </select>
-    <span class="hint">Los pedidos son los que entraron <b>por el portal</b> (no los que carga el comercial).</span></div>`;
+    <span class="hint">Los pedidos son los que entraron <b>por el portal</b> (no los que carga el comercial). No se cuenta la navegación del equipo de EyG (${INTERNOS.length} usuarios internos).</span></div>`;
   const kpis=`<div class="kpis">
     <div class="kpi"><div class="k">Pedidos por el portal</div><div class="v">${num(m.ped)}</div>${delta(m.ped,m.pedPrev)}</div>
     <div class="kpi"><div class="k">Facturado online</div><div class="v">${money(m.pedMonto)}</div>${delta(m.pedMonto,m.pedMontoPrev)}</div>
@@ -253,6 +267,7 @@ function cintaPanelHTML(){
         ${barra}</td>
       <td class="n" style="border-top:1px solid var(--line)">${num(st.entregados)}</td>
       <td class="n" style="border-top:1px solid var(--line)">${num(st.vistas)}</td>
+      <td class="n" style="border-top:1px solid var(--line);color:var(--gris2)">${num(st.imp)}</td>
       <td class="n" style="border-top:1px solid var(--line);color:#1E7D46">${num(st.act)}${st.entregados?` <span style="font-weight:400;color:var(--gris2)">${st.tasa}%</span>`:""}</td>
       <td class="n" style="border-top:1px solid var(--line);color:#B0322F">${num(st.rec)}</td>
       <td class="n" style="border-top:1px solid var(--line);color:var(--gris2)">${num(st.mudos)}</td>
@@ -261,10 +276,10 @@ function cintaPanelHTML(){
   if(!filas) return "";
   return `<div class="panel"><h3>Cinta de avisos <span class="lite">· desde que se publicó cada uno</span></h3>
     <div style="overflow-x:auto"><table class="lista">
-      <thead><tr><th>Aviso</th><th style="text-align:right">Clientes</th><th style="text-align:right">Vistas</th>
+      <thead><tr><th>Aviso</th><th style="text-align:right">Clientes</th><th style="text-align:right">Visitas</th><th style="text-align:right">Veces mostrada</th>
         <th style="text-align:right">Activaron</th><th style="text-align:right">Descartaron</th><th style="text-align:right">Sin responder</th></tr></thead>
       <tbody>${filas}</tbody></table></div>
-    <div class="hint" style="margin-top:9px">"Clientes" es a cuántos se les llegó a mostrar (cada uno cuenta una vez); "vistas" son las veces que se mostró en total.</div></div>`;
+    <div class="hint" style="margin-top:9px">"Clientes" es a cuántos se les llegó a mostrar · "visitas" son las veces que volvieron (se cuenta una nueva después de 30 minutos) · "veces mostrada" son las cargas de página. No contamos la navegación del equipo de EyG.</div></div>`;
 }
 
 /* ======================= NOTICIAS =======================
@@ -403,6 +418,7 @@ async function cintaOpciones(){
 /* Pedidos del beneficio + entregas (a quién se le mostró y qué hizo). */
 async function cintaDatos(){
   try{
+    await cargarInternos();
     const [ped,ent]=await Promise.all([
       EYG.supa().from("portal_beneficio").select("*").order("creado",{ascending:false}).limit(500),
       EYG.supa().from("portal_entrega").select("*").limit(5000),
@@ -414,10 +430,12 @@ async function cintaDatos(){
 }
 /* Resumen por aviso: entregados, vistas, activaron, descartaron, sin responder. */
 function cintaStats(avisoId){
-  const f=CENT.filter(x=>x.aviso_id===avisoId);
+  const f=CENT.filter(x=>x.aviso_id===avisoId && !INTERNOS.includes(x.partner_id));
   const act=f.filter(x=>x.activado).length, rec=f.filter(x=>x.rechazado).length;
-  return {entregados:f.length, vistas:f.reduce((a,x)=>a+(x.vistas||0),0), act, rec,
-          mudos:Math.max(0,f.length-act-rec), tasa:f.length?Math.round(act/f.length*100):0};
+  return {entregados:f.length,
+          vistas:f.reduce((a,x)=>a+(x.vistas||0),0),
+          imp:f.reduce((a,x)=>a+(x.impresiones||x.vistas||0),0),
+          act, rec, mudos:Math.max(0,f.length-act-rec), tasa:f.length?Math.round(act/f.length*100):0};
 }
 async function cintaGuardar(msg){
   try{ await EYG.rpc("ir.config_parameter","set_param",[CINTA_KEY, JSON.stringify(CINTA)]); if(msg) toast(msg,true); return true; }
