@@ -130,6 +130,8 @@ const KEY_ESC="eyg.eticos_escala";       // {subcatId:'A'|'B'} clasificación de
 let ESCALA={}, escFiltro="todos", editEsc=null, editLab=null;   // clasificación, filtro, regla de escala en edición, regla de lab en edición
 // Regla "Escalera de éticos por precio" (el tope de cada ético sale de su PVP) + intervalo del cron del motor.
 let ET={on:false, bands:[], descmax:12, minstep:0, open:false}, ETCRON={num:15, type:"minutes"};
+// Precios de venta FIJOS temporales (manuales, pisan al motor). Guardados en eyg.precios_fijos_flat.
+let FIJOS=[], _fijoSel=null, _fijoTimer=null;
 const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
 
 const pct=x=>Math.round((x||0)*1000)/10;           // 0.07 -> 7
@@ -164,6 +166,9 @@ async function cargar(){
     const _dm=parseFloat(etDm); ET.descmax = isNaN(_dm)?0:Math.round(_dm*1000)/10;   // 0 = sin tope global (manda el piso)
     const etMs=await rpc("ir.config_parameter","get_param",["eyg.eticos_min_step"]);
     const _ms=parseFloat(etMs); ET.minstep = isNaN(_ms)?0:Math.round(_ms*1000)/10;   // descuento minimo por escalon (0 = off)
+    // precios de venta fijos temporales (manuales)
+    const rawFijos=await rpc("ir.config_parameter","get_param",["eyg.precios_fijos_flat"]);
+    FIJOS=String(rawFijos||"").split("\n").map(l=>l.trim()).filter(Boolean).map(l=>{const f=l.split("~"); return {tmpl:parseInt(f[0])||0, precio:parseFloat(f[1])||0, hasta:(f[2]||"").trim(), pausado:((f[3]||"").trim()==="1"), nombre:(f.slice(4).join("~")||("#"+f[0]))};}).filter(f=>f.tmpl);
     try{ const cr=await rpc("ir.cron","read",[[92],["interval_number","interval_type"]]); if(cr&&cr[0]){ ETCRON.num=cr[0].interval_number; ETCRON.type=cr[0].interval_type; } }catch(e){}
     render();
     etLoadCounts();   // trae cuántos productos caen en cada franja (explicador de impacto)
@@ -233,8 +238,72 @@ function render(){
     const hb = (rr&&rr.own)?`<span class="badge gen" style="margin-left:8px">regla general</span>`:`<span class="badge no" style="margin-left:8px">sin regla general</span>`;
     return `<div class="grp"><div class="grphead" onclick="toggleGrp('${esc(top)}')"><span>${open?"▾":"▸"}</span> ${esc(top)} ${hb} <span class="cnt">${subs.length} subcat.</span></div>${body}</div>`;
   }).join("");
-  cont.innerHTML=savebar+intro+grupos+renderEtModal();
+  cont.innerHTML=savebar+intro+renderFijos()+grupos+renderEtModal();
 }
+/* =================== PRECIOS DE VENTA FIJOS TEMPORALES (manuales, pisan al motor) =================== */
+function renderFijos(){
+  const hoy=hoyStr();
+  const rows=FIJOS.map((f,i)=>{
+    const venc = f.hasta ? (f.hasta<hoy?`vencido ${f.hasta}`:`hasta ${f.hasta}`) : "sin vencimiento";
+    const est = f.pausado?`<span class="badge no">pausado</span>`:(f.hasta&&f.hasta<hoy?`<span class="badge no">vencido</span>`:`<span class="badge own">activo</span>`);
+    return `<div class="ofrow">
+      <div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">#${f.tmpl}</small></div>
+        <div class="ofdet">precio final <b>${EYG.money(f.precio)}</b> · ${venc}</div></div>
+      ${est}
+      <button class="btn-mini" onclick="fijoPausar(${i})">${f.pausado?'Reanudar':'Pausar'}</button>
+      <button class="btn-mini del" onclick="fijoQuitar(${i})">Quitar</button>
+    </div>`;
+  }).join("") || `<div class="ofrow" style="justify-content:center;color:var(--gris)">No hay precios fijos cargados.</div>`;
+  const sel = _fijoSel
+    ? `<div class="oftgtsel">Producto: <b>${esc(_fijoSel.nombre)}</b> <small style="color:var(--gris2)">#${_fijoSel.tmpl}</small> <button class="btn-mini" onclick="fijoLimpiar()">cambiar</button></div>`
+    : `<input type="text" id="fijo-q" placeholder="Buscar producto por nombre o código…" oninput="fijoBuscar(this.value)" autocomplete="off" style="width:100%;height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"><div id="fijo-results" class="ofbusq" style="display:none"></div>`;
+  return `<div class="grp" style="border:2px solid #0f7d84;margin-bottom:14px">
+    <div class="grphead" style="cursor:default;background:#eef7f6">💵 Precios de venta fijos (temporales)</div>
+    <div style="padding:14px">
+      <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Cuando conseguís una compra muy buena y querés <b>fijar el precio de venta</b> a mano: el motor <b>no lo toca</b> hasta que lo <b>pausás</b> o lo <b>quitás</b>, y ahí vuelve a la escalera automática en la próxima corrida. Es el <b>precio final</b> (con IVA si el producto lleva), no un descuento. Se fija en la web (LISTA 1 EyG) y en el precio base que heredan las demás listas/plataformas.</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+        <div style="flex:1;min-width:240px;position:relative">${sel}</div>
+        <div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Precio final</div><div class="inpu" style="position:relative"><input type="number" id="fijo-precio" step="1" style="height:38px;width:130px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"></div></div>
+        <div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Hasta (opcional)</div><input type="date" id="fijo-hasta" style="height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"></div>
+        <button class="btn-mini cons" onclick="fijoAgregar()">＋ Fijar precio</button>
+      </div>
+      <div class="oflist">${rows}</div>
+      <div style="margin-top:12px"><button class="btn-save" onclick="guardarFijos()">💾 Guardar precios fijos</button> <span id="fijo-msg" style="font-size:12.5px;color:var(--gris);margin-left:8px"></span></div>
+    </div>
+  </div>`;
+}
+window.fijoBuscar=(q)=>{
+  clearTimeout(_fijoTimer);
+  _fijoTimer=setTimeout(async ()=>{
+    const box=document.getElementById("fijo-results"); if(!box) return;
+    q=(q||"").trim();
+    if(q.length<2){ box.style.display="none"; box.innerHTML=""; return; }
+    try{
+      const rs=await rpc("product.template","search_read",[["|",["name","ilike",q],["default_code","ilike",q]],["id","name","default_code"]],{limit:8,context:{lang:"es_AR"}});
+      if(!rs.length){ box.style.display="block"; box.innerHTML=`<div class="ofbitem" style="color:var(--gris)">Sin resultados</div>`; return; }
+      box.style.display="block";
+      box.innerHTML=rs.map(r=>`<div class="ofbitem" onclick='fijoElegir(${r.id}, ${JSON.stringify(r.name)})'>${esc(r.name)} <small style="color:var(--gris2)">${esc(r.default_code||"")}</small></div>`).join("");
+    }catch(e){}
+  }, 300);
+};
+window.fijoElegir=(id,nombre)=>{ _fijoSel={tmpl:id, nombre:nombre}; render(); };
+window.fijoLimpiar=()=>{ _fijoSel=null; render(); };
+window.fijoAgregar=()=>{
+  if(!_fijoSel){ if(typeof toast==="function") toast("Elegí un producto primero"); return; }
+  const pr=parseFloat((document.getElementById("fijo-precio")||{}).value); if(!(pr>0)){ if(typeof toast==="function") toast("Poné un precio final válido"); return; }
+  const hasta=(document.getElementById("fijo-hasta")||{}).value||"";
+  FIJOS=FIJOS.filter(f=>f.tmpl!==_fijoSel.tmpl);   // reemplaza si ya estaba
+  FIJOS.unshift({tmpl:_fijoSel.tmpl, nombre:_fijoSel.nombre, precio:pr, hasta:hasta, pausado:false});
+  _fijoSel=null; render();
+};
+window.fijoPausar=(i)=>{ if(FIJOS[i]){ FIJOS[i].pausado=!FIJOS[i].pausado; render(); } };
+window.fijoQuitar=(i)=>{ if(!confirm("¿Quitar este precio fijo? El producto vuelve a la escalera del motor en la próxima corrida.")) return; FIJOS.splice(i,1); render(); };
+window.guardarFijos=async ()=>{
+  const flat=FIJOS.map(f=>[f.tmpl, f.precio, f.hasta||"", f.pausado?"1":"0", String(f.nombre||"").replace(/~/g,"-").replace(/\n/g," ")].join("~")).join("\n");
+  const m=document.getElementById("fijo-msg"); if(m) m.textContent="Guardando…";
+  try{ await rpc("ir.config_parameter","set_param",["eyg.precios_fijos_flat",flat]); if(m) m.textContent="Guardado ✓ — se aplican en la próxima corrida del motor."; if(typeof toast==="function") toast("Precios fijos guardados ✓"); }
+  catch(e){ if(m) m.textContent="Error: "+(e.message||e); }
+};
 
 /* =================== AJUSTES DEL MOTOR (modal): General (intervalo) + Escalera de éticos por precio =================== */
 // impacto de una franja: rango de PVP, tope y ~total de compra para llegar al máximo descuento.
