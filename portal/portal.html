@@ -132,6 +132,7 @@ function render(){
 function setTab(t){ if(t===TAB) return; TAB=t; CEDIT=null; render(); cargarTab(); }
 function cargarTab(){
   if(TAB==="resumen" && !MET) metricas();
+  if(TAB==="resumen" && !CINTA) cintaCargar();
   if(TAB==="cinta" && !CINTA) cintaCargar();
   if(TAB==="noticias" && !POSTS) noticiasCargar();
 }
@@ -228,9 +229,42 @@ function vistaResumen(){
     ${filas.length?`<table class="lista"><thead><tr><th>${col}</th><th style="text-align:right">Vistas</th></tr></thead>
       <tbody>${filas.map(f=>`<tr><td class="url">${esc(f.t)}</td><td class="n">${num(f.n)}</td></tr>`).join("")}</tbody></table>`
     :'<div class="hint">Sin datos en el período.</div>'}</div>`;
-  return sel+kpis+graf+
+  return sel+kpis+graf+cintaPanelHTML()+
     tabla("Lo más visitado", m.pags.map(p=>({t:p.url,n:p.n})), "Página")+
     tabla("Productos más mirados", m.prods.map(p=>({t:p.p,n:p.n})), "Producto");
+}
+
+/* Cómo viene cada aviso de la cinta: a cuántos les llegó y qué hicieron.
+   "Sin responder" son los que la vieron y siguieron de largo (ni la activaron
+   ni la descartaron); la cinta les sigue apareciendo. */
+function cintaPanelHTML(){
+  if(!CINTA || !(CINTA.avisos||[]).length) return "";
+  const filas=(CINTA.avisos||[]).map(a=>{
+    const st=cintaStats(a.id);
+    if(!st.entregados && a.activo===false) return "";
+    const barra=st.entregados?`<div style="display:flex;height:7px;border-radius:20px;overflow:hidden;background:#eef1f0;margin-top:6px;max-width:230px">
+        <i style="width:${st.act/st.entregados*100}%;background:#1E7D46"></i>
+        <i style="width:${st.rec/st.entregados*100}%;background:#B0322F"></i>
+        <i style="width:${st.mudos/st.entregados*100}%;background:#CBD8D4"></i></div>`:"";
+    return `<tr>
+      <td style="padding:9px 8px;border-top:1px solid var(--line)">
+        <b>${esc(a.titulo||a.texto||a.id)}</b>
+        <div style="font-size:11.5px;color:var(--gris2);margin-top:2px">${estadoPill(a)} ${a.tipo==="beneficio"?"· con botón":"· aviso"}</div>
+        ${barra}</td>
+      <td class="n" style="border-top:1px solid var(--line)">${num(st.entregados)}</td>
+      <td class="n" style="border-top:1px solid var(--line)">${num(st.vistas)}</td>
+      <td class="n" style="border-top:1px solid var(--line);color:#1E7D46">${num(st.act)}${st.entregados?` <span style="font-weight:400;color:var(--gris2)">${st.tasa}%</span>`:""}</td>
+      <td class="n" style="border-top:1px solid var(--line);color:#B0322F">${num(st.rec)}</td>
+      <td class="n" style="border-top:1px solid var(--line);color:var(--gris2)">${num(st.mudos)}</td>
+    </tr>`;
+  }).filter(Boolean).join("");
+  if(!filas) return "";
+  return `<div class="panel"><h3>Cinta de avisos <span class="lite">· desde que se publicó cada uno</span></h3>
+    <div style="overflow-x:auto"><table class="lista">
+      <thead><tr><th>Aviso</th><th style="text-align:right">Clientes</th><th style="text-align:right">Vistas</th>
+        <th style="text-align:right">Activaron</th><th style="text-align:right">Descartaron</th><th style="text-align:right">Sin responder</th></tr></thead>
+      <tbody>${filas}</tbody></table></div>
+    <div class="hint" style="margin-top:9px">"Clientes" es a cuántos se les llegó a mostrar (cada uno cuenta una vez); "vistas" son las veces que se mostró en total.</div></div>`;
 }
 
 /* ======================= NOTICIAS =======================
@@ -331,7 +365,7 @@ const CINTA_ICO='<svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="1
 const ALCANCES=[["inicio","Solo el inicio"],["inicio_shop","Inicio y catálogo"],["sitio","Todo el portal"]];
 const PERFILES=[["apto","Apto"],["reparos","Apto con reparos"],["consultar","Consultar con Cobranzas"],["noapto","No apto"]];
 const SINVAL="__sin__";
-let COPC=null, CPED=[], CBUSCA=null, CNOM={}, CCUENTA=null;
+let COPC=null, CPED=[], CENT=[], CBUSCA=null, CNOM={}, CCUENTA=null;
 
 function cintaDefault(){ return {activo:true, alcance:"inicio_shop", cerrable:true, notificarA:"", copiaA:"", avisos:[]}; }
 function filtrosDefault(){ return {perfil:[], rubro:[], comercial:[], provincia:[], pago:[], facturado_min:0, compro_dias:0, solo_ids:[], excluir_ids:[]}; }
@@ -344,7 +378,7 @@ async function cintaCargar(){
   if(!Array.isArray(CINTA.avisos)) CINTA.avisos=[];
   render();
   cintaOpciones().then(()=>{ if(TAB==="cinta") render(); });
-  cintaPedidos().then(()=>{ if(TAB==="cinta") render(); });
+  cintaDatos().then(()=>{ if(TAB==="cinta"||TAB==="resumen") render(); });
 }
 /* Opciones reales para los filtros (salen de Odoo, no se hardcodean). */
 async function cintaOpciones(){
@@ -366,12 +400,24 @@ async function cintaOpciones(){
   }catch(e){ COPC={rubro:[],comercial:[],provincia:[],pago:[]}; }
   return COPC;
 }
-async function cintaPedidos(){
+/* Pedidos del beneficio + entregas (a quién se le mostró y qué hizo). */
+async function cintaDatos(){
   try{
-    const {data,error}=await EYG.supa().from("portal_beneficio").select("*").order("creado",{ascending:false}).limit(300);
-    CPED = error?[]:(data||[]);
-  }catch(e){ CPED=[]; }
+    const [ped,ent]=await Promise.all([
+      EYG.supa().from("portal_beneficio").select("*").order("creado",{ascending:false}).limit(500),
+      EYG.supa().from("portal_entrega").select("*").limit(5000),
+    ]);
+    CPED = ped.error?[]:(ped.data||[]);
+    CENT = ent.error?[]:(ent.data||[]);
+  }catch(e){ CPED=[]; CENT=[]; }
   return CPED;
+}
+/* Resumen por aviso: entregados, vistas, activaron, descartaron, sin responder. */
+function cintaStats(avisoId){
+  const f=CENT.filter(x=>x.aviso_id===avisoId);
+  const act=f.filter(x=>x.activado).length, rec=f.filter(x=>x.rechazado).length;
+  return {entregados:f.length, vistas:f.reduce((a,x)=>a+(x.vistas||0),0), act, rec,
+          mudos:Math.max(0,f.length-act-rec), tasa:f.length?Math.round(act/f.length*100):0};
 }
 async function cintaGuardar(msg){
   try{ await EYG.rpc("ir.config_parameter","set_param",[CINTA_KEY, JSON.stringify(CINTA)]); if(msg) toast(msg,true); return true; }
@@ -512,6 +558,19 @@ function cintaForm(){
       </div>
     </div>
 
+    <div style="border-top:1px dashed var(--line);margin:16px 0 14px;padding-top:14px">
+      <label style="display:block;font-size:12px;font-weight:700;color:var(--gris);margin-bottom:8px">¿CÓMO SE ENTREGA?</label>
+      <div class="sw" style="margin-bottom:10px">
+        <div class="knob ${e.seguirEntregando===false?'':'on'}" onclick="cintaEntrega('seguirEntregando',${e.seguirEntregando===false})"><i></i></div>
+        <b style="flex:none">Seguir entregándolo a los que se sumen</b>
+        <span class="hint">Un cliente nuevo que se registra en el portal, o uno que empieza a cumplir las condiciones, lo recibe solo. Si lo apagás, queda congelado en los que ya lo tienen.</span>
+      </div>
+      <div class="fld" style="max-width:280px"><label>Máximo de veces por cliente</label>
+        <input id="c-veces" type="number" min="0" value="${e.maxVistas||0}" placeholder="0">
+        <div class="hint"><b>0 = hasta que responda</b> (le sigue apareciendo mientras no lo active ni lo descarte). Con 3, por ejemplo, se lo mostramos tres visitas y no lo molestamos más.</div></div>
+      <div class="hint">A nadie se le entrega dos veces lo mismo: queda registrado quién ya lo recibió. Si después <b>ampliás las condiciones</b>, el aviso sale solo para los que entran ahora.</div>
+    </div>
+
     <div class="row2">
       <div class="fld"><label>Desde</label><input id="c-desde" type="date" value="${esc(e.desde||hoy())}"></div>
       <div class="fld"><label>Hasta (opcional)</label><input id="c-hasta" type="date" value="${esc(e.hasta||"")}"><div class="hint">Vacío = hasta que lo saques.</div></div>
@@ -538,7 +597,7 @@ function cintaLista(){
   const avisos=CINTA.avisos||[];
   if(!avisos.length) return `<div class="empty">Todavía no hay avisos en la cinta.<br><span style="font-size:12.5px">Creá uno y sale al portal en el momento.</span></div>`;
   return avisos.map(a=>{
-    const ped=CPED.filter(p=>p.aviso_id===a.id).length;
+    const ped=CPED.filter(p=>p.aviso_id===a.id).length, st=cintaStats(a.id);
     const f=a.filtros||{};
     const seg=[];
     if((f.perfil||[]).length) seg.push("perfil: "+f.perfil.map(p=>(PERFILES.find(x=>x[0]===p)||[p,p])[1]).join(", "));
@@ -559,7 +618,9 @@ function cintaLista(){
       <div class="meta">
         <span>👥 ${prueba?"solo la lista de prueba":(seg.length?esc(seg.join(" · ")):"todos los clientes")}</span>
         <span>🗓️ desde ${a.desde?fD(a.desde):"siempre"}</span>${a.hasta?`<span>⏳ hasta ${fD(a.hasta)}</span>`:""}
-        ${a.tipo==="beneficio"?`<span>🤝 ${ped} pedido${ped===1?"":"s"}</span>`:""}</div>
+        ${a.tipo==="beneficio"?`<span>🤝 ${ped} pedido${ped===1?"":"s"}</span>`:""}
+        <span>👁️ ${st.entregados} recibieron${st.act?` · ${st.act} activaron`:""}${st.rec?` · ${st.rec} descartaron`:""}</span>
+        ${a.seguirEntregando===false?'<span>⏸️ congelado</span>':''}${a.maxVistas?`<span>máx ${a.maxVistas} veces</span>`:''}</div>
       <div class="acts">
         <button class="btn ghost sm" onclick="cintaEditar('${a.id}')">✏️ Editar</button>
         <button class="btn ghost sm" onclick="cintaToggle('${a.id}')">${a.activo===false?"✅ Reactivar":"🚫 Desactivar"}</button>
@@ -595,10 +656,12 @@ function cintaSync(){
              confirmacion:"c-conf",letraChica:"c-fine",desde:"c-desde",hasta:"c-hasta"};
   Object.keys(map).forEach(k=>{ const v=g(map[k]); if(v!==undefined) CEDIT[k]=v; });
   CEDIT.filtros=CEDIT.filtros||filtrosDefault();
-  const d=g("c-dias"), fa=g("c-fact");
+  const d=g("c-dias"), fa=g("c-fact"), v=g("c-veces");
   if(d!==undefined) CEDIT.filtros.compro_dias=Math.max(0,parseInt(d||"0",10)||0);
   if(fa!==undefined) CEDIT.filtros.facturado_min=Math.max(0,parseFloat(fa||"0")||0);
+  if(v!==undefined) CEDIT.maxVistas=Math.max(0,parseInt(v||"0",10)||0);
 }
+function cintaEntrega(campo,valor){ cintaSync(); CEDIT[campo]=valor; render(); }
 async function cintaGeneral(campo,valor){ CINTA[campo]=valor; render(); await cintaGuardar("Listo ✓"); }
 function cintaTipo(t){ cintaSync(); CEDIT.tipo=t; if(t==="beneficio") CEDIT.ctaUrl=""; render(); }
 function cintaFiltro(campo,valor){
@@ -639,7 +702,7 @@ async function cintaContar(){
   }catch(e){ CCUENTA=""; if(el) el.textContent="No pude contar: "+(e.message||e); }
 }
 function cintaNuevo(){
-  CEDIT={id:"cin_"+Date.now()+"_"+Math.random().toString(36).slice(2,6), tipo:"aviso", destacado:"Nuevo",
+  CEDIT={id:"cin_"+Date.now()+"_"+Math.random().toString(36).slice(2,6), tipo:"aviso", destacado:"Nuevo", seguirEntregando:true, maxVistas:0,
          titulo:"", texto:"", ctaTexto:"", ctaUrl:"", confirmacion:"", letraChica:"",
          desde:hoy(), hasta:"", activo:true, filtros:filtrosDefault()};
   CBUSCA=null; CCUENTA=null; render();
