@@ -301,10 +301,17 @@ window.EYG = (function(){
     {key:"calidad",   nom:"Calidad"},
     {key:"finanzas",  nom:"Administración y Finanzas"},
     {key:"precios",   nom:"Precios y Rentabilidad"},
+    {key:"portal",    nom:"Portal web"},
     {key:"direccion", nom:"Dirección"},
     {key:"admin",     nom:"Sistema"},
   ];
   const MODULOS = [
+    /* Portal web = TODO lo del portal de clientes (drogueriaeyg.odoo.com) junto:
+       cómo viene el portal, la cinta de avisos que ven los clientes y las noticias.
+       Acá se irán sumando notificaciones, campañas y demás cosas de la web. */
+    {key:"portal", dept:"portal", cat:"Portal web", ico:"🌐", titulo:"Portal web",
+      desc:"Cómo viene el portal de clientes: visitas, pedidos online y clientes que entran. Además, la cinta de avisos que ven en el portal y las noticias que se publican.",
+      roles:["lider"], ready:true, path:()=>"portal/portal.html"},
     {key:"comunicaciones", dept:"direccion", cat:"Dirección", ico:"📣",
       titulo:p=>(p.rol==="admin"||p.rol==="direccion"||p.rol==="lider")?"Comunicaciones":"Novedades",
       desc:p=>(p.rol==="admin"||p.rol==="direccion")?"Bajá novedades a toda la empresa o a un área y seguí quién las leyó."
