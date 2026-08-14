@@ -164,6 +164,7 @@ async function cargar(){
     const _dm=parseFloat(etDm); ET.descmax = isNaN(_dm)?0:Math.round(_dm*1000)/10;   // 0 = sin tope global (manda el piso)
     try{ const cr=await rpc("ir.cron","read",[[92],["interval_number","interval_type"]]); if(cr&&cr[0]){ ETCRON.num=cr[0].interval_number; ETCRON.type=cr[0].interval_type; } }catch(e){}
     render();
+    etLoadCounts();   // trae cuántos productos caen en cada franja (explicador de impacto)
   }catch(e){ cont.innerHTML='<div class="empty">No pude cargar: '+esc(e.message)+'</div>'; }
 }
 
@@ -212,7 +213,7 @@ function render(){
   const cont=document.getElementById("cont");
   if(document.getElementById("et-on")) etLeer();   // preserva lo tipeado en la sección de éticos ante cualquier re-render
   const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA","ETICOS"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
-  const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardarTodo()">💾 Guardar cambios</button><button class="btn-recalc" onclick="recalcularAhora()">⚡ Recalcular precios ahora</button>${dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>'}<button class="gearbtn" onclick="etOpenModal()" title="Ajustes del motor: intervalo de corrida y escalera de éticos por precio">⚙️ Ajustes del motor</button></div>`;
+  const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardarTodo()">💾 Guardar cambios</button><button class="btn-recalc" onclick="recalcularAhora()">⚡ Recalcular precios ahora</button>${dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>'}<button class="gearbtn" onclick="etOpenModal()" title="Ajuste general del motor: cada cuánto recalcula (aplica a todo el catálogo)">⚙️ General del motor</button></div>`;
   const intro=`<div class="intro"><b>Reglas del motor de precios.</b> Definí por categoría (y subcategoría) cómo se arma la escalera: <b>recargo</b> sobre el costo, <b>piso</b> de margen, <b>modo</b> de cortes (embalaje / fijo), <b>cortes</b> y <b>descuento por tramo</b>, <b>unidad</b> e <b>IVA al costo</b>. <b>La subcategoría pisa a la categoría</b>; si no tiene regla propia, hereda del padre. <b>Al guardar, el motor recalcula todos los precios al instante.</b> El costo lo toma solo (más reciente entre manual, compra y estándar); la caja cerrada se maneja por producto en el Maestro.<br><span style="color:var(--gris2)">Las ofertas y descuentos temporales se crean en <b>Oportunidades y Ofertas</b>.</span></div>`;
   const grupos=tops.map(top=>{
     const cats=CATS.filter(c=>c.top===top);
@@ -242,26 +243,14 @@ function etImpacto(b, hi){
   if(tope<=1) return `PVP ${rango} → <b>precio único</b> (sin escalera): se venden al precio de 1 caja${cnt}.`;
   return `PVP ${rango} → el máximo descuento cae comprando <b>${tope} caja${tope>1?"s":""}</b>. La escalera baja hasta el <b>piso de margen</b> de la escala (nunca lo perfora), acotada para que comprar más nunca salga menos${cnt}.`;
 }
+// modal ⚙ GENERAL del motor: solo el intervalo del cron (aplica a todo el motor, no solo éticos)
 function renderEtModal(){
   if(!ET.open) return "";
-  const sorted=ET.bands;   // ya viene ordenado (etLeer/carga ordenan); mantenemos el orden para que los ids coincidan
-  const bands=sorted.map((b,i)=>{
-    const hi = (i<sorted.length-1) ? (+sorted[i+1].pvp||0) : null;
-    return `<div class="etband">
-      <div class="etband-in">
-        <span>PVP desde $ <input type="number" id="et-pvp-${i}" value="${b.pvp}" style="width:118px"></span>
-        <span>tope <input type="number" id="et-tope-${i}" value="${b.tope}" style="width:60px"> caja(s)</span>
-        <button class="btn-mini del" onclick="etDelBand(${i})">quitar</button>
-      </div>
-      <div class="etband-imp">${etImpacto(b, hi)}</div>
-    </div>`;
-  }).join("");
   return `<div class="etmodal-bg" onclick="if(event.target===this)etCloseModal()">
    <div class="etmodal">
-    <div class="mhd">⚙️ Ajustes del motor <button class="btn-mini" style="margin-left:auto" onclick="etCloseModal()">✕ Cerrar</button></div>
-
+    <div class="mhd">⚙️ General del motor <button class="btn-mini" style="margin-left:auto" onclick="etCloseModal()">✕ Cerrar</button></div>
     <div class="etsec">
-      <h4>🕒 General — cada cuánto recalcula el motor</h4>
+      <h4>🕒 Cada cuánto recalcula el motor</h4>
       <p class="d">Vale para <b>todo</b> el motor (no solo éticos). Cada corrida relee costos y precios de todo el catálogo.</p>
       <div class="etinline">El motor recalcula cada
         <input type="number" id="et-cron-num" value="${ETCRON.num}" style="width:64px" min="1">
@@ -272,41 +261,33 @@ function renderEtModal(){
       </div>
       <p class="etnote">Recomendado no bajar de <b>5 minutos</b>: cada corrida lee mucho y a 1 minuto puede enlentecer Odoo para todos.</p>
     </div>
-
-    <div class="etsec">
-      <h4>🎯 Escalera de éticos por precio
-        <label class="etswitch"><input type="checkbox" id="et-on" ${ET.on?"checked":""}> ${ET.on?"Activada":"Desactivada"}</label></h4>
-      <p class="d">El <b>tope</b> de la escalera de cada ético sale de su <b>PVP</b>: caro → pocas cajas para el máximo descuento; barato → más. Mové el tope de una franja y cambia el <b>esfuerzo de compra</b> para llegar al máximo (más abajo lo ves calculado). Los productos "Caja x N&gt;1" no se tocan.</p>
-      ${bands}
-      <button class="btn-mini" style="border-style:dashed;color:var(--teal-deep)" onclick="etAddBand()">+ agregar franja</button>
-      <div class="etinline" style="margin-top:14px">Descuento máximo
-        <input type="number" id="et-descmax" value="${ET.descmax||''}" step="1" style="width:60px" min="0" placeholder="0"> %
-        <span style="color:var(--gris2);font-size:11.5px">0 = sin tope (baja hasta el piso de cada escala)</span>
-      </div>
-      <p class="etnote"><b>El piso de margen es innegociable: el precio nunca baja de ahí.</b> La profundidad la manda el piso de cada escala (A/B, editables abajo); este campo es un tope extra opcional (0 = sin tope). La escalera se distribuye sola según el <b>tope</b> para que comprar más nunca salga menos: tope de pocas cajas → descuento profundo; de muchas cajas → moderado. ¿Querés más profundo en un barato? Bajale el tope.</p>
-    </div>
-
     <div class="etsec" style="display:flex;align-items:center;gap:12px">
-      <button class="btn-save" onclick="guardarTopeEticos()">💾 Guardar ajustes</button>
-      <span id="et-msg" style="font-size:12.5px;color:var(--gris)"></span>
+      <button class="btn-save" onclick="guardarCron()">💾 Guardar</button>
+      <span id="et-cron-msg" style="font-size:12.5px;color:var(--gris)"></span>
     </div>
    </div></div>`;
 }
-window.etOpenModal=async ()=>{
-  ET.bands.sort((a,b)=>(+a.pvp||0)-(+b.pvp||0));
-  ET.open=true; render();
-  // referencia: cuántos productos caen en cada franja (una consulta por franja; no bloquea la UI)
+window.guardarCron=async ()=>{
+  const cn=document.getElementById("et-cron-num"); if(cn) ETCRON.num=parseInt(cn.value)||15;
+  const ct=document.getElementById("et-cron-type"); if(ct) ETCRON.type=ct.value;
+  const m=document.getElementById("et-cron-msg"); if(m) m.textContent="Guardando…";
+  try{ let n=ETCRON.num; if(!(n>=1)) n=15; await rpc("ir.cron","write",[[92],{interval_number:n,interval_type:(ETCRON.type||"minutes")}]); if(m) m.textContent="Guardado ✓"; if(typeof toast==="function") toast("Intervalo del motor guardado ✓"); }catch(e){ if(m) m.textContent="Error: "+(e.message||e); }
+};
+window.etOpenModal=()=>{ ET.open=true; render(); };   // ⚙ abre solo el modal general (cron)
+window.etCloseModal=()=>{ etLeer(); ET.open=false; render(); };
+// referencia: cuántos productos caen en cada franja (para el explicador de impacto del panel de éticos)
+async function etLoadCounts(){
   try{
-    for(let i=0;i<ET.bands.length;i++){
-      const lo=+ET.bands[i].pvp||0, hi=(i<ET.bands.length-1)?(+ET.bands[i+1].pvp||0):null;
+    const b=ET.bands.slice().sort((x,y)=>(+x.pvp||0)-(+y.pvp||0));
+    for(let i=0;i<b.length;i++){
+      const lo=+b[i].pvp||0, hi=(i<b.length-1)?(+b[i+1].pvp||0):null;
       const dom=[["categ_id","child_of",12],["active","=",true],["list_price",">=",lo]];
       if(hi!=null) dom.push(["list_price","<",hi]);
-      ET.bands[i]._n=await rpc("product.template","search_count",[dom]);
+      b[i]._n=await rpc("product.template","search_count",[dom]);
     }
-    if(ET.open) render();
+    render();
   }catch(e){}
-};
-window.etCloseModal=()=>{ etLeer(); ET.open=false; render(); };
+}
 function etLeer(){
   ET.bands.forEach((b,i)=>{ const p=document.getElementById("et-pvp-"+i), t=document.getElementById("et-tope-"+i); if(p) b.pvp=parseFloat(p.value)||0; if(t) b.tope=parseInt(t.value)||1; });
   const dm=document.getElementById("et-descmax"); if(dm) ET.descmax=parseFloat(dm.value)||0;
@@ -325,12 +306,11 @@ window.guardarTopeEticos=async ()=>{
     await rpc("ir.config_parameter","set_param",["eyg.eticos_tope_activo", ET.on?"1":"0"]);
     await rpc("ir.config_parameter","set_param",["eyg.eticos_tope_flat", flat]);
     await rpc("ir.config_parameter","set_param",["eyg.eticos_tope_descmax", String((ET.descmax||0)/100)]);
-    let n=ETCRON.num; if(!(n>=1)) n=15;
-    await rpc("ir.cron","write",[[92],{interval_number:n, interval_type:(ETCRON.type||"minutes")}]);
     ET.bands.sort((a,b)=>(+a.pvp||0)-(+b.pvp||0));
-    if(typeof toast==="function") toast("Ajustes del motor guardados ✓");
+    if(typeof toast==="function") toast("Escalera de éticos guardada ✓");
     render();
     const m2=document.getElementById("et-msg"); if(m2) m2.textContent="Guardado ✓ — el motor recalcula en la próxima corrida.";
+    etLoadCounts();
   }catch(e){ if(msg) msg.textContent="Error: "+(e.message||e); }
 };
 
@@ -338,11 +318,7 @@ window.guardarTopeEticos=async ()=>{
 function resumenPvp(r){
   if(!r) return "";
   if(!r.genera) return "NO genera escalera";
-  const n=(r.cortes&&r.cortes.length)||(r.desc&&r.desc.length)||0;
-  let s="PVP −"+pct(r.recargo)+"% · piso "+pct(r.piso)+"%";
-  if(r.descMax) s+=" · desc máx "+pct(r.descMax)+"%";
-  s+=" · "+n+" tramos (cantidades del Maestro)";
-  return s;
+  return "PVP −"+pct(r.recargo)+"% (1ª caja) · piso de margen "+pct(r.piso)+"%";
 }
 // resuelve la regla de un lab ético: propia (CFG.reglas[id]) o la general de su escala (CFG.escala[A|B])
 function resolverEtico(id){
@@ -375,7 +351,37 @@ function renderEticos(labs){
                 .sort((a,b)=>a.full.localeCompare(b.full));
   const rows=vis.map(filaEtico).join("") || `<div class="row" style="justify-content:center;color:var(--gris)">No hay labs con este filtro.</div>`;
   const intro=`<div class="intro" style="margin:0 12px 12px">Los éticos se precian desde el <b>PVP de Alfabeta</b>. Definí una <b>regla general por escala</b> (A/B) y, si querés, una <b>regla propia por laboratorio</b> que la pisa. El lab sin regla propia toma la general de su escala. Tocá el cuadradito de un lab para cambiarle la escala. <b>Con las reglas vacías no se toca ningún precio.</b></div>`;
-  return `<div class="escwrap">${intro}${bar}${cards}<div class="labcol">${rows}</div></div>`;
+  return `<div class="escwrap">${intro}${renderEtConfig()}${bar}${cards}<div class="labcol">${rows}</div></div>`;
+}
+// PANEL GENERAL de éticos: perilla + franjas de precio→tope + descuento máximo (una sola vez, para todos)
+function renderEtConfig(){
+  const sorted=ET.bands;
+  const bands=sorted.map((b,i)=>{
+    const hi=(i<sorted.length-1)?(+sorted[i+1].pvp||0):null;
+    return `<div class="etband">
+      <div class="etband-in">
+        <span>PVP desde $ <input type="number" id="et-pvp-${i}" value="${b.pvp}" style="width:110px"></span>
+        <span>tope <input type="number" id="et-tope-${i}" value="${b.tope}" style="width:58px"> caja(s)</span>
+        <button class="btn-mini del" onclick="etDelBand(${i})">quitar</button>
+      </div>
+      <div class="etband-imp">${etImpacto(b,hi)}</div>
+    </div>`;
+  }).join("");
+  return `<div class="grp" style="margin:0 12px 14px;border:2px solid #7c3aed">
+    <div class="grphead" style="cursor:default;background:#f6f2ff">🎯 Escalera de éticos por precio
+      <label class="etswitch" style="margin-left:14px"><input type="checkbox" id="et-on" ${ET.on?"checked":""}> ${ET.on?"Activada":"Desactivada"}</label></div>
+    <div style="padding:14px">
+      <p class="d" style="font-size:12.5px;color:var(--gris);margin:0 0 12px">El <b>tope</b> de la escalera de cada ético sale de su <b>PVP</b>: caro → pocas cajas para el máximo descuento; barato → más. La <b>1ª caja</b> es el precio base (PVP − descuento de su escala) y baja hasta el <b>piso de margen</b>. La cantidad de escalones sale sola del tope. Los "Caja x N&gt;1" no se tocan.</p>
+      ${bands}
+      <button class="btn-mini" style="border-style:dashed;color:var(--teal-deep)" onclick="etAddBand()">+ agregar franja</button>
+      <div class="etinline" style="margin-top:14px">Descuento máximo
+        <input type="number" id="et-descmax" value="${ET.descmax||''}" step="1" style="width:60px" min="0" placeholder="0"> %
+        <span style="color:var(--gris2);font-size:11.5px">0 = sin tope (baja hasta el piso de cada escala)</span>
+      </div>
+      <p class="etnote"><b>El piso de margen es innegociable: el precio nunca baja de ahí.</b> La profundidad la manda el piso de cada escala (A/B, abajo); este campo es un tope extra opcional. La escalera se distribuye sola según el tope para que comprar más nunca salga menos.</p>
+      <div style="margin-top:12px"><button class="btn-save" onclick="guardarTopeEticos()">💾 Guardar escalera de éticos</button> <span id="et-msg" style="font-size:12.5px;color:var(--gris);margin-left:8px"></span></div>
+    </div>
+  </div>`;
 }
 function filaEtico(c){
   const res=resolverEtico(c.id);
@@ -397,25 +403,22 @@ function formPvpHTML(r, idp, saveCall, cancelCall, titulo){
   r=r||{};
   return `<div class="form" onclick="event.stopPropagation()">
     <label class="chk"><input type="checkbox" id="${idp}-genera" ${r.genera?"checked":""}> <span>Genera escalera de precios (${esc(titulo||'')})</span></label>
-    <div class="grid">
-      <div class="fld2"><label>Descuento sobre PVP</label><div class="inpu"><input type="number" id="${idp}-desc" step="1" value="${r.recargo?pct(r.recargo):''}" placeholder="ej: 33"><span class="suf">%</span></div><div class="hint">base = PVP − este %</div></div>
-      <div class="fld2"><label>Piso de margen</label><div class="inpu"><input type="number" id="${idp}-piso" step="1" value="${r.piso?pct(r.piso):''}" placeholder="ej: 9"><span class="suf">%</span></div><div class="hint">margen mínimo sobre costo</div></div>
-      <div class="fld2"><label>Descuento máximo</label><div class="inpu"><input type="number" id="${idp}-dmax" step="1" value="${r.descMax?pct(r.descMax):''}" placeholder="opcional"><span class="suf">%</span></div><div class="hint">tope del último tramo · vacío = hasta el piso</div></div>
-      <div class="fld2"><label>Cantidad de tramos</label><input type="number" id="${idp}-cortes" min="1" max="8" value="${(r.cortes&&r.cortes.length)||(r.desc&&r.desc.length)||4}"><div class="hint">escalones de precio · las cantidades salen del Maestro (Caja x N)</div></div>
+    <div class="grid" style="grid-template-columns:repeat(2,1fr)">
+      <div class="fld2"><label>Descuento sobre PVP</label><div class="inpu"><input type="number" id="${idp}-desc" step="1" value="${r.recargo?pct(r.recargo):''}" placeholder="ej: 33"><span class="suf">%</span></div><div class="hint">base = PVP − este % · es el precio de la 1ª caja</div></div>
+      <div class="fld2"><label>Piso de margen</label><div class="inpu"><input type="number" id="${idp}-piso" step="1" value="${r.piso?pct(r.piso):''}" placeholder="ej: 9"><span class="suf">%</span></div><div class="hint">margen mínimo sobre costo · el descuento nunca lo perfora</div></div>
     </div>
+    <div class="hint" style="margin-top:9px">El <b>tope de cajas</b> y el <b>descuento máximo</b> se definen una sola vez en <b>🎯 Escalera de éticos por precio</b> (arriba), para todos los éticos. La cantidad de escalones sale sola del tope.</div>
     <div class="acts"><button class="cancel" onclick="${cancelCall}">Cancelar</button><button class="ok" onclick="${saveCall}">Aplicar</button></div>
   </div>`;
 }
 function leerFormPvp(idp){
   const gv=x=>document.getElementById(x).value;
   const genera=document.getElementById(idp+"-genera").checked;
-  const recargo=frac(gv(idp+"-desc")), piso=frac(gv(idp+"-piso")), descMax=frac(gv(idp+"-dmax"));
-  const n=Math.max(1,Math.min(8, parseInt(gv(idp+"-cortes"))||4));   // cantidad de tramos
-  // cortes/desc son placeholders: el motor calcula las CANTIDADES por producto desde el Maestro (Caja x N),
-  // igual que el resto de las categorías, y recalcula el descuento por tramo.
-  const cortes=cortesEven(1,Math.max(n,2),n);
-  const desc=[]; for(let i=0;i<n;i++) desc.push(0);
-  return { genera, base:'pvp', recargo, piso, descMax, modo:'auto', unidad:'', cortes, desc, ivaCosto:0 };
+  const recargo=frac(gv(idp+"-desc")), piso=frac(gv(idp+"-piso"));
+  // descuento máximo y cantidad de tramos ya NO se configuran por escala/lab: los maneja la regla general
+  // "Escalera de éticos por precio" + el piso. El motor deriva los escalones del tope (precio). descMax=0.
+  const n=4; const cortes=cortesEven(1,Math.max(n,2),n); const desc=[]; for(let i=0;i<n;i++) desc.push(0);
+  return { genera, base:'pvp', recargo, piso, descMax:0, modo:'auto', unidad:'', cortes, desc, ivaCosto:0 };
 }
 window.setFiltroEsc = v => { escFiltro=v; render(); };
 window.editarEscala = e => { editEsc=e; editLab=null; editId=null; abiertos['ETICOS']=true; render(); };
