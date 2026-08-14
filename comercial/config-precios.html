@@ -169,9 +169,8 @@ async function cargar(){
     // precios de venta fijos temporales (manuales)
     const rawFijos=await rpc("ir.config_parameter","get_param",["eyg.precios_fijos_flat"]);
     FIJOS=String(rawFijos||"").split("\n").map(l=>l.trim()).filter(Boolean).map(l=>{
-      const f=l.split("~"), tmpl=parseInt(f[0])||0;
-      if(f[1]==="f"||f[1]==="e") return {tmpl, modo:f[1], precio:parseFloat(f[2])||0, descmax:(parseFloat(f[3])||0)*100, tope:parseInt(f[4])||0, perforar:(f[5]==="1"), hasta:(f[6]||"").trim(), pausado:(f[7]==="1"), nombre:(f.slice(8).join("~")||("#"+f[0]))};
-      return {tmpl, modo:"f", precio:parseFloat(f[1])||0, descmax:0, tope:0, perforar:false, hasta:(f[2]||"").trim(), pausado:((f[3]||"").trim()==="1"), nombre:(f.slice(4).join("~")||("#"+f[0]))};
+      const f=l.split("~"), tmpl=parseInt(f[0])||0;   // formato: tmplId~precio~descmax~tramos~tope~perforar~hasta~pausado~nombre
+      return {tmpl, precio:parseFloat(f[1])||0, descmax:(parseFloat(f[2])||0)*100, tramos:parseInt(f[3])||0, tope:parseInt(f[4])||0, perforar:(f[5]==="1"), hasta:(f[6]||"").trim(), pausado:(f[7]==="1"), nombre:(f.slice(8).join("~")||("#"+f[0]))};
     }).filter(f=>f.tmpl);
     try{ const cr=await rpc("ir.cron","read",[[92],["interval_number","interval_type"]]); if(cr&&cr[0]){ ETCRON.num=cr[0].interval_number; ETCRON.type=cr[0].interval_type; } }catch(e){}
     render();
@@ -244,22 +243,26 @@ function render(){
   }).join("");
   cont.innerHTML=savebar+intro+renderFijos()+grupos+renderEtModal();
 }
-/* =================== CAPA TEMPORAL DE PRECIOS (fijo o escalera, pisa al motor) =================== */
-let _fijoModo="f", _fijoEdit=null;   // modo del formulario ('f'|'e') y valores a precargar cuando editás una entrada
+/* =================== CAPA TEMPORAL DE PRECIOS (unificada, pisa al motor) =================== */
+let _fijoEdit=null;   // valores a precargar cuando editás una entrada
 function _mrgColor(m){ return m<0?"#b0322f":(m<0.15?"#8a5a00":"#0E6B39"); }   // rojo <0 · amarillo <15% · verde
 function _mrgTxt(precioNeto, cost){ if(!(precioNeto>0)) return "—"; const m=(precioNeto-cost)/precioNeto; return `<b style="color:${_mrgColor(m)}">${Math.round(m*100)}%</b>`; }
+function _fijoDet(f){
+  if(f.tramos===1) return `precio único <b>${EYG.money(f.precio)}</b>`;
+  const tr=f.tramos>1?`${f.tramos} tramos`:"tramos del motor";
+  const dm=f.descmax>0?` · desc. máx <b>${Math.round(f.descmax)}%</b>`:"";
+  const tp=f.tope>0?` · tope <b>${f.tope}</b>`:"";
+  const pf=f.perforar?` · <span style="color:#b0322f;font-weight:700">perfora piso</span>`:"";
+  return `escalera (${tr})${dm}${tp}${pf}`;
+}
 function renderFijos(){
-  const hoy=hoyStr();
-  const pe=_fijoEdit||{};   // valores a precargar en el formulario cuando editás
+  const hoy=hoyStr(); const pe=_fijoEdit||{};
   const rows=FIJOS.map((f,i)=>{
     const venc = f.hasta ? (f.hasta<hoy?`vencido ${f.hasta}`:`hasta ${f.hasta}`) : "sin vencimiento";
     const est = f.pausado?`<span class="badge no">pausado</span>`:(f.hasta&&f.hasta<hoy?`<span class="badge no">vencido</span>`:`<span class="badge own">activo</span>`);
-    const det = (f.modo==="e")
-      ? `escalera · desc. máx <b>${Math.round(f.descmax)}%</b>${f.tope?` · tope <b>${f.tope}</b> cajas`:""}${f.perforar?` · <span style="color:#b0322f;font-weight:700">perfora piso</span>`:""}`
-      : `precio fijo <b>${EYG.money(f.precio)}</b>`;
     return `<div class="ofrow">
       <div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">#${f.tmpl}</small></div>
-        <div class="ofdet">${det} · ${venc}</div></div>
+        <div class="ofdet">${_fijoDet(f)} · ${venc}</div></div>
       ${est}
       <button class="btn-mini" onclick="fijoEditar(${i})">Editar</button>
       <button class="btn-mini" onclick="fijoPausar(${i})">${f.pausado?'Reanudar':'Pausar'}</button>
@@ -269,22 +272,20 @@ function renderFijos(){
   const sel = _fijoSel
     ? `<div class="oftgtsel">Producto: <b>${esc(_fijoSel.nombre)}</b> <small style="color:var(--gris2)">#${_fijoSel.tmpl}${_fijoSel.etico?" · ético (desde PVP)":""}</small> <button class="btn-mini" onclick="fijoLimpiar()">cambiar</button></div>`
     : `<input type="text" id="fijo-q" placeholder="Buscar producto por nombre o código…" oninput="fijoBuscar(this.value)" autocomplete="off" style="width:100%;height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"><div id="fijo-results" class="ofbusq" style="display:none"></div>`;
-  const tabF=`<button class="cptab ${_fijoModo==='f'?'on':''}" onclick="fijoModoSet('f')">Precio fijo</button>`;
-  const tabE=`<button class="cptab ${_fijoModo==='e'?'on':''}" onclick="fijoModoSet('e')">Escalera temporal</button>`;
-  const campos = (_fijoModo==="e")
-    ? `<div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Descuento máx.</div><input type="number" id="fijo-descmax" step="1" value="${pe.descmax||''}" oninput="fijoPreview()" style="height:38px;width:90px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"> %</div>
-       <div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Tope (cajas)</div><input type="number" id="fijo-tope" step="1" min="1" value="${pe.tope||''}" oninput="fijoPreview()" placeholder="franjas" style="height:38px;width:90px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"></div>
-       <label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:#b0322f;height:38px"><input type="checkbox" id="fijo-perforar" ${pe.perforar?'checked':''} style="width:17px;height:17px;accent-color:#b0322f"> perforar piso</label>`
-    : `<div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Precio final</div><input type="number" id="fijo-precio" step="1" value="${pe.precio||''}" oninput="fijoPreview()" style="height:38px;width:130px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"></div>`;
+  const cmp=(lbl,inner)=>`<div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">${lbl}</div>${inner}</div>`;
+  const inp=(id,val,w,ph)=>`<input type="number" id="${id}" step="1" value="${(val===0||val)?val:''}" ${ph?`placeholder="${ph}"`:''} oninput="fijoPreview()" style="height:38px;width:${w}px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit">`;
   return `<div class="grp" style="border:2px solid #0f7d84;margin-bottom:14px">
     <div class="grphead" style="cursor:default;background:#eef7f6">💵 Capa temporal de precios (pisa al motor)</div>
     <div style="padding:14px">
-      <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual y temporal que <b>pisa</b> al motor cuando conseguís una compra muy buena. <b>Precio fijo</b>: un precio de venta final único. <b>Escalera temporal</b>: para éticos, arranca del PVP y podés poner un <b>descuento máximo más profundo</b> que el del motor, incluso <b>perforar el piso de margen</b>. El motor no lo toca hasta que lo <b>pausás/quitás</b> y ahí vuelve solo a la escalera automática.</p>
-      <div class="cptabs" style="margin-bottom:12px">${tabF}${tabE}</div>
+      <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual y temporal que <b>pisa</b> al motor cuando conseguís una compra muy buena. La <b>cantidad de tramos</b> manda: <b>1</b> = precio único (una sola línea, en todas las listas); <b>N</b> = escalera de N tramos; <b>vacío</b> = los tramos que calcula el motor. Para éticos la escalera arranca del <b>PVP</b>. Podés poner un <b>descuento máximo más profundo</b> que el del motor e incluso <b>perforar el piso</b>. Al <b>pausar/quitar</b>, vuelve solo a la escalera automática.</p>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
-        <div style="flex:1;min-width:240px;position:relative">${sel}</div>
-        ${campos}
-        <div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Hasta (opc.)</div><input type="date" id="fijo-hasta" value="${pe.hasta||''}" style="height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"></div>
+        <div style="flex:1;min-width:220px;position:relative">${sel}</div>
+        ${cmp("Cant. tramos", inp("fijo-tramos", pe.tramos, 78, "motor"))}
+        ${cmp("Precio único", inp("fijo-precio", pe.precio, 118))}
+        ${cmp("Descuento máx.", inp("fijo-descmax", pe.descmax, 76)+" %")}
+        ${cmp("Tope (cajas)", inp("fijo-tope", pe.tope, 78, "franjas"))}
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:#b0322f;height:38px"><input type="checkbox" id="fijo-perforar" ${pe.perforar?'checked':''} style="width:17px;height:17px;accent-color:#b0322f"> perforar piso</label>
+        ${cmp("Hasta (opc.)", `<input type="date" id="fijo-hasta" value="${pe.hasta||''}" style="height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit">`)}
         <button class="btn-mini cons" onclick="fijoAgregar()">＋ Agregar</button>
       </div>
       <div id="fijo-preview" class="rentbox" style="margin:0 0 12px;display:${_fijoSel?'block':'none'}">${_fijoSel?fijoPreviewHTML():""}</div>
@@ -297,22 +298,24 @@ function fijoPreviewHTML(){
   if(!_fijoSel) return "";
   if(_fijoSel.loading) return "Trayendo costo y precio base…";
   const cost=_fijoSel.cost||0, base=_fijoSel.base||0, iva=_fijoSel.iva||0;
-  const cabecera=`Costo real <b>${EYG.money(cost)}</b>${base?` · precio base actual (1ª caja) <b>${EYG.money(base)}</b> · margen ${_mrgTxt(base,cost)}`:""}`;
-  if(_fijoModo==="e"){
-    const dmEl=document.getElementById("fijo-descmax"), tpEl=document.getElementById("fijo-tope");
-    const dm=(dmEl?parseFloat(dmEl.value):0)||0, tope=(tpEl&&parseInt(tpEl.value))||0;
-    if(!base) return cabecera+" · <i>sin precio base para simular la escalera</i>";
-    const topePrecio = base*(1-dm/100);
-    const totTope = tope?` · comprando ${tope}: ${EYG.money(topePrecio*tope)}`:"";
-    const perf = (topePrecio<cost)?` <span style="color:#b0322f;font-weight:800">⚠ por debajo del costo</span>`:"";
-    return `${cabecera}<br>Con desc. máx <b>${Math.round(dm)}%</b>: último escalón <b>${EYG.money(topePrecio)}</b> · margen ${_mrgTxt(topePrecio,cost)}${totTope}${perf}`;
+  const tramos=(parseInt((document.getElementById("fijo-tramos")||{}).value))||0;
+  const cab=`Costo real <b>${EYG.money(cost)}</b>${base?` · precio base (1ª caja) <b>${EYG.money(base)}</b> · margen ${_mrgTxt(base,cost)}`:""}`;
+  if(tramos===1){
+    const pr=(parseFloat((document.getElementById("fijo-precio")||{}).value))||0;
+    const neto=pr/(1+iva/100);
+    return `${cab}<br><b>Precio único</b> final <b>${EYG.money(pr)}</b> (neto ${EYG.money(neto)}${iva?`, IVA ${iva}%`:", exento"}) · margen ${_mrgTxt(neto,cost)}`;
   }
-  const prEl=document.getElementById("fijo-precio"); const pr=(prEl?parseFloat(prEl.value):0)||0;
-  const neto = pr/(1+iva/100);
-  return `${cabecera}<br>Precio fijo final <b>${EYG.money(pr)}</b> (neto ${EYG.money(neto)}${iva?`, IVA ${iva}%`:", exento"}) · margen ${_mrgTxt(neto,cost)}`;
+  const dm=(parseFloat((document.getElementById("fijo-descmax")||{}).value))||0;
+  const tope=(parseInt((document.getElementById("fijo-tope")||{}).value))||0;
+  if(!base) return cab+" · <i>sin precio base para simular la escalera</i>";
+  const topePrecio=base*(1-dm/100);
+  const nt=tramos>1?`${tramos} tramos`:"tramos del motor";
+  const totTope=tope?` · comprando ${tope}: ${EYG.money(topePrecio*tope)}`:"";
+  const perf=(topePrecio<cost)?` <span style="color:#b0322f;font-weight:800">⚠ bajo el costo</span>`:"";
+  const cuerpo=dm?` · desc. máx ${Math.round(dm)}% → último escalón <b>${EYG.money(topePrecio)}</b> · margen ${_mrgTxt(topePrecio,cost)}`:` · descuento del motor (hasta el piso)`;
+  return `${cab}<br><b>Escalera</b> (${nt})${cuerpo}${totTope}${perf}`;
 }
 window.fijoPreview=()=>{ const box=document.getElementById("fijo-preview"); if(box){ box.style.display=_fijoSel?"block":"none"; box.innerHTML=fijoPreviewHTML(); } };
-window.fijoModoSet=(m)=>{ _fijoModo=m; render(); };
 window.fijoBuscar=(q)=>{
   clearTimeout(_fijoTimer);
   _fijoTimer=setTimeout(async ()=>{
@@ -327,7 +330,7 @@ window.fijoBuscar=(q)=>{
     }catch(e){}
   }, 300);
 };
-window.fijoEditar=(i)=>{ const f=FIJOS[i]; if(!f) return; _fijoModo=f.modo||"f"; fijoElegir(f.tmpl, f.nombre, {precio:f.precio, descmax:f.descmax, tope:f.tope, perforar:f.perforar, hasta:f.hasta}); };
+window.fijoEditar=(i)=>{ const f=FIJOS[i]; if(!f) return; fijoElegir(f.tmpl, f.nombre, {precio:f.precio, descmax:f.descmax, tramos:f.tramos, tope:f.tope, perforar:f.perforar, hasta:f.hasta}); };
 window.fijoElegir=async (id,nombre,prefill)=>{
   _fijoEdit=prefill||null;
   _fijoSel={tmpl:id, nombre:nombre, loading:true}; render();
@@ -347,24 +350,22 @@ window.fijoElegir=async (id,nombre,prefill)=>{
 window.fijoLimpiar=()=>{ _fijoSel=null; _fijoEdit=null; render(); };
 window.fijoAgregar=()=>{
   if(!_fijoSel){ if(typeof toast==="function") toast("Elegí un producto primero"); return; }
+  const tramos=parseInt((document.getElementById("fijo-tramos")||{}).value)||0;
+  const precio=parseFloat((document.getElementById("fijo-precio")||{}).value)||0;
+  const dm=parseFloat((document.getElementById("fijo-descmax")||{}).value)||0;
+  const tope=parseInt((document.getElementById("fijo-tope")||{}).value)||0;
+  const perf=!!(document.getElementById("fijo-perforar")||{}).checked;
   const hasta=(document.getElementById("fijo-hasta")||{}).value||"";
-  let ent;
-  if(_fijoModo==="e"){
-    const dm=parseFloat((document.getElementById("fijo-descmax")||{}).value); if(!(dm>0)){ if(typeof toast==="function") toast("Poné un descuento máximo"); return; }
-    const tope=parseInt((document.getElementById("fijo-tope")||{}).value)||0;
-    const perf=!!(document.getElementById("fijo-perforar")||{}).checked;
-    ent={tmpl:_fijoSel.tmpl, nombre:_fijoSel.nombre, modo:"e", precio:0, descmax:dm, tope:tope, perforar:perf, hasta:hasta, pausado:false};
-  }else{
-    const pr=parseFloat((document.getElementById("fijo-precio")||{}).value); if(!(pr>0)){ if(typeof toast==="function") toast("Poné un precio final válido"); return; }
-    ent={tmpl:_fijoSel.tmpl, nombre:_fijoSel.nombre, modo:"f", precio:pr, descmax:0, tope:0, perforar:false, hasta:hasta, pausado:false};
-  }
+  if(tramos===1){ if(!(precio>0)){ if(typeof toast==="function") toast("Para precio único (1 tramo), poné el precio"); return; } }
+  else if(!(dm>0||tope>0||tramos>1)){ if(typeof toast==="function") toast("Definí descuento máx., tope o cantidad de tramos"); return; }
+  const ent={tmpl:_fijoSel.tmpl, nombre:_fijoSel.nombre, precio:precio, descmax:dm, tramos:tramos, tope:tope, perforar:perf, hasta:hasta, pausado:false};
   FIJOS=FIJOS.filter(f=>f.tmpl!==_fijoSel.tmpl); FIJOS.unshift(ent);
   _fijoSel=null; _fijoEdit=null; render();
 };
 window.fijoPausar=(i)=>{ if(FIJOS[i]){ FIJOS[i].pausado=!FIJOS[i].pausado; render(); } };
 window.fijoQuitar=(i)=>{ if(!confirm("¿Quitar esto? El producto vuelve a la escalera del motor en la próxima corrida.")) return; FIJOS.splice(i,1); render(); };
 window.guardarFijos=async ()=>{
-  const flat=FIJOS.map(f=>{ const modo=f.modo||"f"; return [f.tmpl, modo, (modo==="f"?(f.precio||0):""), (modo==="e"?((f.descmax||0)/100):""), (modo==="e"?(f.tope||""):""), (f.perforar?"1":"0"), f.hasta||"", f.pausado?"1":"0", String(f.nombre||"").replace(/~/g,"-").replace(/\n/g," ")].join("~"); }).join("\n");
+  const flat=FIJOS.map(f=>[f.tmpl, (f.precio||0), ((f.descmax||0)/100), (f.tramos||""), (f.tope||""), (f.perforar?"1":"0"), f.hasta||"", f.pausado?"1":"0", String(f.nombre||"").replace(/~/g,"-").replace(/\n/g," ")].join("~")).join("\n");
   const m=document.getElementById("fijo-msg"); if(m) m.textContent="Guardando…";
   try{ await rpc("ir.config_parameter","set_param",["eyg.precios_fijos_flat",flat]); if(m) m.textContent="Guardado ✓ — se aplican en la próxima corrida del motor."; if(typeof toast==="function") toast("Capa temporal guardada ✓"); }
   catch(e){ if(m) m.textContent="Error: "+(e.message||e); }
