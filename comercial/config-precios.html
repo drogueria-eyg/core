@@ -129,7 +129,7 @@ let CATS=[], byId={}, CFG={v:1,reglas:{}}, editId=null, abiertos={}, dirty=false
 const KEY_ESC="eyg.eticos_escala";       // {subcatId:'A'|'B'} clasificación de labs éticos
 let ESCALA={}, escFiltro="todos", editEsc=null, editLab=null;   // clasificación, filtro, regla de escala en edición, regla de lab en edición
 // Regla "Escalera de éticos por precio" (el tope de cada ético sale de su PVP) + intervalo del cron del motor.
-let ET={on:false, bands:[], descmax:12, open:false}, ETCRON={num:15, type:"minutes"};
+let ET={on:false, bands:[], descmax:12, minstep:0, open:false}, ETCRON={num:15, type:"minutes"};
 const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
 
 const pct=x=>Math.round((x||0)*1000)/10;           // 0.07 -> 7
@@ -162,6 +162,8 @@ async function cargar(){
       .map(l=>{const f=l.split("~");return {pvp:parseFloat(f[0])||0, tope:parseInt(f[1])||1};}).sort((a,b)=>a.pvp-b.pvp);
     if(!ET.bands.length) ET.bands=[{pvp:0,tope:12},{pvp:25000,tope:6},{pvp:50000,tope:3},{pvp:100000,tope:2},{pvp:200000,tope:1}];
     const _dm=parseFloat(etDm); ET.descmax = isNaN(_dm)?0:Math.round(_dm*1000)/10;   // 0 = sin tope global (manda el piso)
+    const etMs=await rpc("ir.config_parameter","get_param",["eyg.eticos_min_step"]);
+    const _ms=parseFloat(etMs); ET.minstep = isNaN(_ms)?0:Math.round(_ms*1000)/10;   // descuento minimo por escalon (0 = off)
     try{ const cr=await rpc("ir.cron","read",[[92],["interval_number","interval_type"]]); if(cr&&cr[0]){ ETCRON.num=cr[0].interval_number; ETCRON.type=cr[0].interval_type; } }catch(e){}
     render();
     etLoadCounts();   // trae cuántos productos caen en cada franja (explicador de impacto)
@@ -291,6 +293,7 @@ async function etLoadCounts(){
 function etLeer(){
   ET.bands.forEach((b,i)=>{ const p=document.getElementById("et-pvp-"+i), t=document.getElementById("et-tope-"+i); if(p) b.pvp=parseFloat(p.value)||0; if(t) b.tope=parseInt(t.value)||1; });
   const dm=document.getElementById("et-descmax"); if(dm) ET.descmax=parseFloat(dm.value)||0;
+  const ms=document.getElementById("et-minstep"); if(ms) ET.minstep=parseFloat(ms.value)||0;
   const on=document.getElementById("et-on"); if(on) ET.on=on.checked;
   const cn=document.getElementById("et-cron-num"); if(cn) ETCRON.num=parseInt(cn.value)||15;
   const ct=document.getElementById("et-cron-type"); if(ct) ETCRON.type=ct.value;
@@ -306,6 +309,7 @@ window.guardarTopeEticos=async ()=>{
     await rpc("ir.config_parameter","set_param",["eyg.eticos_tope_activo", ET.on?"1":"0"]);
     await rpc("ir.config_parameter","set_param",["eyg.eticos_tope_flat", flat]);
     await rpc("ir.config_parameter","set_param",["eyg.eticos_tope_descmax", String((ET.descmax||0)/100)]);
+    await rpc("ir.config_parameter","set_param",["eyg.eticos_min_step", String((ET.minstep||0)/100)]);
     ET.bands.sort((a,b)=>(+a.pvp||0)-(+b.pvp||0));
     if(typeof toast==="function") toast("Escalera de éticos guardada ✓");
     render();
@@ -350,7 +354,7 @@ function renderEticos(labs){
   const vis=labs.filter(c=>{ const e=ESCALA[c.id]||null; if(escFiltro==='todos') return true; if(escFiltro==='none') return !e; return e===escFiltro; })
                 .sort((a,b)=>a.full.localeCompare(b.full));
   const rows=vis.map(filaEtico).join("") || `<div class="row" style="justify-content:center;color:var(--gris)">No hay labs con este filtro.</div>`;
-  const intro=`<div class="intro" style="margin:0 12px 12px">Los éticos se precian desde el <b>PVP de Alfabeta</b>. Definí una <b>regla general por escala</b> (A/B) y, si querés, una <b>regla propia por laboratorio</b> que la pisa. El lab sin regla propia toma la general de su escala. Tocá el cuadradito de un lab para cambiarle la escala. <b>Con las reglas vacías no se toca ningún precio.</b></div>`;
+  const intro=`<div class="intro" style="margin:0 12px 12px">Los éticos se precian desde el <b>PVP de Alfabeta</b> con una <b>regla general por escala (A/B)</b>: descuento sobre PVP (1ª caja) y piso de margen. Cada lab se asigna a una escala tocando su <b>cuadradito A/B</b>. La escalera por cantidad se define arriba (una sola vez, para todos). <b>Los ajustes por laboratorio se descontinuaron</b> — si algún lab tiene una regla propia vieja, sale marcada y se puede quitar.</div>`;
   return `<div class="escwrap">${intro}${renderEtConfig()}${bar}${cards}<div class="labcol">${rows}</div></div>`;
 }
 // PANEL GENERAL de éticos: perilla + franjas de precio→tope + descuento máximo (una sola vez, para todos)
@@ -378,7 +382,11 @@ function renderEtConfig(){
         <input type="number" id="et-descmax" value="${ET.descmax||''}" step="1" style="width:60px" min="0" placeholder="0"> %
         <span style="color:var(--gris2);font-size:11.5px">0 = sin tope (baja hasta el piso de cada escala)</span>
       </div>
-      <p class="etnote"><b>El piso de margen es innegociable: el precio nunca baja de ahí.</b> La profundidad la manda el piso de cada escala (A/B, abajo); este campo es un tope extra opcional. La escalera se distribuye sola según el tope para que comprar más nunca salga menos.</p>
+      <div class="etinline" style="margin-top:10px">Descuento mínimo entre escalones
+        <input type="number" id="et-minstep" value="${ET.minstep||''}" step="0.5" style="width:60px" min="0" placeholder="0"> %
+        <span style="color:var(--gris2);font-size:11.5px">si el salto por escalón queda por debajo, se eliminan escalones (0 = off)</span>
+      </div>
+      <p class="etnote"><b>El piso de margen es innegociable: el precio nunca baja de ahí.</b> La profundidad la manda el piso de cada escala (A/B, abajo); el <b>descuento máximo</b> es un tope extra opcional. Con <b>descuento mínimo entre escalones</b>, si el descuento total no alcanza para que cada escalón sea notorio, el motor <b>saca escalones</b> (y si no alcanza ni para dos, queda precio único). La escalera se distribuye sola según el tope para que comprar más nunca salga menos.</p>
       <div style="margin-top:12px"><button class="btn-save" onclick="guardarTopeEticos()">💾 Guardar escalera de éticos</button> <span id="et-msg" style="font-size:12.5px;color:var(--gris);margin-left:8px"></span></div>
     </div>
   </div>`;
@@ -388,15 +396,11 @@ function filaEtico(c){
   const e=ESCALA[c.id]||null;
   const chip=`<span class="chipesc ${e||'none'}" title="Cambiar escala" onclick="cicloEscala(${c.id})">${e||'—'}</span>`;
   const sub=c.full.includes(" / ")? c.full.split(" / ").slice(1).join(" / ") : c.name;
-  let badge, sum="";
-  if(res && res.own){ badge=`<span class="badge own">regla propia</span>`; sum=`<div class="sum">${esc(resumenPvp(res.rule))}</div>`; }
-  else if(res){ badge=`<span class="badge inh">hereda de escala ${res.fromEsc}</span>`; }
-  else { badge=`<span class="badge no">sin regla</span>`; }
-  const btns=(res&&res.own)
-    ? `<button class="btn-mini" onclick="editarLabEtico(${c.id})">Editar</button><button class="btn-mini del" onclick="quitarLabEtico(${c.id})">Quitar</button>`
-    : `<button class="btn-mini" onclick="editarLabEtico(${c.id})">+ Regla propia</button>`;
-  const form=editLab===c.id?formPvpHTML((res&&res.own)?res.rule:{genera:true,cortes:[1,5,10]}, 'fl', `guardarLabEtico(${c.id})`, 'editLab=null;render()', esc(sub)):"";
-  return `<div class="row">${chip}<div class="nm" style="flex:1">${esc(sub)} <small>#${c.id}</small></div>${badge}${btns}${form}</div>`;
+  let badge, extra="";
+  if(res && res.own){ badge=`<span class="badge own">regla propia (vieja)</span>`; extra=`<button class="btn-mini del" onclick="quitarLabEtico(${c.id})" title="Quitar la regla propia: el lab pasa a usar la general de su escala">Quitar</button>`; }
+  else if(res){ badge=`<span class="badge inh">usa escala ${res.fromEsc}</span>`; }
+  else { badge=`<span class="badge no">sin escala</span>`; }
+  return `<div class="row">${chip}<div class="nm" style="flex:1">${esc(sub)} <small>#${c.id}</small></div>${badge}${extra}</div>`;
 }
 // formulario PVP compartido (regla general de escala o regla propia de lab). idp = prefijo de ids ('fe'|'fl').
 function formPvpHTML(r, idp, saveCall, cancelCall, titulo){
