@@ -161,7 +161,7 @@ async function cargar(){
     ET.bands = String(etFlat||"").split("\n").map(l=>l.trim()).filter(l=>l&&l[0]!=="#")
       .map(l=>{const f=l.split("~");return {pvp:parseFloat(f[0])||0, tope:parseInt(f[1])||1};}).sort((a,b)=>a.pvp-b.pvp);
     if(!ET.bands.length) ET.bands=[{pvp:0,tope:12},{pvp:25000,tope:6},{pvp:50000,tope:3},{pvp:100000,tope:2},{pvp:200000,tope:1}];
-    ET.descmax = Math.round((parseFloat(etDm)||0.12)*1000)/10;
+    const _dm=parseFloat(etDm); ET.descmax = isNaN(_dm)?0:Math.round(_dm*1000)/10;   // 0 = sin tope global (manda el piso)
     try{ const cr=await rpc("ir.cron","read",[[92],["interval_number","interval_type"]]); if(cr&&cr[0]){ ETCRON.num=cr[0].interval_number; ETCRON.type=cr[0].interval_type; } }catch(e){}
     render();
   }catch(e){ cont.innerHTML='<div class="empty">No pude cargar: '+esc(e.message)+'</div>'; }
@@ -240,10 +240,7 @@ function etImpacto(b, hi){
   const rango = hi!=null ? `${M(lo)}–${M(Math.max(lo,hi-1))}` : `${M(lo)} o más`;
   const cnt = (b._n!=null) ? ` · <b>~${b._n}</b> productos hoy` : "";
   if(tope<=1) return `PVP ${rango} → <b>precio único</b> (sin escalera): se venden al precio de 1 caja${cnt}.`;
-  const dm=(+ET.descmax||0)/100;
-  const tot=pvp=>tope*pvp*0.66*(1-dm);   // ≈ total al comprar el tope (precio del último tramo × cajas; base ≈ PVP−34%)
-  const totTxt = hi!=null ? `${M(tot(lo))} a ${M(tot(hi-1))}` : `desde ${M(tot(lo))}`;
-  return `PVP ${rango} → máximo descuento comprando <b>${tope} caja${tope>1?"s":""}</b> · para llegar ahí el cliente gasta ≈ <b>${totTxt}</b>${cnt}.`;
+  return `PVP ${rango} → el máximo descuento cae comprando <b>${tope} caja${tope>1?"s":""}</b>. La escalera baja hasta el <b>piso de margen</b> de la escala (nunca lo perfora), acotada para que comprar más nunca salga menos${cnt}.`;
 }
 function renderEtModal(){
   if(!ET.open) return "";
@@ -282,11 +279,11 @@ function renderEtModal(){
       <p class="d">El <b>tope</b> de la escalera de cada ético sale de su <b>PVP</b>: caro → pocas cajas para el máximo descuento; barato → más. Mové el tope de una franja y cambia el <b>esfuerzo de compra</b> para llegar al máximo (más abajo lo ves calculado). Los productos "Caja x N&gt;1" no se tocan.</p>
       ${bands}
       <button class="btn-mini" style="border-style:dashed;color:var(--teal-deep)" onclick="etAddBand()">+ agregar franja</button>
-      <div class="etinline" style="margin-top:14px">Descuento máximo por volumen
-        <input type="number" id="et-descmax" value="${ET.descmax}" step="1" style="width:60px" min="0"> %
-        <span style="color:var(--gris2);font-size:11.5px">= cuánto más barata sale la caja en el tope vs. comprar 1</span>
+      <div class="etinline" style="margin-top:14px">Descuento máximo
+        <input type="number" id="et-descmax" value="${ET.descmax||''}" step="1" style="width:60px" min="0" placeholder="0"> %
+        <span style="color:var(--gris2);font-size:11.5px">0 = sin tope (baja hasta el piso de cada escala)</span>
       </div>
-      <p class="etnote">El descuento máximo se autolimita si algún tope haría que comprar más salga menos en total. El margen nunca baja del piso de la regla de la categoría.</p>
+      <p class="etnote"><b>El piso de margen es innegociable: el precio nunca baja de ahí.</b> La profundidad la manda el piso de cada escala (A/B, editables abajo); este campo es un tope extra opcional (0 = sin tope). La escalera se distribuye sola según el <b>tope</b> para que comprar más nunca salga menos: tope de pocas cajas → descuento profundo; de muchas cajas → moderado. ¿Querés más profundo en un barato? Bajale el tope.</p>
     </div>
 
     <div class="etsec" style="display:flex;align-items:center;gap:12px">
