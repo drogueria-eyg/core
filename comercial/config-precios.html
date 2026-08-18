@@ -134,6 +134,18 @@ let ET={on:false, bands:[], descmax:12, minstep:0, open:false}, ETCRON={num:15, 
 let FIJOS=[], _fijoSel=null, _fijoTimer=null;
 const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
 
+/* ============ MULTI-TIER: 1 Farmacias (escalera, como hoy) · 2 SAMCOs/clínicas · 3 Instituciones ============ */
+// Tier 2 y 3: precio ÚNICO desde el costo (x_costo_motor), margen sobre el precio de venta, SIN escalera,
+// éticos incluidos (base costo, sin PVP). IVA al costo se HEREDA de la config de Farmacias (tier 1).
+let TIER=1;
+const TINFO={1:{n:"Farmacias",pl:3},2:{n:"SAMCOs y clínicas",pl:16},3:{n:"Instituciones",pl:5}};
+const TKEYS={2:{cfg:"eyg.t2_precios_config",flat:"eyg.t2_precios_flat",fijos:"eyg.t2_precios_fijos_flat"},
+             3:{cfg:"eyg.t3_precios_config",flat:"eyg.t3_precios_flat",fijos:"eyg.t3_precios_fijos_flat"}};
+const DEF23={2:{genera:true,margen:0.20,descom:0.05,pisoduro:0.15},3:{genera:true,margen:0.13,descom:0,pisoduro:0.13}};
+let CFG23={2:{v:1,reglas:{}},3:{v:1,reglas:{}}};   // reglas por categoría (margen) de cada tier
+let FIJOS23={2:[],3:[]};                            // capa temporal (precio único) por tier
+let editId23=null, _loaded23={2:false,3:false};     // categoría en edición · si ya cargó el tier
+
 const pct=x=>Math.round((x||0)*1000)/10;           // 0.07 -> 7
 const frac=x=>{const n=parseFloat(x); return isNaN(n)?0:n/100;};
 const listNum=s=>String(s||"").split(/[,;\s]+/).map(x=>parseFloat(x)).filter(x=>!isNaN(x));
@@ -221,9 +233,10 @@ window.consolidar = rootId => {
 };
 function render(){
   const cont=document.getElementById("cont");
+  if(TIER!==1){ cont.innerHTML=renderTabs()+renderTier23()+renderEtModal(); return; }
   if(document.getElementById("et-on")) etLeer();   // preserva lo tipeado en la sección de éticos ante cualquier re-render
   const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA","ETICOS"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
-  const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardarTodo()">💾 Guardar cambios</button><button class="btn-recalc" onclick="recalcularAhora()">⚡ Recalcular precios ahora</button>${dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>'}<button class="gearbtn" onclick="etOpenModal()" title="Ajuste general del motor: cada cuánto recalcula (aplica a todo el catálogo)">⚙️ General del motor</button></div>`;
+  const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardarTodo()">💾 Guardar y recalcular</button>${dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>'}</div>`;
   const intro=`<div class="intro"><b>Reglas del motor de precios.</b> Definí por categoría (y subcategoría) cómo se arma la escalera: <b>recargo</b> sobre el costo, <b>piso</b> de margen, <b>modo</b> de cortes (embalaje / fijo), <b>cortes</b> y <b>descuento por tramo</b>, <b>unidad</b> e <b>IVA al costo</b>. <b>La subcategoría pisa a la categoría</b>; si no tiene regla propia, hereda del padre. <b>Al guardar, el motor recalcula todos los precios al instante.</b> El costo lo toma solo (más reciente entre manual, compra y estándar); la caja cerrada se maneja por producto en el Maestro.<br><span style="color:var(--gris2)">Las ofertas y descuentos temporales se crean en <b>Oportunidades y Ofertas</b>.</span></div>`;
   const grupos=tops.map(top=>{
     const cats=CATS.filter(c=>c.top===top);
@@ -241,8 +254,20 @@ function render(){
     const hb = (rr&&rr.own)?`<span class="badge gen" style="margin-left:8px">regla general</span>`:`<span class="badge no" style="margin-left:8px">sin regla general</span>`;
     return `<div class="grp"><div class="grphead" onclick="toggleGrp('${esc(top)}')"><span>${open?"▾":"▸"}</span> ${esc(top)} ${hb} <span class="cnt">${subs.length} subcat.</span></div>${body}</div>`;
   }).join("");
-  cont.innerHTML=savebar+intro+renderFijos()+grupos+renderEtModal();
+  cont.innerHTML=renderTabs()+savebar+intro+renderFijos()+grupos+renderEtModal();
 }
+// pestañas de tier + engranaje (solo ícono) para el ajuste general del motor (cron)
+function renderTabs(){
+  const tab=(t,label)=>`<button class="cptab ${TIER===t?'on':''}" onclick="setTier(${t})">${esc(label)}</button>`;
+  return `<div class="cptabs" style="margin-bottom:14px;align-items:center">${tab(1,'Farmacias')}${tab(2,'SAMCOs y clínicas')}${tab(3,'Instituciones')}<button class="gearbtn" style="margin-left:auto;padding:9px 12px;font-size:16px" title="General del motor: cada cuánto recalcula (aplica a todo el catálogo)" onclick="etOpenModal()">⚙️</button></div>`;
+}
+window.setTier = async t => {
+  if(t===TIER) return;
+  if(dirty && !confirm("Tenés cambios sin guardar en esta pestaña. ¿Cambiar igual y perderlos?")) return;
+  TIER=t; editId=null; editId23=null; _fijoSel=null; _f23Sel=null; dirty=false;
+  if(t!==1 && !_loaded23[t]){ const cont=document.getElementById("cont"); if(cont) cont.innerHTML='<div class="empty">Cargando configuración de '+esc(TINFO[t].n)+'…</div>'; await loadTier(t); }
+  render();
+};
 /* =================== CAPA TEMPORAL DE PRECIOS (unificada, pisa al motor) =================== */
 let _fijoEdit=null;   // valores a precargar cuando editás una entrada
 function _mrgColor(m){ return m<0?"#b0322f":(m<0.15?"#8a5a00":"#0E6B39"); }   // rojo <0 · amarillo <15% · verde
@@ -679,6 +704,206 @@ window.recalcularAhora = async () => {
   if(b){ b.disabled=false; b.textContent="⚡ Recalcular precios ahora"; }
 };
 let tT; function toast(m){ let t=document.getElementById("cptoast"); if(!t){ t=document.createElement("div"); t.id="cptoast"; t.style.cssText="position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#0E1F1D;color:#fff;padding:11px 20px;border-radius:10px;font-weight:600;z-index:9999;box-shadow:0 8px 26px rgba(0,0,0,.25)"; document.body.appendChild(t);} t.textContent=m; t.style.opacity="1"; clearTimeout(tT); tT=setTimeout(()=>t.style.opacity="0",2600); }
+
+/* =================== TIER 2 / 3 · precio único desde el costo (sin escalera) =================== */
+let _f23Sel=null, _f23Timer=null;
+async function loadTier(t){
+  try{
+    const raw=await rpc("ir.config_parameter","get_param",[TKEYS[t].cfg]);
+    CFG23[t]= raw?JSON.parse(raw):{v:1,reglas:{}}; if(!CFG23[t].reglas) CFG23[t].reglas={};
+    if(!CFG23[t].global) CFG23[t].global=Object.assign({genera:true},DEF23[t]);   // margen general del tier (cubre todo)
+    const rf=await rpc("ir.config_parameter","get_param",[TKEYS[t].fijos]);
+    FIJOS23[t]=String(rf||"").split("\n").map(l=>l.trim()).filter(Boolean).map(l=>{
+      const f=l.split("~");   // tmplId~precio~hasta~pausado~nombre
+      return {tmpl:parseInt(f[0])||0, precio:parseFloat(f[1])||0, hasta:(f[2]||"").trim(), pausado:(f[3]==="1"), nombre:(f.slice(4).join("~")||("#"+f[0]))};
+    }).filter(x=>x.tmpl);
+    _loaded23[t]=true;
+  }catch(e){ CFG23[t]={v:1,reglas:{}}; FIJOS23[t]=[]; _loaded23[t]=true; }
+}
+// regla efectiva de una categoría en el tier activo: propia o heredada del ancestro más cercano
+function resolver23(id){ let cur=id,g=0; const R=CFG23[TIER].reglas; while(cur&&g++<20){ if(R[cur]) return {rule:R[cur],fromId:cur,own:(cur===id)}; cur=byId[cur]?byId[cur].pid:null; } const gl=CFG23[TIER].global; return (gl&&gl.genera!==false)?{rule:gl,fromId:null,own:false,global:true}:null; }
+// IVA al costo HEREDADO de Farmacias (tier 1): se lee de CFG (config de tier 1, ya cargada)
+function iva1(id){ let cur=id,g=0; while(cur&&g++<20){ const r=CFG.reglas[cur]; if(r&&r.genera) return r.ivaCosto||0; cur=byId[cur]?byId[cur].pid:null; } return 0; }
+function resumen23(r){
+  if(!r) return "";
+  if(!r.genera) return "NO genera precio";
+  const p=["margen "+pct(r.margen)+"%"];
+  if(TIER===2) p.push("desc. comercial "+pct(r.descom)+"% (piso duro "+pct(r.pisoduro)+"%)");
+  return p.join(" · ");
+}
+function renderTier23(){
+  const inf=TINFO[TIER];
+  const saved=dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>';
+  const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardar23()">💾 Guardar y recalcular</button>${saved}</div>`;
+  const intro=`<div class="intro"><b>${esc(inf.n)} · precio desde el costo.</b> El precio se calcula <b>siempre desde el costo</b> (el más reciente entre manual, compra y estándar), con un <b>margen sobre el precio de venta</b>. <b>Sin escalera</b> (un precio por producto), <b>éticos incluidos</b> (acá no se usa el PVP). El <b>IVA al costo se hereda de Farmacias</b>. La subcategoría pisa a la categoría; si no tiene regla propia, hereda del padre.${TIER===2?' El comercial puede bajar hasta el <b>descuento comercial</b>, nunca por debajo del <b>piso duro</b>.':''}<br><span style="color:var(--gris2)">Escribe en la lista <b>${esc(inf.n)}</b> de Odoo. La capa temporal pisa el precio del motor de este tier.</span></div>`;
+  const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA","ETICOS"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
+  const grupos=tops.map(top=>{
+    const cats=CATS.filter(c=>c.top===top);
+    const open=!!abiertos["23_"+top];
+    const root=cats.find(c=>c.pid===1);
+    const subs=cats.filter(c=>c.pid!==1).sort((a,b)=>a.full.localeCompare(b.full));
+    const body=open ? ((root?filaRoot23(root):"")+subs.map(c=>fila23(c)).join("")) : "";
+    const rr=root?resolver23(root.id):null;
+    const hb=(rr&&rr.own)?`<span class="badge gen" style="margin-left:8px">regla propia</span>`:`<span class="badge inh" style="margin-left:8px">usa la general del tier</span>`;
+    return `<div class="grp"><div class="grphead" onclick="toggleGrp23('${esc(top)}')"><span>${open?"▾":"▸"}</span> ${esc(top)} ${hb} <span class="cnt">${subs.length} subcat.</span></div>${body}</div>`;
+  }).join("");
+  return savebar+intro+renderGlobal23()+renderFijos23()+grupos;
+}
+// tarjeta "Regla general del tier": un solo margen que cubre TODO el catálogo (las categorías la pisan)
+function renderGlobal23(){
+  const g=CFG23[TIER].global||DEF23[TIER];
+  const sum="margen "+pct(g.margen)+"%"+(TIER===2?` · desc. comercial ${pct(g.descom)}% (piso duro ${pct(g.pisoduro)}%)`:"");
+  const form=editId23==='G'?formHTML23({id:'G'}):"";
+  return `<div class="grp" style="border:2px solid var(--teal);margin-bottom:14px">
+    <div class="grphead" style="cursor:default;background:#eef7f6">🎯 Regla general de ${esc(TINFO[TIER].n)} <span class="badge gen" style="margin-left:8px">aplica a todo</span><button class="btn-mini" style="margin-left:auto" onclick="editar23('G')">Editar</button></div>
+    <div class="row"><div class="nm">Todos los productos del tier <small>salvo los que tengan regla propia por categoría o subcategoría</small></div><div class="sum">${esc(sum)}</div>${form}</div>
+  </div>`;
+}
+function filaRoot23(c){
+  const res=resolver23(c.id), has=res&&res.own;
+  const badge=has?`<span class="badge gen">regla de toda la categoría</span>`:`<span class="badge inh">usa la general del tier</span>`;
+  const sum=has?`<div class="sum">${esc(resumen23(res.rule))} · IVA al costo heredado ${pct(iva1(c.id))}%</div>`
+               :`<div class="sum">Sin regla propia: toma la <b>general del tier</b>. Poné una acá para pisarla en toda esta categoría.</div>`;
+  const btns=has?`<button class="btn-mini" onclick="editar23(${c.id})">Editar</button><button class="btn-mini del" onclick="quitar23(${c.id})">Quitar</button>`
+                :`<button class="btn-mini" onclick="editar23(${c.id})">+ Regla para toda la categoría</button>`;
+  const form=editId23===c.id?formHTML23(c):"";
+  return `<div class="row catrule"><div class="nm">📂 Toda la categoría <small>aplica a las subcategorías sin regla propia</small></div>${badge}${btns}${sum}${form}</div>`;
+}
+function fila23(c){
+  const res=resolver23(c.id);
+  const sub=c.full.includes(" / ")? c.full.split(" / ").slice(1).join(" / ") : "(categoría)";
+  let badge,sum="";
+  if(res&&res.own){ badge=`<span class="badge gen">regla propia</span>`; sum=`<div class="sum">${esc(resumen23(res.rule))}</div>`; }
+  else if(res&&res.global){ badge=`<span class="badge inh">regla general del tier</span>`; }
+  else if(res){ badge=`<span class="badge inh">hereda de ${esc(byId[res.fromId]?byId[res.fromId].full:'?')}</span>`; }
+  else { badge=`<span class="badge no">sin regla</span>`; }
+  const btns=(res&&res.own)?`<button class="btn-mini" onclick="editar23(${c.id})">Editar</button><button class="btn-mini del" onclick="quitar23(${c.id})">Quitar</button>`
+                           :`<button class="btn-mini" onclick="editar23(${c.id})">+ Regla propia</button>`;
+  const form=editId23===c.id?formHTML23(c):"";
+  return `<div class="row"><div class="nm">${esc(sub)} <small>#${c.id}</small></div>${badge}${btns}${sum}${form}</div>`;
+}
+function formHTML23(c){
+  const isG=(c.id==='G'), t2=(TIER===2);
+  const r=isG ? (CFG23[TIER].global||DEF23[TIER]) : (()=>{const res=resolver23(c.id);return (res&&res.rule)?res.rule:DEF23[TIER];})();
+  const idArg=isG?"'G'":c.id;
+  const label=isG?"Genera precio (regla general del tier)":"Genera precio para esta categoría";
+  const ivaFld=isG?"":`<div class="fld2 off"><label>IVA al costo (heredado)</label><div class="inpu"><input type="number" value="${pct(iva1(c.id))}" disabled><span class="suf">%</span></div><div class="hint">se define en Farmacias</div></div>`;
+  const cols=(t2?3:1)+(isG?0:1);
+  return `<div class="form" onclick="event.stopPropagation()">
+    <label class="chk"><input type="checkbox" id="g-genera" ${r.genera?"checked":""}> <span>${esc(label)}</span></label>
+    <div class="grid" style="grid-template-columns:repeat(${cols},1fr)">
+      <div class="fld2"><label>Margen s/ venta</label><div class="inpu"><input type="number" id="g-margen" step="1" value="${pct(r.margen)}"><span class="suf">%</span></div><div class="hint">precio = costo ÷ (1 − margen)</div></div>
+      ${t2?`<div class="fld2"><label>Desc. comercial máx</label><div class="inpu"><input type="number" id="g-descom" step="1" value="${pct(r.descom)}"><span class="suf">%</span></div><div class="hint">lo que puede bajar el comercial</div></div>
+      <div class="fld2"><label>Piso duro de margen</label><div class="inpu"><input type="number" id="g-pisoduro" step="1" value="${pct(r.pisoduro)}"><span class="suf">%</span></div><div class="hint">el precio nunca baja de acá</div></div>`:''}
+      ${ivaFld}
+    </div>
+    <div class="acts"><button class="cancel" onclick="editId23=null;render()">Cancelar</button><button class="ok" onclick="guardarRegla23(${idArg})">Aplicar regla</button></div>
+  </div>`;
+}
+window.toggleGrp23 = t => { abiertos["23_"+t]=!abiertos["23_"+t]; render(); };
+window.editar23 = id => { editId23=id; const c=byId[id]; if(c) abiertos["23_"+c.top]=true; render(); };
+window.quitar23 = id => { if(!confirm("¿Quitar la regla propia de esta categoría? Va a pasar a heredar del padre.")) return; delete CFG23[TIER].reglas[id]; dirty=true; editId23=null; render(); };
+window.guardarRegla23 = id => {
+  const gv=x=>document.getElementById(x);
+  const genera=gv("g-genera").checked;
+  const margen=frac(gv("g-margen").value);
+  const descom=TIER===2?frac((gv("g-descom")||{}).value):0;
+  const pisoduro=TIER===2?frac((gv("g-pisoduro")||{}).value):margen;
+  const rule={genera,margen,descom,pisoduro};
+  if(id==='G'){ CFG23[TIER].global=rule; } else { CFG23[TIER].reglas[id]=rule; }
+  dirty=true; editId23=null; render();
+};
+// texto plano que lee el cron. Línea 0 = regla general del tier (cubre todo). Resto = solo categorías con regla PROPIA.
+// El motor, por producto, camina de la categoría hacia arriba: usa la 1ª categoría con regla propia, si no la general (0).
+// Formato: catId~margen~descom~pisoduro   (catId 0 = general del tier)
+function construirFlat23(){
+  const out=[], g=CFG23[TIER].global, R=CFG23[TIER].reglas;
+  if(g&&g.genera!==false) out.push(["0", g.margen, (g.descom||0), (g.pisoduro||g.margen)].join("~"));
+  Object.keys(R).forEach(id=>{ const r=R[id]; if(r&&r.genera){ out.push([id, r.margen, (r.descom||0), (r.pisoduro||r.margen)].join("~")); } });
+  return out.join("\n");
+}
+window.guardar23 = async () => {
+  const btn=document.querySelector(".btn-save"); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
+  try{
+    await rpc("ir.config_parameter","set_param",[TKEYS[TIER].cfg, JSON.stringify(CFG23[TIER])]);
+    await rpc("ir.config_parameter","set_param",[TKEYS[TIER].flat, construirFlat23()]);
+    await rpc("ir.config_parameter","set_param",[TKEYS[TIER].fijos, flat23Fijos()]);
+    if(btn) btn.textContent="Recalculando precios…";
+    await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
+    dirty=false; render(); toast("Guardado y precios recalculados ✓");
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent="💾 Guardar y recalcular"; } toast("Error: "+(e.message||e)); }
+};
+
+/* ---- Capa temporal de precios (precio único) para tier 2/3 ---- */
+function flat23Fijos(){ return FIJOS23[TIER].map(f=>[f.tmpl,(f.precio||0),f.hasta||"",f.pausado?"1":"0",String(f.nombre||"").replace(/~/g,"-").replace(/\n/g," ")].join("~")).join("\n"); }
+function f23PreviewHTML(){
+  if(!_f23Sel) return "";
+  if(_f23Sel.loading) return "Trayendo costo…";
+  const cost=_f23Sel.cost||0;
+  const pr=(parseFloat((document.getElementById("f23-precio")||{}).value))||0;
+  return `Costo real <b>${EYG.money(cost)}</b>${pr>0?` · precio único <b>${EYG.money(pr)}</b> · margen ${_mrgTxt(pr,cost)}`:""}`;
+}
+window.f23Preview=()=>{ const box=document.getElementById("f23-preview"); if(box){ box.style.display=_f23Sel?"block":"none"; box.innerHTML=f23PreviewHTML(); } };
+function renderFijos23(){
+  const hoy=hoyStr();
+  const rows=FIJOS23[TIER].map((f,i)=>{
+    if(_f23Sel && f.tmpl===_f23Sel.tmpl) return "";
+    const venc=f.hasta?(f.hasta<hoy?`vencido ${f.hasta}`:`hasta ${f.hasta}`):"sin vencimiento";
+    const est=f.pausado?`<span class="badge no">pausado</span>`:(f.hasta&&f.hasta<hoy?`<span class="badge no">vencido</span>`:`<span class="badge own">activo</span>`);
+    return `<div class="ofrow"><div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">#${f.tmpl}</small></div><div class="ofdet">precio único <b>${EYG.money(f.precio)}</b> · ${venc}</div></div>${est}<button class="btn-mini" onclick="f23Pausar(${i})">${f.pausado?'Reanudar':'Pausar'}</button><button class="btn-mini del" onclick="f23Quitar(${i})">Quitar</button></div>`;
+  }).join("") || `<div class="ofrow" style="justify-content:center;color:var(--gris)">No hay precios cargados en esta capa.</div>`;
+  const sel=_f23Sel
+    ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;padding:6px 0"><span style="color:var(--gris);font-weight:700">Producto:</span> <b style="color:var(--teal-deep);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(_f23Sel.nombre)}">${esc(_f23Sel.nombre)}</b> <small style="color:var(--gris2)">#${_f23Sel.tmpl}</small> <button class="btn-mini" onclick="f23Limpiar()">cambiar</button></div>`
+    : `<input type="text" id="f23-q" placeholder="Buscar producto por nombre o código…" oninput="f23Buscar(this.value)" autocomplete="off" style="width:100%;height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"><div id="f23-results" class="ofbusq" style="display:none"></div>`;
+  return `<div class="grp" style="border:2px solid #0f7d84;margin-bottom:14px">
+    <div class="grphead" style="cursor:default;background:#eef7f6">💵 Capa temporal de precios (pisa al motor)</div>
+    <div style="padding:14px">
+      <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual que <b>pisa</b> el precio de esta lista para un producto puntual (por ej. una compra muy buena). Es un <b>precio único</b> final. Al <b>pausar/quitar</b>, el producto vuelve al precio del motor en la próxima corrida.</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+        <div style="flex:1;min-width:220px;position:relative">${sel}</div>
+        <div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Precio único</div><input type="number" id="f23-precio" step="1" value="${_f23Sel&&_f23Sel.precio?_f23Sel.precio:''}" oninput="f23Preview()" style="height:38px;width:120px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"></div>
+        <div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Hasta (opc.)</div><input type="date" id="f23-hasta" value="${(_f23Sel&&_f23Sel.hasta)||''}" style="height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"></div>
+        <button class="btn-mini cons" onclick="f23Agregar()">✓ Guardar</button>
+        ${_f23Sel?`<button class="btn-mini" onclick="f23Limpiar()">Cancelar</button>`:''}
+      </div>
+      <div id="f23-preview" class="rentbox" style="margin:0 0 12px;display:${_f23Sel?'block':'none'}">${_f23Sel?f23PreviewHTML():""}</div>
+      <div class="oflist">${rows}</div>
+    </div></div>`;
+}
+window.f23Buscar=(q)=>{
+  clearTimeout(_f23Timer);
+  _f23Timer=setTimeout(async ()=>{
+    const box=document.getElementById("f23-results"); if(!box) return;
+    q=(q||"").trim();
+    if(q.length<2){ box.style.display="none"; box.innerHTML=""; return; }
+    try{
+      const rs=await rpc("product.template","search_read",[["|",["name","ilike",q],["default_code","ilike",q]],["id","name","default_code"]],{limit:8,context:{lang:"es_AR"}});
+      if(!rs.length){ box.style.display="block"; box.innerHTML=`<div class="ofbitem" style="color:var(--gris)">Sin resultados</div>`; return; }
+      box.style.display="block";
+      box.innerHTML=rs.map(r=>`<div class="ofbitem" style="font-size:12.5px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(r.name)}" onclick='f23Elegir(${r.id}, ${JSON.stringify(r.name)})'>${esc(r.name)} <small style="color:var(--gris2);font-size:11px">${esc(r.default_code||"")}</small></div>`).join("");
+    }catch(e){}
+  }, 300);
+};
+window.f23Elegir=async (id,nombre,prefill)=>{
+  _f23Sel={tmpl:id, nombre:nombre, loading:true, precio:(prefill&&prefill.precio)||0, hasta:(prefill&&prefill.hasta)||""}; render();
+  try{
+    const vs=await rpc("product.product","search_read",[[["product_tmpl_id","=",id]],["x_costo_motor","standard_price"]],{limit:1});
+    const cost=(vs[0]&&(vs[0].x_costo_motor||vs[0].standard_price))||0;
+    _f23Sel={tmpl:id, nombre:nombre, cost:cost, precio:(prefill&&prefill.precio)||0, hasta:(prefill&&prefill.hasta)||""}; render();
+  }catch(e){ _f23Sel={tmpl:id, nombre:nombre, cost:0, precio:(prefill&&prefill.precio)||0, hasta:(prefill&&prefill.hasta)||""}; render(); }
+};
+window.f23Limpiar=()=>{ _f23Sel=null; render(); };
+window.f23Agregar=()=>{
+  if(!_f23Sel){ toast("Elegí un producto primero"); return; }
+  const precio=parseFloat((document.getElementById("f23-precio")||{}).value)||0;
+  const hasta=(document.getElementById("f23-hasta")||{}).value||"";
+  if(!(precio>0)){ toast("Poné el precio único"); return; }
+  const ent={tmpl:_f23Sel.tmpl, nombre:_f23Sel.nombre, precio:precio, hasta:hasta, pausado:false};
+  FIJOS23[TIER]=FIJOS23[TIER].filter(f=>f.tmpl!==_f23Sel.tmpl); FIJOS23[TIER].unshift(ent);
+  _f23Sel=null; dirty=true; render();
+};
+window.f23Pausar=(i)=>{ if(FIJOS23[TIER][i]){ FIJOS23[TIER][i].pausado=!FIJOS23[TIER][i].pausado; dirty=true; render(); } };
+window.f23Quitar=(i)=>{ if(!confirm("¿Quitar esto? El producto vuelve al precio del motor en la próxima corrida.")) return; FIJOS23[TIER].splice(i,1); dirty=true; render(); };
 
 EYG.requireAuth(["finanzas"], perfil=>{
   document.body.innerHTML = EYG.layout(perfil, "config-precios", '<div id="cont"></div>', "Motor de precios");
