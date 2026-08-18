@@ -211,6 +211,11 @@
   .ministep input.q{width:48px;height:32px;text-align:center;font-family:inherit;font-weight:800;font-size:14px;border:1.5px solid var(--line);border-radius:8px;padding:0 2px;-moz-appearance:textfield}
   .ministep input.q::-webkit-outer-spin-button,.ministep input.q::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
   .ministep .del{background:none;color:var(--bad);font-size:16px;width:auto;padding:0 6px;cursor:pointer;border:0}
+  .descstep{display:flex;align-items:center;gap:7px;margin-top:7px}
+  .descstep .dl{font-size:12.5px;font-weight:700;color:var(--gris)}
+  .descstep button{width:32px;height:32px;border-radius:8px;border:0;font-size:18px;font-weight:800;cursor:pointer;background:#FBF0DA;color:#9A6A0B}
+  .descstep button:active{transform:scale(.94)}
+  .descstep .dv{min-width:42px;text-align:center;font-weight:800;font-size:15px;color:#9A6A0B}
   .cart-empty{padding:40px 20px;text-align:center;color:var(--gris2);font-size:13.5px}
   .cfoot{border-top:1px solid var(--line);padding:14px 16px}
   .cfoot .row{display:flex;justify-content:space-between;font-size:13.5px;color:var(--gris);margin-bottom:4px}
@@ -276,6 +281,7 @@ const FAMILIAS = [
   {k:"EQUIPOS MEDICOS", id:369, label:"Equipos"},
 ];
 const CATALOG_ROOTS = FAMILIAS.map(f=>f.id);
+const TIER2_LIST = 16;   // (2) SAMCOs y clínicas: única lista con descuento comercial
 
 let COMERCIAL="";
 let ST = {
@@ -288,6 +294,9 @@ let ST = {
   order:null,                 // {id, partnerId, partnerName, pricelistId, listName, plazo}
   want:{},                    // product_id -> cantidad deseada (intención del comercial)
   lines:{},                   // product_id -> {lineId, qty, price_unit, discount, subtotal, name, sku}
+  desc:{},                    // product_id -> % de descuento comercial (SOLO tier 2)
+  baseUnit:{},                // product_id -> precio unitario BASE de la lista (sin descuento)
+  maxDescT2:5,                // tope de descuento en tier 2 (se recalcula del piso de margen)
   amount:{untaxed:0, total:0},
   syncing:false, dirty:false,
   // catálogo
@@ -668,6 +677,7 @@ async function reanudar(orderId){
     ST.want={}; ST.lines={};
     await refrescarLineas();       // trae las líneas ya cargadas
     Object.values(ST.lines).forEach(l=>{ ST.want[l.pid]=l.qty; });
+    if(ST.order.pricelistId===TIER2_LIST){ await cargarMaxDescT2(); await derivarDescuentos(); }
     await entrarVenta();
   }catch(e){ toast("No pude abrir el presupuesto"); cargar(); }
 }
@@ -675,6 +685,7 @@ async function reanudar(orderId){
 async function entrarVenta(){
   ST.view="venta"; ST.fam="HOSPITALARIOS"; ST.qProd=""; ST.cartOpen=false;
   render();
+  if(esTier2()) cargarMaxDescT2();   // tope de descuento comercial según el piso de margen
   cargarOfertas();          // en paralelo: marca los productos en oferta (no bloquea el catálogo)
   await cargarCatalogo();
 }
@@ -795,6 +806,7 @@ async function cargarPrecios(prods){
     if(arr.length && arr[0].q<1) arr[0]={...arr[0], q:1};
     ST.tiers[p.id]=arr;
     ST.precios[p.id] = arr.length ? arr[0].p : (p.list_price>1?p.list_price:null);
+    if(ST.precios[p.id]!=null) ST.baseUnit[p.id]=ST.precios[p.id];   // base sin descuento (para tier 2)
   });
 }
 
@@ -959,6 +971,55 @@ function addProd(pid){ ST.want[pid]=(ST.want[pid]||0)+1; refrescarCelda(pid); ma
 function chgQty(pid,d){ ST.want[pid]=Math.max(0,(ST.want[pid]||0)+d); if(ST.want[pid]===0) delete ST.want[pid]; refrescarCelda(pid); marcarDirty(); }
 function setQty(pid,v){ let n=Math.max(0,Math.floor(+v||0)); if(n===0) delete ST.want[pid]; else ST.want[pid]=n; refrescarCelda(pid); marcarDirty(); }
 
+/* ---------- descuento comercial (SOLO tier 2): va al PRECIO UNITARIO, nunca a la columna descuento ---------- */
+function esTier2(){ return !!(ST.order && ST.order.pricelistId===TIER2_LIST); }
+function chgDesc(pid,d){
+  let n=Math.max(0, Math.min(ST.maxDescT2||5, (ST.desc[pid]||0)+d));
+  n=Math.round(n*10)/10;
+  if(n>0) ST.desc[pid]=n; else delete ST.desc[pid];
+  renderCart(); marcarDirty();
+}
+async function cargarMaxDescT2(){
+  try{
+    const raw=await rpc("ir.config_parameter","get_param",["eyg.t2_precios_config"]);
+    const g=(raw?JSON.parse(raw):{}).global||{};
+    const margen=(g.margen!=null?g.margen:0.20), piso=(g.pisoduro!=null?g.pisoduro:0.15);
+    // el descuento no puede perforar el piso de margen: desc <= 1-(1-margen)/(1-piso)
+    const capPiso=(piso<1)?(1-(1-margen)/(1-piso)):0;
+    ST.maxDescT2=Math.max(0, Math.min(5, Math.floor(capPiso*1000)/10));   // tope de negocio 5%, acotado por el piso
+  }catch(e){ ST.maxDescT2=5; }
+}
+// Aplica el descuento al PRECIO UNITARIO de cada línea (después de sincronizar cantidades, que resetean el precio).
+async function aplicarDescuentos(){
+  if(!esTier2()) return;
+  const cambios=[];
+  for(const pid of Object.keys(ST.lines)){
+    const l=ST.lines[pid]; if(!l) continue;
+    const base=(ST.baseUnit[pid]!=null)?ST.baseUnit[pid]:l.price_unit;
+    const disc=Math.max(0, Math.min(ST.maxDescT2||5, ST.desc[pid]||0));
+    const target=Math.round(base*(1-disc/100)*100)/100;
+    if(Math.abs((l.price_unit||0)-target)>0.005 || (l.discount||0)!==0) cambios.push({id:l.lineId, price_unit:target});
+  }
+  if(cambios.length){
+    for(const c of cambios){ await rpc("sale.order.line","write",[[c.id],{price_unit:c.price_unit,discount:0}],{context:ES}); }
+    await refrescarLineas();
+  }
+}
+// Al reanudar un presupuesto tier 2: reconstruye el % de descuento comparando el precio de la línea con el base de la lista.
+async function derivarDescuentos(){
+  const pids=Object.keys(ST.lines).map(Number); if(!pids.length) return;
+  try{
+    const items=await rpc("product.pricelist.item","search_read",[[["pricelist_id","=",ST.order.pricelistId],["applied_on","=","0_product_variant"],["product_id","in",pids]],["product_id","fixed_price"]],{limit:20000});
+    const baseByPid={}; items.forEach(it=>{ if(it.product_id&&it.fixed_price>0) baseByPid[it.product_id[0]]=it.fixed_price; });
+    Object.keys(ST.lines).forEach(pid=>{
+      const l=ST.lines[pid], base=baseByPid[pid];
+      if(base){ ST.baseUnit[pid]=base;
+        const d=Math.round((1-(l.price_unit||base)/base)*1000)/10;
+        if(d>0.05) ST.desc[pid]=Math.min(ST.maxDescT2||5, d); }
+    });
+  }catch(e){}
+}
+
 function refrescarCelda(pid){
   const dyn=document.getElementById("dyn-"+pid); const card=document.getElementById("prod-"+pid);
   const q=ST.want[pid]||0;
@@ -991,6 +1052,7 @@ async function syncOrder(){
       await rpc("sale.order","write",[[ST.order.id],{order_line:cmds}],{context:ES});
       await refrescarLineas();
     }
+    await aplicarDescuentos();   // tier 2: baja el precio unitario según el descuento comercial
   }catch(e){ toast("No pude guardar en Odoo"); ST.dirty=true; }
   ST.syncing=false;
   renderCart();
@@ -1079,13 +1141,15 @@ function renderCart(){
   items.innerHTML = pids.map(pid=>{
     const q=ST.want[pid]; const l=ST.lines[pid];
     const nombre = (l&&l.name) || (ST.prods.find(p=>p.id==pid)||{}).name || "Producto";
-    const sub = l? l.subtotal : null;
-    const unit = l? l.price_unit*(1-(l.discount||0)/100) : ST.precios[pid];
+    const base = (ST.baseUnit[pid]!=null) ? ST.baseUnit[pid] : (l?l.price_unit:ST.precios[pid]);
+    const desc = esTier2() ? (ST.desc[pid]||0) : 0;
+    const unit = (base!=null) ? base*(1-desc/100) : (l?l.price_unit:ST.precios[pid]);
+    const sub = (unit!=null && q) ? unit*q : (l?l.subtotal:null);
     const nx=proxTramo(pid,q);
     return `<div class="citem">
       <div style="min-width:0;flex:1">
         <div class="ci-nm">${esc(nombre)}</div>
-        ${(l&&l.discount)?`<div style="margin-top:3px"><span class="ci-disc">−${Math.round(l.discount)}% desc.</span></div>`:""}
+        ${desc>0?`<div style="margin-top:3px"><span class="ci-disc">−${desc}% desc.</span></div>`:""}
         ${nx?`<div class="nextd" style="margin-top:5px;display:inline-block">＋${nx.need} u → ${money(nx.tier.p)} c/u${nx.pct>0?` (−${nx.pct}%)`:""}</div>`:""}
         <div class="ministep">
           <button onclick="chgQty(${pid},-1)">−</button>
@@ -1093,6 +1157,7 @@ function renderCart(){
           <button onclick="chgQty(${pid},1)">＋</button>
           <button class="del" onclick="quitar(${pid})" title="Quitar">🗑</button>
         </div>
+        ${esTier2()?`<div class="descstep"><span class="dl">Desc.</span><button onclick="chgDesc(${pid},-1)">−</button><span class="dv">${desc}%</span><button onclick="chgDesc(${pid},1)">＋</button></div>`:""}
       </div>
       <div class="ci-r">
         <div class="ci-u">${unit!=null?money(unit)+" c/u":"…"}</div>
