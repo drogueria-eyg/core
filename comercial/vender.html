@@ -576,16 +576,33 @@ async function crearOrden(pid, c, ship){
 
 /* ---------- SELECTOR DE LISTA DE PRECIOS (paso previo al catálogo) ---------- */
 // Listas que puede usar el comercial. Por ahora todas las activas; más adelante se filtra por comercial.
+// Qué listas puede ver/elegir cada comercial (por user_id de Odoo). Default: solo Farmacias (3).
+// El orden acá manda el orden en pantalla (la 1ª es la que se fuerza si el cliente tiene una no permitida).
+const LISTAS_POR_USER = {
+  215: [3, 16],   // Antonella Infanti  → Farmacias + SAMCOs y clínicas
+  18:  [16, 5],   // Natividad Sanchez  → SAMCOs y clínicas + Instituciones
+  498: [16, 5],   // Ruth Aguayo        → SAMCOs y clínicas + Instituciones
+};
 async function cargarListas(){
   if(ST.listas) return ST.listas;
-  try{ ST.listas = await rpc("product.pricelist","search_read",[[["active","=",true]]],{fields:["id","name"],order:"name",context:ES}); }
+  const permitidas = LISTAS_POR_USER[ST.userId] || [3];   // resto de comerciales: solo Farmacias
+  try{
+    const all = await rpc("product.pricelist","search_read",[[["id","in",permitidas],["active","=",true]]],{fields:["id","name"],context:ES});
+    ST.listas = permitidas.map(id=>all.find(l=>l.id===id)).filter(Boolean);   // respeta el orden de 'permitidas'
+  }
   catch(e){ ST.listas=[]; }
   return ST.listas;
 }
 // Va al paso de elegir lista tras crear el pedido. Si hay una sola lista, saltea directo al catálogo.
 async function irAElegirLista(){
   await cargarListas();
-  if((ST.listas||[]).length<=1){ await entrarVenta(); return; }
+  const listas=ST.listas||[];
+  // Si la lista fijada del cliente NO está entre las permitidas del comercial, forzar la 1ª permitida.
+  if(listas.length && !listas.some(l=>l.id===ST.order.pricelistId)){
+    document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Aplicando lista…</div>';
+    await aplicarLista(listas[0].id);
+  }
+  if(listas.length<=1){ await entrarVenta(); return; }   // una sola opción → directo al catálogo
   ST._listaFrom="create"; ST.view="lista"; render();
 }
 // Reabre el selector desde el encabezado (a mitad del pedido).
@@ -608,18 +625,21 @@ function vLista(){
     <div class="lista-wrap">${btns}</div>
     <div style="margin-top:18px"><button class="btn ghost big" onclick="${volver}">← Volver</button></div>`;
 }
-async function confirmarLista(plId){
+// Escribe la lista en el pedido y recalcula (sin navegar). La usan el paso previo y el forzado.
+async function aplicarLista(plId){
   const o=ST.order;
-  if(plId && plId!==o.pricelistId){
-    document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Aplicando lista…</div>';
-    try{
-      await rpc("sale.order","write",[[o.id],{pricelist_id:plId}],{context:ES});
-      try{ await rpc("sale.order","action_update_prices",[[o.id]],{context:ES}); }catch(e){}   // recalcula líneas ya cargadas
-      const l=(ST.listas||[]).find(x=>x.id===plId);
-      o.pricelistId=plId; o.listName=l?l.name:"";
-      ST.catCache={};    // invalidar caché de precios del catálogo (cambió la lista)
-    }catch(e){ toast("No pude cambiar la lista"); }
-  }
+  if(!plId || plId===o.pricelistId) return;
+  try{
+    await rpc("sale.order","write",[[o.id],{pricelist_id:plId}],{context:ES});
+    try{ await rpc("sale.order","action_update_prices",[[o.id]],{context:ES}); }catch(e){}   // recalcula líneas ya cargadas
+    const l=(ST.listas||[]).find(x=>x.id===plId);
+    o.pricelistId=plId; o.listName=l?l.name:"";
+    ST.catCache={};    // invalidar caché de precios del catálogo (cambió la lista)
+  }catch(e){ toast("No pude cambiar la lista"); }
+}
+async function confirmarLista(plId){
+  document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Aplicando lista…</div>';
+  await aplicarLista(plId);
   if(ST._listaFrom==="venta"){
     ST.precios={}; ST.tiers={};
     if(Object.keys(ST.lines||{}).length){ try{ await refrescarLineas(); Object.values(ST.lines).forEach(li=>{ ST.want[li.pid]=li.qty; }); }catch(e){} }
