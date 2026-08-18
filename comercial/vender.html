@@ -93,6 +93,13 @@
   .eopt{justify-content:flex-start;text-align:left;gap:10px;padding:14px 16px}
   .eopt small{color:var(--gris);font-weight:500;font-size:12.5px}
   .eopt.eadd{border-style:dashed;color:var(--teal-deep)}
+  /* selector de lista de precios (paso previo, tablet-friendly) */
+  .lista-wrap{display:flex;flex-direction:column;gap:14px;margin-top:6px}
+  .lista-opt{justify-content:flex-start;text-align:left;gap:16px;padding:24px 22px;font-size:19px;border-radius:16px;border-width:2px;min-height:72px}
+  .lista-opt.sel{border-color:var(--teal);background:var(--agua);color:var(--teal-deep)}
+  .lista-opt .lopt-ic{font-size:26px;line-height:1}
+  .lista-opt .lopt-tx small{display:block;font-weight:500;color:var(--gris);font-size:13.5px;margin-top:3px}
+  .lista-badge{cursor:pointer}
   /* formulario "nueva dirección de entrega" */
   .eform{display:flex;flex-direction:column;gap:4px;margin-top:8px}
   .eform label{font-size:12px;font-weight:700;color:var(--gris);margin-top:7px}
@@ -340,6 +347,7 @@ function render(){
   const app=document.getElementById("app");
   if(ST.view==="inicio")  app.innerHTML = vInicio();
   else if(ST.view==="picker") { app.innerHTML = vPicker(); const i=document.getElementById("cliSearch"); if(i){ i.focus(); } }
+  else if(ST.view==="lista")  app.innerHTML = vLista();
   else if(ST.view==="venta")  { app.innerHTML = vVenta(); renderGrid(); renderCart(); }
   else if(ST.view==="success") app.innerHTML = vSuccess();
 }
@@ -562,8 +570,63 @@ async function crearOrden(pid, c, ship){
       plazo:(o.payment_term_id&&o.payment_term_id[1])||plazoTxt(c),
     };
     ST.want={}; ST.lines={}; ST.amount={untaxed:0,total:0};
-    await entrarVenta();
+    await irAElegirLista();
   }catch(e){ toast("No pude crear el presupuesto"); ST.view="inicio"; render(); }
+}
+
+/* ---------- SELECTOR DE LISTA DE PRECIOS (paso previo al catálogo) ---------- */
+// Listas que puede usar el comercial. Por ahora todas las activas; más adelante se filtra por comercial.
+async function cargarListas(){
+  if(ST.listas) return ST.listas;
+  try{ ST.listas = await rpc("product.pricelist","search_read",[[["active","=",true]]],{fields:["id","name"],order:"name",context:ES}); }
+  catch(e){ ST.listas=[]; }
+  return ST.listas;
+}
+// Va al paso de elegir lista tras crear el pedido. Si hay una sola lista, saltea directo al catálogo.
+async function irAElegirLista(){
+  await cargarListas();
+  if((ST.listas||[]).length<=1){ await entrarVenta(); return; }
+  ST._listaFrom="create"; ST.view="lista"; render();
+}
+// Reabre el selector desde el encabezado (a mitad del pedido).
+async function elegirLista(){
+  if(!ST.order) return;
+  await cargarListas();
+  ST._listaFrom="venta"; ST.view="lista"; render();
+}
+function vLista(){
+  const o=ST.order, listas=ST.listas||[], cur=o.pricelistId;
+  const btns=listas.map(l=>{
+    const sel=(l.id===cur);
+    return `<button class="btn ghost eopt lista-opt${sel?' sel':''}" onclick="confirmarLista(${l.id})">
+      <span class="lopt-ic">${sel?'✅':'🏷️'}</span>
+      <span class="lopt-tx"><b>${esc(l.name)}</b>${sel?'<br><small>Lista fijada de este cliente</small>':''}</span>
+    </button>`;
+  }).join("") || `<p style="color:var(--gris)">No hay listas disponibles.</p>`;
+  const volver = ST._listaFrom==="venta" ? "entrarVenta()" : "volverInicio()";
+  return `<div class="hero"><h1>¿Con qué lista cotizás?</h1><p>Cliente: <b>${esc(o.partnerName)}</b>. Aparece marcada la lista fijada de este cliente. Tocá otra si corresponde — podés cambiarla también durante el pedido.</p></div>
+    <div class="lista-wrap">${btns}</div>
+    <div style="margin-top:18px"><button class="btn ghost big" onclick="${volver}">← Volver</button></div>`;
+}
+async function confirmarLista(plId){
+  const o=ST.order;
+  if(plId && plId!==o.pricelistId){
+    document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Aplicando lista…</div>';
+    try{
+      await rpc("sale.order","write",[[o.id],{pricelist_id:plId}],{context:ES});
+      try{ await rpc("sale.order","action_update_prices",[[o.id]],{context:ES}); }catch(e){}   // recalcula líneas ya cargadas
+      const l=(ST.listas||[]).find(x=>x.id===plId);
+      o.pricelistId=plId; o.listName=l?l.name:"";
+      ST.catCache={};    // invalidar caché de precios del catálogo (cambió la lista)
+    }catch(e){ toast("No pude cambiar la lista"); }
+  }
+  if(ST._listaFrom==="venta"){
+    ST.precios={}; ST.tiers={};
+    if(Object.keys(ST.lines||{}).length){ try{ await refrescarLineas(); Object.values(ST.lines).forEach(li=>{ ST.want[li.pid]=li.qty; }); }catch(e){} }
+    ST.view="venta"; render(); await cargarCatalogo();
+  } else {
+    await entrarVenta();
+  }
 }
 
 async function reanudar(orderId){
@@ -683,17 +746,27 @@ async function cargarPrecios(prods){
   ST.precios={}; ST.tiers={};
   if(!ST.order.pricelistId || !prods.length){ prods.forEach(p=>{ ST.precios[p.id]=(p.list_price>1?p.list_price:null); }); return; }
   const tmpls=[...new Set(prods.map(p=>p.product_tmpl_id&&p.product_tmpl_id[0]).filter(Boolean))];
+  const vids=prods.map(p=>p.id);
   let items=[];
   try{
+    // Farmacias usa ítems por PLANTILLA (1_product, con escalera); tier 2/3 usan ítems por VARIANTE
+    // (0_product_variant, precio único). Traemos las dos formas en una sola query.
     items=await rpc("product.pricelist.item","search_read",
-      [[["pricelist_id","=",ST.order.pricelistId],["applied_on","=","1_product"],["product_tmpl_id","in",tmpls]]],
-      {fields:["product_tmpl_id","min_quantity","fixed_price","compute_price"], limit:20000});
+      [["&",["pricelist_id","=",ST.order.pricelistId],"|",
+         "&",["applied_on","=","1_product"],["product_tmpl_id","in",tmpls],
+         "&",["applied_on","=","0_product_variant"],["product_id","in",vids]]],
+      {fields:["product_tmpl_id","product_id","applied_on","min_quantity","fixed_price","compute_price"], limit:20000});
   }catch(e){}
-  const porT={};
-  items.forEach(it=>{ if(!it.product_tmpl_id) return; const t=it.product_tmpl_id[0]; (porT[t]=porT[t]||[]).push(it); });
+  const porT={}, porV={};
+  items.forEach(it=>{
+    if(it.applied_on==="0_product_variant" && it.product_id){ (porV[it.product_id[0]]=porV[it.product_id[0]]||[]).push(it); }
+    else if(it.product_tmpl_id){ (porT[it.product_tmpl_id[0]]=porT[it.product_tmpl_id[0]]||[]).push(it); }
+  });
   prods.forEach(p=>{
     const t=p.product_tmpl_id&&p.product_tmpl_id[0];
-    let arr=(porT[t]||[]).filter(i=>i.compute_price==="fixed"&&i.fixed_price>0)
+    // el ítem por variante (tier 2/3) manda sobre el de plantilla si existe
+    const src=(porV[p.id]&&porV[p.id].length) ? porV[p.id] : (porT[t]||[]);
+    let arr=src.filter(i=>i.compute_price==="fixed"&&i.fixed_price>0)
       .map(i=>({q:i.min_quantity||1, p:i.fixed_price})).sort((a,b)=>a.q-b.q);
     // Quirk EyG: el 1er tramo (min≤1) que DUPLICA el precio del 2do es el "precio general" oculto → se fusiona.
     if(arr.length>=2 && arr[0].q<=1 && Math.round(arr[0].p)===Math.round(arr[1].p)){ arr=arr.slice(1); arr[0]={...arr[0], q:1}; }
@@ -927,7 +1000,7 @@ function vVenta(){
         <div class="nm">${esc(o.partnerName)}</div>
         <div class="badges">
           <span class="bdg">${esc(o.name||"Presupuesto")}</span>
-          ${o.listName?`<span class="bdg">🏷️ ${esc(o.listName)}</span>`:""}
+          <span class="bdg lista-badge" onclick="elegirLista()" title="Cambiar lista de precios">🏷️ ${esc(o.listName||"Elegir lista")} ✎</span>
           ${o.plazo?`<span class="bdg plazo">🕐 ${esc(o.plazo)}</span>`:""}
           <span class="bdg entrega" onclick="cambiarEntrega()" title="Cambiar dirección de entrega">📦 ${o.shipName?("Entrega: "+esc(o.shipName)):"Entrega: dirección fiscal"} ✎</span>
         </div>
