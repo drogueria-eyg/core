@@ -150,6 +150,18 @@
   .nextd{font-size:10.5px;font-weight:800;color:#9A6A0B;background:#FBF4E3;border:1px solid #f0e0b8;border-radius:7px;padding:3px 7px;line-height:1.2;display:inline-block}
   .add .plus{width:100%;background:var(--teal);color:#fff;border:0;border-radius:10px;padding:10px;font-family:inherit;font-weight:800;font-size:14px;cursor:pointer}
   .add .plus:active{transform:scale(.97)}
+  /* vencimientos: badge de stock tocable + vto más próximo + popup de lotes */
+  .stk.tap{cursor:pointer}
+  .vto{font-size:10.5px;font-weight:800;border-radius:6px;padding:1px 6px;background:#eef2f1;color:var(--gris);white-space:nowrap}
+  .vto.corto{background:#FBE4E3;color:#b0322f}
+  .stkline{margin-top:3px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .lotlist{display:flex;flex-direction:column;gap:7px;max-height:44vh;overflow:auto}
+  .lotrow{display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px}
+  .lotrow.viejo{border-color:#f0c9a0;background:#FBF4E3}
+  .lbadge{font-size:10px;font-weight:800;background:#9A6A0B;color:#fff;border-radius:20px;padding:1px 7px;margin-left:5px}
+  .lotrow .ld{display:flex;gap:12px;align-items:center;white-space:nowrap}
+  .lvto{font-weight:800;color:var(--teal-deep)} .lvto.corto{color:#b0322f}
+  .lotrow .lq{color:var(--gris);font-weight:700}
   .stepper{display:flex;align-items:center;gap:6px}
   .stepper button{width:40px;height:40px;border-radius:10px;border:0;font-size:20px;font-weight:800;cursor:pointer;background:var(--agua);color:var(--teal-deep);display:flex;align-items:center;justify-content:center}
   .stepper button:active{transform:scale(.94)}
@@ -180,7 +192,7 @@
   .rprod .stk.low{color:var(--gold)}
   .rprod .esc{min-height:0;flex:1;min-width:120px}
   .rprod.oferta .pm,.rprod.oferta .esc{color:var(--gris)}
-  .rright{flex:none;width:212px;display:flex;flex-direction:column;gap:6px;align-items:stretch}
+  .rright{flex:none;width:176px;display:flex;flex-direction:column;gap:6px;align-items:stretch}
   .rright .pr{font-size:17px;font-weight:800;color:var(--teal-deep);line-height:1}
   .rright .pr small{font-size:10.5px;color:var(--gris);font-weight:600}
   .rright .pr.of{color:var(--coral)}
@@ -297,6 +309,7 @@ let ST = {
   desc:{},                    // product_id -> % de descuento comercial (SOLO tier 2)
   baseUnit:{},                // product_id -> precio unitario BASE de la lista (sin descuento)
   maxDescT2:5,                // tope de descuento en tier 2 (se recalcula del piso de margen)
+  lotes:{},                   // product_id -> [{n:lote, exp:vto, qty}] ordenados por vencimiento
   amount:{untaxed:0, total:0},
   syncing:false, dirty:false,
   // catálogo
@@ -598,8 +611,8 @@ const LISTAS_POR_USER = {
   12:  [3, 16, 5],  // German Banquero (líder)          → todas
   520: [3, 16, 5],  // Diego Velazquez (líder/conector) → todas
   215: [3, 16],     // Antonella Infanti  → Farmacias + SAMCOs y clínicas
-  18:  [16, 5],     // Natividad Sanchez  → SAMCOs y clínicas + Instituciones
-  498: [16, 5],     // Ruth Aguayo        → SAMCOs y clínicas + Instituciones
+  18:  [3, 16, 5],  // Natividad Sanchez  → todas (tiene algunos clientes de Farmacias)
+  498: [3, 16, 5],  // Ruth Aguayo        → todas (ídem)
 };
 async function cargarListas(){
   if(ST.listas) return ST.listas;
@@ -773,6 +786,7 @@ async function cargarCatalogo(){
     if(token!==ST._catToken) return;              // el usuario cambió de familia/búsqueda: descartamos
     ST.prods=prods;
     await cargarPrecios(prods);
+    cargarLotes(prods);          // vencimientos en paralelo (no bloquea el catálogo; repinta al llegar)
     if(token!==ST._catToken) return;
     if(key) ST.catCache[key]={prods:ST.prods, precios:ST.precios, tiers:ST.tiers};
   }catch(e){ ST.prods=[]; toast("No pude leer el catálogo"); }
@@ -816,6 +830,42 @@ async function cargarPrecios(prods){
     if(ST.precios[p.id]!=null) ST.baseUnit[p.id]=ST.precios[p.id];   // base sin descuento (para tier 2)
   });
 }
+
+// Lotes con stock y su vencimiento por producto (el vendedor informa al cliente si algo está corto de vto).
+async function cargarLotes(prods){
+  try{
+    const pids=prods.map(p=>p.id);
+    const lots=await rpc("stock.lot","search_read",[[["product_id","in",pids],["product_qty",">",0]],["product_id","name","expiration_date","product_qty"]],{limit:5000});
+    const by={};
+    lots.forEach(l=>{ if(!l.product_id) return; const pid=l.product_id[0]; (by[pid]=by[pid]||[]).push({n:l.name||"", exp:(l.expiration_date||"").slice(0,10), qty:l.product_qty||0}); });
+    Object.keys(by).forEach(pid=>{ by[pid].sort((a,b)=>(a.exp||"9999").localeCompare(b.exp||"9999")); });
+    ST.lotes=Object.assign(ST.lotes||{}, by);
+    if(ST.view==="venta" && !ST.cargandoCat) renderGrid();
+  }catch(e){}
+}
+function fmtVto(d){ if(!d) return "—"; const p=d.split("-"); return p.length===3 ? (p[2]+"/"+p[1]+"/"+p[0].slice(2)) : d; }
+function diasHasta(d){ if(!d) return 99999; try{ const t=new Date(d+"T00:00:00"), h=new Date(EYG.argToday()+"T00:00:00"); return Math.round((t-h)/86400000); }catch(e){ return 99999; } }
+// badge de stock (tocable si hay lotes) + el vencimiento más próximo
+function stockHtml(p){
+  const stk=p.qty_available||0;
+  const ls=(ST.lotes&&ST.lotes[p.id])||null; const has=ls&&ls.length;
+  const vto=(has&&ls[0].exp) ? `<span class="vto ${diasHasta(ls[0].exp)<180?'corto':''}">⏳ ${fmtVto(ls[0].exp)}</span>` : "";
+  return `<span class="stk ${stk<10?"low":""}${has?" tap":""}" ${has?`onclick="verLotes(${p.id},event)"`:""}>${stk<10?"⚠ ":"✓ "}${Math.round(stk)} stock${has?" ▾":""}</span>${vto}`;
+}
+// popup con los lotes y vencimientos, resaltando el más viejo
+window.verLotes=(pid,ev)=>{
+  if(ev){ ev.stopPropagation(); }
+  const ls=(ST.lotes&&ST.lotes[pid])||[]; const p=ST.prods.find(x=>x.id==pid)||{};
+  if(!ls.length){ modal(`<h3>Lotes y vencimientos</h3><p>No hay lotes con stock cargados para este producto.</p><div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cerrar</button></div>`); return; }
+  const rows=ls.map((l,i)=>{
+    const corto=diasHasta(l.exp)<180;
+    return `<div class="lotrow${i===0?' viejo':''}">
+      <div class="ln">Lote <b>${esc(l.n||"—")}</b>${i===0?` <span class="lbadge">más viejo</span>`:""}</div>
+      <div class="ld"><span class="lvto ${corto?'corto':''}">${l.exp?fmtVto(l.exp):"sin vto"}</span><span class="lq">${Math.round(l.qty)} u</span></div>
+    </div>`;
+  }).join("");
+  modal(`<h3>Lotes y vencimientos</h3><p style="font-size:13px;color:var(--gris);margin:0 0 10px">${esc(p.name||"")}</p><div class="lotlist">${rows}</div><div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cerrar</button></div>`);
+};
 
 // ---- helpers de escalera ----
 // tramo que aplica a la cantidad q (el de mayor min_quantity <= q)
@@ -885,7 +935,7 @@ function rowProd(p){
     <div class="rinfo">
       <div class="pn">${esc(p.name)}</div>
       <div class="pm">${p.default_code?("["+esc(p.default_code)+"] "):""}${esc(catCorta(p.categ_id&&p.categ_id[1]))}</div>
-      <div class="rmeta"><span class="stk ${stk<10?"low":""}">${stk<10?"⚠ ":"✓ "}${Math.round(stk)} en stock</span>${escHtml(p.id)}</div>
+      <div class="rmeta">${stockHtml(p)}${escHtml(p.id)}</div>
     </div>
     <div class="rright">
       ${precioHtml(p, pr, oferta)}
@@ -912,7 +962,7 @@ function cardProd(p){
       <div class="ti">
         <div class="pn">${esc(p.name)}</div>
         <div class="pm">${p.default_code?("["+esc(p.default_code)+"] "):""}${esc(catCorta(p.categ_id&&p.categ_id[1]))}</div>
-        <div class="stk ${stk<10?"low":""}">${stk<10?"⚠ ":"✓ "}${Math.round(stk)} en stock</div>
+        <div class="stkline">${stockHtml(p)}</div>
       </div>
     </div>
     <div class="foot">
@@ -1097,6 +1147,7 @@ function vVenta(){
         </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn ghost" onclick="enviarLink()">📤 Enviar al cliente</button>
         <button class="btn ghost" onclick="volverInicio()">← Presupuestos</button>
         <button class="btn ghost" onclick="irAlPanel()">🏠 Panel</button>
       </div>
@@ -1239,6 +1290,39 @@ async function limpiarSiVacio(){
 async function volverInicio(){ await limpiarSiVacio(); ST.view="inicio"; ST.order=null; ST.want={}; ST.lines={}; cargar(); }
 // salir al panel del comercial
 async function irAlPanel(){ await limpiarSiVacio(); location.href = panelHref(); }
+
+/* ---------- enviar el presupuesto al cliente (link del portal de Odoo, con token) ---------- */
+async function baseUrl(){
+  if(ST._baseUrl) return ST._baseUrl;
+  try{ ST._baseUrl=(await rpc("ir.config_parameter","get_param",["web.base.url"]))||"https://drogueriaeyg.odoo.com"; }
+  catch(e){ ST._baseUrl="https://drogueriaeyg.odoo.com"; }
+  return ST._baseUrl;
+}
+async function enviarLink(){
+  if(!ST.order||!ST.order.id){ toast("Todavía no hay presupuesto"); return; }
+  modal('<h3>Generando enlace…</h3><div class="loading" style="padding:10px 0"><div class="spinner"></div></div>');
+  try{
+    const rel=await rpc("sale.order","get_portal_url",[[ST.order.id]]);
+    const url=(await baseUrl())+rel;
+    ST._lastLink=url;
+    const nombre=ST.order.name||"presupuesto";
+    const msg="Hola! Te comparto el presupuesto "+nombre+" de Droguería EyG para que lo veas completo:\n"+url;
+    const wa="https://wa.me/?text="+encodeURIComponent(msg);
+    modal(`<h3>Enviar al cliente</h3>
+      <p>Enlace del presupuesto <b>${esc(nombre)}</b> de <b>${esc(ST.order.partnerName||"")}</b>. El cliente lo ve completo, sin entrar a Odoo.</p>
+      <div style="word-break:break-all;background:#f3f8f7;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:12.5px;margin:12px 0">${esc(url)}</div>
+      <div class="mb" style="flex-direction:column;gap:10px">
+        <a class="btn grn big" href="${wa}" target="_blank" rel="noopener" onclick="cerrarModal()">🟢 Enviar por WhatsApp</a>
+        <button class="btn teal big" onclick="copiarLink()">📋 Copiar enlace</button>
+        <button class="btn ghost" onclick="cerrarModal()">Cerrar</button>
+      </div>`);
+  }catch(e){ modal('<h3>Ups</h3><p>No pude generar el enlace. Probá de nuevo.</p><div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cerrar</button></div>'); }
+}
+function copiarLink(){
+  const url=ST._lastLink||"";
+  if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(()=>toast("Enlace copiado ✓")).catch(()=>toast("No pude copiar")); }
+  else { toast("Copiá el enlace de arriba"); }
+}
 function modal(html){ document.getElementById("modalHost").innerHTML=`<div class="scrim" onclick="if(event.target===this)cerrarModal()"><div class="modal">${html}</div></div>`; }
 function cerrarModal(){ document.getElementById("modalHost").innerHTML=""; }
 function modal(html){ document.getElementById("modalHost").innerHTML=`<div class="scrim" onclick="if(event.target===this)cerrarModal()"><div class="modal">${html}</div></div>`; }
