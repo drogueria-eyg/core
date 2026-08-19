@@ -342,6 +342,13 @@ window.EYG = (function(){
     {key:"precios",   dept:"precios", cat:"Precios y Rentabilidad", ico:"🏷️", titulo:"Costos y Rentabilidad", desc:"Costo, escalera de precios por cantidad y margen por tramo, con salud por color. Para definir y analizar los precios.", roles:["finanzas"], ready:true, path:()=>"comercial/precios.html"},
     {key:"config-precios", dept:"precios", cat:"Precios y Rentabilidad", ico:"⚙️", titulo:"Motor de precios", desc:"Reglas del motor por categoría: recargo, cortes, descuentos, IVA al costo y piso de margen. Las ofertas se crean en Oportunidades y Ofertas.", roles:["finanzas"], ready:true, path:()=>"comercial/config-precios.html"},
     {key:"cobranzas", dept:"finanzas", cat:"Administración", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","cobranzas"], ready:true, path:()=>"finanzas/cobranzas.html"},
+    /* EN PRUEBAS: legajos de clientes (documentación de alta). Lo gestiona Administración
+       (Vanesa/Bárbara). Oculto al equipo hasta liberarlo: se le da acceso puntual por persona
+       (modulos_extra) desde "Usuarios y accesos", o se borra la línea `pruebas` de acá y el
+       {pruebas:…} del EYG.guard() de finanzas/legajos.html para abrirlo a los roles. */
+    {key:"legajos", dept:"finanzas", cat:"Administración", ico:"📁", titulo:"Legajos de clientes", desc:"Documentación de alta de cada cliente: habilitación sanitaria y constancia de CUIT, con vencimientos y estado a simple vista. Los archivos quedan pegados al contacto.", roles:["finanzas","cobranzas","admin","direccion"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"finanzas/legajos.html"},
     /* EN PRUEBAS: consulta crediticia por CUIT (Central de Deudores del BCRA, fuente pública/gratis).
        La página le pega directo al BCRA (no usa Supabase). Gateada al super-admin hasta revisarla.
        Para liberarla: borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/situacion-crediticia.html. */
@@ -1140,7 +1147,71 @@ window.EYG = (function(){
   /* Aplica campos a un item (ej. {descartado:{motivo,por,ts}} o {archivado:true}). RMW. */
   async function conquistarPatch(id, patch){ const arr=await conquistarLeer(); const it=arr.find(x=>x&&x.id===id); if(it){ Object.assign(it, patch||{}); await conquistarGuardar(arr); } return arr; }
 
+  /* ===== LEGAJOS DE CLIENTES (documentación de alta) =====
+     Administración (Vanesa/Bárbara) carga la documentación de alta de cada cliente. Los
+     archivos van como ADJUNTO del contacto en Odoo (ir.attachment sobre res.partner), así
+     quedan pegados al cliente y visibles también desde Odoo. La metadata (tipo de documento,
+     vencimiento, quién/cuándo lo cargó) viaja en el campo `description` del adjunto como un
+     marcador JSON `[LEGAJO]{...}` — parseable acá y legible en Odoo. El módulo es
+     finanzas/legajos.html; este motor se comparte para mostrar el semáforo del legajo en
+     otros módulos (CRM, Cobranzas), igual que la alerta de crédito. */
+  const LEGAJO_TAG="[LEGAJO]";
+  /* Checklist de documentación de alta. `vence:true` = el documento se renueva (lleva fecha
+     de vencimiento). Para sumar/quitar documentos, editar SOLO esta lista. */
+  const LEGAJO_DOCS=[
+    {k:"habilitacion", lbl:"Habilitación sanitaria", vence:true},
+    {k:"cuit",         lbl:"Constancia de CUIT",     vence:false},
+  ];
+  function legajoParse(desc){
+    if(!desc) return null; const i=desc.indexOf(LEGAJO_TAG); if(i<0) return null;
+    try{ const j=JSON.parse(desc.slice(i+LEGAJO_TAG.length).trim()); return (j&&j.t)?j:null; }catch(e){ return null; }
+  }
+  function legajoMarker(meta){ return LEGAJO_TAG+JSON.stringify(meta||{}); }
+  const _legDiasHasta=ymd=>{ if(!ymd) return null; const h=new Date(argToday()+"T00:00:00"); const v=new Date(String(ymd).slice(0,10)+"T00:00:00"); return Math.round((v-h)/86400000); };
+  /* estado de un legajo ya armado {docs:{tipo:{...}}} → agrega estado/falta/vencidos/porVencer.
+     estado: verde (completo y vigente) · amarillo (algo por vencer o sin fecha) · rojo (falta
+     un obligatorio o algo vencido) · vacio (nada cargado). */
+  function evaluarLegajo(e, alerta){
+    alerta=alerta||30; e.falta=[]; e.vencidos=[]; e.porVencer=[];
+    LEGAJO_DOCS.forEach(d=>{
+      const doc=e.docs[d.k];
+      if(!doc){ e.falta.push(d); return; }
+      if(d.vence){ const n=_legDiasHasta(doc.vence);
+        if(n===null) e.porVencer.push({doc:d,dias:null});          // cargado pero sin fecha de vencimiento
+        else if(n<0) e.vencidos.push({doc:d,dias:n});
+        else if(n<=alerta) e.porVencer.push({doc:d,dias:n});
+      }
+    });
+    if(!Object.keys(e.docs).length) e.estado="vacio";
+    else if(e.falta.length || e.vencidos.length) e.estado="rojo";
+    else if(e.porVencer.length) e.estado="amarillo";
+    else e.estado="verde";
+    return e;
+  }
+  /* Estado del legajo de una lista de partners (o de todos los que tengan algo cargado si no
+     se pasan ids). UNA sola query a ir.attachment. Devuelve {byId:{partnerId:{docs,estado,...}}}. */
+  async function legajoEstado(ids, opts){
+    opts=opts||{}; const alerta=opts.dias||30;
+    const dom=[["res_model","=","res.partner"],["description","=like",LEGAJO_TAG+"%"]];
+    if(ids&&ids.length) dom.push(["res_id","in",ids]);
+    let rows=[];
+    try{ rows=await rpc("ir.attachment","search_read",[dom],{fields:["id","res_id","name","description","mimetype","create_date"],limit:0}); }catch(e){ rows=[]; }
+    const byId={};
+    for(const r of rows){ const m=legajoParse(r.description); if(!m||!r.res_id) continue;
+      const pid=Array.isArray(r.res_id)?r.res_id[0]:r.res_id;
+      const e=byId[pid]||(byId[pid]={docs:{},estado:"vacio",falta:[],vencidos:[],porVencer:[]});
+      const prev=e.docs[m.t];
+      if(!prev || (r.create_date||"")>(prev.create_date||"")) e.docs[m.t]={attId:r.id,tipo:m.t,vence:m.v||null,por:m.p||"",email:m.u||"",ts:m.ts||r.create_date,name:r.name,mimetype:r.mimetype,create_date:r.create_date};
+    }
+    Object.keys(byId).forEach(pid=>evaluarLegajo(byId[pid],alerta));
+    return {byId, dias:alerta};
+  }
+  function legajoStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-leg-css")) return; const s=document.createElement("style"); s.id="eyg-leg-css"; s.textContent=".eyg-leg{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:800;padding:2px 9px;border-radius:20px;white-space:nowrap}.eyg-leg .pt{width:7px;height:7px;border-radius:50%;background:currentColor}.eyg-leg.g{background:#E4F5E9;color:#1E7D46}.eyg-leg.y{background:#FBF0DA;color:#9A6B12}.eyg-leg.r{background:#FBE4E3;color:#B0322F}.eyg-leg.n{background:#eef1f1;color:#8A9A97}"; document.head.appendChild(s); }
+  const LEGAJO_ESTADO_META={verde:{c:"g",t:"Legajo al día"},amarillo:{c:"y",t:"Por vencer / incompleto"},rojo:{c:"r",t:"Falta / vencido"},vacio:{c:"n",t:"Sin legajo"}};
+  function badgeLegajo(estado){ legajoStyles(); const m=LEGAJO_ESTADO_META[estado]||LEGAJO_ESTADO_META.vacio; return `<span class="eyg-leg ${m.c}" title="${esc(m.t)}"><span class="pt"></span>${esc(m.t)}</span>`; }
+
   return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
+    LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
     creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
