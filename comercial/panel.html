@@ -658,7 +658,7 @@ async function cargar(){
     ST.contactos=contactos; ST.catFiscal=fiscal; ST.catId=idt; ST.catProv=prov; ST.nuevos=nuevos;
     const ids=contactos.map(c=>c.id);
     // recencia/frecuencia + notas de hoy + cuentas corrientes (deuda) + cobrado del mes
-    const [og,notas,ccLines,cobrado,aFact,facMes,facSem,ncMes,ncSem,bovMsgs]=await Promise.all([
+    const [og,notas,ccLines,cobrado,aFact,facMes,facSem,ncMes,ncSem,bovMsgs, ordHist,cobro3,facHist,drafts]=await Promise.all([
       rpc("sale.order","read_group",[[["partner_id","in",ids],["state","in",["sale","done"]]],["date_order:max","amount_total:sum"],["partner_id"]],{lazy:false}),
       // Mensajes de WhatsApp registrados (confirmados) de la SEMANA: [EyGWA] tipo/nuevo|seg. Incluye legacy [EyGCRM].
       rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",hace(7)+" 00:00:00"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id","date","body"],limit:0}),
@@ -675,7 +675,13 @@ async function cargar(){
       rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],[]],{lazy:false}),
       rpc("account.move","read_group",[[["partner_id","in",ids],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioSem]],["amount_untaxed:sum"],[]],{lazy:false}),
       // bóveda: marcadores de archivado de esta cartera (para sacar los archivados de la lista)
-      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["body","like",BOV_TAG]]],{fields:["res_id","body","date"],limit:0})
+      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["body","like",BOV_TAG]]],{fields:["res_id","body","date"],limit:0}),
+      // ---- Historial 190d (NIVEL/SALUD) + presupuestos: viajan en la MISMA tanda; si fallan no rompen el panel ----
+      rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["sale","done"]],["date_order",">=",hace(190)]]],{fields:["partner_id","date_order","amount_total","amount_untaxed","website_id","name"],limit:0}).catch(()=>[]),
+      rpc("account.payment","read_group",[[["partner_id","in",ids],["payment_type","=","inbound"],["state","=","posted"],["date",">=",hace(100)]],["amount:sum"],[]],{lazy:false}).catch(()=>[]),
+      rpc("account.move","search_read",[[["partner_id","in",ids],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",hace(190)]]],{fields:["invoice_date","amount_untaxed","move_type"],limit:0}).catch(()=>[]),
+      // Presupuestos abiertos del comercial (draft=borrador/carrito web · sent=enviado o pedido web cerrado sin confirmar).
+      rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["draft","sent"]]]],{fields:["id","name","partner_id","amount_total","amount_untaxed","create_date","write_date","website_id","order_line","state","is_abandoned_cart","cart_quantity"],order:"write_date desc",limit:0}).catch(()=>[])
     ]);
     // aplicar bóveda: los contactos archivados salen de la cartera (los revisa la gerencia)
     { const seen=new Set(), bov=new Set();
@@ -715,17 +721,8 @@ async function cargar(){
     EYG.conquistarLeer().then(a=>{ ST.conquistar=EYG.conquistarDeComercial(a,COMERCIAL); if(document.getElementById("app")) render(); }).catch(()=>{});
     // Estado del portal (web de Odoo) por contacto: ícono en la fila (ya ingresó / tiene acceso).
     cargarPortalEstado().catch(()=>{});
-    // ---- Baselines del NIVEL (dinámico, cualquier comercial): objetivo de cobro (prom 3m ×1,1), promedio de pedidos/clientes, perfil por ticket ----
+    // ---- Baselines del NIVEL (dinámico): usa el historial 190d y los presupuestos que ya vinieron en la tanda de arriba ----
     try{
-      const [ordHist, cobro3, facHist, drafts]=await Promise.all([
-        rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["sale","done"]],["date_order",">=",hace(190)]]],{fields:["partner_id","date_order","amount_total","amount_untaxed","website_id","name"],limit:0}),
-        rpc("account.payment","read_group",[[["partner_id","in",ids],["payment_type","=","inbound"],["state","=","posted"],["date",">=",hace(100)]],["amount:sum"],[]],{lazy:false}),
-        rpc("account.move","search_read",[[["partner_id","in",ids],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",hace(190)]]],{fields:["invoice_date","amount_untaxed","move_type"],limit:0}),
-        // Presupuestos abiertos del comercial. state draft=borrador/carrito web · sent=presupuesto enviado o
-        // pedido web CERRADO por el cliente (falta confirmar). website_id marca el origen; is_abandoned_cart/
-        // cart_quantity distinguen carritos web abiertos vs abandonados vs vacíos.
-        rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["draft","sent"]]]],{fields:["id","name","partner_id","amount_total","amount_untaxed","create_date","write_date","website_id","order_line","state","is_abandoned_cart","cart_quantity"],order:"write_date desc",limit:0})
-      ]);
       const bk={}; let sumTot=0;
       for(const o of ordHist){ const m=(o.date_order||"").slice(0,7); if(!m)continue; (bk[m]=bk[m]||{ped:0,cli:new Set(),tot:0}); bk[m].ped++; if(o.partner_id)bk[m].cli.add(o.partner_id[0]); bk[m].tot+=o.amount_total||0; sumTot+=o.amount_total||0; }
       const curM=inicioMes.slice(0,7);

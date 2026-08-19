@@ -764,6 +764,39 @@ async function precargarCatalogo(){
     cargarLotes(prods);   // y los vencimientos de esos productos
   }catch(e){}
 }
+// BÚSQUEDA DE PRODUCTOS con el mismo motor que el buscador del portal (buscar_web, pg_trgm en Supabase):
+// rápida y DIFUSA por palabra → "ibu 600" trae IBUPROFENO 600, tolera tipeo y busca por droga.
+// buscar_web devuelve ids de PLANTILLA; luego pedimos a Odoo SÓLO esas variantes (por id = instantáneo)
+// y filtramos el stock en el navegador, para no pagar la búsqueda lenta de qty_available sobre todo el catálogo.
+async function buscarProductos(q){
+  let filas=[];
+  try{
+    const {data,error}=await EYG.supa().rpc("buscar_web",{q, lim:40});
+    if(error) throw error;
+    filas=data||[];
+  }catch(e){ return await buscarProductosOdoo(q); }   // si el índice no responde, no dejamos sin buscar
+  const tmplIds=[...new Set(filas.map(f=>f.id).filter(Boolean))];
+  if(!tmplIds.length) return [];
+  const rank={}; tmplIds.forEach((id,i)=>{ rank[id]=i; });   // orden de relevancia que ya calculó buscar_web
+  const prods=await rpc("product.product","search_read",
+    [[["product_tmpl_id","in",tmplIds]]],
+    {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price"], context:ES, limit:200});
+  const conStock=prods.filter(p=>(p.qty_available||0)>0);   // sólo con stock (como el catálogo)
+  conStock.sort((a,b)=>{
+    const ra=rank[a.product_tmpl_id&&a.product_tmpl_id[0]] ?? 1e9, rb=rank[b.product_tmpl_id&&b.product_tmpl_id[0]] ?? 1e9;
+    return ra-rb || (a.name||"").localeCompare(b.name||"");
+  });
+  return conStock;
+}
+// Respaldo: la búsqueda vieja en Odoo (name/código contiene). Sólo se usa si buscar_web falla.
+async function buscarProductosOdoo(q){
+  const rootsOr=[];
+  for(let i=0;i<CATALOG_ROOTS.length-1;i++) rootsOr.push("|");
+  CATALOG_ROOTS.forEach(id=>rootsOr.push(["categ_id","child_of",id]));
+  const dom=["&","&",["qty_available",">",0],"|",["name","ilike",q],["default_code","ilike",q]].concat(rootsOr);
+  return await rpc("product.product","search_read",[dom],
+    {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price"], context:ES, order:"name", limit:200});
+}
 async function cargarCatalogo(){
   const token=(ST._catToken=(ST._catToken||0)+1);
   desconectarIO();
@@ -782,15 +815,13 @@ async function cargarCatalogo(){
   try{
     let prods;
     if(cacheable && ST.prodCache[key]){ prods=ST.prodCache[key]; }   // productos ya cargados (no cambian con la lista)
+    else if(q){
+      // Búsqueda rápida y difusa con el motor del portal (buscar_web). No se cachea (varía por texto).
+      prods = await buscarProductos(q);
+      if(token!==ST._catToken) return;
+    }
     else { let dom;
-    if(q){
-      // Búsqueda en TODO el catálogo vendible, con stock:
-      //   qty>0  AND  (name ILIKE q OR code ILIKE q)  AND  (dentro de alguna familia vendible)
-      const rootsOr=[];
-      for(let i=0;i<CATALOG_ROOTS.length-1;i++) rootsOr.push("|");
-      CATALOG_ROOTS.forEach(id=>rootsOr.push(["categ_id","child_of",id]));
-      dom=["&","&",["qty_available",">",0],"|",["name","ilike",q],["default_code","ilike",q]].concat(rootsOr);
-    }else if(ST.fam==="OFERTAS"){
+    if(ST.fam==="OFERTAS"){
       if(!ST._ofLoaded) await cargarOfertas();
       const pids=[...ST.ofertaPids], tmpls=[...ST.ofertaTmpls];
       if(!pids.length && !tmpls.length){ ST.prods=[]; ST.precios={}; ST.tiers={}; if(token===ST._catToken){ST.cargandoCat=false; renderGrid();} return; }
@@ -1183,7 +1214,7 @@ function vVenta(){
     <div class="cat-card">
       <div class="cat-tools">
         <div class="toolrow">
-          <div class="search2">🔎 <input id="prodSearch" placeholder="Buscar producto por nombre o código…" value="${esc(ST.qProd)}" oninput="buscarProd(this.value)"></div>
+          <div class="search2">🔎 <input id="prodSearch" placeholder="Buscar por nombre, droga o código… (ej: ibu 600)" value="${esc(ST.qProd)}" oninput="buscarProd(this.value)"></div>
           <div class="vtoggle" title="Cambiar vista">
             <button class="vbtn ${ST.vista==='filas'?'on':''}" data-v="filas" onclick="setVista('filas')" title="Vista en filas">☰</button>
             <button class="vbtn ${ST.vista==='grilla'?'on':''}" data-v="grilla" onclick="setVista('grilla')" title="Vista en grilla">▦</button>
@@ -1207,7 +1238,7 @@ function vVenta(){
 
 // marca visualmente la familia activa (o ninguna si hay búsqueda) sin repintar toda la vista
 function marcarFam(){ document.querySelectorAll(".fam").forEach(b=>b.classList.toggle("on", !ST.qProd && b.dataset.fam===ST.fam)); }
-window.buscarProd = EYG.buscador(v=>{ ST.qProd=v; marcarFam(); cargarCatalogo(); }, 380);
+window.buscarProd = EYG.buscador(v=>{ ST.qProd=v; marcarFam(); cargarCatalogo(); }, 250);
 function setFam(k){ ST.fam=k; ST.qProd=""; const s=document.getElementById("prodSearch"); if(s) s.value=""; marcarFam(); cargarCatalogo(); }
 function setVista(v){ if(ST.vista===v) return; ST.vista=v; try{ localStorage.setItem("eyg_vender_vista",v); }catch(e){} document.querySelectorAll(".vbtn").forEach(b=>b.classList.toggle("on",b.dataset.v===v)); renderGrid(); }
 function toggleCart(){ ST.cartOpen=!ST.cartOpen; const b=document.getElementById("cartBox"); if(b) b.classList.toggle("open",ST.cartOpen); }
