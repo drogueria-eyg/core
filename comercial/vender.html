@@ -313,7 +313,7 @@ let ST = {
   amount:{untaxed:0, total:0},
   syncing:false, dirty:false,
   // catálogo
-  fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, ofertaPids:new Set(), ofertaTmpls:new Set(), ofertaInfo:{}, ofertaRule:{}, _ofLoaded:false, cargandoCat:false,
+  fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, prodCache:{}, ofertaPids:new Set(), ofertaTmpls:new Set(), ofertaInfo:{}, ofertaRule:{}, _ofLoaded:false, cargandoCat:false,
   cartOpen:false,
   vista:(function(){ try{ return localStorage.getItem("eyg_vender_vista")||"filas"; }catch(e){ return "filas"; } })(),  // "filas" | "grilla"
 };
@@ -347,6 +347,8 @@ async function cargar(){
     ]);
     ST.cartera = cartera.sort((a,b)=>(a.name||"").localeCompare(b.name||""));
     ST.drafts = drafts;
+    cargarListas();          // precargar las listas (para que el paso de selección salga al toque)
+    precargarCatalogo();     // precargar productos de Hospitalarios en 2º plano → entrar a la venta es instantáneo
     // Alerta de crédito (motor compartido): se trae aparte para no frenar el arranque y
     // repinta cuando llega. Avisa al comercial (ej. no ofrecer plazos a un mal pagador).
     EYG.riesgoCartera().then(m=>{ ST.riesgos=m||{}; if(ST.view==="picker") renderCliList(); else if(ST.view==="venta") render(); }).catch(()=>{});
@@ -588,9 +590,11 @@ async function crearOrden(pid, c, ship){
     const vals = {partner_id:pid, user_id:ST.userId};
     if(ship) vals.partner_shipping_id = ship.id;      // entregar en la sucursal, no en la central
     const id = await rpc("sale.order","create",[vals],{context:CREAR});
-    // Odoo a veces recalcula la dirección de entrega desde partner_id al crear: la reafirmamos.
-    if(ship){ try{ await rpc("sale.order","write",[[id],{partner_shipping_id:ship.id}],{context:ES}); }catch(e){} }
-    const [o] = await rpc("sale.order","read",[[id]],{fields:["id","name","partner_id","partner_shipping_id","pricelist_id","payment_term_id"],context:ES});
+    let [o] = await rpc("sale.order","read",[[id]],{fields:["id","name","partner_id","partner_shipping_id","pricelist_id","payment_term_id"],context:ES});
+    // Odoo a veces recalcula la entrega desde partner_id al crear: la reafirmamos SOLO si quedó distinta.
+    if(ship && (!o.partner_shipping_id || o.partner_shipping_id[0]!==ship.id)){
+      try{ await rpc("sale.order","write",[[id],{partner_shipping_id:ship.id}],{context:ES}); o.partner_shipping_id=[ship.id, ship.name||""]; }catch(e){}
+    }
     const shipId=(o.partner_shipping_id&&o.partner_shipping_id[0])||pid;
     ST.order = {
       id:o.id, name:o.name, partnerId:pid, partnerName:(o.partner_id&&o.partner_id[1])||c.name,
@@ -662,10 +666,10 @@ async function aplicarLista(plId){
   if(!plId || plId===o.pricelistId) return;
   try{
     await rpc("sale.order","write",[[o.id],{pricelist_id:plId}],{context:ES});
-    try{ await rpc("sale.order","action_update_prices",[[o.id]],{context:ES}); }catch(e){}   // recalcula líneas ya cargadas
+    if(Object.keys(ST.lines||{}).length){ try{ await rpc("sale.order","action_update_prices",[[o.id]],{context:ES}); }catch(e){} }   // recalcula SOLO si ya hay líneas
     const l=(ST.listas||[]).find(x=>x.id===plId);
     o.pricelistId=plId; o.listName=l?l.name:"";
-    ST.catCache={};    // invalidar caché de precios del catálogo (cambió la lista)
+    // la caché de precios es por familia+lista (ckey), así que la lista nueva ya re-arma precios sola; los productos NO se re-bajan
   }catch(e){ toast("No pude cambiar la lista"); }
 }
 async function confirmarLista(plId){
@@ -749,20 +753,36 @@ function esOferta(p){ return (ST.ofertaPids&&ST.ofertaPids.has(p.id)) || (ST.ofe
 /* ============================================================
    CATÁLOGO
    ============================================================ */
+// Precarga en 2º plano los productos de Hospitalarios (familia por defecto) para que entrar a la venta sea instantáneo.
+async function precargarCatalogo(){
+  try{
+    const fam=FAMILIAS.find(f=>f.k==="HOSPITALARIOS")||FAMILIAS[0];
+    if(ST.prodCache[fam.k]) return;
+    const prods=await rpc("product.product","search_read",[[["categ_id","child_of",fam.id],["qty_available",">",0]]],
+      {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price"],context:ES,order:"name",limit:200});
+    ST.prodCache[fam.k]=prods;
+    cargarLotes(prods);   // y los vencimientos de esos productos
+  }catch(e){}
+}
 async function cargarCatalogo(){
   const token=(ST._catToken=(ST._catToken||0)+1);
   desconectarIO();
   const q=(ST.qProd||"").trim();
   const key = q ? null : ST.fam;                  // solo cacheamos las familias (no las búsquedas)
-  // Caché: volver a una familia ya vista es INSTANTÁNEO (no vuelve a pegarle a Odoo).
-  if(key && ST.catCache[key]){
-    const c=ST.catCache[key]; ST.prods=c.prods; ST.precios=c.precios; ST.tiers=c.tiers;
-    ST.cargandoCat=false; renderGrid();
+  const cacheable = !!key && ST.fam!=="OFERTAS";  // familias reales (no búsqueda ni ofertas)
+  const plId = ST.order && ST.order.pricelistId;
+  const ckey = cacheable ? (key+"|"+plId) : null; // caché por familia+lista (los precios dependen de la lista)
+  // Caché completa (productos + precios de esta lista) → INSTANTÁNEO.
+  if(ckey && ST.catCache[ckey]){
+    const c=ST.catCache[ckey]; ST.prods=c.prods; ST.precios=c.precios; ST.tiers=c.tiers;
+    ST.cargandoCat=false; renderGrid(); cargarLotes(ST.prods);
     return;
   }
   ST.cargandoCat=true; renderGrid();
   try{
-    let dom;
+    let prods;
+    if(cacheable && ST.prodCache[key]){ prods=ST.prodCache[key]; }   // productos ya cargados (no cambian con la lista)
+    else { let dom;
     if(q){
       // Búsqueda en TODO el catálogo vendible, con stock:
       //   qty>0  AND  (name ILIKE q OR code ILIKE q)  AND  (dentro de alguna familia vendible)
@@ -781,14 +801,16 @@ async function cargarCatalogo(){
       const fam=FAMILIAS.find(f=>f.k===ST.fam)||FAMILIAS[0];
       dom=[["categ_id","child_of",fam.id],["qty_available",">",0]];
     }
-    const prods = await rpc("product.product","search_read",[dom],
+    prods = await rpc("product.product","search_read",[dom],
       {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price"], context:ES, order:"name", limit:200});
     if(token!==ST._catToken) return;              // el usuario cambió de familia/búsqueda: descartamos
+    if(cacheable) ST.prodCache[key]=prods;
+    }
     ST.prods=prods;
     await cargarPrecios(prods);
     cargarLotes(prods);          // vencimientos en paralelo (no bloquea el catálogo; repinta al llegar)
     if(token!==ST._catToken) return;
-    if(key) ST.catCache[key]={prods:ST.prods, precios:ST.precios, tiers:ST.tiers};
+    if(ckey) ST.catCache[ckey]={prods:ST.prods, precios:ST.precios, tiers:ST.tiers};
   }catch(e){ ST.prods=[]; toast("No pude leer el catálogo"); }
   if(token!==ST._catToken) return;
   ST.cargandoCat=false; renderGrid();
@@ -834,7 +856,10 @@ async function cargarPrecios(prods){
 // Lotes con stock y su vencimiento por producto (el vendedor informa al cliente si algo está corto de vto).
 async function cargarLotes(prods){
   try{
-    const pids=prods.map(p=>p.id);
+    ST._lotesDone = ST._lotesDone || new Set();
+    const pids=prods.map(p=>p.id).filter(id=>!ST._lotesDone.has(id));   // no re-consultar los ya traídos
+    if(!pids.length) return;
+    pids.forEach(id=>ST._lotesDone.add(id));
     const lots=await rpc("stock.lot","search_read",[[["product_id","in",pids],["product_qty",">",0]],["product_id","name","expiration_date","product_qty"]],{limit:5000});
     const by={};
     lots.forEach(l=>{ if(!l.product_id) return; const pid=l.product_id[0]; (by[pid]=by[pid]||[]).push({n:l.name||"", exp:(l.expiration_date||"").slice(0,10), qty:l.product_qty||0}); });
