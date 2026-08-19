@@ -111,6 +111,10 @@
   .up label.file-in:hover{background:#E6F2F0}
   .up input[type=file]{display:none}
   .up .picked{font-size:12px;color:var(--gris);font-weight:600}
+  .opapel{margin-top:13px;padding-top:12px;border-top:1px dashed var(--line);font-size:11px;color:var(--gris2);font-weight:700;text-align:center}
+  .opapel .bt{margin-top:8px}
+  .opapel-nota{font-size:11.5px;color:var(--gris);font-weight:400;line-height:1.45;margin-top:8px;text-align:left}
+  .oblig.papel{color:var(--y);background:var(--ybg);padding:2px 8px;border-radius:20px}
   .hint{font-size:12px;color:var(--gris);line-height:1.5;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin-top:6px}
   /* Formulario de alta */
   .altaform .fld{margin-bottom:12px}
@@ -238,7 +242,9 @@ function detalle(leg){
   (leg.falta||[]).forEach(d=>out.push(`<span class="rr">Falta ${esc(d.lbl)}</span>`));
   (leg.vencidos||[]).forEach(v=>out.push(`<span class="rr">${esc(v.doc.lbl)} vencida</span>`));
   (leg.porVencer||[]).forEach(v=>{ out.push(v.dias===null?`<span class="yy">${esc(v.doc.lbl)}: falta fecha</span>`:`<span class="yy">${esc(v.doc.lbl)} vence en ${v.dias} d</span>`); });
-  if(!out.length) out.push("Documentación completa y vigente");
+  const papel=Object.values(leg.docs||{}).filter(x=>x&&x.fisico).length;
+  if(!out.length) out.push(papel?`Completo · <span class="yy">${papel} en papel</span>`:"Documentación completa y vigente");
+  else if(papel) out.push(`<span class="yy">${papel} en papel</span>`);
   return out.slice(0,2).join(" · ");
 }
 
@@ -310,20 +316,23 @@ function pintarDrawer(){
 }
 function docHTML(c, d){
   const doc=(c.leg&&c.leg.docs)?c.leg.docs[d.k]:null;
+  const vencInput = d.vence?`<div class="fl"><span class="vl" style="font-size:12.5px;color:var(--gris);font-weight:600">Vencimiento:</span><input type="date" id="venc-${d.k}"></div>`:'';
   if(!doc){
     return `<div class="doc miss">
       <div class="dt"><h4>${esc(d.lbl)}</h4><span class="oblig">obligatorio</span></div>
       <div class="up">
         <div class="fl">
-          <label class="file-in">Elegir archivo<input type="file" id="file-${d.k}" accept=".pdf,.jpg,.jpeg,.png,.webp" onchange="picked(this,'${d.k}')"></label>
+          <label class="file-in">Elegir archivo digital<input type="file" id="file-${d.k}" accept=".pdf,.jpg,.jpeg,.png,.webp" onchange="picked(this,'${d.k}')"></label>
           <span class="picked" id="pick-${d.k}">Ningún archivo elegido</span>
         </div>
-        ${d.vence?`<div class="fl"><span class="vl" style="font-size:12.5px;color:var(--gris);font-weight:600">Vence:</span><input type="date" id="venc-${d.k}"></div>`:''}
+        ${vencInput}
         <div><button class="bt primary" id="btn-${d.k}" onclick="subir(${c.id},'${d.k}')" disabled>Subir documento</button></div>
       </div>
+      <div class="opapel">— o —<br><button class="bt" onclick="marcarFisico(${c.id},'${d.k}')">📄 Lo tenemos en papel (marcar como cumplido)</button>
+        <div class="opapel-nota">Usalo si todavía no lo tenés en digital. ${d.vence?'Podés cargar el vencimiento arriba.':''} Después lo podés reemplazar por el archivo escaneado.</div></div>
     </div>`;
   }
-  // documento cargado
+  // documento presente (digital o en papel)
   const n = d.vence ? diasHasta(doc.vence) : null;
   let vencHTML="";
   if(d.vence){
@@ -335,8 +344,20 @@ function docHTML(c, d){
     vencHTML=`<div class="venc"><span class="vl">Vencimiento:</span><span class="vv ${cls}">${txt}</span>
       <input type="date" id="venc-${d.k}" value="${doc.vence?String(doc.vence).slice(0,10):''}"><button class="bt" onclick="guardarVenc(${c.id},'${d.k}')">Guardar fecha</button></div>`;
   }
+  if(doc.fisico){
+    return `<div class="doc ok">
+      <div class="dt"><h4>${esc(d.lbl)}</h4><span class="oblig papel">📄 en papel</span></div>
+      <div class="file"><span class="fi">📄</span><span class="fn">En físico (papel) — falta el digital</span></div>
+      <div class="who">Marcado por ${esc(doc.por||'—')}${doc.ts?(' · '+fmtFecha(doc.ts)):''}</div>
+      ${vencHTML}
+      <div class="acts">
+        <label class="bt primary" style="cursor:pointer">⬆ Subir el digital<input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" style="display:none" onchange="reemplazar(this,${c.id},'${d.k}')"></label>
+        <button class="bt danger" onclick="quitar(${c.id},'${d.k}',${doc.attId})">Quitar</button>
+      </div>
+    </div>`;
+  }
   return `<div class="doc ok">
-    <div class="dt"><h4>${esc(d.lbl)}</h4><span class="oblig">✓ cargado</span></div>
+    <div class="dt"><h4>${esc(d.lbl)}</h4><span class="oblig">✓ digital</span></div>
     <div class="file"><span class="fi">${(doc.mimetype||'').includes('pdf')?'📄':'🖼️'}</span><span class="fn">${esc(doc.name||'documento')}</span></div>
     <div class="who">Cargado por ${esc(doc.por||'—')}${doc.ts?(' · '+fmtFecha(doc.ts)):''}</div>
     ${vencHTML}
@@ -382,6 +403,15 @@ async function subir(pid,k){
   if(btn){ btn.disabled=true; btn.textContent="Subiendo…"; }
   try{ await crearAdjunto(pid,d,file,venc); toast("Documento cargado ✓"); await refrescar(pid); }
   catch(e){ toast("No se pudo subir: "+(e.message||e)); if(btn){ btn.disabled=false; btn.textContent="Subir documento"; } }
+}
+async function marcarFisico(pid,k){
+  const d=DOCS.find(x=>x.k===k);
+  const venc=d.vence?((document.getElementById("venc-"+k)||{}).value||null):null;
+  const meta={ t:d.k, v:venc, f:1, p:(PERFIL.nombre||PERFIL.email||""), u:PERFIL.email||"", ts:new Date().toISOString() };
+  try{
+    await EYG.rpc("ir.attachment","create",[{ name:d.lbl+" — En papel (físico)", res_model:"res.partner", res_id:pid, type:"binary", description:EYG.legajoMarker(meta) }]);
+    toast("Marcado: lo tienen en papel ✓"); await refrescar(pid);
+  }catch(e){ toast("No se pudo marcar: "+(e.message||e)); }
 }
 async function reemplazar(input,pid,k){
   const f=input.files&&input.files[0]; if(!f) return;

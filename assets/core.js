@@ -1201,7 +1201,7 @@ window.EYG = (function(){
       const pid=Array.isArray(r.res_id)?r.res_id[0]:r.res_id;
       const e=byId[pid]||(byId[pid]={docs:{},estado:"vacio",falta:[],vencidos:[],porVencer:[]});
       const prev=e.docs[m.t];
-      if(!prev || (r.create_date||"")>(prev.create_date||"")) e.docs[m.t]={attId:r.id,tipo:m.t,vence:m.v||null,por:m.p||"",email:m.u||"",ts:m.ts||r.create_date,name:r.name,mimetype:r.mimetype,create_date:r.create_date};
+      if(!prev || (r.create_date||"")>(prev.create_date||"")) e.docs[m.t]={attId:r.id,tipo:m.t,vence:m.v||null,fisico:!!m.f,por:m.p||"",email:m.u||"",ts:m.ts||r.create_date,name:r.name,mimetype:r.mimetype,create_date:r.create_date};
     }
     Object.keys(byId).forEach(pid=>evaluarLegajo(byId[pid],alerta));
     return {byId, dias:alerta};
