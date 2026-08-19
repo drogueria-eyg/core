@@ -302,6 +302,7 @@ window.EYG = (function(){
     {key:"finanzas",  nom:"Administración y Finanzas"},
     {key:"precios",   nom:"Precios y Rentabilidad"},
     {key:"portal",    nom:"Portal web"},
+    {key:"manuales",  nom:"Manuales y Capacitación"},
     {key:"direccion", nom:"Dirección"},
     {key:"admin",     nom:"Sistema"},
   ];
@@ -318,6 +319,15 @@ window.EYG = (function(){
              :(p.rol==="lider"?"Novedades para tu equipo y las bajadas de Gerencia, con acuse de lectura.":"Las novedades y bajadas que te llegan de Gerencia y de tu líder."),
       roles:["comercial","lider","finanzas","inventario","cobranzas","maestro"], ready:true,
       path:()=>"comunicaciones/comunicaciones.html"},
+    /* Manuales y Capacitación: biblioteca de guías e instructivos por área (inducción,
+       procedimientos, etc.). El primer manual es el Guion Comercial. La ven líderes y
+       gerencia; los comerciales llegan al Guion por un atajo dentro de su panel (están
+       "encerrados" en su sesión). A medida que sumen manuales de Depósito/Calidad/etc.,
+       se agregan en manuales/index.html y, si hace falta, se amplían los roles de acá. */
+    {key:"manuales", dept:"manuales", cat:"Manuales y Capacitación", ico:"📚", titulo:"Manuales",
+      desc:"Guías, instructivos e inducción del equipo, ordenados por área. Empezá por el Guion Comercial de ventas.",
+      roles:["lider"], ready:true,
+      path:()=>"manuales/index.html"},
     {key:"panel", dept:"comercial", cat:"Comercial", ico:"⚡",
       titulo:p=>(p.rol==="admin"||p.rol==="direccion")?"Panel comerciales":"Mi Panel",
       desc:p=>(p.rol==="admin"||p.rol==="direccion")?"El equipo: métricas resumidas de cada comercial + acceso a su panel individual y al panel del líder.":(p.rol==="lider"?"Tu panel de líder: el equipo, cumplimiento y alertas.":"Tu sesión de venta: objetivos, comisión, salud y tu cartera a mano."),
