@@ -693,7 +693,14 @@ window.EYG = (function(){
     .eyg-bell-wrap{position:relative;display:inline-flex}
     .eyg-bell-btn{background:transparent;border:0;color:inherit;cursor:pointer;font-size:20px;line-height:1;padding:5px;border-radius:10px;position:relative;display:inline-flex;align-items:center;justify-content:center}
     .eyg-bell-btn:hover{background:rgba(127,127,127,.16)}
-    .eyg-bell-badge{position:absolute;top:-1px;right:-1px;min-width:16px;height:16px;padding:0 4px;background:#EC5E4F;color:#fff;font-size:10px;font-weight:800;border-radius:20px;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 2px rgba(0,0,0,.12)}
+    .eyg-bell-badge{position:absolute;top:-1px;right:-1px;min-width:16px;height:16px;padding:0 4px;background:#EC5E4F;color:#fff;font-size:10px;font-weight:800;border-radius:20px;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 2px rgba(0,0,0,.12);z-index:2}
+    /* Onda sonora que sale de la campanita cuando hay notificaciones (llama la atención) */
+    .eyg-bell-ripple{position:absolute;left:50%;top:52%;width:20px;height:20px;margin:-10px 0 0 -10px;border-radius:50%;border:2px solid rgba(236,94,79,.6);pointer-events:none;z-index:0;animation:eygBellRing 1.9s ease-out infinite}
+    .eyg-bell-ripple.d2{animation-delay:.95s}
+    .eyg-bell-wrap.has-notif .eyg-bell-btn{animation:eygBellSwing 1.9s ease-in-out infinite;transform-origin:top center}
+    @keyframes eygBellRing{0%{transform:scale(.5);opacity:.65}70%{opacity:.12}100%{transform:scale(2.7);opacity:0}}
+    @keyframes eygBellSwing{0%,60%,100%{transform:rotate(0)}68%{transform:rotate(11deg)}76%{transform:rotate(-9deg)}84%{transform:rotate(6deg)}92%{transform:rotate(-3deg)}}
+    @media(prefers-reduced-motion:reduce){.eyg-bell-ripple,.eyg-bell-wrap.has-notif .eyg-bell-btn{animation:none}}
     .eyg-bell-dd{position:absolute;right:0;top:calc(100% + 8px);width:344px;max-width:88vw;max-height:66vh;overflow:auto;background:#fff;border:1px solid #e5eae9;border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.24);z-index:9999;padding:8px;text-align:left}
     .eyg-bell-dd .hd{display:flex;align-items:center;justify-content:space-between;padding:6px 8px 8px;border-bottom:1px solid #eef1f0;margin-bottom:4px}
     .eyg-bell-dd .hd b{font-size:14px;color:#0E1F1D}
@@ -785,7 +792,8 @@ window.EYG = (function(){
       </div>`;
     };
     const waBanner = waNuevos.length ? `<div class="eyg-wa-banner" onclick="EYG.comVerWA('${mountId}')">📱 <span><b>${waNuevos.length}</b> mensaje${waNuevos.length>1?'s':''} de WhatsApp para enviar a tus clientes</span><span class="go">Ver ↓</span></div>` : '';
-    mount.innerHTML=`<div class="eyg-bell-wrap">
+    mount.innerHTML=`<div class="eyg-bell-wrap${nBadge?' has-notif':''}">
+      ${nBadge?'<span class="eyg-bell-ripple"></span><span class="eyg-bell-ripple d2"></span>':''}
       <button class="eyg-bell-btn" title="Notificaciones" onclick="EYG.comToggleBell(event,'${mountId}')">🔔${nBadge?`<span class="eyg-bell-badge">${nBadge>9?'9+':nBadge}</span>`:''}</button>
       <div class="eyg-bell-dd" style="display:${abierto?'block':'none'}">
         ${waBanner}

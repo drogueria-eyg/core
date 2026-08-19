@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=28"></script>
+<script src="../assets/core.js?v=29"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -221,6 +221,18 @@
   .of-foot{display:flex;justify-content:space-between;font-size:11.5px;color:#9fd0cb;align-items:center}
   .of-foot .p{color:#f2d38a;font-weight:800}
   .of-venc{display:inline-block;margin-top:9px;font-size:10.5px;color:#f2d38a;background:rgba(229,169,59,.14);border:1px solid rgba(229,169,59,.3);padding:2px 8px;border-radius:20px}
+  /* Rendimiento global de la oferta (todos los comerciales) + 🔥 latiendo en las mejores */
+  .of-stats{display:flex;gap:6px;flex-wrap:wrap;margin:7px 0 2px;font-size:10.5px}
+  .of-stats span{background:rgba(255,255,255,.08);border-radius:20px;padding:2px 8px;color:#cdeae6}
+  .of-stats b{color:#fff;font-weight:800}
+  .of-rend{font-weight:800}
+  .of-rend.alta{background:rgba(34,224,198,.22);color:#7EE0C9}
+  .of-rend.media{background:rgba(229,169,59,.22);color:#f2d38a}
+  .of-rend.baja{background:rgba(255,255,255,.08);color:#a9d8d3}
+  .of-card.hot{border-color:rgba(255,180,90,.6);box-shadow:0 0 0 1px rgba(255,180,90,.4),0 6px 20px rgba(255,140,60,.18)}
+  .of-fire{display:inline-block;animation:ofFire 1.1s ease-in-out infinite;transform-origin:center}
+  @keyframes ofFire{0%,100%{transform:scale(1);filter:drop-shadow(0 0 0 rgba(255,140,60,0))}50%{transform:scale(1.3);filter:drop-shadow(0 0 8px rgba(255,140,60,.85))}}
+  @media(prefers-reduced-motion:reduce){.of-fire{animation:none}}
   .of-wa{display:inline-flex;align-items:center;gap:6px;margin:10px 0 0 8px;background:var(--wa);color:#053b38;font-weight:700;font-size:12px;padding:6px 11px;border-radius:9px;text-decoration:none}
   @media(max-width:680px){ .cc{grid-template-columns:1fr auto} .cc .rec,.compbar{display:none} }
 
@@ -1516,9 +1528,13 @@ function ofertaMsg(o){
   return L.join("\n");
 }
 
+// Rendimiento por oferta (global): conversión = vendidas ÷ enviadas por todos, + volumen.
+function ofStat(o){ const g=ST.ofertas[o.id]||{}; const env=g.gEnv||0, ven=g.gVen||0, conv=env>0?ven/env:0; return {env,ven,conv, score:conv*100+ven}; }
 function ofertasHTML(){
   if(!OFERTAS.length) return "";
-  const cards=OFERTAS.map(o=>{
+  const SC=OFERTAS.map(ofStat); const maxSc=Math.max(0,...SC.map(s=>s.score));
+  const esHot=s=> maxSc>0 && s.ven>=1 && s.score>=Math.max(1,0.6*maxSc);   // las de mejor rendimiento
+  const cards=OFERTAS.map((o,i)=>{
     const st=ST.ofertas[o.id]; const col=st?st.colocados:null;
     const meta=ofMeta(o);
     const pct=col==null?0:Math.min(100,Math.round(col/meta*100));
@@ -1534,8 +1550,10 @@ function ofertasHTML(){
     // producto contra el cual contar, así que va sin precio y sin barra de progreso.
     const badge = o._info ? (o._off?`<span class="of-off">${esc(o._off)}</span>`:'')
                           : (off?`<span class="of-off">−${off}%</span>`:'');
-    return `<div class="of-card">
-      <div class="of-top"><span class="of-name">${esc(tit)}</span>${badge}</div>
+    const s=SC[i], hot=esHot(s), rendPct=s.env>0?Math.round(s.conv*100):null;
+    const rendCls=rendPct==null?'':(rendPct>=40?'alta':rendPct>=15?'media':'baja');
+    return `<div class="of-card${hot?' hot':''}">
+      <div class="of-top"><span class="of-name">${hot?'<span class="of-fire" title="¡De las de mejor rendimiento! Ofrecela.">🔥</span> ':''}${esc(tit)}</span>${badge}</div>
       ${o._info
         ? (o._alcance?`<div class="of-prod">${esc(o._alcance)}</div>`:'')
         : (items&&items!==tit)?`<div class="of-prod">${esc(items)}</div>`:''}
@@ -1544,6 +1562,11 @@ function ofertasHTML(){
       ${o._info?'':`<div class="of-bar"><i style="width:${pct}%"></i></div>
       <div class="of-foot" title="Clientes de tu cartera que la compraron desde que se publicó la oferta (meta ${meta})"><span>${col==null?'…':(col>=meta?col+' compraron ✓':col+' / '+meta+' compraron')}</span>${(st&&st.monto>0)?`<span class="p">${money(st.monto)}</span>`:''}</div>`}
       ${envN?`<div style="font-size:11.5px;font-weight:700;color:#0E5C46;margin:2px 0">📤 la compartiste ${envN}${envN===1?' vez':' veces'} este mes</div>`:''}
+      <div class="of-stats" title="Rendimiento de esta oferta en toda la droguería (últimos 120 días)">
+        <span>📤 <b>${s.env}</b> enviadas</span>
+        <span>🛒 <b>${s.ven}</b> vendidas</span>
+        ${rendPct!=null?`<span class="of-rend ${rendCls}">${rendPct}% rend.</span>`:''}
+      </div>
       <span class="of-venc">⏳ ${venc}</span>
       <a class="of-wa" href="https://api.whatsapp.com/send?text=${encodeURIComponent(ofertaMsg(o))}" target="_blank" rel="noopener" onclick="confirmarCompartir('${(o.id||'').replace(/'/g,'')}')">Compartir por WhatsApp</a>
     </div>`;
@@ -1646,14 +1669,19 @@ async function cargarOfertas(ids){
     if(!pids.length || !ids.length){ ST.ofertas[o.id]={colocados:0,cli:[]}; return; }
     const desde=ofDesde(o), hasta=(o.hasta||hoyStr).slice(0,10);
     try{
+      // GLOBAL: clientes de TODA la droguería que compraron la oferta en su vigencia (sin
+      // restringir a la cartera del comercial). De acá se derivan: lo mío (intersección con
+      // mi cartera) y lo de TODOS (para las estadísticas de rendimiento de la oferta).
       const g=await rpc("sale.order.line","read_group",
-        [[["order_partner_id","in",ids],["product_id","in",pids],["state","in",["sale","done"]],
+        [[["product_id","in",pids],["state","in",["sale","done"]],
           ["order_id.date_order",">=",desde],["order_id.date_order","<=",hasta+" 23:59:59"]],
          ["price_subtotal:sum"],["order_partner_id"]],{lazy:false});
-      ST.ofertas[o.id]={ colocados:g.length,
-        cli:g.map(x=>x.order_partner_id&&x.order_partner_id[0]).filter(Boolean),
-        monto:g.reduce((s,x)=>s+(x.price_subtotal||0),0) };
-    }catch(e){ ST.ofertas[o.id]={colocados:0,cli:[],err:true}; }
+      const idset=new Set(ids);
+      const rows=g.map(x=>({p:x.order_partner_id&&x.order_partner_id[0], m:x.price_subtotal||0})).filter(x=>x.p);
+      const mios=rows.filter(x=>idset.has(x.p));
+      ST.ofertas[o.id]={ colocados:mios.length, cli:mios.map(x=>x.p), monto:mios.reduce((s,x)=>s+x.m,0),
+        gVen:rows.length, gMonto:rows.reduce((s,x)=>s+x.m,0) };
+    }catch(e){ ST.ofertas[o.id]={colocados:0,cli:[],gVen:0,gMonto:0,err:true}; }
   }));
   // ---- Puntaje/encabezado: VENDIDAS = suma de "colocados" por oferta (cliente × oferta).
   // Cada colocados ya usa la ventana correcta [publicación exacta → cierre], así que NO
@@ -1668,6 +1696,13 @@ async function cargarOfertas(ids){
       const vm={}; pr.forEach(p=>{ if(p.gg_lot_expiration_date) vm[p.id]=String(p.gg_lot_expiration_date).slice(0,10); });
       OFERTAS.forEach(o=>{ const vs=(o.items||[]).map(i=>vm[i.id]).filter(Boolean).sort(); o.venc=vs[0]||null; o.vencMulti=(new Set(vs).size>1); });
     }
+  }catch(e){}
+  // ENVÍOS GLOBALES por oferta: notas [EyGOFENV] de TODOS los comerciales (en cualquier partner),
+  // agrupadas por el título con el que se registró el envío. Ventana: últimos 120 días.
+  try{
+    const allEnv=await rpc("mail.message","search_read",[[["model","=","res.partner"],["body","like","EyGOFENV"],["date",">=",hace(120)+" 00:00:00"]]],{fields:["body"],limit:0});
+    const envTexts=allEnv.map(m=>(m.body||"").replace(/<[^>]+>/g,""));
+    OFERTAS.forEach(o=>{ const tit=o.titulo||ofItems(o); const g=(ST.ofertas[o.id]=ST.ofertas[o.id]||{}); g.gEnv=tit?envTexts.filter(b=>b.includes(tit)).length:0; });
   }catch(e){}
   ST.ofVendidas=OFERTAS.reduce((s,o)=>s+(((ST.ofertas[o.id]||{}).colocados)||0),0);
   try{
