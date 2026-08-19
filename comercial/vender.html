@@ -181,6 +181,9 @@
   .rprod.incart{border-color:var(--teal);box-shadow:inset 0 0 0 1.5px var(--teal)}
   .rprod.oferta{background:#FEF5F3;border-color:var(--coral);animation:ofGlow 2.4s ease-in-out infinite}
   .rprod.oferta.incart{border-color:var(--teal)}
+  .rprod.pre{opacity:.72}
+  .pre-load{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--gris2);white-space:nowrap}
+  .pspin{width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--teal);border-radius:50%;animation:spin .8s linear infinite;flex:none}
   @media(prefers-reduced-motion:reduce){ .rprod.oferta{animation:none;box-shadow:0 0 0 1px var(--coral),0 0 12px rgba(236,94,79,.4)} }
   .rprod .thumb{width:62px;height:62px;border-radius:10px;background:#f2f6f5;border:1px solid var(--line);flex:none;object-fit:contain;display:block}
   .rprod .thumb.ph{display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--gris2)}
@@ -765,17 +768,18 @@ async function precargarCatalogo(){
   }catch(e){}
 }
 // BÚSQUEDA DE PRODUCTOS con el mismo motor que el buscador del portal (buscar_web, pg_trgm en Supabase):
-// rápida y DIFUSA por palabra → "ibu 600" trae IBUPROFENO 600, tolera tipeo y busca por droga.
-// buscar_web devuelve ids de PLANTILLA; luego pedimos a Odoo SÓLO esas variantes (por id = instantáneo)
-// y filtramos el stock en el navegador, para no pagar la búsqueda lenta de qty_available sobre todo el catálogo.
-async function buscarProductos(q){
-  let filas=[];
-  try{
-    const {data,error}=await EYG.supa().rpc("buscar_web",{q, lim:40});
-    if(error) throw error;
-    filas=data||[];
-  }catch(e){ return await buscarProductosOdoo(q); }   // si el índice no responde, no dejamos sin buscar
-  const tmplIds=[...new Set(filas.map(f=>f.id).filter(Boolean))];
+// rápida y DIFUSA por palabra → "ibu 600" trae IBUPROFENO 600, "taf 1g" trae TAFIROL 1 g, tolera tipeo y busca por droga.
+// FLUJO EN 2 PASOS para que se sienta igual de rápido que la web:
+//  (1) buscar_web devuelve al instante (Postgres) los productos que matchean → se PINTAN ya (nombre+foto).
+//  (2) recién ahí pedimos a Odoo las variantes de SÓLO esas plantillas (por id) + precios de la lista, y repintamos.
+// buscar_web devuelve ids de PLANTILLA; Odoo trae las variantes por product_tmpl_id (indexado = instantáneo).
+async function buscarWebRows(q){
+  const {data,error}=await EYG.supa().rpc("buscar_web",{q, lim:40});
+  if(error) throw error;
+  return data||[];
+}
+async function variantesDeRows(rows){
+  const tmplIds=[...new Set(rows.map(f=>f.id).filter(Boolean))];
   if(!tmplIds.length) return [];
   const rank={}; tmplIds.forEach((id,i)=>{ rank[id]=i; });   // orden de relevancia que ya calculó buscar_web
   const prods=await rpc("product.product","search_read",
@@ -787,6 +791,19 @@ async function buscarProductos(q){
     return ra-rb || (a.name||"").localeCompare(b.name||"");
   });
   return conStock;
+}
+// Vista previa INSTANTÁNEA con lo que ya trajo buscar_web (nombre + foto de la plantilla + código),
+// mientras Odoo completa precio/stock/variante en 2º plano. La foto usa product.template (aún no hay variante).
+function renderPreview(rows){
+  const el=document.getElementById("gridWrap"); if(!el) return;
+  ST.cargandoCat=false;
+  el.innerHTML='<div class="rows">'+rows.slice(0,40).map(r=>`
+    <div class="rprod pre">
+      <img class="thumb" loading="lazy" decoding="async" alt="" src="${ODOO_BASE}/web/image/product.template/${r.id}/image_128" onerror="imgFallback(this)">
+      <div class="rinfo"><div class="pn">${esc(r.nombre||"")}</div>
+        <div class="pm">${r.codigo?("["+esc(r.codigo)+"] "):""}${esc(r.categoria||"")}</div></div>
+      <div class="rright"><div class="pre-load"><span class="pspin"></span>precio y stock…</div></div>
+    </div>`).join("")+'</div>';
 }
 // Respaldo: la búsqueda vieja en Odoo (name/código contiene). Sólo se usa si buscar_web falla.
 async function buscarProductosOdoo(q){
@@ -816,9 +833,17 @@ async function cargarCatalogo(){
     let prods;
     if(cacheable && ST.prodCache[key]){ prods=ST.prodCache[key]; }   // productos ya cargados (no cambian con la lista)
     else if(q){
-      // Búsqueda rápida y difusa con el motor del portal (buscar_web). No se cachea (varía por texto).
-      prods = await buscarProductos(q);
+      // Búsqueda rápida y difusa con buscar_web. No se cachea (varía por texto).
+      // (1) traer las filas del índice (instantáneo) y PINTAR ya; (2) enriquecer con Odoo.
+      let rows;
+      try{ rows = await buscarWebRows(q); }
+      catch(e){ prods = await buscarProductosOdoo(q); }   // si el índice no responde, modo viejo
       if(token!==ST._catToken) return;
+      if(rows){
+        if(!rows.length){ prods = []; }
+        else { renderPreview(rows); prods = await variantesDeRows(rows); }
+        if(token!==ST._catToken) return;
+      }
     }
     else { let dom;
     if(ST.fam==="OFERTAS"){
