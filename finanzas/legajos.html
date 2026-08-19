@@ -112,6 +112,20 @@
   .up input[type=file]{display:none}
   .up .picked{font-size:12px;color:var(--gris);font-weight:600}
   .hint{font-size:12px;color:var(--gris);line-height:1.5;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin-top:6px}
+  /* Formulario de alta */
+  .altaform .fld{margin-bottom:12px}
+  .altaform label{display:block;font-size:12px;font-weight:600;color:var(--gris);margin-bottom:5px}
+  .altaform input,.altaform select{width:100%;font-family:inherit;font-size:14px;border:1px solid var(--line);border-radius:9px;padding:10px 11px;color:var(--ink);background:var(--surface)}
+  .altaform input:focus,.altaform select:focus{outline:none;border-color:var(--teal-med);box-shadow:0 0 0 3px rgba(4,135,130,.1)}
+  .altaform .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .altaform .req{color:var(--r)}
+  .dupwarn{background:var(--rbg);border:1px solid #F1CFCD;color:#8A2E2B;border-radius:10px;padding:11px 13px;font-size:13px;line-height:1.5;margin-bottom:12px}
+  .dupitem{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:pointer}
+  .dupitem:hover{border-color:var(--teal-med);background:#F7FBFA}
+  .dfoot{padding:14px 22px;border-top:1px solid var(--line);background:var(--surface);display:flex;gap:8px}
+  .btn-save{flex:1;background:var(--teal);color:#fff;border:0;border-radius:10px;padding:13px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer}
+  .btn-save:disabled{opacity:.6;cursor:default}
+  .btn-ghost{background:#EEF1F0;color:var(--gris);border:0;border-radius:10px;padding:13px 16px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer}
   .odoo-link{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--teal);text-decoration:none;margin-top:10px}
   .odoo-link:hover{text-decoration:underline}
   .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:600;z-index:100;box-shadow:0 8px 30px rgba(6,65,62,.28);opacity:0;pointer-events:none;transition:opacity .2s;max-width:90vw;text-align:center}
@@ -134,12 +148,22 @@
 const ODOO="https://drogueriaeyg.odoo.com";
 const esc=EYG.esc;
 const RUBRO_FIELD="x_studio_selection_field_6ui_1j42g6fu9";
+const RUBROS7=["FARMACIAS","INSTITUCIONES","DISTRIBUIDORAS","VETERINARIAS","EMPRESAS DE SALUD","DROGUERIAS","PERSONAL"];
+const IDT={cuit:4,dni:5,cuil:6};
+const NUEVO_TAG="[CONTACTO-NUEVO]";          // misma marca que usa el CRM para su pestaña "Nuevos"
 const DOCS=EYG.LEGAJO_DOCS;                 // checklist compartido (core.js)
 const ALERTA=30;                            // "por vencer" = vence en <=30 días
 let PERFIL=null, CLIENTES=[], LEG={}, filtro={q:"", estado:""}, _abierto=null;
+let CAT={fiscal:[],idt:[],prov:[]}, PROVIDX={}, COMLIST=[], _forzarCrear=false;
 
 const soloDig=s=>(s||"").replace(/\D/g,"");
 function fmtCuit(v){ const d=soloDig(v); if(d.length!==11) return v||"—"; return d.slice(0,2)+"-"+d.slice(2,10)+"-"+d.slice(10); }
+const NORM=s=>(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toUpperCase().replace(/\s+/g," ").trim();
+function oracion(s){s=(s||"").trim().replace(/\s+/g," ");if(!s)return"";return s.charAt(0).toUpperCase()+s.slice(1).toLowerCase();}
+function fmtDoc(raw,idt){const d=soloDig(raw);if(!d)return"";if(idt===IDT.dni){if(d.length<7||d.length>8)return raw.trim();return d.replace(/\B(?=(\d{3})+(?!\d))/g,".");}if(idt===IDT.cuit||idt===IDT.cuil){if(d.length!==11)return raw.trim();return d.slice(0,2)+"-"+d.slice(2,10)+"-"+d.slice(10);}return raw.trim();}
+function fmtTel(raw){let d=soloDig(raw);if(!d)return"";if(d.startsWith("0054"))d=d.slice(4);if(d.startsWith("54"))d=d.slice(2);d=d.replace(/^0/,"");if(d.length>10)d=d.replace(/^(\d{2,4})15(\d{6,8})$/,"$1$2");if(d.length<8)return raw.trim();let area,local;if(d.length===10){if(d.startsWith("11")){area="11";local=d.slice(2);}else{area=d.slice(0,3);local=d.slice(3);}}else if(d.length===11){area=d.slice(0,4);local=d.slice(4);}else return"+54 "+d;const ls=local.length>=8?local.slice(0,4)+"-"+local.slice(4):local.slice(0,3)+"-"+local.slice(3);return"+54 "+area+" "+ls;}
+const optSel=(list,sel,ph)=>`<option value="">${esc(ph||"—")}</option>`+list.map(o=>`<option value="${o.id}" ${sel===o.id?'selected':''}>${esc(o.name.replace(/\s*\((AR|IT)\)$/,""))}</option>`).join("");
+const optCom=sel=>`<option value="">— sin asignar —</option>`+COMLIST.map(o=>`<option value="${o.id}" ${sel===o.id?'selected':''}>${esc(o.name)}</option>`).join("");
 const fmtFecha=f=> f? String(f).slice(0,10).split("-").reverse().join("/") : "—";
 function diasHasta(ymd){ if(!ymd) return null; const h=new Date(EYG.argToday()+"T00:00:00"); const v=new Date(String(ymd).slice(0,10)+"T00:00:00"); return Math.round((v-h)/86400000); }
 function toast(msg){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";t.className="toast";document.body.appendChild(t);}t.textContent=msg;t.classList.add("on");clearTimeout(toast._t);toast._t=setTimeout(()=>t.classList.remove("on"),2600);}
@@ -174,10 +198,28 @@ async function cargar(){
       return { id:p.id, nombre:p.name, vat:p.vat||"", comercial:p.user_id?p.user_id[1]:"Sin asignar",
                rubro:p[RUBRO_FIELD]||"", estado:leg.estado, leg };
     });
+    await cargarCatalogos();
     render();
   }catch(e){
     document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar los clientes.</b><br>'+esc(e.message||e)+'</div>';
   }
+}
+
+// Catálogos para el alta (condición fiscal AFIP, tipo de documento, provincias) + roster de
+// comerciales. No cambian seguido → se cargan una sola vez.
+async function cargarCatalogos(){
+  if(CAT.prov.length) return;
+  try{
+    const [fiscal,idt,prov,users]=await Promise.all([
+      EYG.rpc("l10n_ar.afip.responsibility.type","search_read",[[]],{fields:["id","name"],context:{lang:"es_AR"}}),
+      EYG.rpc("l10n_latam.identification.type","search_read",[[["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}}),
+      EYG.rpc("res.country.state","search_read",[[["country_id.code","=","AR"]]],{fields:["id","name"],limit:0}),
+      EYG.rpc("res.users","search_read",[[["share","=",false],["active","=",true]]],{fields:["id","name"]})
+    ]);
+    CAT={fiscal,idt,prov};
+    PROVIDX={}; prov.forEach(p=>{ PROVIDX[NORM(p.name.replace(/\s*\((AR|IT)\)$/,""))]=p.id; });
+    COMLIST=users.filter(u=>u.id>1).map(u=>({id:u.id,name:u.name})).sort((a,b)=>a.name.localeCompare(b.name));
+  }catch(e){ console.warn("No se pudieron cargar catálogos del alta",e); }
 }
 
 function conteos(){
@@ -223,6 +265,7 @@ function render(){
         <option value="amarillo" ${filtro.estado==='amarillo'?'selected':''}>Por vencer</option>
         <option value="verde" ${filtro.estado==='verde'?'selected':''}>Al día</option>
       </select>
+      <button class="bt primary" style="font-size:13.5px;padding:10px 15px" onclick="abrirAlta()">＋ Dar de alta un cliente</button>
     </div>
     <div class="count-line"><b>${vis.length}</b> cliente${vis.length===1?'':'s'}${filtro.estado||filtro.q?' (filtrado)':''}</div>
     <div class="tablecard">
@@ -375,6 +418,120 @@ async function verDoc(attId){
     if(!w){ const link=document.createElement("a"); link.href=url; link.download=a.name||"documento"; link.click(); }
     setTimeout(()=>URL.revokeObjectURL(url),60000);
   }catch(e){ toast("No pude abrir el archivo: "+(e.message||e)); }
+}
+
+/* ===== Alta de un cliente nuevo (crea el res.partner → aparece solo en Contactos/CRM) ===== */
+function abrirAlta(){
+  _abierto=null; _forzarCrear=false;
+  document.getElementById("drawer").innerHTML=`
+    <div class="dhead"><span class="x" onclick="cerrar()">✕</span><h2>Dar de alta un cliente</h2>
+      <div class="dsub">Se crea en Odoo · aparece también en Contactos (CRM)</div></div>
+    <div class="dbody altaform">
+      <div class="hint">Cargá lo que tengas ahora — solo el <b>nombre</b> es obligatorio; el resto se completa después. Cuando lo crees vas a poder subirle la documentación de alta enseguida.</div>
+      <div class="fld"><label>Nombre / Razón social <span class="req">*</span></label><input id="a_name" placeholder="Farmacia del Centro S.R.L."></div>
+      <div class="grid2">
+        <div class="fld"><label>Tipo</label><select id="a_type"><option value="company">Empresa</option><option value="person">Persona</option></select></div>
+        <div class="fld"><label>Rubro</label><select id="a_rubro"><option value="">— sin rubro —</option>${RUBROS7.map(r=>`<option>${esc(r)}</option>`).join("")}</select></div>
+      </div>
+      <div class="grid2">
+        <div class="fld"><label>CUIT</label><input id="a_vat" placeholder="30-12345678-9"></div>
+        <div class="fld"><label>Cond. fiscal (AFIP)</label><select id="a_fiscal">${optSel(CAT.fiscal,false,'— condición —')}</select></div>
+      </div>
+      <div class="grid2">
+        <div class="fld"><label>Teléfono</label><input id="a_phone" placeholder="0341 155033943"></div>
+        <div class="fld"><label>Email</label><input id="a_email" placeholder="nombre@dominio.com"></div>
+      </div>
+      <div class="fld"><label>Dirección</label><input id="a_street" placeholder="Av. Pellegrini 1234"></div>
+      <div class="grid2">
+        <div class="fld"><label>Localidad</label><input id="a_city" placeholder="Rosario"></div>
+        <div class="fld"><label>Provincia</label><select id="a_state">${optSel(CAT.prov,false,'— provincia —')}</select></div>
+      </div>
+      <div class="grid2">
+        <div class="fld"><label>Código postal</label><input id="a_zip" placeholder="2000"></div>
+        <div class="fld"><label>Comercial asignado</label><select id="a_com">${optCom(false)}</select></div>
+      </div>
+    </div>
+    <div class="dfoot"><button class="btn-ghost" onclick="cerrar()">Cancelar</button><button class="btn-save" id="btnAlta" onclick="crearCliente()">Crear cliente</button></div>`;
+  document.getElementById("scrim").classList.add("on");
+  document.getElementById("drawer").classList.add("on");
+}
+function valId(x){ const el=document.getElementById(x); const v=el?el.value.trim():""; return v?parseInt(v,10):false; }
+function valStr(x){ const el=document.getElementById(x); return el?el.value.trim():""; }
+
+async function buscarDupCliente(name, vat){
+  const out={};
+  try{
+    if(vat){ const f=fmtDoc(vat,IDT.cuit); const d=soloDig(vat);
+      const r=await EYG.rpc("res.partner","search_read",[["|",["vat","=",f],["vat","=",d]]],{fields:["id","name","city","user_id","active"],context:{active_test:false},limit:5});
+      r.forEach(p=>out[p.id]=p);
+    }
+    if(name && name.length>=3){
+      const r=await EYG.rpc("res.partner","search_read",[[["name","ilike",name]]],{fields:["id","name","city","user_id","active"],context:{active_test:false},limit:5});
+      r.forEach(p=>out[p.id]=p);
+    }
+  }catch(e){}
+  return Object.values(out).slice(0,6);
+}
+function mostrarDupsAlta(dups){
+  document.getElementById("drawer").innerHTML=`
+    <div class="dhead"><span class="x" onclick="cerrar()">✕</span><h2>¿Ya existe este cliente?</h2>
+      <div class="dsub">Coincidencias por nombre o CUIT</div></div>
+    <div class="dbody">
+      <div class="dupwarn">Encontramos cliente(s) que podrían ser el mismo. Si ya existe, <b>no lo crees de nuevo</b>: tocalo para abrir su legajo.</div>
+      ${dups.map(p=>`<div class="dupitem" onclick="abrirDup(${p.id})">
+        <div class="cname">${esc(p.name)} ${p.active?'':'<span class="badge n" style="font-size:10px">archivado</span>'}</div>
+        <div class="cmeta">📍 ${esc(p.city||'—')} · ${p.user_id?('👤 '+esc(p.user_id[1])):'sin comercial'}</div>
+      </div>`).join("")}
+    </div>
+    <div class="dfoot"><button class="btn-ghost" onclick="abrirAlta()">← Volver a los datos</button><button class="btn-save" style="background:var(--r)" onclick="_forzarCrear=true;crearCliente()">No es el mismo · crear igual</button></div>`;
+}
+async function abrirDup(id){
+  let c=CLIENTES.find(x=>x.id===id);
+  if(!c){
+    try{
+      const p=(await EYG.rpc("res.partner","read",[[id]],{fields:["id","name","vat","user_id",RUBRO_FIELD],context:{lang:"es_AR"}}))[0];
+      const est=await EYG.legajoEstado([id],{dias:ALERTA}); const leg=est.byId[id]||{docs:{},estado:"vacio",falta:DOCS.slice(),vencidos:[],porVencer:[]};
+      LEG[id]=leg;
+      c={ id:p.id, nombre:p.name, vat:p.vat||"", comercial:p.user_id?p.user_id[1]:"Sin asignar", rubro:p[RUBRO_FIELD]||"", estado:leg.estado, leg };
+      CLIENTES.push(c); render();
+    }catch(e){ toast("No pude abrir el cliente: "+(e.message||e)); return; }
+  }
+  abrir(id);
+}
+async function crearCliente(){
+  const btn=document.getElementById("btnAlta"); if(!btn) return;
+  const name=valStr("a_name"); if(!name){ toast("Falta el nombre"); return; }
+  const vat=valStr("a_vat");
+  if(!_forzarCrear){
+    btn.disabled=true; btn.textContent="Buscando duplicados…";
+    const dups=await buscarDupCliente(name, vat);
+    btn.disabled=false; btn.textContent="Crear cliente";
+    if(dups.length){ mostrarDupsAlta(dups); return; }
+  }
+  btn.disabled=true; btn.textContent="Creando…";
+  const tieneVat=!!vat;
+  const vals={
+    name, company_type:valStr("a_type")||"company",
+    customer_rank:1,                                  // es cliente → aparece en Legajos y como cliente en Odoo
+    user_id:valId("a_com"),
+    [RUBRO_FIELD]:valStr("a_rubro")||false,
+    vat:tieneVat?fmtDoc(vat,IDT.cuit):false, l10n_latam_identification_type_id:tieneVat?IDT.cuit:false,
+    l10n_ar_afip_responsibility_type_id:valId("a_fiscal"),
+    phone:valStr("a_phone")?fmtTel(valStr("a_phone")):false, email:valStr("a_email")||false,
+    street:valStr("a_street")?oracion(valStr("a_street")):false,
+    city:valStr("a_city")?oracion(valStr("a_city")):false, state_id:valId("a_state"), zip:valStr("a_zip")||false
+  };
+  try{
+    const newId=await EYG.rpc("res.partner","create",[vals],{context:{lang:"es_AR"}});
+    const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
+    try{ await EYG.rpc("res.partner","message_post",[[newId]],{body:"👤 "+NUEVO_TAG+" por="+quien,message_type:"comment"}); }catch(_){}
+    _forzarCrear=false;
+    // sumar a la lista y abrir su legajo para cargar la documentación enseguida
+    const leg={docs:{},estado:"vacio",falta:DOCS.slice(),vencidos:[],porVencer:[]}; LEG[newId]=leg;
+    CLIENTES.push({ id:newId, nombre:name, vat:vals.vat||"", comercial:valId("a_com")&&(COMLIST.find(o=>o.id===valId("a_com"))||{}).name||"Sin asignar", rubro:valStr("a_rubro")||"", estado:"vacio", leg });
+    toast("Cliente creado ✓ — cargale la documentación");
+    render(); abrir(newId);
+  }catch(e){ btn.disabled=false; btn.textContent="Crear cliente"; toast("No se pudo crear: "+(e.message||e)); }
 }
 
 EYG.guard(["finanzas","cobranzas","admin","direccion"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(perfil=>{ PERFIL=perfil; cargar(); });
