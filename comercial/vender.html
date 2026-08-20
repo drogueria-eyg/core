@@ -951,7 +951,9 @@ window.verLotes=(pid,ev)=>{
 // ---- helpers de escalera ----
 // tramo que aplica a la cantidad q (el de mayor min_quantity <= q)
 function tramoDe(pid,q){ const t=ST.tiers[pid]||[]; let r=t[0]||null; for(const x of t){ if(x.q<=Math.max(1,q)) r=x; } return r; }
-function descPct(pid,tier){ const t=ST.tiers[pid]||[]; if(!t.length||!tier) return 0; const base=t[0].p; return base>0?Math.round((1-tier.p/base)*100):0; }
+// % de descuento SOBRE EL PVP (como la web): base = list_price (PVP Alfabeta en éticos). Si el
+// producto no tiene PVP real (hospitalarios, list_price 0/1) usamos el 1er tramo de la lista.
+function descPct(pid,tier){ const t=ST.tiers[pid]||[]; if(!t.length||!tier) return 0; const pvp=(ST.pvp&&ST.pvp[pid])||0; const base=pvp>1?pvp:t[0].p; return base>0?Math.round((1-tier.p/base)*100):0; }
 // próximo tramo con mejor precio a partir de q → {need, tier, pct}
 function proxTramo(pid,q){ const t=ST.tiers[pid]||[]; const cur=tramoDe(pid,q); for(const x of t){ if(x.q>Math.max(1,q) && (!cur||x.p<cur.p)){ return {need:x.q-Math.max(0,q), tier:x, pct:descPct(pid,x)}; } } return null; }
 // precio normal (para tacharlo) de un producto en oferta. El precio ACTUAL (cur) es el de oferta.
@@ -984,8 +986,11 @@ function precioHtml(p, pr, oferta){
 // escalera: los tramos de descuento en una línea limpia (slot siempre presente para alinear)
 function escHtml(pid){
   const t=ST.tiers[pid]||[]; if(t.length<2) return '<div class="esc"></div>';
-  const segs=t.slice(1,4).map(x=>`<span class="tg"><i>x${x.q}</i> <b>−${descPct(pid,x)}%</b></span>`).join("");
-  return `<div class="esc" title="Descuentos por cantidad">${segs}</div>`;
+  // Si el 1er tramo ya trae descuento sobre PVP (éticos), lo mostramos (como la web). Si no
+  // (hospitalarios: el 1er tramo ES la base), arrancamos en el 2do para no mostrar un −0%.
+  const start = descPct(pid,t[0])>0 ? 0 : 1;
+  const segs=t.slice(start,start+3).map(x=>`<span class="tg"><i>x${x.q}</i> <b>−${descPct(pid,x)}%</b></span>`).join("");
+  return `<div class="esc" title="Descuentos sobre el PVP">${segs}</div>`;
 }
 // aviso de salto de tramo
 function hintHtml(pid,q){
@@ -998,6 +1003,8 @@ function renderGrid(){
   const el=document.getElementById("gridWrap"); if(!el) return;
   if(ST.cargandoCat){ el.innerHTML='<div class="loading"><div class="spinner"></div>Leyendo catálogo…</div>'; return; }
   if(!ST.prods.length){ el.innerHTML='<div class="empty">'+(ST.qProd?"No encontré productos con ese nombre (y stock).":(ST.fam==="OFERTAS"?"No hay ofertas vigentes con stock por ahora.":"No hay productos con stock en esta familia."))+'</div>'; return; }
+  // PVP por producto (list_price): en éticos = PVP Alfabeta. Base para mostrar el descuento como en la web.
+  ST.pvp={}; ST.prods.forEach(p=>{ ST.pvp[p.id]=p.list_price||0; });
   const cuerpo = ST.vista==="grilla"
     ? '<div class="grid">'+ST.prods.map(cardProd).join("")+'</div>'
     : '<div class="rows">'+ST.prods.map(rowProd).join("")+'</div>';
