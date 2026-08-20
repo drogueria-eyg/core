@@ -190,10 +190,12 @@ function clasificar(r){
   if(/^SAMPLE_/i.test(r.code) || /^(table (top|leg))/i.test(r.name)) return "basura";
   if(!r.active) return "archivado";
   if(!(r.costo>0)) return "sincosto";
-  // torcido: hay stock positivo y el valor de Odoo difiere claramente del valor a costo
-  if(r.qty>0){
-    const base=Math.max(Math.abs(r.valObj),1);
-    if(Math.abs(r.dif)>1000 && Math.abs(r.dif)/base>0.05) return "torcido";
+  // ROTO = Odoo perdió el valor del stock: valor NEGATIVO (imposible) o casi cero (quedó por debajo
+  // del 40% de lo que debería, no es un simple desfasaje por inflación). Los que solo están más baratos
+  // porque el costo subió (valor de Odoo = promedio real pagado) NO son errores → quedan sanos.
+  if(r.qty>0 && r.valObj>0){
+    const falta=r.valObj-r.val;
+    if(falta>1000 && r.val < 0.4*r.valObj) return "torcido";
   }
   return "sano";
 }
@@ -223,7 +225,7 @@ function render(){
     <div class="hmetrics">
       <div class="hm clk ${negLines?'bad':'good'}" onclick="irNeg()" title="Lotes en negativo. Casi nunca es falta de stock: el producto suele tener stock en otros lotes (se descontó del lote equivocado). Tocá para ver el producto completo y reordenar sus lotes."><div class="k">⚠️ Lotes negativos</div><div class="v">${negLines}</div></div>
       <div class="hm clk ${ghostLines?'bad':'good'}" onclick="irGhost()" title="Líneas en 0 con reserva pegada sin ninguna venta detrás. Son las que 'no dejan modificar'. Tocá para liberarlas."><div class="k">🔒 Reservas fantasma</div><div class="v">${ghostLines}</div></div>
-      <div class="hm clk ${g.torcido.length?'bad':'good'}" onclick="irTab('valuacion')" title="Productos con la valuación torcida. Tocá para verlos y corregirlos."><div class="k">⚖️ Valuación torcida</div><div class="v">${g.torcido.length}</div></div>
+      <div class="hm clk ${g.torcido.length?'bad':'good'}" onclick="irTab('valuacion')" title="Productos donde Odoo perdió el valor del stock (negativo o casi cero). NO incluye los que solo están más baratos por inflación. Tocá para verlos y corregirlos."><div class="k">⚖️ Valor roto</div><div class="v">${g.torcido.length}</div></div>
       <div class="hm clk ${g.sincosto.length?'mid':'good'}" onclick="irTab('sincosto')" title="Productos con stock pero sin costo. Tocá para cargarles el costo."><div class="k">🏷️ Sin costo</div><div class="v">${g.sincosto.length}</div></div>
       <div class="hm clk ${g.archivado.length?'mid':'good'}" onclick="irTab('archivado')" title="Productos archivados que todavía tienen stock. Tocá para resolverlos."><div class="k">🗃️ Archivados c/stock</div><div class="v">${g.archivado.length}</div></div>
       <div class="hm clk ${g.basura.length?'mid':'good'}" onclick="irTab('basura')" title="Productos de prueba con stock. Tocá para limpiarlos."><div class="k">🧹 Basura</div><div class="v">${g.basura.length}</div></div>
@@ -288,7 +290,7 @@ function tabValuacion(list){
       <div class="tr-r"><button class="mini-btn pri" onclick="revalorizar(${r.id})" title="Corrige el valor a ${money(objetivo)} con la herramienta oficial de Odoo. No toca la contabilidad.">🔧 Corregir</button></div>
     </div>`;
   }).join('');
-  return `<div class="note">⚖️ <b>Valuación torcida.</b> Estos productos <b>tienen stock físico</b>, pero Odoo los valúa mal (a veces en negativo) por haber entregado sin haber ingresado antes. El botón <b>Corregir</b> lleva el valor a <b>cantidad × costo del motor</b> con la herramienta oficial de Odoo (revalorización). Verificado: <b>no genera asiento contable</b>. De raíz: <b>ingresar la mercadería antes de entregarla</b>.</div>
+  return `<div class="note">⚖️ <b>Valor roto.</b> Solo están acá los productos donde Odoo <b>perdió el valor</b> del stock: lo dejó en <b>negativo</b> (imposible) o casi en cero, por haber entregado sin ingresar antes. <b>Debería valer = cantidad × costo del motor</b> (última compra o costo manual). <b>Corregir</b> lleva el valor a ese número con la herramienta oficial de Odoo; <b>no genera asiento contable</b>. <br><b>Ojo:</b> los productos cuyo valor de Odoo es más bajo <b>solo por inflación</b> (el costo subió, pero el valor guardado es el promedio real de lo que pagaste) <b>NO están acá</b> — ese valor es correcto y subirlo inflaría el inventario. De raíz: <b>ingresar la mercadería antes de entregarla</b>.</div>
    <div class="toolbar">
      <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4-4"/></svg><input id="valq" placeholder="Buscar producto o código…" value="${esc(VAL.q)}"></div>
      <button class="mini-btn" onclick="valSelAll()">Seleccionar todos (${arr.length})</button>
