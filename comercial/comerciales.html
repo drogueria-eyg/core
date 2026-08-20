@@ -215,7 +215,7 @@ EYG.requireAuth(["admin","direccion"], perfil=>{
       ${esSuperAdmin?`<div class="foldrow" id="fold-comi">
         <div class="foldhead" onclick="toggleFold('comi')">
           <div class="fi">🧮</div>
-          <div class="ft"><b>Cálculo de comisiones</b><span>Configurá la meta de facturación y las tasas. Solo vos y Germán. Rige desde agosto.</span></div>
+          <div class="ft"><b>Cálculo de comisiones</b><span>Configurá la meta y las tasas, y seguí las comisiones por mes. Solo vos y Germán.</span></div>
           <span class="pill" style="background:#E2F1EF;color:#04635F">solo dirección</span>
           <div class="chev" style="margin-left:12px">▾</div>
         </div>
@@ -620,14 +620,14 @@ async function montarComi(){
 }
 async function comiLoadData(){
   const now=new Date(); COMI.curM=MESKEY(now);
-  const desdeD=new Date(now.getFullYear(), now.getMonth()-6, 1);   // 6 meses cerrados + el actual
+  const desdeD=new Date(now.getFullYear(), now.getMonth()-8, 1);   // ventana amplia: 6 meses a mostrar + 3 previos para calcular su meta
   const desde=desdeD.toISOString().slice(0,10);
   // vendedores que nos importan: comerciales + líderes que venden
   const sellers=[]; const seen=new Set();
   (STATE.coms||[]).forEach(c=>{ if(!seen.has(c.uid)){ seen.add(c.uid); sellers.push({uid:c.uid,name:c.name}); } });
   (STATE.leaders||[]).forEach(l=>{ if(l.uid && !seen.has(l.uid) && (l.ownFactMes>0)){ seen.add(l.uid); sellers.push({uid:l.uid,name:l.name}); } });
   COMI.sellers=sellers; COMI.names={}; sellers.forEach(s=>COMI.names[s.uid]=s.name);
-  const monthly={}; COMI.recu={};
+  const monthly={}; COMI.recu={}; COMI.ticket={};
   // FACTURADO NETO por mes con la regla HÍBRIDA: vendedor del pedido; o dueño del cliente si el pedido
   // quedó bajo la cuenta genérica (recupera lo mal cargado). Igual que el panel del comercial.
   const dom=(uid,mt,soloGen)=>{ const base=[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",desde]];
@@ -635,16 +635,18 @@ async function comiLoadData(){
                    : [...base,"|",["sale_line_ids.order_id.user_id","=",uid],"&",["sale_line_ids.order_id.user_id","=",GEN_UID],["sale_line_ids.order_id.partner_id.user_id","=",uid]]; };
   for(const s of sellers){
     monthly[s.uid]={};
-    const [fi,fr,gi,gr]=await Promise.all([
+    const [fi,fr,gi,gr,to]=await Promise.all([
       EYG.rpc("account.move.line","read_group",[dom(s.uid,"out_invoice",false),["price_subtotal:sum"],["date:month"]],{lazy:false}),
       EYG.rpc("account.move.line","read_group",[dom(s.uid,"out_refund",false),["price_subtotal:sum"],["date:month"]],{lazy:false}),
       EYG.rpc("account.move.line","read_group",[dom(s.uid,"out_invoice",true),["price_subtotal:sum"],[]],{lazy:false}),
       EYG.rpc("account.move.line","read_group",[dom(s.uid,"out_refund",true),["price_subtotal:sum"],[]],{lazy:false}),
+      EYG.rpc("sale.order","read_group",[[["user_id","=",s.uid],["state","in",["sale","done"]],["date_order",">=",desde]],["amount_total:sum"],[]],{lazy:false}),
     ]);
     for(const r of fi){ const rg=r.__range&&r.__range["date:month"]; const k=rg?rg.from.slice(0,7):null; if(k) monthly[s.uid][k]=(monthly[s.uid][k]||0)+(r.price_subtotal||0); }
     for(const r of fr){ const rg=r.__range&&r.__range["date:month"]; const k=rg?rg.from.slice(0,7):null; if(k) monthly[s.uid][k]=(monthly[s.uid][k]||0)-(r.price_subtotal||0); }
     const rec=((gi[0]&&gi[0].price_subtotal)||0)-((gr[0]&&gr[0].price_subtotal)||0);
     if(rec>0) COMI.recu[s.uid]=rec;
+    const tr=to[0]||{}; COMI.ticket[s.uid]=(tr.__count>0)?((tr.amount_total||0)/tr.__count):0;   // ticket bruto → perfil
   }
   COMI.monthly=monthly;
 }
@@ -672,7 +674,7 @@ function comiRender(){
   const c=COMI.cfg||EYG.COMI_DEF; COMI._metodo=c.metaMetodo||"promedio";
   const pct=Math.round((c.metaCrecimiento||0)*100);
   box.innerHTML=`
-    <div class="comi-note">La <b>meta</b> de cada comercial = <b>promedio de su facturado neto</b> de los últimos meses + un %. La comisión se calcula sobre el <b>facturado neto</b> (facturas − NC) atribuido a <b>quien generó el pedido</b> (y si el pedido quedó bajo la genérica, al dueño del cliente). Cambiá los valores y mirá la meta de cada una <b>en vivo</b>. Se guarda recién con el botón, y rige <b>desde agosto</b>.</div>
+    <div class="comi-note">La comisión se calcula sobre el <b>facturado neto</b> (facturas − NC), atribuido a <b>quien generó el pedido</b> (o al dueño del cliente si el pedido quedó bajo la genérica). La <b>meta</b> = promedio o mediana de los últimos meses + un %. Cambiá los valores y mirá la meta <b>en vivo</b>; se guarda con el botón.</div>
     <div class="comi-knobs">
       <div class="knob"><label>Meses que promedia</label>
         <input type="number" id="k_meses" min="1" max="6" step="1" value="${c.metaMeses||3}" oninput="comiRecalc()">
@@ -705,8 +707,35 @@ function comiRender(){
       <button class="comi-save" id="comi_save" onclick="comiGuardar()">💾 Guardar configuración</button>
       <button class="comi-reset" onclick="comiResetDef()">Volver a los valores por defecto</button>
     </div>
-    <div id="comi_prev" class="comi-prevwrap"></div>`;
+    <div id="comi_prev" class="comi-prevwrap"></div>
+    <div id="comi_seg" class="comi-prevwrap" style="margin-top:20px"></div>`;
   comiRecalc();
+}
+const Mc=n=>{ n=n||0; return Math.abs(n)>=1e6?"$"+(n/1e6).toFixed(2)+"M":"$"+Math.round(n/1000)+"k"; };
+// Tabla de COMISIONES POR MES por comercial (seguimiento / liquidación). Comisión = escalera sobre el
+// facturado neto del mes con la meta de ese mes. Recalcula al cambiar cualquier parámetro de config.
+function comiSegRender(cfg){
+  const wrap=document.getElementById("comi_seg"); if(!wrap)return;
+  const [Y,Mo]=COMI.curM.split("-").map(Number); const cols=[];
+  for(let i=5;i>=0;i--){ let m=Mo-i,y=Y; while(m<1){m+=12;y--;} cols.push(y+"-"+String(m).padStart(2,"0")); }
+  const rates=cfg.rates||EYG.COMI_DEF.rates, esExt=nm=>/Samanta/i.test(nm||"");
+  const escal=(fact,meta,perfil)=>{ const rt=perfil==="externo"?rates.externo:(rates[perfil]||rates.farm); const corte=perfil==="externo"?(cfg.externoCorte||50e6):meta; return fact<=corte?fact*rt.base:corte*rt.base+(fact-corte)*rt.high; };
+  const rows=COMI.sellers.map(s=>{
+    const perfil=esExt(s.name)?"externo":(((COMI.ticket||{})[s.uid]||0)>=(cfg.perfilTicket||300000)?"inst":"farm");
+    const cells=cols.map(k=>{ const fact=(COMI.monthly[s.uid]||{})[k];
+      if(fact==null) return {fact:null,comi:null};
+      const meta=EYG.metaDesde(COMI.monthly[s.uid]||{}, k, cfg).meta;
+      return {fact, comi:escal(fact,meta,perfil)}; });
+    return {name:s.name, cells, tot:cells.reduce((a,c)=>a+(c.comi||0),0)};
+  }).filter(r=>r.cells.some(c=>c.comi!=null)).sort((a,b)=>b.tot-a.tot);
+  const curK=COMI.curM;
+  let html=`<div style="font-size:13px;font-weight:800;margin-bottom:8px">📅 Comisiones por mes <span style="font-weight:600;color:var(--gris2);font-size:11.5px">· sobre facturado neto · el mes en curso es parcial</span></div>
+    <table class="comi-prev"><tr><th class="nm">Comercial</th>${cols.map(k=>`<th>${MESLBL(k)}${k===curK?' ·hoy':''}</th>`).join("")}<th>Total 6m</th></tr>`;
+  for(const r of rows){
+    html+=`<tr><td class="nm">${esc(r.name)}</td>`+r.cells.map(c=>c.comi==null?'<td><span style="color:var(--gris2)">—</span></td>':`<td><b>${Mc(c.comi)}</b><br><span style="font-size:10px;color:var(--gris2)">fact ${Mc(c.fact)}</span></td>`).join("")+`<td class="meta">${Mc(r.tot)}</td></tr>`;
+  }
+  html+=`</table><div style="font-size:11px;color:var(--gris2);margin-top:6px">Comisión base = escalera sobre el facturado neto con la meta de cada mes. No incluye el ajuste de nivel/salud (que se ve en el panel de cada comercial).</div>`;
+  wrap.innerHTML=html;
 }
 function comiSetMetodo(m){ COMI._metodo=m; const a=document.getElementById("m_prom"),b=document.getElementById("m_med"); if(a)a.className=m!=='mediana'?'on':''; if(b)b.className=m==='mediana'?'on':''; comiRecalc(); }
 function comiResetDef(){ COMI.cfg=JSON.parse(JSON.stringify(EYG.COMI_DEF)); comiRender(); otoast("Valores por defecto (sin guardar)", true); }
@@ -730,6 +759,7 @@ function comiRecalc(){
   html+=`</table>`;
   if(!rows.length) html='<div class="comi-note">No hay ventas por vendedor en la ventana para mostrar.</div>';
   wrap.innerHTML=html;
+  comiSegRender(cfg);   // tabla de comisiones por mes (seguimiento/liquidación) — recalcula con los mismos parámetros
 }
 async function comiGuardar(){
   const btn=document.getElementById("comi_save"); if(btn){btn.disabled=true;btn.textContent="Guardando…";}
