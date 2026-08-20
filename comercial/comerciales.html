@@ -295,12 +295,16 @@ async function cargar(){
     const parts=await EYG.rpc("res.partner","search_read",[[["user_id","in",metricUids],["customer_rank",">",0]]],{fields:["id","user_id"]});
     const sellerOf={}, allIds=[];
     for(const p of parts){ const u=p.user_id&&p.user_id[0]; if(u==null||!(u in cartera))continue; sellerOf[p.id]=u; cartera[u]++; allIds.push(p.id); }
-    const [facG,ncG,cobG,mlAll,hoyG,...series] = await Promise.all([
+    // DEUDA por CRUCE (solo ventas que hizo cada comercial): factura impaga → pedido → vendedor; o genérica → dueño del cliente.
+    const deudaDom=u=>[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],
+      "|",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",u],
+          "&",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",452],["move_id.invoice_line_ids.sale_line_ids.order_id.partner_id.user_id","=",u]];
+    const [facG,ncG,cobG,hoyG,deudaL,...series] = await Promise.all([
       allIds.length?EYG.rpc("account.move","read_group",[[["partner_id","in",allIds],["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],["partner_id"]],{lazy:false}):[],
       allIds.length?EYG.rpc("account.move","read_group",[[["partner_id","in",allIds],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],["partner_id"]],{lazy:false}):[],
       allIds.length?EYG.rpc("account.payment","read_group",[[["partner_id","in",allIds],["payment_type","=","inbound"],["state","=","posted"],["date",">=",inicioMes]],["amount:sum"],["partner_id"]],{lazy:false}):[],
-      allIds.length?EYG.rpc("account.move.line","search_read",[[["partner_id","in",allIds],["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false]]],{fields:["partner_id","amount_residual","date_maturity"],limit:0}):[],
       EYG.rpc("sale.order","read_group",[[["user_id","in",metricUids],["state","in",["sale","done"]],["date_order",">=",hoy+" 00:00:00"]],["amount_untaxed:sum"],["user_id"]],{lazy:false}),
+      Promise.all(metricUids.map(u=>EYG.rpc("account.move.line","search_read",[deudaDom(u)],{fields:["amount_residual","date_maturity"],limit:0}).catch(()=>[]))),
       ...leaders.map(L=>{ const tu=comEmps.filter(e=>e.parent_id&&e.parent_id[0]===L.id).map(e=>e.user_id[0]);
         const su=[...new Set([L.user_id[0], ...tu])];   // serie TOTAL = líder + su equipo
         return EYG.rpc("sale.order","read_group",[[["user_id","in",su],["state","in",["sale","done"]],["date_order",">=",desde12+" 00:00:00"]],["amount_untaxed:sum"],["date_order:month"]],{lazy:false}); }),
@@ -309,7 +313,7 @@ async function cargar(){
     for(const g of facG){ const u=sellerOf[pidOf(g)]; if(u!=null) fac[u]+=g.amount_untaxed||0; }
     for(const g of ncG){  const u=sellerOf[pidOf(g)]; if(u!=null) nc[u]+=g.amount_untaxed||0; }
     for(const g of cobG){ const u=sellerOf[pidOf(g)]; if(u!=null) cob[u]+=g.amount||0; }
-    for(const l of mlAll){ const u=sellerOf[l.partner_id&&l.partner_id[0]]; if(u==null)continue; const r=l.amount_residual||0; if(r>0){ deuda[u]+=r; if(l.date_maturity&&l.date_maturity<hoy) venc[u]+=r; } }
+    metricUids.forEach((u,i)=>{ deuda[u]=0; venc[u]=0; for(const l of (deudaL[i]||[])){ const r=l.amount_residual||0; if(r>0){ deuda[u]+=r; if(l.date_maturity&&l.date_maturity<hoy) venc[u]+=r; } } });
     for(const g of hoyG){ const u=g.user_id&&g.user_id[0]; if(u!=null&&(u in hoyU)) hoyU[u]=g.amount_untaxed||0; }
     // series mensuales por líder (para el mini-gráfico)
     STATE._serieByLeader={};
