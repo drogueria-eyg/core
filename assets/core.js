@@ -493,34 +493,72 @@ window.EYG = (function(){
 
   /* ---- Tarjeta "Combos y ofertas de la semana" (compartida: panel comercial + lider) ----
      Lee las ofertas activas del parametro eyg.ofertas (las carga el modulo Oportunidades). */
+  // CSS de las tarjetas de oferta del líder (incluye el 🔥 latiendo). Se inyecta 1 vez.
+  function ofStyles(){
+    if(typeof document==="undefined"||document.getElementById("eyg-lof-css")) return;
+    const s=document.createElement("style"); s.id="eyg-lof-css"; s.textContent=
+    ".lofbox{background:linear-gradient(135deg,#04635F,#048782);border-radius:16px;padding:15px 16px;margin:14px 0}"+
+    ".lof-head{color:#fff;font-weight:800;font-size:16px;margin-bottom:11px}.lof-head span{opacity:.8;font-weight:600;font-size:12px}"+
+    ".lof-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:11px;align-items:stretch}"+
+    ".lof-card{background:#fff;border-radius:12px;padding:12px 13px;box-shadow:0 2px 10px rgba(0,0,0,.08);display:flex;flex-direction:column;border:1px solid transparent}"+
+    ".lof-card.hot{border-color:#F0B15A;box-shadow:0 0 0 1px #F0B15A,0 6px 18px rgba(255,140,60,.18)}"+
+    ".lof-tag{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#048782}"+
+    ".lof-name{font-weight:800;font-size:14px;color:#0E1F1D;margin:3px 0;line-height:1.25;min-height:34px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}"+
+    ".lof-prod{font-size:11px;color:#8A9A97;min-height:15px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}"+
+    ".lof-price{display:flex;align-items:baseline;gap:7px;margin:6px 0 4px;min-height:24px}.lof-old{color:#8A9A97;text-decoration:line-through;font-size:12px}.lof-new{color:#1E7D46;font-weight:900;font-size:18px}.lof-off{background:#e7f6ec;color:#1E7D46;font-weight:800;font-size:11px;border-radius:20px;padding:1px 7px}"+
+    ".lof-perf{display:flex;gap:5px;flex-wrap:wrap;margin:2px 0}.lof-perf span{background:#F1F5F4;border-radius:20px;padding:2px 8px;font-size:10.5px;font-weight:700;color:#5F716E;white-space:nowrap}.lof-perf b{color:#0E1F1D}"+
+    ".lof-rend.alta{background:#E4F5E9;color:#1E7D46}.lof-rend.media{background:#FBF0DA;color:#9A6B12}.lof-rend.baja{background:#F1F5F4;color:#8A9A97}"+
+    ".lof-extra{font-size:10.5px;color:#8A9A97;margin-top:4px;min-height:14px}"+
+    ".lof-hot{margin-top:auto;padding-top:8px;font-size:11px;font-weight:800;color:#B45816}"+
+    ".of-fire{display:inline-block;animation:ofFire 1.15s ease-in-out infinite;transform-origin:center}"+
+    "@keyframes ofFire{0%,100%{transform:scale(1);filter:drop-shadow(0 0 0 rgba(255,140,60,0))}50%{transform:scale(1.25);filter:drop-shadow(0 0 7px rgba(255,140,60,.8))}}"+
+    "@media(prefers-reduced-motion:reduce){.of-fire{animation:none}}";
+    document.head.appendChild(s);
+  }
   async function cardOfertasSemana(elId){
     const el = document.getElementById(elId); if(!el) return;
+    ofStyles();
     let ofertas=[];
     try{ const raw = await rpc("ir.config_parameter","get_param",["eyg.ofertas"]); ofertas = JSON.parse(raw||"[]"); }catch(e){ return; }
     const hoy = new Date().toISOString().slice(0,10);
-    const act = ofertas.filter(o=>!o.hasta || o.hasta>=hoy);
+    const act = ofertas.filter(o=>o && o.id && (!o.hasta || o.hasta>=hoy));
     if(!act.length){ el.innerHTML=""; return; }
+    // Rendimiento GLOBAL por oferta (todos los comerciales), igual criterio que el panel del comercial.
+    const d120 = new Date(Date.now()-120*864e5).toISOString().slice(0,10);
+    const stat={};
+    try{
+      const allEnv = await rpc("mail.message","search_read",[[["model","=","res.partner"],["body","like","EyGOFENV"],["date",">=",d120+" 00:00:00"]]],{fields:["body"],limit:0});
+      const envTexts = allEnv.map(m=>(m.body||"").replace(/<[^>]+>/g,""));
+      await Promise.all(act.map(async o=>{
+        const pids=(o.items||[]).map(i=>i.id).filter(Boolean);
+        const tit=o.titulo || (o.items||[]).map(i=>i.nombre).join(" + ");
+        const env = tit ? envTexts.filter(b=>b.includes(tit)).length : 0;
+        let ven=0;
+        if(pids.length){ const desde=(o.creada||(d120+" 00:00:00")), hasta=(o.hasta||hoy);
+          try{ const g=await rpc("sale.order.line","read_group",[[["product_id","in",pids],["state","in",["sale","done"]],["order_id.date_order",">=",desde],["order_id.date_order","<=",hasta+" 23:59:59"]],["__count"],["order_partner_id"]],{lazy:false}); ven=g.length; }catch(e){} }
+        stat[o.id]={env,ven,conv:env>0?ven/env:0, score:(env>0?ven/env:0)*100+ven};
+      }));
+    }catch(e){}
+    const maxSc=Math.max(0,...act.map(o=>(stat[o.id]||{}).score||0));
+    const esHot=o=>{ const s=stat[o.id]||{}; return maxSc>0 && (s.ven||0)>=1 && (s.score||0)>=Math.max(1,0.6*maxSc); };
     const fD=s=>s?(s.slice(8,10)+"/"+s.slice(5,7)):"";
     const card=o=>{
       const items=(o.items||[]).map(i=>i.nombre).join(" + ");
-      const ah = (o.precioAntes>o.precio) ? Math.round((1-o.precio/o.precioAntes)*100) : 0;
-      return `<div style="background:#fff;border-radius:12px;padding:12px 13px;min-width:210px;flex:1 1 210px;box-shadow:0 2px 10px rgba(0,0,0,.08)">
-        <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#048782">${o.tipo==='combo'?'🎁 Combo':'🏷️ Oferta'}${o.hasta?' · hasta '+fD(o.hasta):''}</div>
-        <div style="font-weight:800;font-size:14px;color:#0E1F1D;margin:3px 0;line-height:1.25">${esc(o.titulo||items)}</div>
-        ${(o.titulo&&items&&items!==o.titulo)?`<div style="font-size:11px;color:#8A9A97">${esc(items)}</div>`:""}
-        <div style="display:flex;align-items:baseline;gap:7px;margin-top:6px">
-          ${o.precioAntes>o.precio?`<span style="color:#8A9A97;text-decoration:line-through;font-size:12px">${money(o.precioAntes)}</span>`:""}
-          <span style="color:#1E7D46;font-weight:900;font-size:18px">${money(o.precio)}</span>
-          ${ah?`<span style="background:#e7f6ec;color:#1E7D46;font-weight:800;font-size:11px;border-radius:20px;padding:1px 7px">−${ah}%</span>`:""}
-        </div>
-        ${o.stock?`<div style="font-size:11px;color:#5F716E;margin-top:4px">📦 ${o.stock} disponibles</div>`:""}
-        ${o.nota?`<div style="font-size:11px;color:#5F716E;margin-top:2px">📝 ${esc(o.nota)}</div>`:""}
+      const ah=(o.precioAntes>o.precio)?Math.round((1-o.precio/o.precioAntes)*100):0;
+      const s=stat[o.id]||{env:0,ven:0}; const hot=esHot(o); const rendPct=s.env>0?Math.round(s.conv*100):null;
+      const rc=rendPct==null?'':(rendPct>=40?'alta':rendPct>=15?'media':'baja');
+      return `<div class="lof-card${hot?' hot':''}">
+        <div class="lof-tag">${o.tipo==='combo'?'🎁 Combo':'🏷️ Oferta'}${o.hasta?' · hasta '+fD(o.hasta):''}</div>
+        <div class="lof-name">${esc(o.titulo||items)}</div>
+        <div class="lof-prod">${(o.titulo&&items&&items!==o.titulo)?esc(items):'&nbsp;'}</div>
+        <div class="lof-price">${o.precioAntes>o.precio?`<span class="lof-old">${money(o.precioAntes)}</span>`:""}<span class="lof-new">${money(o.precio)}</span>${ah?`<span class="lof-off">−${ah}%</span>`:""}</div>
+        <div class="lof-perf" title="Rendimiento en toda la droguería (120 días)"><span>📤 <b>${s.env}</b></span><span>🛒 <b>${s.ven}</b></span>${rendPct!=null?`<span class="lof-rend ${rc}">${rendPct}%</span>`:''}</div>
+        <div class="lof-extra">${o.stock?('📦 '+o.stock+' disp.'+(o.nota?' · 📝 '+esc(o.nota):'')):(o.nota?('📝 '+esc(o.nota)):'&nbsp;')}</div>
+        ${hot?'<div class="lof-hot"><span class="of-fire">🔥</span> Mejor rendimiento — ofrecela</div>':''}
       </div>`;
     };
-    el.innerHTML = `<div style="background:linear-gradient(135deg,#04635F,#048782);border-radius:16px;padding:15px 16px;margin:14px 0">
-      <div style="color:#fff;font-weight:800;font-size:16px;margin-bottom:11px">🏷️ Combos y ofertas de la semana <span style="opacity:.8;font-weight:600;font-size:12px">· ${act.length}</span></div>
-      <div style="display:flex;gap:11px;flex-wrap:wrap">${act.map(card).join("")}</div>
-    </div>`;
+    el.innerHTML = `<div class="lofbox"><div class="lof-head">🏷️ Combos y ofertas de la semana <span>· ${act.length}</span></div>
+      <div class="lof-grid">${act.map(card).join("")}</div></div>`;
   }
 
   /* ===== Comunicaciones · novedades internas (parámetro eyg.comunicaciones) =====
