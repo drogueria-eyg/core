@@ -161,6 +161,7 @@
   .row:hover{background:#F7FBFA}.row:last-child{border-bottom:0}
   .thead>div,.row>div{min-width:0}
   .g-stock{grid-template-columns:2.4fr 1.1fr 0.75fr 1fr 0.8fr 0.8fr 0.9fr}
+  .g-liq{grid-template-columns:2.8fr 1.1fr 0.7fr 1fr 1.5fr}
   .g-repo{grid-template-columns:2.4fr 1.4fr 0.8fr 0.8fr 0.9fr 0.9fr}
   .g-win{grid-template-columns:2.4fr 0.8fr 0.9fr 0.8fr 1fr 0.9fr}
   .tr-r{text-align:right;font-variant-numeric:tabular-nums}
@@ -275,7 +276,7 @@
   .cotrow .cst{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;font-size:12.5px}
 
   @media(max-width:860px){ .grid2{grid-template-columns:1fr} .rotleg{grid-template-columns:1fr}
-    .g-stock{grid-template-columns:1.8fr 0.7fr 1fr 0.85fr 0.9fr} .g-repo{grid-template-columns:2fr 1fr 0.9fr} .g-win{grid-template-columns:2fr 0.9fr 1fr}
+    .g-stock{grid-template-columns:1.8fr 0.7fr 1fr 0.85fr 0.9fr} .g-repo{grid-template-columns:2fr 1fr 0.9fr} .g-win{grid-template-columns:2fr 0.9fr 1fr} .g-liq{grid-template-columns:1.7fr 1fr 1.3fr}
     .hide-sm{display:none} .fbar{width:8px} .spark{width:100%} .health .hh{gap:16px} }
 </style>
 </head>
@@ -329,6 +330,7 @@ function fmtDurC(m){
 
 let DATA=[], ARCH=[], VALROTO=[], LOTES={}, FLUJO={meses:[],ventas:[],compras:[]}, CAD={}, TOT=0, KPI={}, BUCKETS=[], FAMS=[];
 let TAB="comprar";
+let comprarSub="reponer";   // sub-pestaña de Comprar: "reponer" | "pres"
 let liq={plazo:6};   // Liquidar: plazo de vencimiento en meses para el filtro "por vencer"
 let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
 let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
@@ -726,7 +728,7 @@ function tabsBar(rd){
 function setTab(t){ TAB=t; render(); }
 function renderTab(rd){
   const c=document.getElementById("tabc");
-  if(TAB==="comprar") { c.innerHTML=tabComprar(rd); if(PRES.loaded) renderPresList(); }
+  if(TAB==="comprar") { c.innerHTML=tabComprar(rd); if(comprarSub==="pres"&&PRES.loaded) renderPresList(); }
   else if(TAB==="liquidar") c.innerHTML=tabLiquidar(rd);
   else if(TAB==="win") { c.innerHTML=tabWin(rd); renderWin(); }
   else if(TAB==="revisar") c.innerHTML=tabRevisar();
@@ -868,14 +870,23 @@ async function accionArchivar(id){
 
 // ---------- TAB: Comprar (reponer + cargar compra + presupuestos, todo junto) ----------
 function tabComprar(rd){
+  const nrep=rd.necesita.filter(x=>x.r.provId||x.r.viaOtra).length;
+  const npres=PRES.loaded?PRES.rows.length:null;
+  return `
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0 6px">
+      <div class="segs">
+        <button class="${comprarSub==='reponer'?'on':''}" onclick="setComprarSub('reponer')">🔁 Reponer${nrep?` · ${nrep}`:""}</button>
+        <button class="${comprarSub==='pres'?'on':''}" onclick="setComprarSub('pres')">📄 Presupuestos${npres!=null?` · ${npres}`:""}</button>
+      </div>
+      <button class="wa-send" style="width:auto;margin:0;padding:10px 18px;background:var(--gold);margin-left:auto" onclick="nuevaCompra()">➕ Nuevo pedido</button>
+    </div>
+    ${comprarSub==='pres' ? presSeccion() : reponerSeccion(rd)}
+  `;
+}
+function reponerSeccion(rd){
   const topUrg=[...rd.necesita].filter(x=>x.r.provId||x.r.viaOtra)
     .sort((a,b)=>(URG_ORD[a.rp.urg]-URG_ORD[b.rp.urg])||(b.r.margenAnual-a.r.margenAnual)).slice(0,12);
   return `
-    <div class="note info">Todo lo de comprar en un solo lugar: qué reponer, armar el pedido por proveedor, cargar una compra nueva, y tus presupuestos abiertos para cotizar y confirmar.</div>
-    <div style="display:flex;justify-content:flex-end;margin:12px 0 2px">
-      <button class="wa-send" style="width:auto;margin:0;padding:11px 20px;background:var(--gold)" onclick="nuevaCompra()">➕ Nuevo pedido de compra</button>
-    </div>
-
     <div class="policy">
       <div class="pol"><label>Avisar cuando la cobertura baje de <b id="lbU">${pol.umbral} mes</b></label>
         <input type="range" min="0.25" max="3" step="0.25" value="${pol.umbral}" oninput="setUmbral(this.value)"></div>
@@ -913,11 +924,9 @@ function tabComprar(rd){
         ${rd.otra.length>30?`<div class="count-line" style="margin-top:8px">…y ${rd.otra.length-30} más.</div>`:""}</div>`:""}
 
     ${rd.sinProv.length?`<div class="note">Hay <b>${rd.sinProv.length} productos</b> que habría que reponer pero <b>no tienen proveedor cargado</b> en Odoo. Asignales uno para poder armarles el pedido.</div>`:""}
-
-    <h2 class="sec" style="margin-top:30px">Presupuestos abiertos<span class="hint">pedidos de presupuesto en Odoo — cotizá con el proveedor, enviá y confirmá</span></h2>
-    ${presSeccion()}
   `;
 }
+function setComprarSub(s){ comprarSub=s; render(); }
 function setUmbral(v){pol.umbral=parseFloat(v);document.getElementById("lbU").textContent=pol.umbral+(pol.umbral===1?" mes":" meses");render();}
 function setObjetivo(v){pol.objetivo=parseFloat(v);document.getElementById("lbO").textContent=pol.objetivo+" meses";render();}
 function setFuente(f){pol.fuente=f;render();}
@@ -930,32 +939,47 @@ function tabLiquidar(rd){
   const yaMarcados=DATA.filter(r=>r.xop).length;
   const plazoLbl=m=>m>=12?(m/12)+(m===12?" año":" años"):m+" meses";
   return `
-    <div class="note info">Lo que conviene <b>vender rápido o liquidar</b>: por vencer, sobrestock y sin rotación. Con <b>Mandar a Oportunidades</b> lo enviás al módulo de Oportunidades y Ofertas, donde se le arma el descuento y va al panel de comerciales.${yaMarcados?` Ya hay <b>${yaMarcados}</b> marcado${yaMarcados===1?"":"s"}.`:""}</div>
+    <div class="note info">Lo que conviene <b>vender rápido o liquidar</b>: por vencer, sobrestock y sin rotación. <b>A ofertar</b> lo manda al módulo de Oportunidades y Ofertas, donde se le arma el descuento y va al panel de comerciales.${yaMarcados?` Ya hay <b>${yaMarcados}</b> marcado${yaMarcados===1?"":"s"}.`:""}</div>
 
     <h2 class="sec">⏳ Por vencer</h2>
     <div class="policy" style="align-items:center">
-      <div class="pol" style="flex:0 0 auto;min-width:auto"><label>Mostrar lo que vence en menos de</label>
+      <div class="pol" style="flex:0 0 auto;min-width:auto"><label>Vence en menos de</label>
         <div class="segs">${[1,3,6,12,24].map(m=>`<button class="${liq.plazo===m?'on':''}" onclick="setLiqPlazo(${m})">${plazoLbl(m)}</button>`).join("")}</div></div>
       <div class="pol" style="flex:1"><label>Resultado</label><div style="font-size:13px;color:var(--gris)"><b>${porVencer.length}</b> producto${porVencer.length===1?"":"s"} · ${money(porVencer.reduce((a,r)=>a+r.val,0))} en stock</div></div>
     </div>
-    <div class="pcard">${porVencer.length?`<ul class="lst">${porVencer.slice(0,50).map(r=>liqRow(r,"vence")).join("")}</ul>${porVencer.length>50?`<div class="count-line" style="margin-top:8px">…y ${porVencer.length-50} más.</div>`:""}`:'<div class="empty">Nada que venza en ese plazo. 👌</div>'}</div>
+    ${liqTabla(porVencer,"vence",50)}
 
-    <h2 class="sec">🐢 Sobrestock<span class="hint">+1 año de stock — conviene moverlo</span></h2>
-    <div class="pcard">${sobre.length?`<ul class="lst">${sobre.slice(0,30).map(r=>liqRow(r,"sobre")).join("")}</ul>${sobre.length>30?`<div class="count-line" style="margin-top:8px">…y ${sobre.length-30} más.</div>`:""}`:'<div class="empty">Sin sobrestock. 👌</div>'}</div>
+    <h2 class="sec" style="margin-top:26px">🐢 Sobrestock<span class="hint">+1 año de stock — conviene moverlo</span></h2>
+    ${liqTabla(sobre,"sobre",30)}
 
-    <h2 class="sec">💤 Sin rotación<span class="hint">sin ventas hace 1 año</span></h2>
-    <div class="pcard">${muerto.length?`<ul class="lst">${muerto.slice(0,30).map(r=>liqRow(r,"muerto")).join("")}</ul>${muerto.length>30?`<div class="count-line" style="margin-top:8px">…y ${muerto.length-30} más.</div>`:""}`:'<div class="empty">Todo rota. 👌</div>'}</div>
+    <h2 class="sec" style="margin-top:26px">💤 Sin rotación<span class="hint">sin ventas hace 1 año</span></h2>
+    ${liqTabla(muerto,"muerto",30)}
   `;
 }
-function liqRow(r,tipo){
-  const tag = tipo==="vence"?(r.min<0?`<span class="pill red">vencido</span>`:`<span class="pill org">vence en ${fmtDur(r.min)}</span>`)
-    : tipo==="sobre"?`<span class="pill org">${fmtDur(r.meses)} de stock</span>`
-    : `<span class="pill gray">sin venta 12m</span>`;
-  return `<li class="li">
-    <span onclick="abrirProd(${r.id})" style="cursor:pointer;flex:1;display:flex;gap:11px;align-items:center;min-width:0">${tag}
-      <span class="nm"><b>${esc(cleanName(r.name))}</b><span>${r.qty.toLocaleString("es-AR")} u · ${money(r.val)}${r.provName?" · "+esc(r.provName):""}</span></span></span>
-    <button class="mini-btn" onclick="mandarOportunidad(${r.id})" style="background:var(--gold);color:#fff;border-color:var(--gold);white-space:nowrap">🏷️ Mandar a Oportunidades</button>
-  </li>`;
+function liqTabla(rows,tipo,cap){
+  if(!rows.length) return `<div class="pcard empty">${tipo==="vence"?"Nada que venza en ese plazo. 👌":tipo==="sobre"?"Sin sobrestock. 👌":"Todo rota. 👌"}</div>`;
+  return `<div class="tablecard">
+    <div class="thead g-liq">
+      <div title="Nombre y código del producto.">Producto</div>
+      <div title="${tipo==='vence'?'Cuánto falta para que venza (o si ya venció).':tipo==='sobre'?'Para cuánto alcanza el stock al ritmo de venta.':'Hace cuánto que no se vende.'}">Estado</div>
+      <div class="tr-r hide-sm" title="Unidades en stock.">Stock</div>
+      <div class="tr-r hide-sm" title="Valor del stock (unidades × costo).">Valor</div>
+      <div style="text-align:right" title="Mandar al módulo de Oportunidades para ofertarlo.">Acción</div>
+    </div>
+    ${rows.slice(0,cap).map(r=>{
+      const est = tipo==="vence" ? (r.min<0?`<span class="pill red">vencido</span>`:`<span class="pill org">${fmtDurC(r.min)}</span>`)
+        : tipo==="sobre" ? `<span class="pill org">${fmtDurC(r.meses)}</span>`
+        : `<span class="pill gray">sin venta</span>`;
+      return `<div class="row g-liq">
+        <div style="cursor:pointer" onclick="abrirProd(${r.id})"><div class="cname" style="color:var(--teal-deep)">${esc(cleanName(r.name))}</div><div class="cmeta">${r.code?esc(r.code):""}${r.provName?" · "+esc(r.provName):""}</div></div>
+        <div>${est}</div>
+        <div class="tr-r hide-sm num">${r.qty.toLocaleString("es-AR")}</div>
+        <div class="tr-r hide-sm num">${money(r.val)}</div>
+        <div style="text-align:right">${r.xop?'<span class="tagmini" style="background:#fbf0d6;color:#9a6a0b">en oportunidades</span>':`<button class="mini-btn" onclick="mandarOportunidad(${r.id})" style="background:var(--gold);color:#fff;border-color:var(--gold)">🏷️ A ofertar →</button>`}</div>
+      </div>`;
+    }).join("")}
+    ${rows.length>cap?`<div class="empty" style="padding:14px">…y ${(rows.length-cap).toLocaleString("es-AR")} más.</div>`:""}
+  </div>`;
 }
 function setLiqPlazo(m){ liq.plazo=m; render(); }
 // Marcar un producto como oportunidad para liquidar → aparece en el módulo Oportunidades y Ofertas (sección detectadas)
