@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=31"></script>
+<script src="../assets/core.js?v=32"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -1534,9 +1534,18 @@ function ofertaMsg(o){
 function ofStat(o){ const g=ST.ofertas[o.id]||{}; const env=g.gEnv||0, ven=g.gVen||0, conv=env>0?ven/env:0; return {env,ven,conv, score:conv*100+ven}; }
 function ofertasHTML(){
   if(!OFERTAS.length) return "";
-  const SC=OFERTAS.map(ofStat); const maxSc=Math.max(0,...SC.map(s=>s.score));
-  const esHot=s=> maxSc>0 && s.ven>=1 && s.score>=Math.max(1,0.6*maxSc);   // las de mejor rendimiento
-  const cards=OFERTAS.map((o,i)=>{
+  const SC=OFERTAS.map(ofStat);
+  // Las mejores: hasta 4 con ventas reales, ordenadas por rendimiento. Llevan la llamita.
+  const hotIds=new Set(OFERTAS.map((o,i)=>({id:o.id,s:SC[i]})).filter(x=>x.s.ven>=1)
+    .sort((a,b)=>b.s.score-a.s.score).slice(0,4).map(x=>x.id));
+  // Orden de aparición: primero las mejores (por rendimiento), después las nuevas/resto (orden original).
+  const order=OFERTAS.map((o,i)=>i).sort((a,b)=>{
+    const ha=hotIds.has(OFERTAS[a].id), hb=hotIds.has(OFERTAS[b].id);
+    if(ha!==hb) return ha?-1:1;
+    if(ha&&hb) return SC[b].score-SC[a].score;
+    return a-b;
+  });
+  const cards=order.map(i=>{ const o=OFERTAS[i];
     const st=ST.ofertas[o.id]; const col=st?st.colocados:null;
     const meta=ofMeta(o);
     const pct=col==null?0:Math.min(100,Math.round(col/meta*100));
@@ -1552,7 +1561,7 @@ function ofertasHTML(){
     // producto contra el cual contar, así que va sin precio y sin barra de progreso.
     const badge = o._info ? (o._off?`<span class="of-off">${esc(o._off)}</span>`:'')
                           : (off?`<span class="of-off">−${off}%</span>`:'');
-    const s=SC[i], hot=esHot(s), rendPct=s.env>0?Math.round(s.conv*100):null;
+    const s=SC[i], hot=hotIds.has(o.id), rendPct=s.env>0?Math.round(s.conv*100):null;
     const rendCls=rendPct==null?'':(rendPct>=40?'alta':rendPct>=15?'media':'baja');
     return `<div class="of-card${hot?' hot':''}">
       <div class="of-top"><span class="of-name">${esc(tit)}</span>${badge}</div>

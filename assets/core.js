@@ -539,8 +539,15 @@ window.EYG = (function(){
         stat[o.id]={env,ven,conv:env>0?ven/env:0, score:(env>0?ven/env:0)*100+ven};
       }));
     }catch(e){}
-    const maxSc=Math.max(0,...act.map(o=>(stat[o.id]||{}).score||0));
-    const esHot=o=>{ const s=stat[o.id]||{}; return maxSc>0 && (s.ven||0)>=1 && (s.score||0)>=Math.max(1,0.6*maxSc); };
+    // Las mejores: hasta 4 con ventas reales, ordenadas por rendimiento. Llevan la llamita.
+    const hotIds=new Set(act.map(o=>({id:o.id,s:stat[o.id]||{}})).filter(x=>(x.s.ven||0)>=1)
+      .sort((a,b)=>(b.s.score||0)-(a.s.score||0)).slice(0,4).map(x=>x.id));
+    const esHot=o=>hotIds.has(o.id);
+    // Orden: primero las mejores (por rendimiento), después las nuevas/resto (orden original).
+    act.sort((a,b)=>{ const ha=hotIds.has(a.id), hb=hotIds.has(b.id);
+      if(ha!==hb) return ha?-1:1;
+      if(ha&&hb) return ((stat[b.id]||{}).score||0)-((stat[a.id]||{}).score||0);
+      return 0; });
     const fD=s=>s?(s.slice(8,10)+"/"+s.slice(5,7)):"";
     const card=o=>{
       const items=(o.items||[]).map(i=>i.nombre).join(" + ");
