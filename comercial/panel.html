@@ -741,21 +741,35 @@ async function cargar(){
     try{
       // config de comisiones (ventana de meses, promedio/mediana, %, tasas) — una sola fuente, editable por Dirección
       const cfg = ST.comiCfg || (ST.comiCfg = await EYG.comisionesConfig().catch(()=>EYG.COMI_DEF));
-      const bk={}; let sumTot=0; const vend={};   // vend = PEDIDOS POR VENDEDOR neto por mes (base de la comisión)
-      for(const o of ordHist){ const m=(o.date_order||"").slice(0,7); if(!m)continue; (bk[m]=bk[m]||{ped:0,cli:new Set(),tot:0}); bk[m].ped++; if(o.partner_id)bk[m].cli.add(o.partner_id[0]); bk[m].tot+=o.amount_total||0; sumTot+=o.amount_total||0; vend[m]=(vend[m]||0)+(o.amount_untaxed||0); }
-      // Recuperar de la cuenta genérica los pedidos de ESTA cartera que quedaron sin vendedor (mayo/junio viejos).
-      // Así la meta no subestima a quien tenía ventas mal cargadas. De agosto en adelante ya se carga bien.
-      try{ const gg=await rpc("sale.order","read_group",[[["user_id","=",452],["partner_id","in",ids],["state","in",["sale","done"]],["date_order",">=",hace(210)]],["amount_untaxed:sum"],["date_order:month"]],{lazy:false});
-        for(const g of gg){ const rg=g.__range&&g.__range["date_order:month"]; const m=rg?rg.from.slice(0,7):null; if(m) vend[m]=(vend[m]||0)+(g.amount_untaxed||0); } }catch(e){}
+      const bk={}; let sumTot=0; const ped={};   // ped = PEDIDOS por vendedor neto por mes (MÉTRICA informativa)
+      for(const o of ordHist){ const m=(o.date_order||"").slice(0,7); if(!m)continue; (bk[m]=bk[m]||{ped:0,cli:new Set(),tot:0}); bk[m].ped++; if(o.partner_id)bk[m].cli.add(o.partner_id[0]); bk[m].tot+=o.amount_total||0; sumTot+=o.amount_total||0; ped[m]=(ped[m]||0)+(o.amount_untaxed||0); }
+      // BASE de la COMISIÓN = FACTURADO NETO (facturas − NC) atribuido a QUIEN GENERÓ EL PEDIDO
+      // (cruce factura→línea→sale.order.user_id). Inmune a los traspasos de cartera y a quién facture.
+      const fact={}, ncM={};   // fact = facturado neto por mes · ncM = notas de crédito (a restar) por mes
+      try{
+        // Atribución HÍBRIDA: se te cuenta la factura si generaste vos el pedido; y si el pedido quedó bajo
+        // la cuenta genérica (452), se le cuenta al DUEÑO DEL CLIENTE (recupera lo mal cargado sin inventar).
+        const domF=(mt)=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",hace(210)],
+          "|",["sale_line_ids.order_id.user_id","=",ST.userId],
+              "&",["sale_line_ids.order_id.user_id","=",452],["sale_line_ids.order_id.partner_id.user_id","=",ST.userId]];
+        const [fi,fr]=await Promise.all([
+          rpc("account.move.line","read_group",[domF("out_invoice"),["price_subtotal:sum"],["date:month"]],{lazy:false}),
+          rpc("account.move.line","read_group",[domF("out_refund"),["price_subtotal:sum"],["date:month"]],{lazy:false}),
+        ]);
+        for(const r of fi){ const rg=r.__range&&r.__range["date:month"]; const m=rg?rg.from.slice(0,7):null; if(m) fact[m]=(fact[m]||0)+(r.price_subtotal||0); }
+        for(const r of fr){ const rg=r.__range&&r.__range["date:month"]; const m=rg?rg.from.slice(0,7):null; if(m){ fact[m]=(fact[m]||0)-(r.price_subtotal||0); ncM[m]=(ncM[m]||0)+(r.price_subtotal||0); } }
+      }catch(e){}
       const curM=inicioMes.slice(0,7);
+      ST.ncMesComi = ncM[curM]||0;   // total NC del mes que se descuenta de tu comisión (detalle on-demand)
       const prev=Object.keys(bk).filter(m=>m<curM), nP=prev.length||1;
       const promPed=Math.round(prev.reduce((s,m)=>s+bk[m].ped,0)/nP)||1;
       const promCli=Math.round(prev.reduce((s,m)=>s+bk[m].cli.size,0)/nP)||1;
       const avgTicket=ordHist.length?sumTot/ordHist.length:0;
-      // META = promedio (o mediana) de los últimos N meses CERRADOS de PEDIDOS por vendedor + % (config)
-      const md = EYG.metaDesde(vend, curM, cfg);
-      ST.base={ objetivoCobro:(cobro3[0]?.amount||0)/3*1.1, promPed, promCli, perfil: avgTicket>=(cfg.perfilTicket||300000)?"inst":"farm", avgTicket, factBaseline:md.baseline, meta:md.meta, metaMeses:md.meses, vend };
-      ST.ventaMes = vend[curM]||0;   // venta del mes = tus pedidos del mes (base de la comisión)
+      // META = promedio (o mediana) de los últimos N meses CERRADOS de FACTURADO NETO + % (config)
+      const md = EYG.metaDesde(fact, curM, cfg);
+      ST.base={ objetivoCobro:(cobro3[0]?.amount||0)/3*1.1, promPed, promCli, perfil: avgTicket>=(cfg.perfilTicket||300000)?"inst":"farm", avgTicket, factBaseline:md.baseline, meta:md.meta, metaMeses:md.meses, fact };
+      ST.ventaMes = fact[curM]||0;      // BASE de la comisión = facturado neto (por cruce) del mes
+      ST.pedMesMonto = ped[curM]||0;    // MÉTRICA informativa = pedidos del mes
       ST.act={ ped: bk[curM]?bk[curM].ped:0, cli: bk[curM]?bk[curM].cli.size:0 };
       // métricas HOY / SEMANA en PEDIDOS por vendedor (neto), del propio historial
       const hoy10=hoyStr.slice(0,10), sem7=inicioSem;   // "semana" = semana calendario del mes
@@ -793,7 +807,7 @@ async function cargar(){
       pp.pedMontoMes=oMes.reduce((s,o)=>s+neto(o),0);
       ST.pedMesList=oMes.slice().sort((a,b)=>String(b.date_order||"").localeCompare(String(a.date_order||"")));
       ST.pp=pp;
-    }catch(e){ ST.base=ST.base||{objetivoCobro:0,promPed:1,promCli:1,perfil:"farm",meta:0,factBaseline:0,vend:{}}; ST.act=ST.act||{ped:0,cli:0}; ST.diag=ST.diag||{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}; if(ST.ventaMes==null)ST.ventaMes=0; if(ST.ventaSem==null)ST.ventaSem=0; if(ST.ventaHoy==null)ST.ventaHoy=0; }
+    }catch(e){ ST.base=ST.base||{objetivoCobro:0,promPed:1,promCli:1,perfil:"farm",meta:0,factBaseline:0,fact:{}}; ST.act=ST.act||{ped:0,cli:0}; ST.diag=ST.diag||{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}; if(ST.ventaMes==null)ST.ventaMes=0; if(ST.pedMesMonto==null)ST.pedMesMonto=0; if(ST.ncMesComi==null)ST.ncMesComi=0; if(ST.ventaSem==null)ST.ventaSem=0; if(ST.ventaHoy==null)ST.ventaHoy=0; }
     // PRIMERA PINTURA con lo esencial (contactos + ventas): el comercial ya puede trabajar.
     // Ofertas y WhatsApp llegan después y RE-pintan (el nivel se ajusta al instante cuando
     // entran los combos colocados; mejor eso que dejar el panel en blanco 10s esperándolos).
@@ -854,10 +868,12 @@ function ayudaHTML(){
   const N=CFGC().metaMeses||3, P=Math.round((CFGC().metaCrecimiento||0)*100);
   return `<div class="ayudabox">
     <div style="background:#EAF5F3;border:1px solid #BFE2DD;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:12.5px;color:#12463f">💡 <b>Desde agosto de 2026</b> tu comisión se calcula sobre <b>tus pedidos</b> (lo que vos vendés), no sobre lo facturado por cartera. Julio y lo anterior quedaron como estaban.</div>
-    <h4>🛒 Tus ventas (base de la comisión)</h4>
-    <p>Es el total <b>neto (sin IVA)</b> de <b>tus pedidos</b> del mes — los que vos cargás como vendedora. No importa quién facture después: cuenta lo que <b>vos</b> vendés.</p>
+    <h4>🛒 Tus pedidos (tu métrica)</h4>
+    <p>El total <b>neto (sin IVA)</b> de <b>tus pedidos</b> del mes — los que vos cargás. Es tu métrica de actividad; la comisión sale de lo facturado (abajo).</p>
+    <h4>🧾 Facturado neto (la base de tu comisión)</h4>
+    <p>Lo <b>facturado</b> (facturas − notas de crédito) que salió de <b>tus pedidos</b>. No importa quién emita la factura: se te cuenta a vos porque <b>vos generaste el pedido</b>.</p>
     <h4>🎯 Tu meta del mes (+${P}%) — ${money(meta)}</h4>
-    <p>= el <b>promedio de tus ventas</b> de los últimos <b>${N} meses</b> cerrados (${money(baseline)}) <b>+ ${P}%</b>. Hasta la meta cobrás una tasa; por lo que la superás, una más alta (crecer te conviene).</p>
+    <p>= el <b>promedio de tu facturado neto</b> de los últimos <b>${N} meses</b> cerrados (${money(baseline)}) <b>+ ${P}%</b>. Hasta la meta cobrás una tasa; por lo que la superás, una más alta (crecer te conviene).</p>
     <h4>💰 Objetivo de cobranza — ${money(b.objetivoCobro||0)}</h4>
     <p>= promedio de lo <b>cobrado</b> en los últimos 3 meses + 10%. Mide plata que entra (cobros), no facturación. La cobranza la lleva el sector de Cobranzas; vos ayudás a que el cliente pague.</p>
     <h4>🩺 Salud de la cuenta (el freno)</h4>
@@ -873,9 +889,43 @@ function ayudaHTML(){
       <li><b>Constancia</b> (5 pts): ${OBJ.diarioContactos} contactos trabajados por día.</li>
     </ul>
     <h4>💵 Comisión</h4>
-    <p>Se calcula sobre <b>tus pedidos</b>: una tasa hasta tu meta y una más alta por lo que la supera (escalera), multiplicada por tu nivel, menos el recorte de salud si tu cuenta no está sana.</p>
+    <p>Se calcula sobre <b>tu facturado neto</b>: una tasa hasta tu meta y una más alta por lo que la supera (escalera), multiplicada por tu nivel, menos el recorte de salud si tu cuenta no está sana.</p>
   </div>`;
 }
+// Ventanita con el DETALLE de las notas de crédito del mes (cliente, fecha, N°, neto) — restan de tu comisión.
+// No lleva a Odoo: se muestra acá. El neto atribuido sale del cruce NC→pedido (solo tu parte).
+async function verNCmes(){
+  let host=document.getElementById("ncModalHost");
+  if(!host){ host=document.createElement("div"); host.id="ncModalHost"; document.body.appendChild(host); }
+  host.innerHTML=`<div style="position:fixed;inset:0;background:rgba(6,40,38,.55);z-index:9998;display:flex;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)cerrarNC()">
+    <div style="background:#fff;border-radius:16px;max-width:580px;width:100%;max-height:82vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="display:flex;align-items:center;gap:10px;padding:15px 18px;border-bottom:1px solid var(--line);position:sticky;top:0;background:#fff">
+        <div style="font-size:17px;font-weight:900;flex:1">↩️ Notas de crédito del mes</div>
+        <button onclick="cerrarNC()" style="border:0;background:#eef3f2;width:30px;height:30px;border-radius:50%;cursor:pointer;font-size:16px">✕</button>
+      </div>
+      <div id="ncBody" style="padding:14px 18px;color:var(--gris)">Cargando…</div>
+    </div></div>`;
+  try{
+    const g=await rpc("account.move.line","read_group",[[["parent_state","=","posted"],["move_id.move_type","=","out_refund"],["date",">=",inicioMes],
+      "|",["sale_line_ids.order_id.user_id","=",ST.userId],
+          "&",["sale_line_ids.order_id.user_id","=",452],["sale_line_ids.order_id.partner_id.user_id","=",ST.userId]],["price_subtotal:sum"],["move_id"]],{lazy:false});
+    const netById={}; const ids=[];
+    for(const r of g){ const id=r.move_id&&r.move_id[0]; if(id){ netById[id]=(netById[id]||0)+(r.price_subtotal||0); ids.push(id); } }
+    const moves=ids.length?await rpc("account.move","read",[ids],{fields:["name","invoice_date","partner_id"]}):[];
+    moves.sort((a,b)=>String(b.invoice_date||"").localeCompare(String(a.invoice_date||"")));
+    const fD=s=>s?(s.slice(8,10)+"/"+s.slice(5,7)+"/"+s.slice(0,4)):"—";
+    let tot=0; moves.forEach(m=>tot+=netById[m.id]||0);
+    const body=document.getElementById("ncBody"); if(!body)return;
+    if(!moves.length){ body.innerHTML='<div style="font-size:14px">No tenés notas de crédito este mes. 👌</div>'; return; }
+    body.innerHTML=`<div style="font-size:12.5px;color:var(--gris);margin-bottom:10px">Cada nota de crédito <b>resta de tu facturado</b> (y por lo tanto de tu comisión). Montos netos, sin IVA.</div>
+      <div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:13px">
+        <tr style="text-align:left;color:var(--gris2);font-size:11px;text-transform:uppercase"><th style="padding:6px 8px">Cliente</th><th style="padding:6px 8px">Fecha</th><th style="padding:6px 8px">N° NC</th><th style="padding:6px 8px;text-align:right">Neto</th></tr>
+        ${moves.map(m=>`<tr style="border-top:1px solid var(--line)"><td style="padding:8px">${esc(m.partner_id?m.partner_id[1]:'—')}</td><td style="padding:8px;white-space:nowrap">${fD(m.invoice_date)}</td><td style="padding:8px;white-space:nowrap">${esc(m.name||'—')}</td><td style="padding:8px;text-align:right;color:var(--coral);font-weight:800;white-space:nowrap">−${money(netById[m.id]||0)}</td></tr>`).join("")}
+        <tr style="border-top:2px solid var(--line)"><td style="padding:9px 8px;font-weight:900" colspan="3">Total del mes (se resta de tu comisión)</td><td style="padding:9px 8px;text-align:right;color:var(--coral);font-weight:900;white-space:nowrap">−${money(tot)}</td></tr>
+      </table></div>`;
+  }catch(e){ const body=document.getElementById("ncBody"); if(body)body.innerHTML='<div class="errbox">No pude cargar las notas de crédito: '+esc(e.message)+'</div>'; }
+}
+function cerrarNC(){ const h=document.getElementById("ncModalHost"); if(h)h.innerHTML=""; }
 // SALUD DE LA CUENTA (0-100) = el FRENO. Baja por: vencido de cartera (45), facturado bajo el piso (30), fichas (25).
 // Recorta la tasa de comisión hasta 1 punto (proporcional a lo que baje la salud). Externo NO tiene salud.
 function saludCuenta(){
@@ -1044,7 +1094,7 @@ function render(){
       <div class="goal ${pFac>=100?'done':''}"><span class="chk">✅</span>${ring(pFac,pFac+'%','','var(--gold)')}<div><div class="gt">Semana · ventas</div><div class="gn">${money(ST.ventaSem)}</div><div class="gs">meta ${money(OBJ.semanalFact)} · tus pedidos</div></div></div>
     </div>
     <div class="secrow"><h2 class="sec">📊 Tus ventas</h2></div>
-    ${externo?'':`<div style="background:#EAF5F3;border:1px solid #BFE2DD;border-radius:12px;padding:11px 14px;margin:-4px 0 12px;font-size:12.5px;color:#12463f;line-height:1.5">💡 <b>Desde agosto</b>, tu comisión se calcula sobre <b>tus pedidos</b> (lo que vos vendés), no sobre lo facturado por cartera. Tu <b>meta</b> es el <b>promedio de tus últimos ${CFGC().metaMeses||3} meses de ventas + ${Math.round((CFGC().metaCrecimiento||0)*100)}%</b>. Lo de julio y antes quedó como estaba. <a onclick="ctrlPanel('ayuda')" style="color:var(--teal-deep);font-weight:800;cursor:pointer;white-space:nowrap">Ver cómo se calcula →</a></div>`}
+    ${externo?'':`<div style="background:#EAF5F3;border:1px solid #BFE2DD;border-radius:12px;padding:11px 14px;margin:-4px 0 12px;font-size:12.5px;color:#12463f;line-height:1.5">💡 <b>Desde agosto</b>: tus <b>pedidos</b> son tu métrica, pero la <b>comisión se calcula sobre lo facturado neto</b> (facturas − NC), atribuido a <b>quien generó el pedido</b>. Tu <b>meta</b> = <b>promedio de tu facturado de los últimos ${CFGC().metaMeses||3} meses + ${Math.round((CFGC().metaCrecimiento||0)*100)}%</b>. Julio y antes no cambian. <a onclick="ctrlPanel('ayuda')" style="color:var(--teal-deep);font-weight:800;cursor:pointer;white-space:nowrap">Ver cómo se calcula →</a></div>`}
     <div class="kpis">
       <div class="kpi">
         <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">☀️</span><div class="kmeta"><div class="kl">Hoy</div><div class="kv">${ST.diag.ventasHoy>0?money(ST.diag.ventasHoy):ST.diag.pedHoy+' ped.'}</div><div class="ks">${ST.diag.pedHoy} pedidos · ${dHoy}/${dObj} contactos</div></div><span class="kchev">▾</span></div>
@@ -1066,20 +1116,21 @@ function render(){
         </div></div></div>
       </div>
       <div class="kpi">
-        <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">📈</span><div class="kmeta"><div class="kl">Mes</div><div class="kv">${money(ST.ventaMes)}</div><div class="ks">${externo?'tus pedidos · neto':'meta '+money(corte)+' · tus pedidos'}</div></div><span class="kchev">▾</span></div>
+        <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">📈</span><div class="kmeta"><div class="kl">Mes</div><div class="kv">${money(ST.pedMesMonto)}</div><div class="ks">${externo?'tus pedidos · neto':'pedidos · comisión s/facturado (meta '+money(corte)+')'}</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
-          <div class="drow"><span>🛒 Tus pedidos del mes (neto)</span><b>${money(ST.ventaMes)}</b></div>
+          <div class="drow"><span>🛒 Tus pedidos del mes (neto)</span><b>${money(ST.pedMesMonto)}</b></div>
           <div class="drow"><span>📦 Cantidad de pedidos</span><b>${ST.act.ped}</b></div>
+          <div class="drow" style="border-top:1px solid var(--line);margin-top:4px;padding-top:8px"><span>🧾 <b>Facturado neto</b> (facturas − NC) · base de tu comisión</span><b>${money(ST.ventaMes)}</b></div>
+          ${ST.ncMesComi>0?`<div class="drow" style="cursor:pointer" onclick="event.stopPropagation();verNCmes()"><span>↩️ Notas de crédito del mes · <span style="color:var(--teal);font-weight:800">ver a quién →</span></span><b style="color:var(--coral)">−${money(ST.ncMesComi)}</b></div>`:''}
           ${externo?'':`<div class="drow"><span>🎯 Tu meta del mes</span><b>${money(corte)}</b></div>
-          <div style="font-size:11px;color:var(--gris2);margin:-2px 0 4px">= promedio de tus últimos ${CFGC().metaMeses||3} meses de ventas + ${Math.round((CFGC().metaCrecimiento||0)*100)}%. Se mide sobre <b>tus pedidos</b> (lo que vos vendés), y rige desde agosto.</div>`}
-          <div class="drow" style="opacity:.7"><span>🧾 Facturado del mes (se cobra después)</span><b>${money(ST.fact.mes)}</b></div>
+          <div style="font-size:11px;color:var(--gris2);margin:-2px 0 4px">= promedio de tu <b>facturado neto</b> de los últimos ${CFGC().metaMeses||3} meses + ${Math.round((CFGC().metaCrecimiento||0)*100)}%. La comisión se calcula sobre lo <b>facturado</b> (no los pedidos), atribuido a quien generó el pedido. Rige desde agosto.</div>`}
           <div style="margin-top:9px"><a onclick="verOdoo('action=667&view_type=list&search_default_sales=1')" style="color:var(--teal);font-weight:700;cursor:pointer;font-size:12.5px">Ver mis pedidos en Odoo →</a></div>
         </div></div></div>
       </div>
       <div class="kpi hl neon">
         <div class="khead" onclick="tk(this.parentNode)"><span class="kic">💰</span><div class="kmeta"><div class="kl">Comisión estimada</div><div class="kv glowtx">${money(cTot)}</div><div class="ks">${externo?'Externo · 3/4% fijo':'tocá para ver el desglose'}</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
-          <div class="drow"><span>🛒 Tus pedidos del mes</span><b>${money(ST.ventaMes)}</b></div>
+          <div class="drow"><span>🧾 Facturado neto del mes</span><b>${money(ST.ventaMes)}</b></div>
           ${desg.map((t,i)=>`<div class="drow"><span>${i===0?(externo?'Hasta $50M':'Hasta tu meta'):(externo?'Sobre $50M':'Sobre tu meta')} · ${money(t.base)}</span><span>${(t.r*100).toFixed(2).replace('.',',')}% = <b>${money(t.comi)}</b></span></div>`).join("")}
           <div class="drow"><span>Base comisión</span><b>${money(cBase)}</b></div>
           ${externo?'':`<div class="drow"><span>Ajustes: nivel ${nv.emoji}×${nv.mult.toFixed(2)} · salud ${sd&&sd.penaltyPt>0.005?'−'+sd.penaltyPt.toFixed(2)+'pt':'ok'}</span><b style="font-size:10.5px;opacity:.8">detalle en Rendimiento ↓</b></div>`}

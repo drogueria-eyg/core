@@ -601,16 +601,16 @@ async function eliminarDescA(id){ const x=(CONQ||[]).find(y=>y&&y.id===id); if(!
 
 /* ===== CÁLCULO DE COMISIONES (solo super-admin) =====
    Configura eyg.comisiones (via core.js) y muestra una VISTA PREVIA en vivo de la meta de cada
-   comercial con la base nueva: PEDIDOS POR VENDEDOR de la orden (sale.order.user_id, neto), con
-   los pedidos que quedaron en la cuenta genérica recuperados al dueño del cliente. Guardar no
-   afecta a nadie hasta que se cablee el panel; es la herramienta de calibración de dirección. */
+   comercial sobre el FACTURADO NETO (facturas − NC) atribuido con la regla HÍBRIDA: vendedor del
+   pedido (cruce factura→pedido); y si el pedido quedó bajo la genérica (452), el dueño del cliente.
+   Es la misma base que usan el panel del comercial y el del líder. */
 const GEN_UID=452;   // cuenta genérica "Drogueria EyG"
 let COMI={ cfg:null, monthly:{}, names:{}, recu:{}, sellers:[], curM:null, loaded:false };
 const MESKEY=d=>d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");
 const MESLBL=k=>{ const [y,m]=k.split("-"); return MESES[(+m)-1]+" "+y.slice(2); };
 async function montarComi(){
   const box=document.getElementById("comi"); if(!box)return;
-  box.innerHTML='<div class="floading" style="padding:12px 0;color:var(--gris)"><span class="spin-sm"></span> Leyendo pedidos por vendedor…</div>';
+  box.innerHTML='<div class="floading" style="padding:12px 0;color:var(--gris)"><span class="spin-sm"></span> Leyendo facturado por vendedor…</div>';
   try{
     COMI.cfg = await EYG.comisionesConfig(true);
     await comiLoadData();
@@ -621,30 +621,31 @@ async function montarComi(){
 async function comiLoadData(){
   const now=new Date(); COMI.curM=MESKEY(now);
   const desdeD=new Date(now.getFullYear(), now.getMonth()-6, 1);   // 6 meses cerrados + el actual
-  const desde=desdeD.toISOString().slice(0,10)+" 00:00:00";
+  const desde=desdeD.toISOString().slice(0,10);
   // vendedores que nos importan: comerciales + líderes que venden
   const sellers=[]; const seen=new Set();
   (STATE.coms||[]).forEach(c=>{ if(!seen.has(c.uid)){ seen.add(c.uid); sellers.push({uid:c.uid,name:c.name}); } });
   (STATE.leaders||[]).forEach(l=>{ if(l.uid && !seen.has(l.uid) && (l.ownFactMes>0)){ seen.add(l.uid); sellers.push({uid:l.uid,name:l.name}); } });
   COMI.sellers=sellers; COMI.names={}; sellers.forEach(s=>COMI.names[s.uid]=s.name);
-  const uids=sellers.map(s=>s.uid);
-  const monthly={}; uids.forEach(u=>monthly[u]={});
-  // 1) pedidos por vendedor de la orden (excluye la genérica)
-  const g1=await EYG.rpc("sale.order","read_group",[[["user_id","in",uids],["state","in",["sale","done"]],["date_order",">=",desde]],["amount_untaxed:sum"],["user_id","date_order:month"]],{lazy:false});
-  for(const r of g1){ const u=r.user_id&&r.user_id[0]; const rg=r.__range&&r.__range["date_order:month"]; const k=rg?rg.from.slice(0,7):null; if(u!=null&&k&&(u in monthly)) monthly[u][k]=(monthly[u][k]||0)+(r.amount_untaxed||0); }
-  // 2) RECUPERAR la cuenta genérica → dueño actual del cliente
-  COMI.recu={};
-  try{
-    const gg=await EYG.rpc("sale.order","read_group",[[["user_id","=",GEN_UID],["state","in",["sale","done"]],["date_order",">=",desde]],["amount_untaxed:sum"],["partner_id","date_order:month"]],{lazy:false});
-    const pids=[...new Set(gg.map(r=>r.partner_id&&r.partner_id[0]).filter(Boolean))];
-    const owner={};
-    if(pids.length){ const parts=await EYG.rpc("res.partner","read",[pids],{fields:["id","user_id","commercial_partner_id"]});
-      const byId={}; parts.forEach(p=>byId[p.id]=p);
-      for(const p of parts){ let u=p.user_id&&p.user_id[0]; if(!u && p.commercial_partner_id){ const c=byId[p.commercial_partner_id[0]]; u=c&&c.user_id&&c.user_id[0]; } owner[p.id]=u||null; }
-    }
-    for(const r of gg){ const pid=r.partner_id&&r.partner_id[0]; const u=owner[pid]; const rg=r.__range&&r.__range["date_order:month"]; const k=rg?rg.from.slice(0,7):null;
-      if(u!=null&&k&&(u in monthly)){ monthly[u][k]=(monthly[u][k]||0)+(r.amount_untaxed||0); COMI.recu[u]=(COMI.recu[u]||0)+(r.amount_untaxed||0); } }
-  }catch(e){ /* si falla la recuperación, seguimos con lo directo */ }
+  const monthly={}; COMI.recu={};
+  // FACTURADO NETO por mes con la regla HÍBRIDA: vendedor del pedido; o dueño del cliente si el pedido
+  // quedó bajo la cuenta genérica (recupera lo mal cargado). Igual que el panel del comercial.
+  const dom=(uid,mt,soloGen)=>{ const base=[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",desde]];
+    return soloGen ? [...base,["sale_line_ids.order_id.user_id","=",GEN_UID],["sale_line_ids.order_id.partner_id.user_id","=",uid]]
+                   : [...base,"|",["sale_line_ids.order_id.user_id","=",uid],"&",["sale_line_ids.order_id.user_id","=",GEN_UID],["sale_line_ids.order_id.partner_id.user_id","=",uid]]; };
+  for(const s of sellers){
+    monthly[s.uid]={};
+    const [fi,fr,gi,gr]=await Promise.all([
+      EYG.rpc("account.move.line","read_group",[dom(s.uid,"out_invoice",false),["price_subtotal:sum"],["date:month"]],{lazy:false}),
+      EYG.rpc("account.move.line","read_group",[dom(s.uid,"out_refund",false),["price_subtotal:sum"],["date:month"]],{lazy:false}),
+      EYG.rpc("account.move.line","read_group",[dom(s.uid,"out_invoice",true),["price_subtotal:sum"],[]],{lazy:false}),
+      EYG.rpc("account.move.line","read_group",[dom(s.uid,"out_refund",true),["price_subtotal:sum"],[]],{lazy:false}),
+    ]);
+    for(const r of fi){ const rg=r.__range&&r.__range["date:month"]; const k=rg?rg.from.slice(0,7):null; if(k) monthly[s.uid][k]=(monthly[s.uid][k]||0)+(r.price_subtotal||0); }
+    for(const r of fr){ const rg=r.__range&&r.__range["date:month"]; const k=rg?rg.from.slice(0,7):null; if(k) monthly[s.uid][k]=(monthly[s.uid][k]||0)-(r.price_subtotal||0); }
+    const rec=((gi[0]&&gi[0].price_subtotal)||0)-((gr[0]&&gr[0].price_subtotal)||0);
+    if(rec>0) COMI.recu[s.uid]=rec;
+  }
   COMI.monthly=monthly;
 }
 function comiReadKnobs(){
@@ -671,7 +672,7 @@ function comiRender(){
   const c=COMI.cfg||EYG.COMI_DEF; COMI._metodo=c.metaMetodo||"promedio";
   const pct=Math.round((c.metaCrecimiento||0)*100);
   box.innerHTML=`
-    <div class="comi-note">La <b>meta de facturación</b> de cada comercial = <b>promedio de sus últimos meses</b> + un %, sobre la base <b>pedidos por vendedor</b> (lo que cada una vende). Cambiá los valores y mirá abajo cómo queda la meta de cada una <b>en vivo</b>. Se guarda recién con el botón, y rige <b>desde agosto</b> (no toca lo anterior).</div>
+    <div class="comi-note">La <b>meta</b> de cada comercial = <b>promedio de su facturado neto</b> de los últimos meses + un %. La comisión se calcula sobre el <b>facturado neto</b> (facturas − NC) atribuido a <b>quien generó el pedido</b> (y si el pedido quedó bajo la genérica, al dueño del cliente). Cambiá los valores y mirá la meta de cada una <b>en vivo</b>. Se guarda recién con el botón, y rige <b>desde agosto</b>.</div>
     <div class="comi-knobs">
       <div class="knob"><label>Meses que promedia</label>
         <input type="number" id="k_meses" min="1" max="6" step="1" value="${c.metaMeses||3}" oninput="comiRecalc()">
