@@ -132,7 +132,7 @@ function fuenteLbl(f){ return f==="manual"?"✎ costo manual":f==="compra"?"🧾
 // ===================== ESTADO =====================
 let DATA=[];      // por producto
 let VIEW={tab:"valuacion"};
-let CONT={q:"",cat:"todos",soloNeg:false};
+let CONT={q:"",cat:"todos",filtro:""}; // filtro: "" | "neg" | "ghost"
 let VAL={q:"",sel:new Set()};
 
 // ===================== CARGA =====================
@@ -142,12 +142,12 @@ async function cargar(){
   try{
     // 1) todos los quants internos
     const quants=await rpc("stock.quant","search_read",[[["location_id.usage","=","internal"]]],
-      {fields:["product_id","quantity","value","lot_id","location_id"],limit:6000,context:ES});
+      {fields:["product_id","quantity","value","reserved_quantity","lot_id","location_id"],limit:6000,context:ES});
     const byP=new Map();
     for(const q of quants){ if(!q.product_id) continue; const id=q.product_id[0];
-      if(!byP.has(id)) byP.set(id,{id,name:q.product_id[1],qty:0,val:0,quants:[]});
-      const o=byP.get(id); o.qty+=q.quantity; o.val+=q.value;
-      o.quants.push({id:q.id,qty:q.quantity,val:q.value,lot:q.lot_id?q.lot_id[0]:null,lotName:q.lot_id?q.lot_id[1]:"",loc:q.location_id?q.location_id[1]:"",locId:q.location_id?q.location_id[0]:null});
+      if(!byP.has(id)) byP.set(id,{id,name:q.product_id[1],qty:0,val:0,res:0,quants:[]});
+      const o=byP.get(id); o.qty+=q.quantity; o.val+=q.value; o.res+=(q.reserved_quantity||0);
+      o.quants.push({id:q.id,qty:q.quantity,val:q.value,res:(q.reserved_quantity||0),lot:q.lot_id?q.lot_id[0]:null,lotName:q.lot_id?q.lot_id[1]:"",loc:q.location_id?q.location_id[1]:"",locId:q.location_id?q.location_id[0]:null});
     }
     const ids=[...byP.keys()];
     // 2) maestro (incluye archivados: active_test:false)
@@ -168,6 +168,7 @@ async function cargar(){
       const cm=costoMotorDe(p,ult[o.id]);
       const r={ id:o.id, code:p.default_code||"", name:p.name||o.name, active:p.active!==false,
         cat:catFull, catTop, qty:Math.round(o.qty*100)/100, val:o.val, quants:o.quants,
+        res:Math.round(o.res*100)/100, disp:Math.round((o.qty-o.res)*100)/100,
         costo:cm.costo, fuente:cm.fuente, fechaCosto:cm.fecha, ivaAplicado:!!cm.iva, std:p.standard_price||0 };
       r.valObj = r.qty*r.costo;
       r.dif = r.val - r.valObj;            // <0 = Odoo lo valúa por debajo (o negativo)
@@ -199,6 +200,7 @@ function render(){
   const pct=total?Math.round(sanos/total*100):100;
   const gap=g.torcido.reduce((a,r)=>a+(r.valObj-r.val),0); // plata mal valuada (lo que falta para el valor real)
   const negLines=DATA.filter(r=>r.clase!=="basura").reduce((a,r)=>a+r.quants.filter(q=>q.qty<0).length,0);
+  const ghostLines=DATA.filter(r=>r.clase!=="basura").reduce((a,r)=>a+r.quants.filter(q=>q.qty===0&&q.res>0).length,0);
   const color=pct>=90?"var(--green)":pct>=70?"var(--org)":"var(--red)";
   const est=pct>=90?["g","Depósito sano"]:pct>=70?["y","Necesita atención"]:["r","Depósito desordenado"];
   const health=`
@@ -213,6 +215,7 @@ function render(){
     </div>
     <div class="hmetrics">
       <div class="hm ${negLines?'bad':'good'}" style="cursor:pointer" onclick="irNeg()" title="Lotes con cantidad negativa: es físicamente imposible (se entregó más de lo ingresado). Tocá para ir a contarlos y ajustarlos."><div class="k">⚠️ Stock negativo</div><div class="v">${negLines}</div></div>
+      <div class="hm ${ghostLines?'bad':'good'}" style="cursor:pointer" onclick="irGhost()" title="Líneas en 0 con reserva pegada sin ninguna venta detrás (reserva fantasma). Son las que 'no dejan modificar'. Tocá para liberarlas."><div class="k">🔒 Reservas fantasma</div><div class="v">${ghostLines}</div></div>
       <div class="hm ${g.torcido.length?'bad':'good'}"><div class="k">⚖️ Valuación torcida</div><div class="v">${g.torcido.length}</div></div>
       <div class="hm ${g.sincosto.length?'mid':'good'}"><div class="k">🏷️ Sin costo</div><div class="v">${g.sincosto.length}</div></div>
       <div class="hm ${g.archivado.length?'mid':'good'}"><div class="k">🗃️ Archivados c/stock</div><div class="v">${g.archivado.length}</div></div>
@@ -241,8 +244,9 @@ function render(){
   if(VIEW.tab==="valuacion") setTimeout(bindVal,0);
 }
 function irTab(k){ VIEW.tab=k; render(); }
-function irNeg(){ VIEW.tab="conteo"; CONT.soloNeg=true; CONT.q=""; CONT.cat="todos"; render(); }
-function toggleNeg(){ CONT.soloNeg=!CONT.soloNeg; repintarBody(); }
+function irNeg(){ VIEW.tab="conteo"; CONT.filtro="neg"; CONT.q=""; CONT.cat="todos"; render(); }
+function irGhost(){ VIEW.tab="conteo"; CONT.filtro="ghost"; CONT.q=""; CONT.cat="todos"; render(); }
+function setFiltro(f){ CONT.filtro=CONT.filtro===f?"":f; repintarBody(); }
 function repintarBody(){
   const g={torcido:grupo("torcido"),sincosto:grupo("sincosto"),archivado:grupo("archivado"),basura:grupo("basura")};
   let body="";
@@ -335,39 +339,50 @@ function lineasConteo(){
   if(q) arr=arr.filter(r=>r.name.toLowerCase().includes(q)||(r.code||"").toLowerCase().includes(q));
   return arr.sort((a,b)=>a.name.localeCompare(b.name));
 }
+const GRID_CONT="grid-template-columns:2.3fr .9fr .7fr .7fr 96px .8fr 92px";
 function tabConteo(){
   const cats=[...new Set(DATA.map(r=>r.catTop))].sort();
-  const negTotal=DATA.filter(r=>r.clase!=="basura").reduce((a,r)=>a+r.quants.filter(q=>q.qty<0).length,0);
+  const nb=DATA.filter(r=>r.clase!=="basura");
+  const negTotal=nb.reduce((a,r)=>a+r.quants.filter(q=>q.qty<0).length,0);
+  const ghostTotal=nb.reduce((a,r)=>a+r.quants.filter(q=>q.qty===0&&q.res>0).length,0);
   let arr=lineasConteo();
-  if(CONT.soloNeg) arr=arr.filter(r=>r.quants.some(q=>q.qty<0));
-  const LIMIT=CONT.soloNeg?9999:200;
+  if(CONT.filtro==="neg") arr=arr.filter(r=>r.quants.some(q=>q.qty<0));
+  if(CONT.filtro==="ghost") arr=arr.filter(r=>r.quants.some(q=>q.qty===0&&q.res>0));
+  const LIMIT=CONT.filtro?9999:200;
   const shown=arr.slice(0,LIMIT);
-  let rows="";
+  let rows="", n=0;
   for(const r of shown){
-    // una línea por quant; si el producto tiene varios lotes, se listan todos
     for(const qn of r.quants){
-      if(CONT.soloNeg && !(qn.qty<0)) continue;
-      const key=`q${qn.id}`;
-      rows+=`<div class="row" data-qid="${qn.id}" style="grid-template-columns:2.4fr 1fr .8fr 96px .9fr 90px">
+      if(CONT.filtro==="neg" && !(qn.qty<0)) continue;
+      if(CONT.filtro==="ghost" && !(qn.qty===0&&qn.res>0)) continue;
+      const key=`q${qn.id}`, ghost=(qn.qty===0&&qn.res>0);
+      const resTxt=qn.res>0?`<b class="neg">${nf(qn.res)}</b>`:'<span style="color:var(--gris2)">—</span>';
+      const accion = ghost
+        ? `<div class="tr-r" style="grid-column:span 2"><span class="pill red">🔒 reserva fantasma</span></div>
+           <div class="tr-r"><button class="mini-btn pri" onclick="liberar(${qn.id})" title="Libera la reserva pegada (no hay venta detrás) para desbloquear esta línea.">Liberar</button></div>`
+        : `<div class="tr-r"><input class="cnt-in" id="${key}" inputmode="decimal" placeholder="conté" data-sis="${qn.qty}"></div>
+           <div class="tr-r" id="dif-${key}"></div>
+           <div class="tr-r"><button class="mini-btn" id="btn-${key}" disabled onclick="ajustar(${qn.id},'${key}')">Ajustar</button></div>`;
+      rows+=`<div class="row" style="${GRID_CONT}">
         <div class="pname"><b>${esc(cleanName(r.name))}</b><span>${esc(r.code)}${qn.lotName?` · lote ${esc(qn.lotName)}`:""}</span></div>
         <div style="font-size:11px;color:var(--gris)">${esc(r.catTop)}</div>
-        <div class="tr-r">sistema<br><b class="${qn.qty<0?'neg':''}">${nf(qn.qty)}</b></div>
-        <div class="tr-r"><input class="cnt-in" id="${key}" inputmode="decimal" placeholder="conté" data-sis="${qn.qty}"></div>
-        <div class="tr-r" id="dif-${key}"></div>
-        <div class="tr-r"><button class="mini-btn" id="btn-${key}" disabled onclick="ajustar(${qn.id},'${key}')">Ajustar</button></div>
-      </div>`;
+        <div class="tr-r"><b class="${qn.qty<0?'neg':''}">${nf(qn.qty)}</b></div>
+        <div class="tr-r">${resTxt}</div>
+        ${accion}
+      </div>`; n++;
     }
   }
-  return `<div class="note info">📋 <b>Conteo físico.</b> Contá la mercadería real en el depósito y anotá lo que hay en <b>Conté</b>: el sistema te muestra la diferencia y con <b>Ajustar</b> corrige la cantidad en Odoo (ajuste de inventario, queda registrado). Contá <b>por lote</b> cuando el producto tiene varios. Buscá o filtrá por categoría para contar de a partes. Después de ajustar cantidades, revisá la pestaña <b>Valuación</b> por si quedó algún valor para corregir.</div>
+  return `<div class="note info">📋 <b>Conteo físico.</b> Contá la mercadería real y anotá lo que hay en <b>Conté</b>: el sistema muestra la diferencia y con <b>Ajustar</b> corrige la cantidad en Odoo (queda registrado). Columna <b>Reservado</b> = unidades comprometidas por una venta. Si ves 0 stock con reserva = <b>🔒 reserva fantasma</b> (no hay venta real detrás): es la línea que "no deja modificar" → tocá <b>Liberar</b> para desbloquearla. Contá por lote cuando el producto tiene varios.</div>
    <div class="toolbar">
-     <button class="chip ${CONT.soloNeg?'on':''}" onclick="toggleNeg()" title="Lotes con cantidad negativa: físicamente imposible. Contalos y ajustalos a lo real.">⚠️ Solo stock negativo${negTotal?` (${negTotal})`:''}</button>
+     <button class="chip ${CONT.filtro==="neg"?'on':''}" onclick="setFiltro('neg')" title="Lotes con cantidad negativa: físicamente imposible.">⚠️ Stock negativo${negTotal?` (${negTotal})`:''}</button>
+     <button class="chip ${CONT.filtro==="ghost"?'on':''}" onclick="setFiltro('ghost')" title="Líneas en 0 con reserva pegada sin venta detrás.">🔒 Reservas fantasma${ghostTotal?` (${ghostTotal})`:''}</button>
      <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4-4"/></svg><input id="cq" placeholder="Buscar producto o código…" value="${esc(CONT.q)}"></div>
      <select id="ccat"><option value="todos">Todas las categorías</option>${cats.map(c=>`<option value="${esc(c)}" ${CONT.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
    </div>
-   <div class="count-line">${CONT.soloNeg?`<b style="color:var(--red)">Mostrando solo lotes con stock negativo.</b> `:''}Mostrando <b>${Math.min(shown.length,arr.length)}</b>${!CONT.soloNeg&&arr.length>LIMIT?` de ${arr.length} (afiná la búsqueda para ver el resto)`:''} productos.</div>
+   <div class="count-line">${CONT.filtro==="neg"?'<b style="color:var(--red)">Solo lotes con stock negativo.</b> ':CONT.filtro==="ghost"?'<b style="color:var(--red)">Solo reservas fantasma.</b> ':''}Mostrando <b>${n}</b> líneas${!CONT.filtro&&arr.length>LIMIT?` (de los primeros ${LIMIT} productos — afiná la búsqueda para ver más)`:''}.</div>
    <div class="tablecard">
-     <div class="thead" style="grid-template-columns:2.4fr 1fr .8fr 96px .9fr 90px">
-       <div>Producto / lote</div><div>Categoría</div><div class="tr-r">Sistema</div><div class="tr-r">Conté</div><div class="tr-r">Diferencia</div><div></div>
+     <div class="thead" style="${GRID_CONT}">
+       <div>Producto / lote</div><div>Categoría</div><div class="tr-r">Sistema</div><div class="tr-r">Reservado</div><div class="tr-r">Conté</div><div class="tr-r">Diferencia</div><div></div>
      </div>${rows||'<div class="row">Sin resultados.</div>'}</div>`;
 }
 function bindConteo(){
@@ -405,6 +420,17 @@ async function ajustar(qid,key){
     alert("No se pudo ajustar: "+(e.message||e)+"\n\n(Puede ser por la unidad de medida del producto: no admite ese decimal.)");
     if(btn){btn.disabled=false;btn.textContent="Ajustar";}
   }
+}
+// Liberar una reserva fantasma: pone reserved_quantity=0 en el quant (no había venta que la respaldara).
+async function liberar(qid){
+  let r=null,qn=null;
+  for(const x of DATA){ const f=x.quants.find(q=>q.id===qid); if(f){ r=x; qn=f; break; } }
+  if(!qn) return;
+  if(!confirm(`Liberar la reserva fantasma de "${cleanName(r?r.name:"")}"${qn.lotName?` (lote ${qn.lotName})`:""}:\n\n• Reservado hoy: ${nf(qn.res)} u  ·  stock físico: ${nf(qn.qty)} u\n\nNo hay ninguna venta detrás de esa reserva. Se libera para desbloquear la línea. ¿Confirmás?`)) return;
+  try{
+    await rpc("stock.quant","write",[[qid],{reserved_quantity:0}],{context:ES});
+    toast("✓ Reserva liberada"); await cargar();
+  }catch(e){ alert("No se pudo liberar: "+(e.message||e)+"\n\nSi Odoo no lo permite, avisame y lo hacemos por otra vía."); }
 }
 
 // ===================== TAB SIN COSTO =====================
