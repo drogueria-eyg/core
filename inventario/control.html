@@ -55,6 +55,9 @@
   .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px}
   .search{flex:1;min-width:200px;display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:9px 12px}
   .search input{border:0;background:none;outline:none;font-family:inherit;font-size:14px;width:100%;color:var(--ink)}
+  .search svg{width:18px;height:18px;color:var(--gris2);flex-shrink:0}
+  .chip{font-size:12.5px;padding:9px 14px;border-radius:99px;border:1px solid var(--line);background:var(--surface);cursor:pointer;font-weight:700;color:var(--gris)}
+  .chip.on{background:var(--red);color:#fff;border-color:var(--red)}
   select,.mini-btn{font-family:inherit;font-size:13px;border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:9px 12px;color:var(--ink);cursor:pointer;font-weight:600}
   .mini-btn:hover{border-color:var(--teal)}
   .mini-btn.pri{background:var(--teal);color:#fff;border-color:var(--teal)}
@@ -129,7 +132,7 @@ function fuenteLbl(f){ return f==="manual"?"✎ costo manual":f==="compra"?"🧾
 // ===================== ESTADO =====================
 let DATA=[];      // por producto
 let VIEW={tab:"valuacion"};
-let CONT={q:"",cat:"todos",soloDif:false};
+let CONT={q:"",cat:"todos",soloNeg:false};
 let VAL={q:"",sel:new Set()};
 
 // ===================== CARGA =====================
@@ -195,6 +198,7 @@ function render(){
   const sanos=g.sano.length;
   const pct=total?Math.round(sanos/total*100):100;
   const gap=g.torcido.reduce((a,r)=>a+(r.valObj-r.val),0); // plata mal valuada (lo que falta para el valor real)
+  const negLines=DATA.filter(r=>r.clase!=="basura").reduce((a,r)=>a+r.quants.filter(q=>q.qty<0).length,0);
   const color=pct>=90?"var(--green)":pct>=70?"var(--org)":"var(--red)";
   const est=pct>=90?["g","Depósito sano"]:pct>=70?["y","Necesita atención"]:["r","Depósito desordenado"];
   const health=`
@@ -208,6 +212,7 @@ function render(){
       </div>
     </div>
     <div class="hmetrics">
+      <div class="hm ${negLines?'bad':'good'}" style="cursor:pointer" onclick="irNeg()" title="Lotes con cantidad negativa: es físicamente imposible (se entregó más de lo ingresado). Tocá para ir a contarlos y ajustarlos."><div class="k">⚠️ Stock negativo</div><div class="v">${negLines}</div></div>
       <div class="hm ${g.torcido.length?'bad':'good'}"><div class="k">⚖️ Valuación torcida</div><div class="v">${g.torcido.length}</div></div>
       <div class="hm ${g.sincosto.length?'mid':'good'}"><div class="k">🏷️ Sin costo</div><div class="v">${g.sincosto.length}</div></div>
       <div class="hm ${g.archivado.length?'mid':'good'}"><div class="k">🗃️ Archivados c/stock</div><div class="v">${g.archivado.length}</div></div>
@@ -236,6 +241,8 @@ function render(){
   if(VIEW.tab==="valuacion") setTimeout(bindVal,0);
 }
 function irTab(k){ VIEW.tab=k; render(); }
+function irNeg(){ VIEW.tab="conteo"; CONT.soloNeg=true; CONT.q=""; CONT.cat="todos"; render(); }
+function toggleNeg(){ CONT.soloNeg=!CONT.soloNeg; repintarBody(); }
 function repintarBody(){
   const g={torcido:grupo("torcido"),sincosto:grupo("sincosto"),archivado:grupo("archivado"),basura:grupo("basura")};
   let body="";
@@ -330,13 +337,16 @@ function lineasConteo(){
 }
 function tabConteo(){
   const cats=[...new Set(DATA.map(r=>r.catTop))].sort();
-  const arr=lineasConteo();
-  const LIMIT=200;
+  const negTotal=DATA.filter(r=>r.clase!=="basura").reduce((a,r)=>a+r.quants.filter(q=>q.qty<0).length,0);
+  let arr=lineasConteo();
+  if(CONT.soloNeg) arr=arr.filter(r=>r.quants.some(q=>q.qty<0));
+  const LIMIT=CONT.soloNeg?9999:200;
   const shown=arr.slice(0,LIMIT);
   let rows="";
   for(const r of shown){
     // una línea por quant; si el producto tiene varios lotes, se listan todos
     for(const qn of r.quants){
+      if(CONT.soloNeg && !(qn.qty<0)) continue;
       const key=`q${qn.id}`;
       rows+=`<div class="row" data-qid="${qn.id}" style="grid-template-columns:2.4fr 1fr .8fr 96px .9fr 90px">
         <div class="pname"><b>${esc(cleanName(r.name))}</b><span>${esc(r.code)}${qn.lotName?` · lote ${esc(qn.lotName)}`:""}</span></div>
@@ -350,10 +360,11 @@ function tabConteo(){
   }
   return `<div class="note info">📋 <b>Conteo físico.</b> Contá la mercadería real en el depósito y anotá lo que hay en <b>Conté</b>: el sistema te muestra la diferencia y con <b>Ajustar</b> corrige la cantidad en Odoo (ajuste de inventario, queda registrado). Contá <b>por lote</b> cuando el producto tiene varios. Buscá o filtrá por categoría para contar de a partes. Después de ajustar cantidades, revisá la pestaña <b>Valuación</b> por si quedó algún valor para corregir.</div>
    <div class="toolbar">
+     <button class="chip ${CONT.soloNeg?'on':''}" onclick="toggleNeg()" title="Lotes con cantidad negativa: físicamente imposible. Contalos y ajustalos a lo real.">⚠️ Solo stock negativo${negTotal?` (${negTotal})`:''}</button>
      <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4-4"/></svg><input id="cq" placeholder="Buscar producto o código…" value="${esc(CONT.q)}"></div>
      <select id="ccat"><option value="todos">Todas las categorías</option>${cats.map(c=>`<option value="${esc(c)}" ${CONT.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
    </div>
-   <div class="count-line">Mostrando <b>${shown.length}</b>${arr.length>LIMIT?` de ${arr.length} (afiná la búsqueda para ver el resto)`:''} productos.</div>
+   <div class="count-line">${CONT.soloNeg?`<b style="color:var(--red)">Mostrando solo lotes con stock negativo.</b> `:''}Mostrando <b>${Math.min(shown.length,arr.length)}</b>${!CONT.soloNeg&&arr.length>LIMIT?` de ${arr.length} (afiná la búsqueda para ver el resto)`:''} productos.</div>
    <div class="tablecard">
      <div class="thead" style="grid-template-columns:2.4fr 1fr .8fr 96px .9fr 90px">
        <div>Producto / lote</div><div>Categoría</div><div class="tr-r">Sistema</div><div class="tr-r">Conté</div><div class="tr-r">Diferencia</div><div></div>
