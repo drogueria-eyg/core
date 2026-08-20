@@ -248,8 +248,8 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=32"></script>
-<script src="../assets/metrics.js?v=4"></script>
+<script src="../assets/core.js?v=33"></script>
+<script src="../assets/metrics.js?v=5"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const COLORS=["#048782","#EC8B5E","#0AA89F","#E5A93B","#5FC8BF","#B0413E","#6E8B86","#04635F"];
@@ -830,14 +830,14 @@ function mval(d,k){
     case "ticket": return d.avgTicket||0;
     case "salud": return d.salud?d.salud.salud:0;
     case "rent": return d.rentabilidad!=null?d.rentabilidad*100:null;
-    case "cumpl": { const meta=(d.factBaseline||0)*1.2; return meta>0?d.factMes/meta*100:0; }
+    case "cumpl": { const meta=(d.meta!=null?d.meta:(d.factBaseline||0)*1.2); return meta>0?d.factMes/meta*100:0; }
     case "ritmo": { const esp=(d.factBaseline||0)*(d.diaMesFrac||1); return esp>0?d.factMes/esp*100:100; }
     case "nivelPts": return d.nivel?d.nivel.pts:0;
   }
   return null;
 }
 const METR=[
-  {k:"factMes", lab:"Facturado del mes", fmt:"money", higher:true},
+  {k:"factMes", lab:"Ventas del mes (pedidos)", fmt:"money", higher:true},
   {k:"cobradoMes", lab:"Cobrado del mes", fmt:"money", higher:true},
   {k:"actividad", lab:"Actividad", fmt:"pct", higher:true},
   {k:"nuevos", lab:"Clientes nuevos", fmt:"num", higher:true},
@@ -883,9 +883,9 @@ function renderEquipo(){
       const s=Math.round(f.salud.salud), scol=s>=80?'var(--teal)':s>=60?'var(--gold)':'var(--coral)';
       saludHTML = ext?"":`<div class="salud" title="Salud ${s}/100">${ringSVG(s,scol,38)}</div>`;
       const cumpl=mval(f,"cumpl"), ritmo=mval(f,"ritmo");
-      const meta=(f.factBaseline||0)*1.2, falta=Math.max(0,meta-f.factMes);
+      const meta=(f.meta!=null?f.meta:(f.factBaseline||0)*1.2), falta=Math.max(0,meta-f.factMes);
       const pcol=cumpl>=100?'var(--teal)':cumpl>=60?'var(--gold)':'var(--coral)';
-      prog = ext?`<div class="lbl">Facturado del mes: <b>${M(f.factMes)}</b></div><div class="prog"><i style="width:${Math.min(100,cumpl)}%;background:var(--teal-med)"></i></div>`
+      prog = ext?`<div class="lbl">Ventas del mes: <b>${M(f.factMes)}</b></div><div class="prog"><i style="width:${Math.min(100,cumpl)}%;background:var(--teal-med)"></i></div>`
         : `<div class="lbl">Meta del mes · ${Math.round(cumpl)}%</div><div class="prog"><i style="width:${Math.min(100,cumpl)}%;background:${pcol}"></i></div>
            <div class="metaline">${M(f.factMes)} de <b>${M(meta)}</b> · ${cumpl>=100?'✓ cumplida':'faltan '+M(falta)}</div>`;
       const up=ritmo>=100; trend=`<span class="trend ${up?'up':'down'}">${up?'▲':'▼'} ${Math.round(ritmo)}%<span style="font-weight:600;color:var(--gris2)"> ritmo</span></span>`;
@@ -911,7 +911,7 @@ function renderEquipo(){
       </div>
     </div>`;
   }).join("");
-  box.innerHTML=`<div class="eqhead"><h2>👥 Rendimiento por comercial</h2><span class="muted">tocá una tarjeta para el análisis · ordenadas por facturado del mes</span></div>
+  box.innerHTML=`<div class="eqhead"><h2>👥 Rendimiento por comercial</h2><span class="muted">tocá una tarjeta para el análisis · ordenadas por ventas del mes</span></div>
     <div class="eqgrid">${cards}</div>
     <div id="detCom"></div>`;
   if(SEL!=null) renderDetalle();
@@ -941,7 +941,7 @@ function oportunidades(d){
   if(d.perfil==="externo") return [];
   const ops=[];
   const vencPct=mval(d,"vencPct"), fichas=mval(d,"fichas"), cumpl=mval(d,"cumpl");
-  const meta=(d.factBaseline||0)*1.2;
+  const meta=(d.meta!=null?d.meta:(d.factBaseline||0)*1.2);
   // 1) vencido → recupera tasa de comisión (salud)
   if(vencPct>25){
     // comisión que recupera si la salud vuelve a 100 (el recorte es penaltyPt/100 de la tasa)
@@ -1039,8 +1039,14 @@ async function fichaData(uid, name, carteraIn, pfIn){
   for(const r of movG){ const m=mkey(r,"invoice_date:month"), amt=r.amount_untaxed||0, inv=r.move_type==="out_invoice";
     netMes[m]=(netMes[m]||0)+(inv?1:-1)*amt;
     if(m===mo){ if(inv){facMonto=amt;facN=r.__count||0;} else {ncMonto=amt;ncN=r.__count||0;} } }
-  const factMes=facMonto-ncMonto;
-  const fprev=Object.keys(netMes).filter(m=>m<mo); const factBaseline=fprev.length?fprev.reduce((s,m)=>s+netMes[m],0)/fprev.length:0;
+  const facturadoMes=facMonto-ncMonto;   // facturado (para el desglose visual de facturación)
+  // BASE de la comisión (desde agosto) = PEDIDOS por vendedor de la orden, neto, + genérica recuperada
+  const vend={}; for(const r of ordG){ const m=mkey(r,"date_order:month"); if(m) vend[m]=(vend[m]||0)+(r.amount_untaxed||0); }
+  try{ const gg=await EYG.rpc("sale.order","read_group",[[["user_id","=",452],["partner_id","in",cartera],["state","in",["sale","done"]],["date_order",">=",EYG.hace(210)]],["amount_untaxed:sum"],["date_order:month"]],{lazy:false}); for(const g of gg){ const rg=g.__range&&g.__range["date_order:month"]; const k=rg?rg.from.slice(0,7):null; if(k) vend[k]=(vend[k]||0)+(g.amount_untaxed||0); } }catch(e){}
+  const _cfg = await EYG.comisionesConfig().catch(()=>EYG.COMI_DEF);
+  const _md = EYG.metaDesde(vend, mo, _cfg);
+  const factMes=vend[mo]||0;             // ventas del mes = pedidos por vendedor (base comisión)
+  const factBaseline=_md.baseline, metaMes=_md.meta;
   // Cobros
   let cobradoMes=0, cob3=0;
   for(const r of payG){ const m=mkey(r,"date:month"), amt=r.amount||0; cob3+=amt; if(m===mo) cobradoMes=amt; }
@@ -1069,7 +1075,7 @@ async function fichaData(uid, name, carteraIn, pfIn){
   const perfil=EYGM.perfilDe(name, avgTicket);
   const desglose={ pedN, pedM, canN, canM, draN, draM, facN, facMonto, ncN, ncMonto };
   const ofVendidas=(ofVenG||[]).length, ofEnviadas=ofEnvC||0;
-  const d={nombre:name, perfil, factMes, factBaseline, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, ofEnviadas, ofVendidas, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg, pedMes:pedM, desglose};
+  const d={nombre:name, perfil, factMes, factBaseline, meta:metaMes, rates:_cfg.rates, externoCorte:_cfg.externoCorte, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, ofEnviadas, ofVendidas, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg, pedMes:pedM, desglose};
   d.nivel=EYGM.nivel(d); d.salud=EYGM.salud(d); d.com=EYGM.comision(d);
   return d;
 }
@@ -1091,7 +1097,7 @@ function ventasHTML(d, opts){
       <div class="vmain">
         <div class="vcol"><div class="vlab">Pedidos <span class="mut2">(neto)</span></div><div class="vbig">${Mabbr(d.pedMes)}</div><div class="vsrc">${cargaLbl}</div></div>
         <div class="vsep">vs</div>
-        <div class="vcol"><div class="vlab">Facturado <span class="mut2">(neto)</span></div><div class="vbig2">${Mabbr(d.factMes)}</div><div class="vsrc">${factLbl}</div></div>
+        <div class="vcol"><div class="vlab">Facturado <span class="mut2">(neto)</span></div><div class="vbig2">${Mabbr((g.facMonto||0)-(g.ncMonto||0))}</div><div class="vsrc">${factLbl}</div></div>
       </div>
       <div id="${id}" class="desg" style="display:none">
         <div class="desgh">Pedidos (por vendedor de la orden)</div>
@@ -1102,7 +1108,7 @@ function ventasHTML(d, opts){
         <div class="desgh" style="margin-top:12px">Facturación (por cliente de la cartera)</div>
         ${drow("📄","Facturas emitidas", g.facN, g.facMonto)}
         ${drow("↩️","Notas de crédito", g.ncN, g.ncMonto, true)}
-        <div class="drow2 tot"><span class="dl">= Facturado neto</span><b class="da">${M(d.factMes)}</b></div>
+        <div class="drow2 tot"><span class="dl">= Facturado neto</span><b class="da">${M((g.facMonto||0)-(g.ncMonto||0))}</b></div>
         <div class="desgnote">Fuente: <b>Pedidos</b> = <code>sale.order</code> confirmados (estado venta/hecho), por el <b>vendedor de la orden</b>. <b>Facturado</b> = <code>account.move</code> (facturas − NC posteadas), por los <b>clientes de la cartera</b>. Difieren por tiempo (un pedido de fin de mes se factura después) y por atribución.</div>
       </div>
     </div>`;
@@ -1221,7 +1227,7 @@ function fichaHTML(d){
   const perfilNom=d.perfil==="externo"?"Externo (3/4%)":(d.perfil==="inst"?"Instituciones":"Farmacias");
   const rent=d.rentabilidad!=null?Math.round(d.rentabilidad*100)+"%":"—";
   const vencPct=d.porCobrar>0?Math.round(d.vencido/d.porCobrar*100):0;
-  const meta=d.factBaseline*1.2, cumpl=meta>0?Math.round(d.factMes/meta*100):0, cobroPct=d.objetivoCobro>0?Math.round(d.cobradoMes/d.objetivoCobro*100):0;
+  const meta=(d.meta!=null?d.meta:d.factBaseline*1.2), cumpl=meta>0?Math.round(d.factMes/meta*100):0, cobroPct=d.objetivoCobro>0?Math.round(d.cobradoMes/d.objetivoCobro*100):0;
   const scol=d.salud.salud>=80?'var(--teal)':d.salud.salud>=60?'var(--gold)':'var(--coral)';
   const niv=d.perfil==="externo"?`<div class="fsub">Sistema</div><div class="muted">Externo · comisión fija 3/4%, sin nivel ni salud.</div>`:
     `<div class="fsub">Nivel ${d.nivel.emoji} ${d.nivel.nombre} · ×${d.nivel.mult.toFixed(2)} · ${Math.round(d.nivel.pts)}/100</div>`+
@@ -1232,7 +1238,7 @@ function fichaHTML(d){
   const obj=d.perfil==="externo"?"":`<div class="fsub">🎯 Objetivos del mes</div>
     <div class="metabox">
       🎯 <b>Meta de facturación: ${M(meta)}</b><br>
-      <span class="muted">Cómo se calcula: promedio del facturado neto de tus meses previos (<b>${M(d.factBaseline)}</b>) + 20%.</span><br>
+      <span class="muted">Cómo se calcula: promedio de tus <b>ventas (pedidos)</b> de meses previos (<b>${M(d.factBaseline)}</b>) + ${d.factBaseline>0?Math.round((d.meta/d.factBaseline-1)*100):20}%.</span><br>
       Vas <b>${M(d.factMes)}</b> · ${cumpl}% · ${cumpl>=100?'<span class="ok">meta cumplida ✓</span>':'<span class="falta">faltan '+M(falta)+'</span>'}
     </div>
     <div class="pb"><i style="width:${Math.min(100,cumpl)}%;background:${cumpl>=100?'var(--teal)':'var(--coral)'}"></i></div>
@@ -1242,7 +1248,7 @@ function fichaHTML(d){
   const nom1=esc((d.nombre||"").split(" ")[0]);
   return `<div class="fichin">
     <div class="fgrid">
-      <div class="fstat"><div class="l">Comisión estimada</div><div class="v" style="color:var(--teal-deep)">${Mabbr(d.com.total)}</div><div class="s">${d.perfil==="externo"?"3/4% fijo sobre facturado":"motor: facturado neto × tramos × nivel"}</div></div>
+      <div class="fstat"><div class="l">Comisión estimada</div><div class="v" style="color:var(--teal-deep)">${Mabbr(d.com.total)}</div><div class="s">${d.perfil==="externo"?"3/4% fijo sobre tus pedidos":"motor: tus pedidos × tramos × nivel"}</div></div>
       <div class="fstat"><div class="l">Rentabilidad</div><div class="v">${rent}</div><div class="s">margen ÷ ventas (line.margin, año)</div></div>
       <div class="fstat"><div class="l">Ticket promedio</div><div class="v">${Mabbr(d.avgTicket)}</div><div class="s">facturado ÷ pedidos (~6 meses)</div></div>
       <div class="fstat"><div class="l">Cobrado del mes</div><div class="v">${Mabbr(d.cobradoMes)}</div><div class="s">pagos entrantes (account.payment)</div></div>
@@ -1268,7 +1274,7 @@ function fuentesHTML(d){
   return `<ul>
     ${li("Pedidos (neto)","suma de <code>sale.order.amount_untaxed</code> con estado confirmado (venta/hecho) del mes, donde el <b>vendedor de la orden</b> es el comercial.")}
     ${li("Facturado (neto)","<code>account.move</code>: facturas (out_invoice) − notas de crédito (out_refund) posteadas del mes, de los <b>clientes de su cartera</b>.")}
-    ${li("Comisión estimada", ext?"3% hasta $50M y 4% por encima, sobre el facturado neto (Externo).":"motor EyG sobre el <b>facturado neto</b>: tramos por objetivo, × multiplicador de nivel, menos recorte por salud.")}
+    ${li("Comisión estimada", ext?"3% hasta $50M y 4% por encima, sobre tus pedidos (Externo).":"motor EyG sobre <b>tus pedidos</b> (lo que vende el vendedor): tramos por meta, × multiplicador de nivel, menos recorte por salud.")}
     ${li("Cobrado del mes","<code>account.payment</code> entrantes posteados del mes, de su cartera.")}
     ${li("Vencido / por cobrar","líneas de cuentas por cobrar sin conciliar (<code>account.move.line</code>, cuenta receivable); vencido = las de fecha de vencimiento pasada.")}
     ${li("Rentabilidad","margen ÷ ventas (<code>sale.order.line.margin</code>) del año.")}

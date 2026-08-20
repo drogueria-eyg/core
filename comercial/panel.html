@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=32"></script>
+<script src="../assets/core.js?v=33"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -551,17 +551,19 @@ async function rpc(model,method,args,kwargs={},intentos=3){
 const OBJ={diarioContactos:10, mensualNuevos:3, semanalFact:10000000}; // semanalFact = objetivo de VENTA NETA semanal (sin IVA, ya descontadas las notas de crédito)
 const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador reversible en el chatter del contacto (misma bóveda que usa la líder en Contactos). La gerencia revisa lo archivado.
 const PPAL_TAG="[ENTREGA-PPAL]"; // marca reversible (chatter) de la dirección de entrega principal → Cargar Venta la usa por defecto
-// ===== Comisión: escalera marginal sobre FACTURADO NETO (base). El cobro NO es la base: es PREMIO → sube el nivel/multiplicador que agranda toda la comisión =====
-// 3 SISTEMAS · escalera 2 tramos con corte en el OBJETIVO (baseline facturado ×1,2), MARGINAL:
-//  🏥 Instituciones 2%/3% · 💊 Farmacias 2,5%/3,5% (× nivel) · 🔵 Externo (Samanta) 3%/4% @ $50M fijo, sin nivel.
-const RATES={ inst:{base:.020,high:.030}, farm:{base:.025,high:.035} };
+// ===== Comisión (DESDE AGOSTO 2026): la base es TUS PEDIDOS (lo que vos vendés, sale.order por vendedor),
+//   no lo facturado por cartera. Antes de agosto NO cambia (julio y anteriores quedaron como estaban).
+//   La META = promedio (o mediana) de tus últimos meses cerrados + un %, todo CONFIGURABLE por Dirección
+//   en eyg.comisiones (ver EYG.comisionesConfig / metaDesde en core.js). El cobro sigue siendo PREMIO (nivel).
+//   Escalera 2 tramos: 🏥 Instituciones 2/3% · 💊 Farmacias 2,5/3,5% (× nivel) · 🔵 Externo 3/4% @ corte fijo, sin nivel.
 const EXTERNOS=["Samanta Luna"];
 const esExterno=()=>EXTERNOS.includes(COMERCIAL);
-const corteObjetivo=()=> esExterno()? 50e6 : (ST.base?.factBaseline||0)*1.2;   // meta = baseline +20% (marginal)
-const comisionRates=()=> esExterno()? {base:.03,high:.04} : (RATES[ST.base?.perfil]||RATES.farm);
+const CFGC=()=> (ST.comiCfg||EYG.COMI_DEF);   // config de comisiones (con defaults si aún no cargó)
+const corteObjetivo=()=> esExterno()? (CFGC().externoCorte||50e6) : (ST.base?.meta||0);   // meta = promedio de meses cerrados + %
+const comisionRates=()=> esExterno()? (CFGC().rates.externo||{base:.03,high:.04}) : (CFGC().rates[ST.base?.perfil]||CFGC().rates.farm);
 function ratesConSalud(){const r=comisionRates(),pen=(esExterno()?0:saludCuenta().penaltyPt)/100;return {base:Math.max(0,r.base-pen),high:Math.max(0,r.high-pen)};}
-function comisionBase(fact){const c=corteObjetivo(),r=ratesConSalud();return fact<=c?fact*r.base:c*r.base+(fact-c)*r.high;}
-function comisionDesglose(fact){const c=corteObjetivo(),r=ratesConSalud(),t=[];t.push({lo:0,hi:c,r:r.base,base:Math.min(fact,c),comi:Math.min(fact,c)*r.base});if(fact>c)t.push({lo:c,hi:Infinity,r:r.high,base:fact-c,comi:(fact-c)*r.high});return t;}
+function comisionBase(v){const c=corteObjetivo(),r=ratesConSalud();return v<=c?v*r.base:c*r.base+(v-c)*r.high;}
+function comisionDesglose(v){const c=corteObjetivo(),r=ratesConSalud(),t=[];t.push({lo:0,hi:c,r:r.base,base:Math.min(v,c),comi:Math.min(v,c)*r.base});if(v>c)t.push({lo:c,hi:Infinity,r:r.high,base:v-c,comi:(v-c)*r.high});return t;}
 const NIV=[{n:"Bronce",e:"🥉",m:1.00},{n:"Plata",e:"🥈",m:1.05},{n:"Oro",e:"🥇",m:1.10},{n:"Platino",e:"💎",m:1.15},{n:"Diamante",e:"👑",m:1.20}];
 const params=new URLSearchParams(location.search);
 let COMERCIAL="";  // se define en el arranque según la cuenta logueada (o ?c= para líder/admin)
@@ -737,25 +739,30 @@ async function cargar(){
     cargarPortalEstado().catch(()=>{});
     // ---- Baselines del NIVEL (dinámico): usa el historial 190d y los presupuestos que ya vinieron en la tanda de arriba ----
     try{
-      const bk={}; let sumTot=0;
-      for(const o of ordHist){ const m=(o.date_order||"").slice(0,7); if(!m)continue; (bk[m]=bk[m]||{ped:0,cli:new Set(),tot:0}); bk[m].ped++; if(o.partner_id)bk[m].cli.add(o.partner_id[0]); bk[m].tot+=o.amount_total||0; sumTot+=o.amount_total||0; }
+      // config de comisiones (ventana de meses, promedio/mediana, %, tasas) — una sola fuente, editable por Dirección
+      const cfg = ST.comiCfg || (ST.comiCfg = await EYG.comisionesConfig().catch(()=>EYG.COMI_DEF));
+      const bk={}; let sumTot=0; const vend={};   // vend = PEDIDOS POR VENDEDOR neto por mes (base de la comisión)
+      for(const o of ordHist){ const m=(o.date_order||"").slice(0,7); if(!m)continue; (bk[m]=bk[m]||{ped:0,cli:new Set(),tot:0}); bk[m].ped++; if(o.partner_id)bk[m].cli.add(o.partner_id[0]); bk[m].tot+=o.amount_total||0; sumTot+=o.amount_total||0; vend[m]=(vend[m]||0)+(o.amount_untaxed||0); }
+      // Recuperar de la cuenta genérica los pedidos de ESTA cartera que quedaron sin vendedor (mayo/junio viejos).
+      // Así la meta no subestima a quien tenía ventas mal cargadas. De agosto en adelante ya se carga bien.
+      try{ const gg=await rpc("sale.order","read_group",[[["user_id","=",452],["partner_id","in",ids],["state","in",["sale","done"]],["date_order",">=",hace(210)]],["amount_untaxed:sum"],["date_order:month"]],{lazy:false});
+        for(const g of gg){ const rg=g.__range&&g.__range["date_order:month"]; const m=rg?rg.from.slice(0,7):null; if(m) vend[m]=(vend[m]||0)+(g.amount_untaxed||0); } }catch(e){}
       const curM=inicioMes.slice(0,7);
       const prev=Object.keys(bk).filter(m=>m<curM), nP=prev.length||1;
       const promPed=Math.round(prev.reduce((s,m)=>s+bk[m].ped,0)/nP)||1;
       const promCli=Math.round(prev.reduce((s,m)=>s+bk[m].cli.size,0)/nP)||1;
       const avgTicket=ordHist.length?sumTot/ordHist.length:0;
-      // baseline de FACTURADO neto (facturas − NC) por mes, promedio de meses previos completos → corte = ×1,2
-      const fbk={}; for(const x of facHist){ const m=(x.invoice_date||"").slice(0,7); if(!m)continue; fbk[m]=(fbk[m]||0)+(x.move_type==="out_refund"?-1:1)*(x.amount_untaxed||0); }
-      const fprev=Object.keys(fbk).filter(m=>m<curM), fnP=fprev.length||1;
-      const factBaseline=fprev.reduce((s,m)=>s+fbk[m],0)/fnP;
-      ST.base={ objetivoCobro:(cobro3[0]?.amount||0)/3*1.1, promPed, promCli, perfil: avgTicket>=300000?"inst":"farm", avgTicket, factBaseline };
+      // META = promedio (o mediana) de los últimos N meses CERRADOS de PEDIDOS por vendedor + % (config)
+      const md = EYG.metaDesde(vend, curM, cfg);
+      ST.base={ objetivoCobro:(cobro3[0]?.amount||0)/3*1.1, promPed, promCli, perfil: avgTicket>=(cfg.perfilTicket||300000)?"inst":"farm", avgTicket, factBaseline:md.baseline, meta:md.meta, metaMeses:md.meses, vend };
+      ST.ventaMes = vend[curM]||0;   // venta del mes = tus pedidos del mes (base de la comisión)
       ST.act={ ped: bk[curM]?bk[curM].ped:0, cli: bk[curM]?bk[curM].cli.size:0 };
-      // métricas HOY / SEMANA (derivadas de lo ya traído, sin fetch extra)
+      // métricas HOY / SEMANA en PEDIDOS por vendedor (neto), del propio historial
       const hoy10=hoyStr.slice(0,10), sem7=inicioSem;   // "semana" = semana calendario del mes
-      let pedHoy=0,pedSem=0; const cliSemS=new Set();
-      for(const o of ordHist){ const dd=(o.date_order||"").slice(0,10); if(dd===hoy10)pedHoy++; if(dd>=sem7){pedSem++; if(o.partner_id)cliSemS.add(o.partner_id[0]);} }
-      let ventasHoy=0; for(const x of facHist){ const dd=(x.invoice_date||"").slice(0,10); if(dd===hoy10)ventasHoy+=(x.move_type==="out_refund"?-1:1)*(x.amount_untaxed||0); }
-      ST.diag={ ventasHoy, pedHoy, pedSem, cliSem:cliSemS.size };
+      let pedHoy=0,pedSem=0,ventaHoy=0,ventaSem=0; const cliSemS=new Set();
+      for(const o of ordHist){ const dd=(o.date_order||"").slice(0,10); const nt=o.amount_untaxed||0; if(dd===hoy10){pedHoy++; ventaHoy+=nt;} if(dd>=sem7){pedSem++; ventaSem+=nt; if(o.partner_id)cliSemS.add(o.partner_id[0]);} }
+      ST.ventaSem=ventaSem; ST.ventaHoy=ventaHoy;
+      ST.diag={ ventasHoy:ventaHoy, pedHoy, pedSem, cliSem:cliSemS.size };
       // ---- Presupuestos y pedidos (sección superior del panel) ----
       // TODO en NETO SIN IVA (amount_untaxed), igual que "Tus ventas", para que el panel sea consistente.
       const esWeb=o=>!!(o.website_id&&o.website_id[0]);
@@ -786,7 +793,7 @@ async function cargar(){
       pp.pedMontoMes=oMes.reduce((s,o)=>s+neto(o),0);
       ST.pedMesList=oMes.slice().sort((a,b)=>String(b.date_order||"").localeCompare(String(a.date_order||"")));
       ST.pp=pp;
-    }catch(e){ ST.base=ST.base||{objetivoCobro:0,promPed:1,promCli:1,perfil:"farm"}; ST.act=ST.act||{ped:0,cli:0}; ST.diag=ST.diag||{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}; }
+    }catch(e){ ST.base=ST.base||{objetivoCobro:0,promPed:1,promCli:1,perfil:"farm",meta:0,factBaseline:0,vend:{}}; ST.act=ST.act||{ped:0,cli:0}; ST.diag=ST.diag||{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}; if(ST.ventaMes==null)ST.ventaMes=0; if(ST.ventaSem==null)ST.ventaSem=0; if(ST.ventaHoy==null)ST.ventaHoy=0; }
     // PRIMERA PINTURA con lo esencial (contactos + ventas): el comercial ya puede trabajar.
     // Ofertas y WhatsApp llegan después y RE-pintan (el nivel se ajusta al instante cuando
     // entran los combos colocados; mejor eso que dejar el panel en blanco 10s esperándolos).
@@ -844,9 +851,13 @@ function nivel(){
 // Explicación completa de cómo se calcula cada número (para que no deje lugar a dudas).
 function ayudaHTML(){
   const b=ST.base||{}, meta=corteObjetivo(), baseline=b.factBaseline||0, sp=PERFIL[b.perfil]||PERFIL.farm;
+  const N=CFGC().metaMeses||3, P=Math.round((CFGC().metaCrecimiento||0)*100);
   return `<div class="ayudabox">
-    <h4>🎯 Meta de facturación (+20%) — ${money(meta)}</h4>
-    <p>= tu <b>promedio de facturación neta</b> de los meses previos (${money(baseline)}) <b>+ 20%</b>. Facturación neta = facturas − notas de crédito de tus clientes. Es tu objetivo de <b>venta</b>, y es <b>distinto</b> del objetivo de cobranza.</p>
+    <div style="background:#EAF5F3;border:1px solid #BFE2DD;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:12.5px;color:#12463f">💡 <b>Desde agosto de 2026</b> tu comisión se calcula sobre <b>tus pedidos</b> (lo que vos vendés), no sobre lo facturado por cartera. Julio y lo anterior quedaron como estaban.</div>
+    <h4>🛒 Tus ventas (base de la comisión)</h4>
+    <p>Es el total <b>neto (sin IVA)</b> de <b>tus pedidos</b> del mes — los que vos cargás como vendedora. No importa quién facture después: cuenta lo que <b>vos</b> vendés.</p>
+    <h4>🎯 Tu meta del mes (+${P}%) — ${money(meta)}</h4>
+    <p>= el <b>promedio de tus ventas</b> de los últimos <b>${N} meses</b> cerrados (${money(baseline)}) <b>+ ${P}%</b>. Hasta la meta cobrás una tasa; por lo que la superás, una más alta (crecer te conviene).</p>
     <h4>💰 Objetivo de cobranza — ${money(b.objetivoCobro||0)}</h4>
     <p>= promedio de lo <b>cobrado</b> en los últimos 3 meses + 10%. Mide plata que entra (cobros), no facturación. La cobranza la lleva el sector de Cobranzas; vos ayudás a que el cliente pague.</p>
     <h4>🩺 Salud de la cuenta (el freno)</h4>
@@ -862,7 +873,7 @@ function ayudaHTML(){
       <li><b>Constancia</b> (5 pts): ${OBJ.diarioContactos} contactos trabajados por día.</li>
     </ul>
     <h4>💵 Comisión</h4>
-    <p>Se calcula sobre tu <b>facturación neta</b>: una tasa hasta tu meta y una más alta por lo que la supera (escalera marginal), multiplicada por tu nivel, menos el recorte de salud si tu cuenta no está sana.</p>
+    <p>Se calcula sobre <b>tus pedidos</b>: una tasa hasta tu meta y una más alta por lo que la supera (escalera), multiplicada por tu nivel, menos el recorte de salud si tu cuenta no está sana.</p>
   </div>`;
 }
 // SALUD DE LA CUENTA (0-100) = el FRENO. Baja por: vencido de cartera (45), facturado bajo el piso (30), fichas (25).
@@ -873,8 +884,8 @@ function saludCuenta(){
   const fichas=ST.contactos.filter(c=>completar(c).pct>=100).length/total;
   const venc=ST.cc.porCobrar>0?ST.cc.vencido/ST.cc.porCobrar:0;
   const d=now.getDate(), dim=new Date(now.getFullYear(),now.getMonth()+1,0).getDate();
-  const esperado=(ST.base?.factBaseline||0)*(d/dim); // piso prorrateado por día del mes
-  const factRatio=esperado>0?ST.fact.mes/esperado:1;
+  const esperado=(ST.base?.factBaseline||0)*(d/dim); // piso prorrateado por día del mes (sobre tus pedidos)
+  const factRatio=esperado>0?(ST.ventaMes||0)/esperado:1;
   const pV=cl((venc-0.10)/0.40,0,1)*45;   // vencido: desde 10%, tope 50%
   const pF=cl((1-factRatio)/0.30,0,1)*30; // facturado < piso (prorrateado)
   const pO=cl((0.40-fichas)/0.40,0,1)*25; // fichas < 40%
@@ -1005,14 +1016,14 @@ function render(){
   const ofH=ofHoy(), ofS=ofSem();
   const dHoy=ST.contactadosHoy.size+ofH, dObj=OBJ.diarioContactos;
   const msgHoy=envH.total+ofH, msgSem=envS+ofS;
-  const pDia=Math.min(100,Math.round(dHoy/dObj*100)), pNue=Math.min(100,Math.round(ST.nuevos/OBJ.mensualNuevos*100)), pFac=Math.min(100,Math.round(ST.fact.sem/OBJ.semanalFact*100));
+  const pDia=Math.min(100,Math.round(dHoy/dObj*100)), pNue=Math.min(100,Math.round(ST.nuevos/OBJ.mensualNuevos*100)), pFac=Math.min(100,Math.round((ST.ventaSem||0)/OBJ.semanalFact*100));
   const externo=esExterno();
   const nv=nivel(); const completas=ST.contactos.filter(c=>completar(c).pct>=100).length; const incompletas=ST.contactos.length-completas;
-  const cBase=comisionBase(ST.fact.mes), cTot=externo?cBase:cBase*nv.mult, desg=comisionDesglose(ST.fact.mes);
+  const cBase=comisionBase(ST.ventaMes), cTot=externo?cBase:cBase*nv.mult, desg=comisionDesglose(ST.ventaMes);
   const corte=corteObjetivo(), rt=comisionRates();
   const sd=externo?null:saludCuenta();
   const scol=sd?(sd.salud>=80?'var(--teal)':sd.salud>=60?'var(--gold)':'var(--coral)'):'';
-  const cobroPct=ST.fact.mes>0?Math.round(Math.min(ST.cc.cobradoMes/ST.fact.mes,1.2)*100):0;
+  const cobroPct=ST.ventaMes>0?Math.round(Math.min(ST.cc.cobradoMes/ST.ventaMes,1.2)*100):0;
   const sinTelN=ST.contactos.filter(c=>!(c.phone||c.mobile)).length;
   const hora=now.getHours(); const saludo=hora<13?"Buenos días":hora<20?"Buenas tardes":"Buenas noches";
   const ring=(p,val,tot,color)=>`<div class="ring" style="--p:${p};--c:${color}"><div style="text-align:center"><div class="rv">${val}</div>${tot?'<div class="rt">de '+tot+'</div>':''}</div></div>`;
@@ -1030,9 +1041,10 @@ function render(){
     <div class="goals">
       <div class="goal ${pDia>=100?'done':''}"><span class="chk">✅</span>${ring(pDia,dHoy,dObj,'var(--teal)')}<div><div class="gt">Hoy · contactos</div><div class="gn">${dHoy}/${dObj}</div><div class="gs">${dHoy>=dObj?'¡Meta cumplida! 🎉':(dObj-dHoy)+' para tu meta'}${msgHoy?` · 📤 ${msgHoy} msg`:''}</div></div></div>
       <div class="goal ${pNue>=100?'done':''}"><span class="chk">✅</span>${ring(pNue,ST.nuevos,OBJ.mensualNuevos,'var(--coral)')}<div><div class="gt">Mes · nuevos</div><div class="gn">${ST.nuevos}/${OBJ.mensualNuevos}</div><div class="gs">clientes nuevos</div></div></div>
-      <div class="goal ${pFac>=100?'done':''}"><span class="chk">✅</span>${ring(pFac,pFac+'%','','var(--gold)')}<div><div class="gt">Semana · ventas</div><div class="gn">${money(ST.fact.sem)}</div><div class="gs">meta ${money(OBJ.semanalFact)} · neto</div></div></div>
+      <div class="goal ${pFac>=100?'done':''}"><span class="chk">✅</span>${ring(pFac,pFac+'%','','var(--gold)')}<div><div class="gt">Semana · ventas</div><div class="gn">${money(ST.ventaSem)}</div><div class="gs">meta ${money(OBJ.semanalFact)} · tus pedidos</div></div></div>
     </div>
     <div class="secrow"><h2 class="sec">📊 Tus ventas</h2></div>
+    ${externo?'':`<div style="background:#EAF5F3;border:1px solid #BFE2DD;border-radius:12px;padding:11px 14px;margin:-4px 0 12px;font-size:12.5px;color:#12463f;line-height:1.5">💡 <b>Desde agosto</b>, tu comisión se calcula sobre <b>tus pedidos</b> (lo que vos vendés), no sobre lo facturado por cartera. Tu <b>meta</b> es el <b>promedio de tus últimos ${CFGC().metaMeses||3} meses de ventas + ${Math.round((CFGC().metaCrecimiento||0)*100)}%</b>. Lo de julio y antes quedó como estaba. <a onclick="ctrlPanel('ayuda')" style="color:var(--teal-deep);font-weight:800;cursor:pointer;white-space:nowrap">Ver cómo se calcula →</a></div>`}
     <div class="kpis">
       <div class="kpi">
         <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">☀️</span><div class="kmeta"><div class="kl">Hoy</div><div class="kv">${ST.diag.ventasHoy>0?money(ST.diag.ventasHoy):ST.diag.pedHoy+' ped.'}</div><div class="ks">${ST.diag.pedHoy} pedidos · ${dHoy}/${dObj} contactos</div></div><span class="kchev">▾</span></div>
@@ -1040,12 +1052,12 @@ function render(){
           <div class="prow"><div class="pl"><span>Contactos trabajados hoy · meta ${dObj}</span><b>${dHoy}/${dObj}</b></div><div class="pbar"><i style="width:${Math.min(100,pDia)}%;background:var(--teal)"></i></div></div>
           <div class="drow"><span>📤 Mensajes enviados hoy</span><b>${msgHoy} <span style="font-weight:600;color:var(--gris2);font-size:11px">${envH.nuevo} nuevos · ${envH.seg} seguim.${ofH?` · ${ofH} oferta${ofH===1?'':'s'}`:''}</span></b></div>
           <div class="drow"><span>📤 Mensajes esta semana</span><b>${msgSem}</b></div>
-          <div class="drow"><span>🧾 Ventas facturadas hoy</span><b>${money(ST.diag.ventasHoy)}</b></div>
+          <div class="drow"><span>🛒 Tus ventas de hoy (pedidos)</span><b>${money(ST.diag.ventasHoy)}</b></div>
           <div class="drow"><span>📦 Pedidos hoy</span><b>${ST.diag.pedHoy}</b></div>
         </div></div></div>
       </div>
       <div class="kpi">
-        <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">📅</span><div class="kmeta"><div class="kl">Semana</div><div class="kv">${money(ST.fact.sem)}</div><div class="ks">${pFac}% de la meta · ${ST.diag.pedSem} pedidos</div></div><span class="kchev">▾</span></div>
+        <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">📅</span><div class="kmeta"><div class="kl">Semana</div><div class="kv">${money(ST.ventaSem)}</div><div class="ks">${pFac}% de la meta · ${ST.diag.pedSem} pedidos</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
           <div class="prow"><div class="pl"><span>Ventas semana · meta ${money(OBJ.semanalFact)}</span><b>${pFac}%</b></div><div class="pbar"><i style="width:${Math.min(100,pFac)}%;background:var(--gold)"></i></div></div>
           <div class="drow"><span>📦 Pedidos (esta semana)</span><b>${ST.diag.pedSem}</b></div>
@@ -1054,21 +1066,21 @@ function render(){
         </div></div></div>
       </div>
       <div class="kpi">
-        <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">📈</span><div class="kmeta"><div class="kl">Mes</div><div class="kv">${money(ST.fact.mes)}</div><div class="ks">${externo?'facturado neto':'meta de facturación '+money(corte)}</div></div><span class="kchev">▾</span></div>
+        <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">📈</span><div class="kmeta"><div class="kl">Mes</div><div class="kv">${money(ST.ventaMes)}</div><div class="ks">${externo?'tus pedidos · neto':'meta '+money(corte)+' · tus pedidos'}</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
-          <div class="drow"><span>Facturado neto del mes</span><b>${money(ST.fact.mes)}</b></div>
-          ${ST.fact.mesNC>0?`<div class="drow"><span>Notas de crédito</span><b>−${money(ST.fact.mesNC)}</b></div>`:''}
-          ${externo?'':`<div class="drow"><span>🎯 Meta de facturación</span><b>${money(corte)}</b></div>
-          <div style="font-size:11px;color:var(--gris2);margin:-2px 0 4px">= tu promedio facturado de meses previos (${money(ST.base?.factBaseline||0)}) + 20%. Es un objetivo de <b>facturación</b>, distinto del de cobranza.</div>`}
-          <div class="drow"><span>📦 Pedidos del mes</span><b>${ST.act.ped}</b></div>
-          <div style="margin-top:9px"><a onclick="verOdoo('action=321&view_type=list&search_default_myinvoices=1')" style="color:var(--teal);font-weight:700;cursor:pointer;font-size:12.5px">Ver mis facturas en Odoo →</a></div>
+          <div class="drow"><span>🛒 Tus pedidos del mes (neto)</span><b>${money(ST.ventaMes)}</b></div>
+          <div class="drow"><span>📦 Cantidad de pedidos</span><b>${ST.act.ped}</b></div>
+          ${externo?'':`<div class="drow"><span>🎯 Tu meta del mes</span><b>${money(corte)}</b></div>
+          <div style="font-size:11px;color:var(--gris2);margin:-2px 0 4px">= promedio de tus últimos ${CFGC().metaMeses||3} meses de ventas + ${Math.round((CFGC().metaCrecimiento||0)*100)}%. Se mide sobre <b>tus pedidos</b> (lo que vos vendés), y rige desde agosto.</div>`}
+          <div class="drow" style="opacity:.7"><span>🧾 Facturado del mes (se cobra después)</span><b>${money(ST.fact.mes)}</b></div>
+          <div style="margin-top:9px"><a onclick="verOdoo('action=667&view_type=list&search_default_sales=1')" style="color:var(--teal);font-weight:700;cursor:pointer;font-size:12.5px">Ver mis pedidos en Odoo →</a></div>
         </div></div></div>
       </div>
       <div class="kpi hl neon">
         <div class="khead" onclick="tk(this.parentNode)"><span class="kic">💰</span><div class="kmeta"><div class="kl">Comisión estimada</div><div class="kv glowtx">${money(cTot)}</div><div class="ks">${externo?'Externo · 3/4% fijo':'tocá para ver el desglose'}</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
-          <div class="drow"><span>Facturado del mes</span><b>${money(ST.fact.mes)}</b></div>
-          ${desg.map((t,i)=>`<div class="drow"><span>${i===0?(externo?'Hasta $50M':'Hasta tu objetivo'):(externo?'Sobre $50M':'Sobre tu objetivo')} · ${money(t.base)}</span><span>${(t.r*100).toFixed(2).replace('.',',')}% = <b>${money(t.comi)}</b></span></div>`).join("")}
+          <div class="drow"><span>🛒 Tus pedidos del mes</span><b>${money(ST.ventaMes)}</b></div>
+          ${desg.map((t,i)=>`<div class="drow"><span>${i===0?(externo?'Hasta $50M':'Hasta tu meta'):(externo?'Sobre $50M':'Sobre tu meta')} · ${money(t.base)}</span><span>${(t.r*100).toFixed(2).replace('.',',')}% = <b>${money(t.comi)}</b></span></div>`).join("")}
           <div class="drow"><span>Base comisión</span><b>${money(cBase)}</b></div>
           ${externo?'':`<div class="drow"><span>Ajustes: nivel ${nv.emoji}×${nv.mult.toFixed(2)} · salud ${sd&&sd.penaltyPt>0.005?'−'+sd.penaltyPt.toFixed(2)+'pt':'ok'}</span><b style="font-size:10.5px;opacity:.8">detalle en Rendimiento ↓</b></div>`}
           <div class="drow tot"><span>Tu comisión</span><b>${money(cTot)}</b></div>

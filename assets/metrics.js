@@ -33,10 +33,12 @@ window.EYGM = (function(){
     return {nombre:NIV[idx].n,emoji:NIV[idx].e,mult:NIV[idx].m,pts,params:P,perfil:sp.nom};
   }
   function comision(d){
-    const rt=d.perfil==="externo"?{base:.03,high:.04}:(RATES[d.perfil]||RATES.farm);
+    // tasas: de la config (d.rates) si viene; si no, defaults. corte: d.meta (nueva) si viene, si no baseline×1,2 (viejo).
+    const R=d.rates||RATES;
+    const rt=d.perfil==="externo"?(R.externo||{base:.03,high:.04}):(R[d.perfil]||R.farm||RATES.farm);
     const pen=d.perfil==="externo"?0:salud(d).penaltyPt/100;
     const rB=Math.max(0,rt.base-pen), rH=Math.max(0,rt.high-pen);
-    const corte=d.perfil==="externo"?50e6:(d.factBaseline||0)*1.2;   // meta = baseline +20% (marginal)
+    const corte=d.perfil==="externo"?(d.externoCorte||50e6):(d.meta!=null?d.meta:(d.factBaseline||0)*1.2);
     const base=d.factMes<=corte?d.factMes*rB:corte*rB+(d.factMes-corte)*rH;
     const mult=d.perfil==="externo"?1:nivel(d).mult;
     return {base, mult, total:base*mult, corte, rt, penaltyPt: d.perfil==="externo"?0:salud(d).penaltyPt};

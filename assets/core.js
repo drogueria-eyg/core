@@ -1264,7 +1264,47 @@ window.EYG = (function(){
   const LEGAJO_ESTADO_META={verde:{c:"g",t:"Legajo al día"},amarillo:{c:"y",t:"Por vencer / incompleto"},rojo:{c:"r",t:"Falta / vencido"},vacio:{c:"n",t:"Sin legajo"}};
   function badgeLegajo(estado){ legajoStyles(); const m=LEGAJO_ESTADO_META[estado]||LEGAJO_ESTADO_META.vacio; return `<span class="eyg-leg ${m.c}" title="${esc(m.t)}"><span class="pt"></span>${esc(m.t)}</span>`; }
 
-  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
+  /* ===== CONFIG DE COMISIONES (una sola fuente, editable por Dirección) =====
+     Vive en ir.config_parameter `eyg.comisiones` (JSON). La usan el panel del comercial
+     y el del líder para calcular la META de facturación (y las tasas), así los dos coinciden.
+       metaMeses        = cuántos meses cerrados se promedian (default 3).
+       metaMetodo       = "promedio" | "mediana" (mediana no la distorsiona una licitación puntual).
+       metaCrecimiento  = cuánto se le suma por encima del promedio (0.20 = +20%).
+       metaCuentaVacios = si un mes flojo/sin facturar cuenta como $0 (true) o se saltea (false).
+       rates            = tasas de la escalera por perfil (base = hasta la meta, high = por encima).
+       perfilTicket     = ticket promedio que separa Instituciones de Farmacias.
+       externoCorte     = corte fijo del externo (Samanta), en $. */
+  const COMI_KEY="eyg.comisiones";
+  const COMI_DEF={ metaMeses:3, metaMetodo:"promedio", metaCrecimiento:0.20, metaCuentaVacios:true,
+    rates:{ inst:{base:.020,high:.030}, farm:{base:.025,high:.035}, externo:{base:.030,high:.040} },
+    perfilTicket:300000, externoCorte:50000000 };
+  let _comiCfg=null;
+  async function comisionesConfig(force){ if(_comiCfg && !force) return _comiCfg; let o={}; try{ o=JSON.parse(await rpc("ir.config_parameter","get_param",[COMI_KEY])||"{}")||{}; }catch(e){}
+    _comiCfg=Object.assign({}, COMI_DEF, o); _comiCfg.rates=Object.assign({}, COMI_DEF.rates, (o&&o.rates)||{}); return _comiCfg; }
+  async function comisionesGuardar(cfg){ const c=Object.assign({}, COMI_DEF, cfg||{}); c.rates=Object.assign({}, COMI_DEF.rates, (cfg&&cfg.rates)||{}); _comiCfg=c; await rpc("ir.config_parameter","set_param",[COMI_KEY, JSON.stringify(c)]); return c; }
+  /* Las N claves "YYYY-MM" de los meses ANTERIORES a curM (curM = mes en curso, se excluye). */
+  function _mesesPrevios(curM, n){ let [y,m]=String(curM).split("-").map(Number); const out=[]; for(let i=0;i<n;i++){ m--; if(m<1){m=12;y--;} out.unshift(y+"-"+String(m).padStart(2,"0")); } return out; }
+  /* META pura: recibe fbk={"YYYY-MM":neto} (facturado neto por mes), el mes en curso y la config.
+     Devuelve el baseline (promedio o mediana de los meses de la ventana) y la meta = baseline×(1+crecimiento).
+     `meses` lista los N meses de la ventana con su neto (null si el mes no tiene datos) para mostrarlos. */
+  function metaDesde(fbk, curM, cfg){
+    cfg=cfg||_comiCfg||COMI_DEF; fbk=fbk||{};
+    const n=Math.max(1, cfg.metaMeses||3);
+    const keys=_mesesPrevios(curM, n);
+    const meses=keys.map(k=>({key:k, net:(k in fbk)?fbk[k]:null}));
+    const cuenta = cfg.metaCuentaVacios!==false;
+    const nums = cuenta ? meses.map(v=>v.net||0) : meses.filter(v=>v.net!=null).map(v=>v.net);
+    let baseline=0;
+    if(nums.length){
+      if(cfg.metaMetodo==="mediana"){ const s=[...nums].sort((a,b)=>a-b), mid=Math.floor(s.length/2); baseline = s.length%2 ? s[mid] : (s[mid-1]+s[mid])/2; }
+      else baseline = nums.reduce((a,b)=>a+b,0)/nums.length;
+    }
+    const meta = baseline*(1+(cfg.metaCrecimiento||0));
+    return { baseline, meta, meses, nUsados:nums.length };
+  }
+
+  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
+    COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
