@@ -620,12 +620,13 @@ async function montarComi(){
 }
 async function comiLoadData(){
   const now=new Date(); COMI.curM=MESKEY(now);
-  const desdeD=new Date(now.getFullYear(), now.getMonth()-8, 1);   // ventana amplia: 6 meses a mostrar + 3 previos para calcular su meta
-  const desde=desdeD.toISOString().slice(0,10);
-  // vendedores que nos importan: comerciales + líderes que venden
-  const sellers=[]; const seen=new Set();
-  (STATE.coms||[]).forEach(c=>{ if(!seen.has(c.uid)){ seen.add(c.uid); sellers.push({uid:c.uid,name:c.name}); } });
-  (STATE.leaders||[]).forEach(l=>{ if(l.uid && !seen.has(l.uid) && (l.ownFactMes>0)){ seen.add(l.uid); sellers.push({uid:l.uid,name:l.name}); } });
+  const desde="2025-11-01";   // piso fijo: contamos desde mayo-2026, y la meta de mayo necesita hasta 6 meses previos (nov-2025)
+  // comerciales, SIN German ni Diego; nos aseguramos Lucía, Marianela y Samanta aunque no estén en el depto Ventas de Odoo
+  const sellers=[]; const seen=new Set(); const EXCLUIR=/German Banquero|Diego Velazquez/i;
+  (STATE.coms||[]).forEach(c=>{ if(!seen.has(c.uid) && !EXCLUIR.test(c.name||"")){ seen.add(c.uid); sellers.push({uid:c.uid,name:c.name}); } });
+  for(const nm of ["Lucía Oviedo","Marianela Soto","Samanta Luna"]){
+    if(!sellers.some(s=>s.name===nm)){ try{ const u=await EYG.rpc("res.users","search_read",[[["name","=",nm]]],{fields:["id","name"]}); if(u[0]&&!seen.has(u[0].id)){ seen.add(u[0].id); sellers.push({uid:u[0].id,name:u[0].name}); } }catch(e){} }
+  }
   COMI.sellers=sellers; COMI.names={}; sellers.forEach(s=>COMI.names[s.uid]=s.name);
   const monthly={}; COMI.recu={}; COMI.ticket={};
   // FACTURADO NETO por mes con la regla HÍBRIDA: vendedor del pedido; o dueño del cliente si el pedido
@@ -717,7 +718,8 @@ const Mc=n=>{ n=n||0; return Math.abs(n)>=1e6?"$"+(n/1e6).toFixed(2)+"M":"$"+Mat
 function comiSegRender(cfg){
   const wrap=document.getElementById("comi_seg"); if(!wrap)return;
   const [Y,Mo]=COMI.curM.split("-").map(Number); const cols=[];
-  for(let i=5;i>=0;i--){ let m=Mo-i,y=Y; while(m<1){m+=12;y--;} cols.push(y+"-"+String(m).padStart(2,"0")); }
+  { let y=2026,m=5; while(y<Y || (y===Y && m<=Mo)){ cols.push(y+"-"+String(m).padStart(2,"0")); m++; if(m>12){m=1;y++;} } }   // desde mayo-2026 hasta el mes actual
+  const curK=COMI.curM;
   const rates=cfg.rates||EYG.COMI_DEF.rates, esExt=nm=>/Samanta/i.test(nm||"");
   const escal=(fact,meta,perfil)=>{ const rt=perfil==="externo"?rates.externo:(rates[perfil]||rates.farm); const corte=perfil==="externo"?(cfg.externoCorte||50e6):meta; return fact<=corte?fact*rt.base:corte*rt.base+(fact-corte)*rt.high; };
   const rows=COMI.sellers.map(s=>{
@@ -727,14 +729,13 @@ function comiSegRender(cfg){
       const meta=EYG.metaDesde(COMI.monthly[s.uid]||{}, k, cfg).meta;
       return {fact, comi:escal(fact,meta,perfil)}; });
     return {name:s.name, cells, tot:cells.reduce((a,c)=>a+(c.comi||0),0)};
-  }).filter(r=>r.cells.some(c=>c.comi!=null)).sort((a,b)=>b.tot-a.tot);
-  const curK=COMI.curM;
-  let html=`<div style="font-size:13px;font-weight:800;margin-bottom:8px">📅 Comisiones por mes <span style="font-weight:600;color:var(--gris2);font-size:11.5px">· sobre facturado neto · el mes en curso es parcial</span></div>
-    <table class="comi-prev"><tr><th class="nm">Comercial</th>${cols.map(k=>`<th>${MESLBL(k)}${k===curK?' ·hoy':''}</th>`).join("")}<th>Total 6m</th></tr>`;
+  }).sort((a,b)=>b.tot-a.tot);
+  let html=`<div style="font-size:13px;font-weight:800;margin-bottom:8px">📅 Comisiones por mes <span style="font-weight:600;color:var(--gris2);font-size:11.5px">· desde mayo · sobre facturado neto</span></div>
+    <div style="overflow-x:auto"><table class="comi-prev"><tr><th class="nm">Comercial</th>${cols.map(k=>`<th>${MESLBL(k)}${k===curK?'<br><span style="color:var(--teal);font-size:9px">EN CURSO</span>':''}</th>`).join("")}<th>Total</th></tr>`;
   for(const r of rows){
-    html+=`<tr><td class="nm">${esc(r.name)}</td>`+r.cells.map(c=>c.comi==null?'<td><span style="color:var(--gris2)">—</span></td>':`<td><b>${Mc(c.comi)}</b><br><span style="font-size:10px;color:var(--gris2)">fact ${Mc(c.fact)}</span></td>`).join("")+`<td class="meta">${Mc(r.tot)}</td></tr>`;
+    html+=`<tr><td class="nm">${esc(r.name)}</td>`+r.cells.map((c,i)=>c.comi==null?'<td><span style="color:var(--gris2)">—</span></td>':`<td${cols[i]===curK?' style="background:#F3FAF8"':''}><b>${Mc(c.comi)}</b><br><span style="font-size:10px;color:var(--gris2)">fact ${Mc(c.fact)}</span></td>`).join("")+`<td class="meta">${Mc(r.tot)}</td></tr>`;
   }
-  html+=`</table><div style="font-size:11px;color:var(--gris2);margin-top:6px">Comisión base = escalera sobre el facturado neto con la meta de cada mes. No incluye el ajuste de nivel/salud (que se ve en el panel de cada comercial).</div>`;
+  html+=`</table></div><div style="font-size:11px;color:var(--gris2);margin-top:6px">Mayo a julio están <b>cerrados</b> (ya liquidados); <b>agosto se actualiza solo</b> a medida que se factura. Comisión base sobre el facturado neto (no incluye nivel/salud, que se ven en el panel de cada comercial).</div>`;
   wrap.innerHTML=html;
 }
 function comiSetMetodo(m){ COMI._metodo=m; const a=document.getElementById("m_prom"),b=document.getElementById("m_med"); if(a)a.className=m!=='mediana'?'on':''; if(b)b.className=m==='mediana'?'on':''; comiRecalc(); }
