@@ -87,6 +87,11 @@
   .spin{width:34px;height:34px;border:4px solid var(--line);border-top-color:var(--teal);border-radius:50%;animation:sp 1s linear infinite;margin:60px auto}
   @keyframes sp{to{transform:rotate(360deg)}}
   .subgrp{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--teal-deep);background:#EAF4F3;padding:7px 14px;border-bottom:1px solid var(--line)}
+  .prodhead{display:grid;gap:10px;align-items:center;padding:11px 14px;background:#EAF4F3;border-top:2px solid var(--teal);border-bottom:1px solid var(--line)}
+  .prodhead .k{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:700}
+  .prodhead b{font-size:15px}
+  .row.bad{background:#FDF3F2}
+  .lotname{color:var(--gris);padding-left:14px}.lotname b{color:var(--ink);font-weight:600}
 </style>
 </head>
 <body>
@@ -214,7 +219,7 @@ function render(){
       </div>
     </div>
     <div class="hmetrics">
-      <div class="hm ${negLines?'bad':'good'}" style="cursor:pointer" onclick="irNeg()" title="Lotes con cantidad negativa: es físicamente imposible (se entregó más de lo ingresado). Tocá para ir a contarlos y ajustarlos."><div class="k">⚠️ Stock negativo</div><div class="v">${negLines}</div></div>
+      <div class="hm ${negLines?'bad':'good'}" style="cursor:pointer" onclick="irNeg()" title="Lotes en negativo. Casi nunca es falta de stock: el producto suele tener stock en otros lotes (se descontó del lote equivocado). Tocá para ver el producto completo y reordenar sus lotes."><div class="k">⚠️ Lotes negativos</div><div class="v">${negLines}</div></div>
       <div class="hm ${ghostLines?'bad':'good'}" style="cursor:pointer" onclick="irGhost()" title="Líneas en 0 con reserva pegada sin ninguna venta detrás (reserva fantasma). Son las que 'no dejan modificar'. Tocá para liberarlas."><div class="k">🔒 Reservas fantasma</div><div class="v">${ghostLines}</div></div>
       <div class="hm ${g.torcido.length?'bad':'good'}"><div class="k">⚖️ Valuación torcida</div><div class="v">${g.torcido.length}</div></div>
       <div class="hm ${g.sincosto.length?'mid':'good'}"><div class="k">🏷️ Sin costo</div><div class="v">${g.sincosto.length}</div></div>
@@ -339,7 +344,30 @@ function lineasConteo(){
   if(q) arr=arr.filter(r=>r.name.toLowerCase().includes(q)||(r.code||"").toLowerCase().includes(q));
   return arr.sort((a,b)=>a.name.localeCompare(b.name));
 }
-const GRID_CONT="grid-template-columns:2.3fr .9fr .7fr .7fr 96px .8fr 92px";
+const GRID6="grid-template-columns:2.5fr .7fr .7fr 96px .8fr 92px";       // lote/producto · sistema · reservado · conté · dif · acción
+const GRIDH="grid-template-columns:2.5fr .7fr .7fr 1.6fr"; // header producto (total de todos los lotes)
+// celdas de acción de una línea (contar/ajustar, o liberar si es fantasma)
+function celdasAccion(qn){
+  const key=`q${qn.id}`, ghost=(qn.qty===0&&qn.res>0);
+  if(ghost) return `<div class="tr-r" style="grid-column:span 2"><span class="pill red">🔒 reserva fantasma</span></div>
+     <div class="tr-r"><button class="mini-btn pri" onclick="liberar(${qn.id})" title="Libera la reserva pegada (no hay venta detrás) para desbloquear esta línea.">Liberar</button></div>`;
+  return `<div class="tr-r"><input class="cnt-in" id="${key}" inputmode="decimal" placeholder="conté" data-sis="${qn.qty}"></div>
+     <div class="tr-r" id="dif-${key}"></div>
+     <div class="tr-r"><button class="mini-btn" id="btn-${key}" disabled onclick="ajustar(${qn.id},'${key}')">Ajustar</button></div>`;
+}
+function filaLote(qn, indent, r){
+  const neg=qn.qty<0, ghost=(qn.qty===0&&qn.res>0);
+  const resTxt=qn.res>0?`<b class="neg">${nf(qn.res)}</b>`:'<span style="color:var(--gris2)">—</span>';
+  const nombre = indent
+    ? `<div class="lotname">🏷️ <b>${esc(qn.lotName||"(sin lote)")}</b></div>`
+    : `<div class="pname"><b>${esc(cleanName(r.name))}</b><span>${esc(r.code)} · ${esc(r.catTop)}</span></div>`;
+  return `<div class="row ${neg||ghost?'bad':''}" style="${GRID6}">
+    ${nombre}
+    <div class="tr-r"><b class="${neg?'neg':''}">${nf(qn.qty)}</b></div>
+    <div class="tr-r">${resTxt}</div>
+    ${celdasAccion(qn)}
+  </div>`;
+}
 function tabConteo(){
   const cats=[...new Set(DATA.map(r=>r.catTop))].sort();
   const nb=DATA.filter(r=>r.clase!=="basura");
@@ -348,42 +376,37 @@ function tabConteo(){
   let arr=lineasConteo();
   if(CONT.filtro==="neg") arr=arr.filter(r=>r.quants.some(q=>q.qty<0));
   if(CONT.filtro==="ghost") arr=arr.filter(r=>r.quants.some(q=>q.qty===0&&q.res>0));
-  const LIMIT=CONT.filtro?9999:200;
+  const LIMIT=CONT.filtro?9999:120;
   const shown=arr.slice(0,LIMIT);
-  let rows="", n=0;
+  let out="", nProd=0;
   for(const r of shown){
-    for(const qn of r.quants){
-      if(CONT.filtro==="neg" && !(qn.qty<0)) continue;
-      if(CONT.filtro==="ghost" && !(qn.qty===0&&qn.res>0)) continue;
-      const key=`q${qn.id}`, ghost=(qn.qty===0&&qn.res>0);
-      const resTxt=qn.res>0?`<b class="neg">${nf(qn.res)}</b>`:'<span style="color:var(--gris2)">—</span>';
-      const accion = ghost
-        ? `<div class="tr-r" style="grid-column:span 2"><span class="pill red">🔒 reserva fantasma</span></div>
-           <div class="tr-r"><button class="mini-btn pri" onclick="liberar(${qn.id})" title="Libera la reserva pegada (no hay venta detrás) para desbloquear esta línea.">Liberar</button></div>`
-        : `<div class="tr-r"><input class="cnt-in" id="${key}" inputmode="decimal" placeholder="conté" data-sis="${qn.qty}"></div>
-           <div class="tr-r" id="dif-${key}"></div>
-           <div class="tr-r"><button class="mini-btn" id="btn-${key}" disabled onclick="ajustar(${qn.id},'${key}')">Ajustar</button></div>`;
-      rows+=`<div class="row" style="${GRID_CONT}">
-        <div class="pname"><b>${esc(cleanName(r.name))}</b><span>${esc(r.code)}${qn.lotName?` · lote ${esc(qn.lotName)}`:""}</span></div>
-        <div style="font-size:11px;color:var(--gris)">${esc(r.catTop)}</div>
-        <div class="tr-r"><b class="${qn.qty<0?'neg':''}">${nf(qn.qty)}</b></div>
-        <div class="tr-r">${resTxt}</div>
-        ${accion}
-      </div>`; n++;
+    nProd++;
+    const lotes=r.quants.slice().sort((a,b)=>(a.qty<0||(a.qty===0&&a.res>0)?-1:0)-(b.qty<0||(b.qty===0&&b.res>0)?-1:0)); // el problemático primero
+    if(lotes.length>1){
+      // encabezado del producto con el TOTAL real (todos los lotes juntos)
+      out+=`<div class="prodhead" style="${GRIDH}">
+        <div class="pname"><b>${esc(cleanName(r.name))}</b><span>${esc(r.code)} · ${esc(r.catTop)} · ${lotes.length} lotes</span></div>
+        <div class="tr-r"><span class="k">a mano</span><br><b class="${r.qty<0?'neg':''}">${nf(r.qty)}</b></div>
+        <div class="tr-r"><span class="k">reservado</span><br><b class="${r.res>0?'neg':''}">${r.res>0?nf(r.res):'—'}</b></div>
+        <div class="tr-r"><span class="k">disponible</span><br><b>${nf(r.disp)}</b></div>
+      </div>`;
+      for(const qn of lotes) out+=filaLote(qn,true,r);
+    }else{
+      out+=filaLote(lotes[0],false,r);
     }
   }
-  return `<div class="note info">📋 <b>Conteo físico.</b> Contá la mercadería real y anotá lo que hay en <b>Conté</b>: el sistema muestra la diferencia y con <b>Ajustar</b> corrige la cantidad en Odoo (queda registrado). Columna <b>Reservado</b> = unidades comprometidas por una venta. Si ves 0 stock con reserva = <b>🔒 reserva fantasma</b> (no hay venta real detrás): es la línea que "no deja modificar" → tocá <b>Liberar</b> para desbloquearla. Contá por lote cuando el producto tiene varios.</div>
+  return `<div class="note info">📋 <b>Conteo físico.</b> Contá lo que hay realmente y ponelo en <b>Conté</b> → <b>Ajustar</b> corrige Odoo (queda registrado). Cuando un producto tiene <b>varios lotes</b>, arriba va el <b>total del producto</b> (a mano / reservado / disponible) y debajo cada lote por separado — contá lote por lote. <b>⚠️ Un lote en negativo casi nunca es falta de stock</b>: el producto suele tener stock en otros lotes (se descontó del lote equivocado); mirá el total de arriba. <b>🔒 Reserva fantasma</b> = 0 con reserva pegada sin venta detrás (la línea que "no deja modificar") → <b>Liberar</b>.</div>
    <div class="toolbar">
-     <button class="chip ${CONT.filtro==="neg"?'on':''}" onclick="setFiltro('neg')" title="Lotes con cantidad negativa: físicamente imposible.">⚠️ Stock negativo${negTotal?` (${negTotal})`:''}</button>
-     <button class="chip ${CONT.filtro==="ghost"?'on':''}" onclick="setFiltro('ghost')" title="Líneas en 0 con reserva pegada sin venta detrás.">🔒 Reservas fantasma${ghostTotal?` (${ghostTotal})`:''}</button>
+     <button class="chip ${CONT.filtro==="neg"?'on':''}" onclick="setFiltro('neg')" title="Productos con algún lote en cantidad negativa.">⚠️ Stock negativo${negTotal?` (${negTotal})`:''}</button>
+     <button class="chip ${CONT.filtro==="ghost"?'on':''}" onclick="setFiltro('ghost')" title="Productos con alguna reserva fantasma.">🔒 Reservas fantasma${ghostTotal?` (${ghostTotal})`:''}</button>
      <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4-4"/></svg><input id="cq" placeholder="Buscar producto o código…" value="${esc(CONT.q)}"></div>
      <select id="ccat"><option value="todos">Todas las categorías</option>${cats.map(c=>`<option value="${esc(c)}" ${CONT.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
    </div>
-   <div class="count-line">${CONT.filtro==="neg"?'<b style="color:var(--red)">Solo lotes con stock negativo.</b> ':CONT.filtro==="ghost"?'<b style="color:var(--red)">Solo reservas fantasma.</b> ':''}Mostrando <b>${n}</b> líneas${!CONT.filtro&&arr.length>LIMIT?` (de los primeros ${LIMIT} productos — afiná la búsqueda para ver más)`:''}.</div>
+   <div class="count-line">${CONT.filtro==="neg"?'<b style="color:var(--red)">Solo productos con lote negativo (se muestran TODOS sus lotes).</b> ':CONT.filtro==="ghost"?'<b style="color:var(--red)">Solo productos con reserva fantasma.</b> ':''}Mostrando <b>${nProd}</b> producto${nProd===1?'':'s'}${!CONT.filtro&&arr.length>LIMIT?` (de los primeros ${LIMIT} — afiná la búsqueda para ver más)`:''}.</div>
    <div class="tablecard">
-     <div class="thead" style="${GRID_CONT}">
-       <div>Producto / lote</div><div>Categoría</div><div class="tr-r">Sistema</div><div class="tr-r">Reservado</div><div class="tr-r">Conté</div><div class="tr-r">Diferencia</div><div></div>
-     </div>${rows||'<div class="row">Sin resultados.</div>'}</div>`;
+     <div class="thead" style="${GRID6}">
+       <div>Producto / lote</div><div class="tr-r">Sistema</div><div class="tr-r">Reservado</div><div class="tr-r">Conté</div><div class="tr-r">Diferencia</div><div></div>
+     </div>${out||'<div class="row">Sin resultados.</div>'}</div>`;
 }
 function bindConteo(){
   const cq=document.getElementById("cq");
