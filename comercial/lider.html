@@ -248,7 +248,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=33"></script>
+<script src="../assets/core.js?v=35"></script>
 <script src="../assets/metrics.js?v=5"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
@@ -641,10 +641,12 @@ async function cargarOfertasLider(){
     let sync=(JSON.parse(syncR||"[]")||[]).filter(o=>o&&o.id&&!o.pausada&&o.tipo==="p"&&(!o.hasta||o.hasta>=hoy)).filter(o=>{const m=/^opo_(\d+)$/.exec(o.id||"");return !(m&&propiaPids.has(+m[1]));});
     let varOf={}; const tmpls=[...new Set(sync.map(o=>o.target))];
     if(tmpls.length){ const tps=await EYG.rpc("product.template","read",[tmpls,["product_variant_id"]]).catch(()=>[]); tps.forEach(t=>{if(t.product_variant_id)varOf[t.id]=t.product_variant_id[0];}); }
-    const OF=[
+    let OF=[
       ...propias.map(o=>({titulo:o.titulo||ofItems(o), tipo:o.tipo||"oferta", pv:(o.items||[])[0]&&o.items[0].id, desde:o.desde, hasta:o.hasta})),
       ...sync.map(o=>{const mts=/^of(\d{13})$/.exec(o.id);return{titulo:o.targetName, tipo:"oferta", pv:varOf[o.target], desde:mts?new Date(+mts[1]).toISOString().slice(0,19).replace("T"," "):"", hasta:o.hasta};}),
     ].filter(o=>o.pv&&o.titulo);
+    // sin stock = oferta apagada: los comerciales ya no la ven, así que tampoco se lista acá
+    try{ const smOF=await EYG.ofStockMap(OF.map(o=>o.pv)); if(smOF) OF=OF.filter(o=>(smOF[o.pv]||0)>0); }catch(e){}
     // enviadas del equipo este mes
     const notes=await EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",Object.values(PART)],["date",">=",inicioMes+" 00:00:00"],["body","like","EyGOFENV"]]],{fields:["body"],limit:0}).catch(()=>[]);
     const sent=notes.map(n=>(n.body||"").replace(/<[^>]+>/g,""));

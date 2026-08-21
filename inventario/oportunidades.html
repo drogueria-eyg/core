@@ -24,6 +24,10 @@
   .card.oferta{border-left:4px solid var(--teal)}
   .tag.os{color:#fff} .tag.os.venc{background:#b0322f} .tag.os.sob{background:#c4602a} .tag.os.mue{background:#8A9A97}
   .card.vencida{opacity:.6}
+  /* oferta con producto SIN STOCK: se apaga (gris), no se borra — para enterarse y reponer */
+  .card.agotada{opacity:.65;filter:grayscale(.85);border-left-color:#9aa5a3}
+  .tag.ag{background:#5b6664;color:#fff}
+  .agotnote{background:#f3f4f4;border:1px dashed #c3cecc;color:#5F716E;border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;margin:8px 0 2px}
   .card .tag{position:absolute;top:12px;right:12px;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;padding:3px 8px;border-radius:20px}
   .tag.g{background:#fbf0d6;color:#9a6a0b} .tag.t{background:var(--agua);color:var(--teal-deep)} .tag.v{background:#eee;color:#888}
   .card h3{font-size:14.5px;font-weight:800;line-height:1.3;padding-right:70px}
@@ -121,7 +125,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=33"></script>
+<script src="../assets/core.js?v=35"></script>
 <script src="../assets/inventario-oportunidades.js"></script>
 <script>
 /* ============ EyG Core · Inventario · Oportunidades y Ofertas ============ */
@@ -133,6 +137,7 @@ const hoy=()=>new Date().toISOString().slice(0,10);
 function masDias(n){ const d=new Date(); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
 function fmtF(s){ if(!s) return ""; const [y,m,d]=String(s).slice(0,10).split("-"); return d+"/"+m; }
 let OPOS=[], ARCH=[], OFERTAS=[], OPORT_STOCK=[], ESTADO={ignora:[],arch:[]}, stockLoading=true, UMBRAL=0.10, SYNC_OF=[];
+let STOCK_T={};   // stock real por plantilla (para marcar "Agotada" en los descuentos por regla)
 let STOCK_MAX=5, STOCK_DESC={vence:0.25,sobre:0.15,muerto:0.20};   // config del módulo (Configuración)
 
 async function getParam(k,def){ const r=await EYG.rpc("ir.config_parameter","get_param",[k]); return (r===false||r==null)?def:r; }
@@ -226,11 +231,18 @@ async function reconciliarOfertasConMotor(){
 async function cargar(){
   const cont=document.getElementById("cont"); cont.innerHTML='<div class="spin"></div>';
   try{
+    STOCK_T={};
     UMBRAL=parseFloat(await getParam("eyg.oferta.umbral","0.10"))||0.10;
     STOCK_MAX=parseInt(await getParam("eyg.oportunidades_stock_max","5"))||5;
     try{ const dsc=JSON.parse(await getParam("eyg.oportunidades_desc","")||"null"); if(dsc&&dsc.vence!=null) STOCK_DESC=dsc; }catch(e){}
     const ofRaw=await getParam("eyg.ofertas","[]");
     try{ OFERTAS=JSON.parse(ofRaw||"[]"); }catch(e){ OFERTAS=[]; }
+    // stock real de los productos de cada oferta/combo → sin stock = "Agotada" (gris acá,
+    // invisible en el panel de los comerciales; al reponer stock revive sola)
+    try{
+      const sm=await EYG.ofStockMap(OFERTAS.flatMap(o=>((o&&o.items)||[]).map(i=>i&&i.id)));
+      if(sm) OFERTAS.forEach(o=>{ o._agotada=EYG.ofAgotada(o,sm); });
+    }catch(e){}
     // descuentos por regla del motor (eyg.sync_ofertas) — se gestionan acá
     const syncRaw=await getParam("eyg.sync_ofertas","[]");
     try{ SYNC_OF=JSON.parse(syncRaw||"[]")||[]; }catch(e){ SYNC_OF=[]; }
@@ -243,8 +255,9 @@ async function cargar(){
         const its=await EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",prodOf.map(o=>o.target)],["min_quantity","=",1]]],{fields:["product_tmpl_id","fixed_price"], limit:5000});
         const byT={}; its.forEach(i=>{ byT[i.product_tmpl_id[0]]=Math.round(i.fixed_price); });
         // éticos: PVP (list_price) para mostrar el descuento contra el PVP, no contra la escalera
-        const tps=await EYG.rpc("product.template","read",[prodOf.map(o=>o.target),["list_price","categ_id"]],LANG);
-        const pvpT={}, catT={}; tps.forEach(t=>{ catT[t.id]=(t.categ_id&&t.categ_id[1])||""; if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) pvpT[t.id]=Math.round(t.list_price||0); });
+        // + stock real (qty_available) para marcar "Agotada" cuando el producto quedó en cero
+        const tps=await EYG.rpc("product.template","read",[prodOf.map(o=>o.target),["list_price","categ_id","qty_available"]],LANG);
+        const pvpT={}, catT={}; tps.forEach(t=>{ STOCK_T[t.id]=t.qty_available||0; catT[t.id]=(t.categ_id&&t.categ_id[1])||""; if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) pvpT[t.id]=Math.round(t.list_price||0); });
         prodOf.forEach(o=>{ o._precio=byT[o.target]; o._pvp=pvpT[o.target]||0; o._cat=catT[o.target]||""; });
       }catch(e){}
     }
@@ -314,7 +327,7 @@ function render(){
     : '<div class="empty">Todavía no hay ofertas ni descuentos. Tocá <b>+ Nueva oferta o descuento</b>.</div>';
   cont.innerHTML=`
     <div class="intro">
-      <div class="grow"><b>Oportunidades y ofertas.</b> Acá se detectan oportunidades (por baja de costo o por stock/vencimiento) y se crean <b>todas</b> las ofertas, descuentos y combos. Lo que confirmes va a la tarjeta <b>“Combos y ofertas de la semana”</b> de los comerciales.</div>
+      <div class="grow"><b>Oportunidades y ofertas.</b> Acá se detectan oportunidades (por baja de costo o por stock/vencimiento) y se crean <b>todas</b> las ofertas, descuentos y combos. Lo que confirmes va a la tarjeta <b>“Combos y ofertas de la semana”</b> de los comerciales. Si un producto en oferta se queda <b>sin stock</b>, la oferta se apaga sola: queda gris acá (para reponer o eliminarla) y desaparece del panel de los comerciales.</div>
       <button class="btn cfg" onclick="abrirConfig()" title="Configuración del módulo">⚙️</button>
       <button class="btn nueva" onclick="rgNueva('desc')">＋ Nueva oferta o descuento</button>
     </div>
@@ -352,7 +365,8 @@ function cardOferta(o){
   const items=(o.items||[]).map(i=>i.nombre).join(" + ");
   const n=(o.items||[]).length;
   const tipoLbl=o.tipo==='combo'?('Combo · '+n+' prod.'):'Oferta';
-  return `<div class="card oferta ${o._venc?'vencida':''}"><span class="tag ${o._venc?'v':'t'}">${tipoLbl}${o._venc?' · vencida':''}</span>
+  const ag=!!o._agotada;
+  return `<div class="card oferta ${o._venc?'vencida':''}${ag?' agotada':''}"><span class="tag ${ag?'ag':(o._venc?'v':'t')}">${tipoLbl}${ag?' · agotada':(o._venc?' · vencida':'')}</span>
     <h3>${esc(o.titulo||items)}</h3>
     <div class="meta">${o.tipo==='combo'?'':catBadge(o._cat)}${esc(items)}</div>
     <div class="drop">${o.precioAntes?`<span class="a">${money(o.precioAntes)}</span> →`:''} <span class="b">${money(o.precio)}</span></div>
@@ -360,6 +374,7 @@ function cardOferta(o){
       <span>Stock ofertado: <b>${o.stock||'—'}</b></span>
       <span>Vigencia: <b>${o.hasta?('hasta '+fmtF(o.hasta)):'sin límite'}</b></span>
     </div>
+    ${ag?`<div class="agotnote">⛔ Se terminó el stock — la oferta se apagó sola y los comerciales ya no la ven. Reponé stock para reactivarla, o eliminala con el botón.</div>`:''}
     ${o.nota?`<div class="meta">📝 ${esc(o.nota)}</div>`:''}
     <div class="acts">
       <button class="btn ghost sm" onclick="rgEditarCombo('${o.id}')">Editar</button>
@@ -430,7 +445,7 @@ window.eliminarOferta=async id=>{
   const of=OFERTAS.find(x=>x.id===id);
   OFERTAS=OFERTAS.filter(o=>o.id!==id);
   try{
-    await setParam("eyg.ofertas", JSON.stringify(OFERTAS));
+    await setParam("eyg.ofertas", JSON.stringify(OFERTAS.map(o=>{const c={...o};delete c._venc;delete c._cat;delete c._agotada;return c;})));
     if(of&&of.items) for(const it of of.items){ try{ await quitarPrecioOferta(it.id); }catch(e){} }
     try{ SYNC_OF=await leerSyncOf(); }catch(e){}
     toast("Eliminada ✓ — precio del producto restaurado"); render();
@@ -521,11 +536,14 @@ function rgCard(o){
     drop=`<div class="drop"><span class="b">${esc(descPc)}</span> <span class="meta" style="opacity:.7">· varía por producto</span></div>`;
   }
   const como=(o.reemplaza||o.modo==='precio')?'precio único (desde 1)':'descuento sobre la escalera';
-  return `<div class="card oferta ${st.c==='ven'?'vencida':''}"><span class="tag ${stC}">${o.tipo==='p'?'Descuento':'Descuento · cat.'}${st.c==='pau'?' · pausado':st.c==='ven'?' · vencido':''}</span>
+  // sin stock real → "Agotada": el panel de los comerciales ya no la muestra (se apagó sola)
+  const ag = o.tipo==='p' && STOCK_T[o.target]!=null && STOCK_T[o.target]<=0;
+  return `<div class="card oferta ${st.c==='ven'?'vencida':''}${ag?' agotada':''}"><span class="tag ${ag?'ag':stC}">${o.tipo==='p'?'Descuento':'Descuento · cat.'}${ag?' · agotada':st.c==='pau'?' · pausado':st.c==='ven'?' · vencido':''}</span>
     <h3>${esc(o.targetName||('#'+o.target))}</h3>
     <div class="meta">${badge}${o.tipo==='p'?'🔖 producto':'📂 categoría / subcategoría'} · ${esc(como)}</div>
     ${drop}
     <div class="kv"><span>Stock: <b>${o.stock||'—'}</b></span><span>Vigencia: <b>${o.hasta?('hasta '+fmtF(o.hasta)):'sin límite'}</b></span></div>
+    ${ag?`<div class="agotnote">⛔ Se terminó el stock — la oferta se apagó sola y los comerciales ya no la ven. Reponé stock para reactivarla, o eliminala con el botón.</div>`:''}
     <div class="acts">
       <button class="btn ghost sm" onclick="rgEditar('${esc(o.id)}')">Editar</button>
       <button class="btn ghost sm" onclick="rgPausar('${esc(o.id)}')">${o.pausada?'Reanudar':'Pausar'}</button>
@@ -792,7 +810,7 @@ window.rgGuardarCombo=async()=>{
   if(i>=0) OFERTAS[i]=clean; else OFERTAS.push(clean);
   rgDraft=null;
   try{
-    await setParam("eyg.ofertas", JSON.stringify(OFERTAS.filter(o=>o.tipo).map(o=>{const c={...o};delete c._venc;delete c._cat;return c;})));
+    await setParam("eyg.ofertas", JSON.stringify(OFERTAS.filter(o=>o.tipo).map(o=>{const c={...o};delete c._venc;delete c._cat;delete c._agotada;return c;})));
     if(desdeOpo){ try{ await EYG.rpc("product.product","write",[[desdeOpo],{x_oportunidad:false,x_oportunidad_archivada:false}],LANG);}catch(e){} OPOS=OPOS.filter(x=>x.id!==desdeOpo); ARCH=ARCH.filter(x=>x.id!==desdeOpo); }
     if(desdeStock){ OPORT_STOCK=OPORT_STOCK.filter(x=>x.id!==desdeStock); ESTADO.arch=ESTADO.arch.filter(x=>x.id!==desdeStock); ESTADO.ignora=ESTADO.ignora.filter(x=>x!==desdeStock); await guardarEstado(); }
     toast("Combo guardado ✓ — ya aparece en el panel de comerciales"); render();

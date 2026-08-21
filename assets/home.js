@@ -941,9 +941,16 @@ window.EYGHome = (function(){
     let ofertas=[], opos=0;
     try{ ofertas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas"])||"[]"); }catch(e){}
     try{ opos=await rpc("product.product","search_count",[[["x_oportunidad","=",true],["x_oportunidad_archivada","=",false]]]); }catch(e){}
-    const act=(ofertas||[]).filter(o=>!o.hasta||o.hasta>=HOY);
+    let act=(ofertas||[]).filter(o=>!o.hasta||o.hasta>=HOY);
+    // las agotadas (sin stock) se apagaron solas del panel: no cuentan como vigentes, avisan aparte
+    let agot=[];
+    try{ const sm=await EYG.ofStockMap(act.flatMap(o=>(o.items||[]).map(i=>i&&i.id)));
+      if(sm){ agot=act.filter(o=>EYG.ofAgotada(o,sm)); act=act.filter(o=>!EYG.ofAgotada(o,sm)); } }catch(e){}
 
     const it=[];
+    if(agot.length) it.push({cls:"warn", ic:"⛔", t:`${agot.length} oferta${agot.length===1?"":"s"} sin stock (apagada${agot.length===1?"":"s"})`,
+      d:agot.slice(0,3).map(o=>o.titulo||(o.items||[]).map(i=>i.nombre).join(" + ")).filter(Boolean).join(" · ")||"Se apagaron solas del panel de los comerciales.",
+      href:EYG.MODULOS.some(m=>m.key==="oportunidades"&&EYG.puedeVer(m,P))?abs("inventario/oportunidades.html"):null, a:"Reponer o eliminar"});
     if(act.length) it.push({cls:"ok", ic:"🏷️", t:`${act.length} oferta${act.length===1?"":"s"} y combos vigentes`,
       d:act.slice(0,3).map(o=>o.titulo||(o.items||[]).map(i=>i.nombre).join(" + ")).filter(Boolean).join(" · ")||"Mirá el detalle en tu panel.",
       href:EYG.MODULOS.some(m=>m.key==="oportunidades"&&EYG.puedeVer(m,P))?abs("inventario/oportunidades.html"):null, a:"Ver ofertas"});

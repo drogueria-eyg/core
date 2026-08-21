@@ -498,6 +498,29 @@ window.EYG = (function(){
     document.body.appendChild(ham);
   }
 
+  /* ---- Stock real de las ofertas ----
+     Una oferta cuyo producto se quedo sin stock se APAGA SOLA: desaparece del panel de los
+     comerciales (y del inicio y la tarjeta del lider) y queda en gris "Agotada" en el modulo
+     Oportunidades y Ofertas, para reponer stock o eliminarla. Al reponer, revive sola.
+     Devuelve {idVariante: qty_available}, o null si Odoo no respondio — en ese caso NO se
+     filtra nada (mejor mostrar una oferta agotada que esconder todas por un error de red). */
+  async function ofStockMap(pids){
+    const ids=[...new Set((pids||[]).filter(Boolean))];
+    if(!ids.length) return {};
+    try{
+      const rows=await rpc("product.product","read",[ids,["qty_available"]]);
+      const m={}; (rows||[]).forEach(r=>{ m[r.id]=r.qty_available||0; });
+      return m;
+    }catch(e){ return null; }
+  }
+  /* Agotada = algun producto de la oferta sin stock (un combo no se entrega si le falta una parte). */
+  function ofAgotada(o,map){
+    if(!map) return false;
+    const its=((o&&o.items)||[]).filter(i=>i&&i.id);
+    if(!its.length) return false;
+    return its.some(i=>(map[i.id]||0)<=0);
+  }
+
   /* ---- Tarjeta "Combos y ofertas de la semana" (compartida: panel comercial + lider) ----
      Lee las ofertas activas del parametro eyg.ofertas (las carga el modulo Oportunidades). */
   // CSS de las tarjetas de oferta del líder (incluye el 🔥 latiendo). Se inyecta 1 vez.
@@ -528,7 +551,10 @@ window.EYG = (function(){
     let ofertas=[];
     try{ const raw = await rpc("ir.config_parameter","get_param",["eyg.ofertas"]); ofertas = JSON.parse(raw||"[]"); }catch(e){ return; }
     const hoy = new Date().toISOString().slice(0,10);
-    const act = ofertas.filter(o=>o && o.id && (!o.hasta || o.hasta>=hoy));
+    let act = ofertas.filter(o=>o && o.id && (!o.hasta || o.hasta>=hoy));
+    // sin stock = no se ofrece: la oferta se apaga sola (queda gris en Oportunidades y Ofertas)
+    const sm = await ofStockMap(act.flatMap(o=>((o.items)||[]).map(i=>i&&i.id)));
+    if(sm) act = act.filter(o=>!ofAgotada(o,sm));
     if(!act.length){ el.innerHTML=""; return; }
     // Rendimiento GLOBAL por oferta (todos los comerciales), igual criterio que el panel del comercial.
     const d120 = new Date(Date.now()-120*864e5).toISOString().slice(0,10);
@@ -1309,7 +1335,7 @@ window.EYG = (function(){
     return { baseline, meta, meses, nUsados:nums.length };
   }
 
-  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
+  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
