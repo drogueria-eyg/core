@@ -745,7 +745,7 @@ async function cargar(){
       for(const o of ordHist){ const m=(o.date_order||"").slice(0,7); if(!m)continue; (bk[m]=bk[m]||{ped:0,cli:new Set(),tot:0}); bk[m].ped++; if(o.partner_id)bk[m].cli.add(o.partner_id[0]); bk[m].tot+=o.amount_total||0; sumTot+=o.amount_total||0; ped[m]=(ped[m]||0)+(o.amount_total||0); }
       // BASE de la COMISIÓN = FACTURADO NETO (facturas − NC) atribuido a QUIEN GENERÓ EL PEDIDO
       // (cruce factura→línea→sale.order.user_id). Inmune a los traspasos de cartera y a quién facture.
-      const fact={}, factT={}, ncM={};   // fact=facturado NETO (comisión) · factT=facturado TOTAL c/IVA (métrica) · ncM=NC del mes
+      const fact={}, factT={}, ncM={}, ncMT={};   // fact=facturado NETO (comisión) · factT=facturado TOTAL c/IVA · ncM=NC neto · ncMT=NC con IVA
       try{
         // Atribución HÍBRIDA: se te cuenta la factura si generaste vos el pedido; y si el pedido quedó bajo
         // la cuenta genérica (452), se le cuenta al DUEÑO DEL CLIENTE (recupera lo mal cargado sin inventar).
@@ -757,10 +757,11 @@ async function cargar(){
           rpc("account.move.line","read_group",[domF("out_refund"),["price_subtotal:sum","price_total:sum"],["date:month"]],{lazy:false}),
         ]);
         for(const r of fi){ const rg=r.__range&&r.__range["date:month"]; const m=rg?rg.from.slice(0,7):null; if(m){ fact[m]=(fact[m]||0)+(r.price_subtotal||0); factT[m]=(factT[m]||0)+(r.price_total||0); } }
-        for(const r of fr){ const rg=r.__range&&r.__range["date:month"]; const m=rg?rg.from.slice(0,7):null; if(m){ fact[m]=(fact[m]||0)-(r.price_subtotal||0); factT[m]=(factT[m]||0)-(r.price_total||0); ncM[m]=(ncM[m]||0)+(r.price_subtotal||0); } }
+        for(const r of fr){ const rg=r.__range&&r.__range["date:month"]; const m=rg?rg.from.slice(0,7):null; if(m){ fact[m]=(fact[m]||0)-(r.price_subtotal||0); factT[m]=(factT[m]||0)-(r.price_total||0); ncM[m]=(ncM[m]||0)+(r.price_subtotal||0); ncMT[m]=(ncMT[m]||0)+(r.price_total||0); } }
       }catch(e){}
       const curM=inicioMes.slice(0,7);
-      ST.ncMesComi = ncM[curM]||0;   // total NC del mes que se descuenta de tu comisión (detalle on-demand)
+      ST.ncMesComi = ncM[curM]||0;     // NC del mes en NETO (ya restada en el facturado neto)
+      ST.ncMesTotal = ncMT[curM]||0;   // NC del mes CON IVA (para mostrar en métricas · detalle on-demand)
       const prev=Object.keys(bk).filter(m=>m<curM), nP=prev.length||1;
       const promPed=Math.round(prev.reduce((s,m)=>s+bk[m].ped,0)/nP)||1;
       const promCli=Math.round(prev.reduce((s,m)=>s+bk[m].cli.size,0)/nP)||1;
@@ -808,7 +809,7 @@ async function cargar(){
       pp.pedMontoMes=oMes.reduce((s,o)=>s+neto(o),0);
       ST.pedMesList=oMes.slice().sort((a,b)=>String(b.date_order||"").localeCompare(String(a.date_order||"")));
       ST.pp=pp;
-    }catch(e){ ST.base=ST.base||{objetivoCobro:0,promPed:1,promCli:1,perfil:"farm",meta:0,factBaseline:0,fact:{}}; ST.act=ST.act||{ped:0,cli:0}; ST.diag=ST.diag||{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}; if(ST.ventaMes==null)ST.ventaMes=0; if(ST.factTotalMes==null)ST.factTotalMes=0; if(ST.pedMesMonto==null)ST.pedMesMonto=0; if(ST.ncMesComi==null)ST.ncMesComi=0; if(ST.ventaSem==null)ST.ventaSem=0; if(ST.ventaHoy==null)ST.ventaHoy=0; }
+    }catch(e){ ST.base=ST.base||{objetivoCobro:0,promPed:1,promCli:1,perfil:"farm",meta:0,factBaseline:0,fact:{}}; ST.act=ST.act||{ped:0,cli:0}; ST.diag=ST.diag||{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}; if(ST.ventaMes==null)ST.ventaMes=0; if(ST.factTotalMes==null)ST.factTotalMes=0; if(ST.pedMesMonto==null)ST.pedMesMonto=0; if(ST.ncMesComi==null)ST.ncMesComi=0; if(ST.ncMesTotal==null)ST.ncMesTotal=0; if(ST.ventaSem==null)ST.ventaSem=0; if(ST.ventaHoy==null)ST.ventaHoy=0; }
     // PRIMERA PINTURA con lo esencial (contactos + ventas): el comercial ya puede trabajar.
     // Ofertas y WhatsApp llegan después y RE-pintan (el nivel se ajusta al instante cuando
     // entran los combos colocados; mejor eso que dejar el panel en blanco 10s esperándolos).
@@ -907,20 +908,20 @@ async function verNCmes(){
   try{
     const g=await rpc("account.move.line","read_group",[[["parent_state","=","posted"],["move_id.move_type","=","out_refund"],["date",">=",inicioMes],
       "|",["sale_line_ids.order_id.user_id","=",ST.userId],
-          "&",["sale_line_ids.order_id.user_id","=",452],["sale_line_ids.order_id.partner_id.user_id","=",ST.userId]],["price_subtotal:sum"],["move_id"]],{lazy:false});
+          "&",["sale_line_ids.order_id.user_id","=",452],["sale_line_ids.order_id.partner_id.user_id","=",ST.userId]],["price_total:sum"],["move_id"]],{lazy:false});
     const netById={}; const ids=[];
-    for(const r of g){ const id=r.move_id&&r.move_id[0]; if(id){ netById[id]=(netById[id]||0)+(r.price_subtotal||0); ids.push(id); } }
+    for(const r of g){ const id=r.move_id&&r.move_id[0]; if(id){ netById[id]=(netById[id]||0)+(r.price_total||0); ids.push(id); } }
     const moves=ids.length?await rpc("account.move","read",[ids],{fields:["name","invoice_date","partner_id"]}):[];
     moves.sort((a,b)=>String(b.invoice_date||"").localeCompare(String(a.invoice_date||"")));
     const fD=s=>s?(s.slice(8,10)+"/"+s.slice(5,7)+"/"+s.slice(0,4)):"—";
     let tot=0; moves.forEach(m=>tot+=netById[m.id]||0);
     const body=document.getElementById("ncBody"); if(!body)return;
     if(!moves.length){ body.innerHTML='<div style="font-size:14px">No tenés notas de crédito este mes. 👌</div>'; return; }
-    body.innerHTML=`<div style="font-size:12.5px;color:var(--gris);margin-bottom:10px">Cada nota de crédito <b>resta de tu facturado</b> (y por lo tanto de tu comisión). Montos netos, sin IVA.</div>
+    body.innerHTML=`<div style="font-size:12.5px;color:var(--gris);margin-bottom:10px">Tus notas de crédito del mes, <b>con IVA</b>. Se descuentan de tu facturación (para la comisión se resta el neto).</div>
       <div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:13px">
-        <tr style="text-align:left;color:var(--gris2);font-size:11px;text-transform:uppercase"><th style="padding:6px 8px">Cliente</th><th style="padding:6px 8px">Fecha</th><th style="padding:6px 8px">N° NC</th><th style="padding:6px 8px;text-align:right">Neto</th></tr>
+        <tr style="text-align:left;color:var(--gris2);font-size:11px;text-transform:uppercase"><th style="padding:6px 8px">Cliente</th><th style="padding:6px 8px">Fecha</th><th style="padding:6px 8px">N° NC</th><th style="padding:6px 8px;text-align:right">Con IVA</th></tr>
         ${moves.map(m=>`<tr style="border-top:1px solid var(--line)"><td style="padding:8px">${esc(m.partner_id?m.partner_id[1]:'—')}</td><td style="padding:8px;white-space:nowrap">${fD(m.invoice_date)}</td><td style="padding:8px;white-space:nowrap">${esc(m.name||'—')}</td><td style="padding:8px;text-align:right;color:var(--coral);font-weight:800;white-space:nowrap">−${money(netById[m.id]||0)}</td></tr>`).join("")}
-        <tr style="border-top:2px solid var(--line)"><td style="padding:9px 8px;font-weight:900" colspan="3">Total del mes (se resta de tu comisión)</td><td style="padding:9px 8px;text-align:right;color:var(--coral);font-weight:900;white-space:nowrap">−${money(tot)}</td></tr>
+        <tr style="border-top:2px solid var(--line)"><td style="padding:9px 8px;font-weight:900" colspan="3">Total del mes (con IVA)</td><td style="padding:9px 8px;text-align:right;color:var(--coral);font-weight:900;white-space:nowrap">−${money(tot)}</td></tr>
       </table></div>`;
   }catch(e){ const body=document.getElementById("ncBody"); if(body)body.innerHTML='<div class="errbox">No pude cargar las notas de crédito: '+esc(e.message)+'</div>'; }
 }
@@ -1077,6 +1078,9 @@ function render(){
   const hora=now.getHours(); const saludo=hora<13?"Buenos días":hora<20?"Buenas tardes":"Buenas noches";
   const ring=(p,val,tot,color)=>`<div class="ring" style="--p:${p};--c:${color}"><div style="text-align:center"><div class="rv">${val}</div>${tot?'<div class="rt">de '+tot+'</div>':''}</div></div>`;
   const logros=[{em:"🎯",l:"Meta diaria",on:pDia>=100},{em:"🆕",l:"10 nuevos",on:pNue>=100},{em:"💰",l:"Meta semanal",on:pFac>=100},{em:"✨",l:"50 fichas",on:completas>=50},{em:"🏆",l:"Cartera 100%",on:incompletas===0}];
+  // Tooltip de la mediana/promedio: los meses y su facturado neto (así se ve de dónde sale el cálculo).
+  const _MN=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const medianaTip=(ST.base?.metaMeses||[]).map(m=>{const p=(m.key||'').split('-'); return _MN[(+p[1])-1]+" "+money(m.net||0);}).join("   ·   ")||"—";
   app.innerHTML=`
     <div class="hero"><div style="flex:1"><h1>${saludo}, ${esc(COMERCIAL.split(" ")[0])} 👋</h1>
       <div class="msg">Tenés <b>${ST.contactos.length}</b> contactos · ${incompletas} con datos por completar.</div>
@@ -1115,13 +1119,17 @@ function render(){
         </div></div></div>
       </div>
       <div class="kpi">
-        <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">📈</span><div class="kmeta"><div class="kl">Mes</div><div class="kv">${money(ST.pedMesMonto)}</div><div class="ks">pedidos del mes · con IVA</div></div><span class="kchev">▾</span></div>
+        <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">📈</span><div class="kmeta"><div class="kl">Mes</div><div class="kv">${money(ST.pedMesMonto)}</div><div class="ks">pedidos · con IVA${externo?'':' · comisión sobre neto ↓'}</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
-          <div class="drow"><span>🛒 Tus pedidos del mes (con IVA)</span><b>${money(ST.pedMesMonto)}</b></div>
+          <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--teal-med);margin-bottom:2px">📊 Ventas del mes · con IVA</div>
+          <div class="drow"><span>🛒 Pedidos del mes</span><b>${money(ST.pedMesMonto)}</b></div>
           <div class="drow"><span>📦 Cantidad de pedidos</span><b>${ST.act.ped}</b></div>
-          <div class="drow" style="border-top:1px solid var(--line);margin-top:4px;padding-top:8px"><span>🧾 Facturado del mes <span style="font-size:10px;color:var(--gris2)">· neto ${money(ST.ventaMes)} = base comisión</span></span><b>${money(ST.factTotalMes)}</b></div>
-          ${ST.ncMesComi>0?`<div class="drow" style="cursor:pointer" onclick="event.stopPropagation();verNCmes()"><span>↩️ Notas de crédito · <span style="color:var(--teal);font-weight:800">ver a quién →</span></span><b style="color:var(--coral)">−${money(ST.ncMesComi)}</b></div>`:''}
-          ${externo?'':`<div class="drow"><span>📊 ${CFGC().metaMetodo==='mediana'?'Mediana':'Promedio'} de tus últimos ${CFGC().metaMeses||3} meses</span><b>${money(ST.base?.factBaseline||0)}</b></div>
+          <div class="drow"><span>🧾 Facturado del mes</span><b>${money(ST.factTotalMes)}</b></div>
+          ${ST.ncMesTotal>0?`<div class="drow" style="cursor:pointer" onclick="event.stopPropagation();verNCmes()"><span>↩️ Notas de crédito · <span style="color:var(--teal);font-weight:800">ver a quién →</span></span><b style="color:var(--coral)">−${money(ST.ncMesTotal)}</b></div>`:''}
+          ${externo?'':`
+          <div style="border-top:1px solid var(--line);margin:9px 0 3px;padding-top:7px;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--teal-med)">💵 Para tu comisión · neto sin IVA</div>
+          <div class="drow"><span>🧾 Facturado neto <span style="font-size:10px;color:var(--gris2)">(NC ya restadas)</span></span><b>${money(ST.ventaMes)}</b></div>
+          <div class="drow" title="Se calcula con estos meses (facturado neto):&#10;${esc(medianaTip)}" style="cursor:help"><span>📊 ${CFGC().metaMetodo==='mediana'?'Mediana':'Promedio'} de tus últimos ${CFGC().metaMeses||3} meses <span style="font-size:10px;color:var(--teal)">ⓘ</span></span><b>${money(ST.base?.factBaseline||0)}</b></div>
           <div class="drow"><span>🎯 Tu meta (+${Math.round((CFGC().metaCrecimiento||0)*100)}%)</span><b>${money(corte)}</b></div>`}
           <div style="margin-top:9px"><a onclick="verOdoo('action=667&view_type=list&search_default_sales=1')" style="color:var(--teal);font-weight:700;cursor:pointer;font-size:12.5px">Ver mis pedidos en Odoo →</a></div>
         </div></div></div>
