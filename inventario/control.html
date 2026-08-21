@@ -102,6 +102,8 @@
 <script>
 const RPC="https://yxotopoklgjowcudveoj.supabase.co/functions/v1/odoo-rpc";
 const ES={lang:"es_AR"};
+const ODOO_BASE="https://drogueriaeyg.odoo.com";
+const DIAS_COMPROMISO=10;  // mismo plazo que vender.html: pasado esto sin entregar, el pedido libera su stock
 const money=n=>"$"+Math.round(n||0).toLocaleString("es-AR");
 const esc=s=>(s||"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
 const SCRAP_LOC=16; // Virtual Locations/Scrap
@@ -138,6 +140,7 @@ function fuenteLbl(f){ return f==="manual"?"✎ costo manual":f==="compra"?"🧾
 
 // ===================== ESTADO =====================
 let DATA=[];      // por producto
+let PEND=[];      // pedidos confirmados sin entregar (delivery_status pending/partial)
 let VIEW={tab:"valuacion"};
 let CONT={q:"",cat:"todos",filtro:""}; // filtro: "" | "neg" | "ghost"
 let VAL={q:"",sel:new Set()};
@@ -182,8 +185,18 @@ async function cargar(){
       r.clase = clasificar(r);
       DATA.push(r);
     }
+    try{ PEND=await cargarPendientes(); }catch(e){ PEND=[]; }
     render();
   }catch(e){ app.innerHTML='<div class="pcard empty">No se pudo cargar Odoo: '+esc(e.message||String(e))+'<br><br><button class="mini-btn pri" onclick="cargar()">Reintentar</button></div>'; }
+}
+// pedidos confirmados con entrega pendiente/parcial (+ días desde el pedido)
+async function cargarPendientes(){
+  const orders=await rpc("sale.order","search_read",
+    [[["state","=","sale"],["delivery_status","in",["pending","partial"]]],
+     ["name","date_order","partner_id","user_id","amount_total","delivery_status"]],
+    {limit:500,order:"date_order asc",context:ES});
+  const hoy=Date.now();
+  return orders.map(o=>({...o, dias: o.date_order? Math.round((hoy-new Date(String(o.date_order).replace(" ","T")))/86400000):0 }));
 }
 
 function clasificar(r){
@@ -235,6 +248,7 @@ function render(){
   const tabs=[
     ["valuacion","⚖️ Valuación",g.torcido.length],
     ["conteo","📋 Conteo físico",0],
+    ["pendientes","📦 Sin entregar",PEND.filter(o=>o.dias>DIAS_COMPROMISO).length],
     ["sincosto","🏷️ Sin costo",g.sincosto.length],
     ["archivado","🗃️ Archivados",g.archivado.length],
     ["basura","🧹 Basura",g.basura.length],
@@ -247,6 +261,7 @@ function render(){
   else if(VIEW.tab==="sincosto") body=tabSinCosto(g.sincosto);
   else if(VIEW.tab==="archivado") body=tabArchivado(g.archivado);
   else if(VIEW.tab==="basura") body=tabBasura(g.basura);
+  else if(VIEW.tab==="pendientes") body=tabPendientes();
 
   document.getElementById("cap").innerHTML=health+tabsHtml+'<div id="tbody">'+body+'</div>';
   if(VIEW.tab==="conteo") setTimeout(bindConteo,0);
@@ -264,6 +279,7 @@ function repintarBody(){
   else if(VIEW.tab==="sincosto") body=tabSinCosto(g.sincosto);
   else if(VIEW.tab==="archivado") body=tabArchivado(g.archivado);
   else if(VIEW.tab==="basura") body=tabBasura(g.basura);
+  else if(VIEW.tab==="pendientes") body=tabPendientes();
   document.getElementById("tbody").innerHTML=body;
   if(VIEW.tab==="conteo") setTimeout(bindConteo,0);
   if(VIEW.tab==="valuacion") setTimeout(bindVal,0);
@@ -547,6 +563,39 @@ async function limpiarBasura(id){
     await rpc("product.product","write",[[id],{active:false}],{context:ES});
     toast("✓ Limpiado"); await cargar(); }
   catch(e){ alert("No se pudo: "+(e.message||e)); }
+}
+
+// ===================== TAB PEDIDOS SIN ENTREGAR =====================
+function tabPendientes(){
+  if(!PEND.length) return `<div class="pcard empty">🎉 No hay pedidos confirmados sin entregar.</div>`;
+  const X=DIAS_COMPROMISO;
+  const viejos=PEND.filter(o=>o.dias>X);
+  const rows=PEND.map(o=>{
+    const v=o.dias>X;
+    return `<div class="row ${v?'bad':''}" style="grid-template-columns:1fr 1.7fr 1.2fr .6fr 1fr 190px">
+      <div class="pname"><b>${esc(o.name)}</b><span>${o.delivery_status==='partial'?'entrega parcial':'sin entregar'}</span></div>
+      <div style="overflow-wrap:anywhere">${esc((o.partner_id&&o.partner_id[1])||'—')}</div>
+      <div style="font-size:12px;color:var(--gris)">${esc((o.user_id&&o.user_id[1])||'—')}</div>
+      <div class="tr-r ${v?'neg':''}">${o.dias}d</div>
+      <div class="tr-r">${money(o.amount_total)}</div>
+      <div style="display:flex;gap:6px;justify-content:flex-end">
+        <button class="mini-btn" onclick="abrirPedidoOdoo(${o.id})" title="Abre el pedido en Odoo para entregarlo o revisarlo.">Abrir</button>
+        <button class="mini-btn" onclick="cancelarPedido(${o.id})" title="Cancela el pedido en Odoo. Reversible (se puede volver a borrador).">Cancelar</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="note">📦 <b>Pedidos sin entregar.</b> Pedidos ya confirmados que todavía no salieron. Los de <b>más de ${X} días</b> (en rojo) ya <b>liberaron su stock</b> para vender (dejaron de comprometerlo): revisalos con logística — entregar cuanto antes, o <b>cancelar</b> si el pedido ya no va (los muy viejos suelen ser abandonados). <b>Cancelar</b> es reversible en Odoo; si el pedido tiene factura, primero hay que anularla allá.</div>
+   <div class="count-line"><b>${PEND.length}</b> pedidos sin entregar · <b style="color:var(--red)">${viejos.length}</b> con más de ${X} días (stock ya liberado, a revisar).</div>
+   <div class="tablecard">
+     <div class="thead" style="grid-template-columns:1fr 1.7fr 1.2fr .6fr 1fr 190px"><div>Pedido</div><div>Cliente</div><div>Comercial</div><div class="tr-r">Días</div><div class="tr-r">Monto</div><div></div></div>
+     ${rows}</div>`;
+}
+function abrirPedidoOdoo(id){ window.open(`${ODOO_BASE}/web#id=${id}&model=sale.order&view_type=form`,"_blank"); }
+async function cancelarPedido(id){
+  const o=PEND.find(x=>x.id===id); const name=o?o.name:("#"+id);
+  if(!confirm(`¿Cancelar el pedido ${name}?\n\nLo pasa a "Cancelado" en Odoo y libera lo comprometido. Es reversible (se puede volver a borrador). Si tiene factura registrada, Odoo no va a dejar hasta anularla.`)) return;
+  try{ await rpc("sale.order","action_cancel",[[id]],{context:ES}); toast("✓ Pedido cancelado"); PEND=await cargarPendientes(); render(); }
+  catch(e){ alert("No se pudo cancelar: "+(e.message||e)+"\n\n(Si tiene factura registrada, anulala primero en Odoo.)"); }
 }
 
 // ===================== ARRANQUE =====================
