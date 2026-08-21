@@ -154,6 +154,11 @@
   .stk.tap{cursor:pointer}
   .vto{font-size:10.5px;font-weight:800;border-radius:6px;padding:1px 6px;background:#eef2f1;color:var(--gris);white-space:nowrap}
   .vto.corto{background:#FBE4E3;color:#b0322f}
+  /* disponible / comprometido */
+  .prod .stk.out,.rprod .stk.out,.stk.out{color:#B42318;font-weight:800}
+  .cmp{font-size:10px;font-weight:800;color:#B42318;background:#FDECEA;border-radius:6px;padding:1px 6px;white-space:nowrap;margin-left:4px}
+  .add .plus.out{background:#F0EDEA;color:#9A8F86;cursor:not-allowed}
+  .add .plus.out:active{transform:none}
   .stkline{margin-top:3px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .lotlist{display:flex;flex-direction:column;gap:7px;max-height:44vh;overflow:auto}
   .lotrow{display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px}
@@ -319,6 +324,7 @@ let ST = {
   syncing:false, dirty:false,
   // catálogo
   fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, prodCache:{}, ofertaPids:new Set(), ofertaTmpls:new Set(), ofertaInfo:{}, ofertaRule:{}, _ofLoaded:false, cargandoCat:false,
+  fisico:{}, comprometido:{}, _compTs:0,   // stock físico y comprometido (confirmado sin entregar) por producto → disponible
   cartOpen:false,
   vista:(function(){ try{ return localStorage.getItem("eyg_vender_vista")||"filas"; }catch(e){ return "filas"; } })(),  // "filas" | "grilla"
 };
@@ -819,6 +825,7 @@ async function buscarProductosOdoo(q){
 async function cargarCatalogo(){
   const token=(ST._catToken=(ST._catToken||0)+1);
   desconectarIO();
+  cargarComprometido();   // refresca (throttle 45s) el comprometido para el disponible; no bloquea el render
   const q=(ST.qProd||"").trim();
   const key = q ? null : ST.fam;                  // solo cacheamos las familias (no las búsquedas)
   const cacheable = !!key && ST.fam!=="OFERTAS";  // familias reales (no búsqueda ni ofertas)
@@ -878,6 +885,7 @@ async function cargarCatalogo(){
 // El precio EXACTO lo pone Odoo al agregar la línea (fuente de verdad, se ve en el carrito).
 async function cargarPrecios(prods){
   ST.precios={}; ST.tiers={};
+  prods.forEach(p=>{ if(p.qty_available!=null) ST.fisico[p.id]=p.qty_available; });   // stock físico para el disponible
   if(!ST.order.pricelistId || !prods.length){ prods.forEach(p=>{ ST.precios[p.id]=(p.list_price>1?p.list_price:null); }); return; }
   const tmpls=[...new Set(prods.map(p=>p.product_tmpl_id&&p.product_tmpl_id[0]).filter(Boolean))];
   const vids=prods.map(p=>p.id);
@@ -928,12 +936,38 @@ async function cargarLotes(prods){
 }
 function fmtVto(d){ if(!d) return "—"; const p=d.split("-"); return p.length===3 ? (p[2]+"/"+p[1]+"/"+p[0].slice(2)) : d; }
 function diasHasta(d){ if(!d) return 99999; try{ const t=new Date(d+"T00:00:00"), h=new Date(EYG.argToday()+"T00:00:00"); return Math.round((t-h)/86400000); }catch(e){ return 99999; } }
-// badge de stock (tocable si hay lotes) + el vencimiento más próximo
+/* ---------- DISPONIBLE = físico − comprometido (confirmado sin entregar) ----------
+   El comprometido son las unidades de pedidos YA CONFIRMADOS con entrega pendiente/parcial:
+   están vendidas aunque sigan en el depósito, así que NO se pueden vender de nuevo.
+   Un presupuesto (borrador) NO cuenta. */
+async function cargarComprometido(force){
+  const now=Date.now();
+  if(!force && ST._compTs && (now-ST._compTs)<45000) return;   // throttle: no reconsultar tan seguido
+  try{
+    const g=await rpc("sale.order.line","read_group",
+      [[["order_id.state","=","sale"],["order_id.delivery_status","in",["pending","partial"]]],
+       ["product_uom_qty:sum","qty_delivered:sum"],["product_id"]],{lazy:false,limit:5000,context:ES});
+    const m={};
+    for(const r of g){ if(!r.product_id) continue; const c=(r.product_uom_qty||0)-(r.qty_delivered||0); if(c>0.001) m[r.product_id[0]]=c; }
+    ST.comprometido=m; ST._compTs=now;
+    if(ST.view==="venta" && !ST.cargandoCat) renderGrid();   // repinta badges/botones con el disponible real
+  }catch(e){}
+}
+function compDe(pid){ return ST.comprometido[pid]||0; }
+function fisicoDe(pid){ const v=ST.fisico[pid]; if(v!=null) return v; const p=(ST.prods||[]).find(x=>x.id==pid); return p?(p.qty_available||0):0; }
+function dispDe(pid){ return Math.round((fisicoDe(pid)-compDe(pid))*100)/100; }        // puede ser negativo
+function dispP(p){ return Math.round(((p.qty_available||0)-compDe(p.id))*100)/100; }
+
+// badge de stock: muestra el DISPONIBLE (no el físico). Si está comprometido, avisa.
 function stockHtml(p){
-  const stk=p.qty_available||0;
+  const disp=dispP(p), cmp=compDe(p.id);
   const ls=(ST.lotes&&ST.lotes[p.id])||null; const has=ls&&ls.length;
   const vto=(has&&ls[0].exp) ? `<span class="vto ${diasHasta(ls[0].exp)<180?'corto':''}">⏳ ${fmtVto(ls[0].exp)}</span>` : "";
-  return `<span class="stk ${stk<10?"low":""}${has?" tap":""}" ${has?`onclick="verLotes(${p.id},event)"`:""}>${stk<10?"⚠ ":"✓ "}${Math.round(stk)} stock${has?" ▾":""}</span>${vto}`;
+  const cmpTxt = cmp>0 ? ` <span class="cmp" title="${Math.round(cmp)} u ya comprometidas a pedidos confirmados sin entregar">🔒 ${Math.round(cmp)} comprom.</span>` : "";
+  if(disp<=0){
+    return `<span class="stk out" title="En depósito hay ${Math.round(p.qty_available||0)} u, pero están comprometidas a pedidos ya confirmados. No se pueden vender de nuevo.">⛔ sin stock disponible</span>${cmpTxt}${vto}`;
+  }
+  return `<span class="stk ${disp<10?"low":""}${has?" tap":""}" ${has?`onclick="verLotes(${p.id},event)"`:""}>${disp<10?"⚠ ":"✓ "}${Math.round(disp)} disp.${has?" ▾":""}</span>${cmpTxt}${vto}`;
 }
 // popup con los lotes y vencimientos, resaltando el más viejo
 window.verLotes=(pid,ev)=>{
@@ -1064,6 +1098,8 @@ function cardProd(p){
 }
 // parte dinámica de la tarjeta (aviso de tramo + botón/stepper), depende de la cantidad
 function dynHtml(pid,q){
+  const disp=dispDe(pid);
+  if(disp<=0 && !(q>0)) return `<div class="add"><button class="plus out" disabled title="Estas unidades están comprometidas a pedidos ya confirmados. No se pueden vender de nuevo.">⛔ Sin stock</button></div>`;
   return hintHtml(pid,q)+
     `<div class="add">${q>0?stepper(pid,q):`<button class="plus" onclick="addProd(${pid})">＋ Agregar</button>`}</div>`;
 }
@@ -1114,9 +1150,15 @@ function pintarImagen(id){
 }
 
 /* ---------- alta/baja de cantidades (optimista + sync a Odoo) ---------- */
-function addProd(pid){ ST.want[pid]=(ST.want[pid]||0)+1; refrescarCelda(pid); marcarDirty(); }
-function chgQty(pid,d){ ST.want[pid]=Math.max(0,(ST.want[pid]||0)+d); if(ST.want[pid]===0) delete ST.want[pid]; refrescarCelda(pid); marcarDirty(); }
-function setQty(pid,v){ let n=Math.max(0,Math.floor(+v||0)); if(n===0) delete ST.want[pid]; else ST.want[pid]=n; refrescarCelda(pid); marcarDirty(); }
+// Aviso (no bloqueo) al pasarse del disponible: el presupuesto puede excederlo, pero al CONFIRMAR se bloquea.
+function _avisarTope(pid,n){
+  const t=dispDe(pid);
+  if(t<=0) toast("Sin stock disponible: está comprometido a pedidos confirmados. Podés dejarlo en presupuesto, pero no vas a poder confirmarlo.",true);
+  else if(n>t) toast(`Ojo: solo hay ${Math.round(t)} disponibles (el resto está comprometido). Podés presupuestarlo, pero al confirmar te va a frenar.`,true);
+}
+function addProd(pid){ ST.want[pid]=(ST.want[pid]||0)+1; _avisarTope(pid,ST.want[pid]); refrescarCelda(pid); marcarDirty(); }
+function chgQty(pid,d){ ST.want[pid]=Math.max(0,(ST.want[pid]||0)+d); if(ST.want[pid]===0) delete ST.want[pid]; else if(d>0) _avisarTope(pid,ST.want[pid]); refrescarCelda(pid); marcarDirty(); }
+function setQty(pid,v){ let n=Math.max(0,Math.floor(+v||0)); if(n===0) delete ST.want[pid]; else { ST.want[pid]=n; _avisarTope(pid,n); } refrescarCelda(pid); marcarDirty(); }
 
 /* ---------- descuento comercial (SOLO tier 2): va al PRECIO UNITARIO, nunca a la columna descuento ---------- */
 function esTier2(){ return !!(ST.order && ST.order.pricelistId===TIER2_LIST); }
@@ -1336,10 +1378,39 @@ async function doConfirmar(){
   cerrarModal();
   if(ST.dirty||ST.syncing){ await syncOrder(); }
   document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Confirmando el pedido…</div>';
+  // CHEQUEO DURO de disponibilidad (dato fresco): no se confirma si algún producto está comprometido a otros pedidos.
+  let faltantes=null;
+  try{ faltantes=await chequearDisponibilidad(); }catch(e){ faltantes=null; }   // ante error de red no bloqueamos la venta
+  if(faltantes && faltantes.length){ ST.view="venta"; render(); mostrarBloqueoStock(faltantes); return; }
   try{
     await rpc("sale.order","action_confirm",[[ST.order.id]],{context:ES});
     ST.view="success"; render();
   }catch(e){ toast("No pude confirmar: "+(e.message||"")); ST.view="venta"; render(); }
+}
+// Re-lee físico + comprometido FRESCOS de los productos del carrito y devuelve los que se pasan del disponible.
+async function chequearDisponibilidad(){
+  const pids=Object.keys(ST.want).filter(p=>ST.want[p]>0).map(Number);
+  if(!pids.length) return null;
+  const g=await rpc("sale.order.line","read_group",
+    [[["product_id","in",pids],["order_id.state","=","sale"],["order_id.delivery_status","in",["pending","partial"]]],
+     ["product_uom_qty:sum","qty_delivered:sum"],["product_id"]],{lazy:false,context:ES});
+  const comp={}; for(const r of g){ if(r.product_id) comp[r.product_id[0]]=Math.max(0,(r.product_uom_qty||0)-(r.qty_delivered||0)); }
+  const prods=await rpc("product.product","read",[pids,["qty_available","name"]],{context:ES});
+  const P={}; prods.forEach(p=>{ P[p.id]=p; ST.fisico[p.id]=p.qty_available||0; });
+  ST.comprometido=Object.assign({},ST.comprometido,comp); ST._compTs=Date.now();
+  const falt=[];
+  for(const pid of pids){
+    const disp=Math.round(((P[pid]&&P[pid].qty_available)||0)-(comp[pid]||0));
+    if(ST.want[pid]>disp) falt.push({name:(P[pid]&&P[pid].name)||("#"+pid), quiere:ST.want[pid], disp:Math.max(0,disp)});
+  }
+  return falt.length?falt:null;
+}
+function mostrarBloqueoStock(falt){
+  const rows=falt.map(f=>`<div class="lotrow"><div class="ln">${esc(f.name)}</div><div class="ld"><span class="lvto corto">pediste ${f.quiere}</span><span class="lq">disp. ${f.disp}</span></div></div>`).join("");
+  modal(`<h3>⛔ No se puede confirmar</h3>
+    <p style="font-size:13px;color:var(--gris);margin:0 0 10px">Estos productos ya están <b>comprometidos a otros pedidos confirmados</b> — aunque estén en el depósito, ya están vendidos. Bajá la cantidad a lo disponible (o dejalo en presupuesto) y confirmá de nuevo.</p>
+    <div class="lotlist">${rows}</div>
+    <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Entendido</button></div>`);
 }
 
 function pedirDescartar(){
