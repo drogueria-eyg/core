@@ -299,25 +299,31 @@ async function cargar(){
     const deudaDom=u=>[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],
       "|",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",u],
           "&",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",452],["move_id.invoice_line_ids.sale_line_ids.order_id.partner_id.user_id","=",u]];
-    const [facG,ncG,cobG,hoyG,deudaL,...series] = await Promise.all([
-      allIds.length?EYG.rpc("account.move","read_group",[[["partner_id","in",allIds],["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],["partner_id"]],{lazy:false}):[],
-      allIds.length?EYG.rpc("account.move","read_group",[[["partner_id","in",allIds],["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",inicioMes]],["amount_untaxed:sum"],["partner_id"]],{lazy:false}):[],
+    // FACTURADO del mes = TOTAL con IVA (métrica), por CRUCE al vendedor del pedido; + DEUDA por cruce. Todo por comercial.
+    const facDom=(u,mt)=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",inicioMes],
+      "|",["sale_line_ids.order_id.user_id","=",u],
+          "&",["sale_line_ids.order_id.user_id","=",452],["sale_line_ids.order_id.partner_id.user_id","=",u]];
+    const [cobG,hoyG,crossL,...series] = await Promise.all([
       allIds.length?EYG.rpc("account.payment","read_group",[[["partner_id","in",allIds],["payment_type","=","inbound"],["state","=","posted"],["date",">=",inicioMes]],["amount:sum"],["partner_id"]],{lazy:false}):[],
-      EYG.rpc("sale.order","read_group",[[["user_id","in",metricUids],["state","in",["sale","done"]],["date_order",">=",hoy+" 00:00:00"]],["amount_untaxed:sum"],["user_id"]],{lazy:false}),
-      Promise.all(metricUids.map(u=>EYG.rpc("account.move.line","search_read",[deudaDom(u)],{fields:["amount_residual","date_maturity"],limit:0}).catch(()=>[]))),
+      EYG.rpc("sale.order","read_group",[[["user_id","in",metricUids],["state","in",["sale","done"]],["date_order",">=",hoy+" 00:00:00"]],["amount_total:sum"],["user_id"]],{lazy:false}),
+      Promise.all(metricUids.map(async u=>{
+        const [fi,fr,deu]=await Promise.all([
+          EYG.rpc("account.move.line","read_group",[facDom(u,"out_invoice"),["price_total:sum"],[]],{lazy:false}).catch(()=>[]),
+          EYG.rpc("account.move.line","read_group",[facDom(u,"out_refund"),["price_total:sum"],[]],{lazy:false}).catch(()=>[]),
+          EYG.rpc("account.move.line","search_read",[deudaDom(u)],{fields:["amount_residual","date_maturity"],limit:0}).catch(()=>[]),
+        ]);
+        return { facT:((fi[0]&&fi[0].price_total)||0)-((fr[0]&&fr[0].price_total)||0), deu };
+      })),
       ...leaders.map(L=>{ const tu=comEmps.filter(e=>e.parent_id&&e.parent_id[0]===L.id).map(e=>e.user_id[0]);
-        const su=[...new Set([L.user_id[0], ...tu])];   // serie TOTAL = líder + su equipo
-        return EYG.rpc("sale.order","read_group",[[["user_id","in",su],["state","in",["sale","done"]],["date_order",">=",desde12+" 00:00:00"]],["amount_untaxed:sum"],["date_order:month"]],{lazy:false}); }),
+        const su=[...new Set([L.user_id[0], ...tu])];   // serie TOTAL = líder + su equipo (con IVA)
+        return EYG.rpc("sale.order","read_group",[[["user_id","in",su],["state","in",["sale","done"]],["date_order",">=",desde12+" 00:00:00"]],["amount_total:sum"],["date_order:month"]],{lazy:false}); }),
     ]);
-    const pidOf=g=>g.partner_id&&g.partner_id[0];
-    for(const g of facG){ const u=sellerOf[pidOf(g)]; if(u!=null) fac[u]+=g.amount_untaxed||0; }
-    for(const g of ncG){  const u=sellerOf[pidOf(g)]; if(u!=null) nc[u]+=g.amount_untaxed||0; }
-    for(const g of cobG){ const u=sellerOf[pidOf(g)]; if(u!=null) cob[u]+=g.amount||0; }
-    metricUids.forEach((u,i)=>{ deuda[u]=0; venc[u]=0; for(const l of (deudaL[i]||[])){ const r=l.amount_residual||0; if(r>0){ deuda[u]+=r; if(l.date_maturity&&l.date_maturity<hoy) venc[u]+=r; } } });
-    for(const g of hoyG){ const u=g.user_id&&g.user_id[0]; if(u!=null&&(u in hoyU)) hoyU[u]=g.amount_untaxed||0; }
+    for(const g of cobG){ const u=sellerOf[g.partner_id&&g.partner_id[0]]; if(u!=null) cob[u]+=g.amount||0; }
+    for(const g of hoyG){ const u=g.user_id&&g.user_id[0]; if(u!=null&&(u in hoyU)) hoyU[u]=g.amount_total||0; }
+    metricUids.forEach((u,i)=>{ const c=crossL[i]||{}; fac[u]=c.facT||0; deuda[u]=0; venc[u]=0; for(const l of (c.deu||[])){ const r=l.amount_residual||0; if(r>0){ deuda[u]+=r; if(l.date_maturity&&l.date_maturity<hoy) venc[u]+=r; } } });
     // series mensuales por líder (para el mini-gráfico)
     STATE._serieByLeader={};
-    leaders.forEach((L,i)=>{ const g=series[i]||[]; const m={}; for(const r of g){ const rg=r.__range&&r.__range["date_order:month"]; const k=rg?rg.from.slice(0,7):null; if(k)m[k]=(m[k]||0)+(r.amount_untaxed||0); } STATE._serieByLeader[L.id]=meses.map(mm=>m[mm.key]||0); });
+    leaders.forEach((L,i)=>{ const g=series[i]||[]; const m={}; for(const r of g){ const rg=r.__range&&r.__range["date_order:month"]; const k=rg?rg.from.slice(0,7):null; if(k)m[k]=(m[k]||0)+(r.amount_total||0); } STATE._serieByLeader[L.id]=meses.map(mm=>m[mm.key]||0); });
   }catch(e){ /* seguimos con lo que haya; las tarjetas muestran lo disponible */ STATE._serieByLeader=STATE._serieByLeader||{}; }
 
   // arma comerciales

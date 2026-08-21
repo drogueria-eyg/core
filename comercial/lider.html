@@ -340,15 +340,15 @@ function inicioSemanaART(){ const t=argToday(); const base=new Date(t+"T12:00:00
 // Traer pedidos desde `iniART` con buffer y devolverlos ya filtrados por FECHA ARGENTINA.
 async function pedidosDesdeART(iniART, fields){
   const desde=new Date(new Date(iniART+"T00:00:00-03:00").getTime()-6*3600*1000).toISOString().slice(0,19).replace("T"," ");
-  const ord=await EYG.rpc("sale.order","search_read",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],fields||["user_id","date_order","amount_untaxed"]],{limit:0});
+  const ord=await EYG.rpc("sale.order","search_read",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],fields||["user_id","date_order","amount_total"]],{limit:0});
   return ord.filter(o=>argParts(o.date_order).date>=iniART);
 }
 // Suma por comercial de la SEMANA (fecha Argentina): en lunes la semana = hoy y coincide con "Hoy".
-async function periodoSemana(){ const ini=inicioSemanaART(); const ord=await pedidosDesdeART(ini); const m={}; for(const o of ord){ const u=o.user_id&&o.user_id[0]; if(u) m[u]=(m[u]||0)+(o.amount_untaxed||0); } return m; }
+async function periodoSemana(){ const ini=inicioSemanaART(); const ord=await pedidosDesdeART(ini); const m={}; for(const o of ord){ const u=o.user_id&&o.user_id[0]; if(u) m[u]=(m[u]||0)+(o.amount_total||0); } return m; }
 
 async function periodo(desde){
-  const g=await EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],["amount_untaxed:sum"],["user_id"]],{lazy:false});
-  const m={}; for(const r of g){ if(r.user_id) m[r.user_id[0]]=r.amount_untaxed||0; } return m;
+  const g=await EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],["amount_total:sum"],["user_id"]],{lazy:false});
+  const m={}; for(const r of g){ if(r.user_id) m[r.user_id[0]]=r.amount_total||0; } return m;
 }
 async function init(){
   try{
@@ -369,9 +369,9 @@ async function init(){
 }
 async function refreshHoy(){
   const desde=new Date(Date.now()-30*3600*1000).toISOString().slice(0,10)+" 00:00:00";
-  const ord=await EYG.rpc("sale.order","search_read",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],["user_id","date_order","amount_untaxed"]],{limit:0});
+  const ord=await EYG.rpc("sale.order","search_read",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],["user_id","date_order","amount_total"]],{limit:0});
   const t=argToday();
-  TODAY=ord.map(o=>({uid:o.user_id&&o.user_id[0], amt:o.amount_untaxed||0, ...argParts(o.date_order)})).filter(o=>o.date===t);
+  TODAY=ord.map(o=>({uid:o.user_id&&o.user_id[0], amt:o.amount_total||0, ...argParts(o.date_order)})).filter(o=>o.date===t);
   const byU={}; DATA.forEach(d=>{d.hoy=0; d.horas=new Array(24).fill(0); byU[d.uid]=d;});
   for(const o of TODAY){ const d=byU[o.uid]; if(d){ d.hoy+=o.amt; d.horas[o.hour]+=o.amt; } }
 }
@@ -517,12 +517,12 @@ async function setPeriodo(p){
 async function cargarSerie(p){
   if(SERIES[p]) return SERIES[p];
   const t=argToday(), y=t.slice(0,4), mo=t.slice(0,7);
-  const dom=(desde,gran)=>EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde+" 00:00:00"]],["amount_untaxed:sum"],["date_order:"+gran]],{lazy:false});
-  const bucket=(g,gran)=>{ const m={}; g.forEach(r=>{ const rg=r.__range&&r.__range["date_order:"+gran]; const f=rg?rg.from.slice(0,10):null; if(f) m[f]=(m[f]||0)+(r.amount_untaxed||0); }); return m; };
+  const dom=(desde,gran)=>EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde+" 00:00:00"]],["amount_total:sum"],["date_order:"+gran]],{lazy:false});
+  const bucket=(g,gran)=>{ const m={}; g.forEach(r=>{ const rg=r.__range&&r.__range["date_order:"+gran]; const f=rg?rg.from.slice(0,10):null; if(f) m[f]=(m[f]||0)+(r.amount_total||0); }); return m; };
   if(p==="sem"){
     // Bucketeamos por FECHA ARGENTINA (evita el corrimiento UTC que descuadraba los días).
-    const ini=inicioSemanaART(); const ord=await pedidosDesdeART(ini,["date_order","amount_untaxed"]);
-    const m={}; for(const o of ord){ const k=argParts(o.date_order).date; m[k]=(m[k]||0)+(o.amount_untaxed||0); }
+    const ini=inicioSemanaART(); const ord=await pedidosDesdeART(ini,["date_order","amount_total"]);
+    const m={}; for(const o of ord){ const k=argParts(o.date_order).date; m[k]=(m[k]||0)+(o.amount_total||0); }
     const base=new Date(ini+"T12:00:00Z"); const arr=[];
     for(let i=0;i<7;i++){ const dd=new Date(base); dd.setUTCDate(base.getUTCDate()+i); const k=dd.toISOString().slice(0,10); const wd=(dd.getUTCDay()+6)%7; arr.push({label:DIASSEM[wd], val:m[k]||0, cur:k===t}); }
     return SERIES.sem=arr;
@@ -821,7 +821,7 @@ async function cargarFichas(){
 function mval(d,k){
   if(!d) return null;
   switch(k){
-    case "factMes": return d.factMes||0;
+    case "factMes": return d.factMesTotal||0;
     case "cobradoMes": return d.cobradoMes||0;
     case "actividad": return (d.actividadRatio||0)*100;
     case "nuevos": return d.nuevos||0;
@@ -837,7 +837,7 @@ function mval(d,k){
   return null;
 }
 const METR=[
-  {k:"factMes", lab:"Facturado del mes (comisión)", fmt:"money", higher:true},
+  {k:"factMes", lab:"Facturado del mes (con IVA)", fmt:"money", higher:true},
   {k:"cobradoMes", lab:"Cobrado del mes", fmt:"money", higher:true},
   {k:"actividad", lab:"Actividad", fmt:"pct", higher:true},
   {k:"nuevos", lab:"Clientes nuevos", fmt:"num", higher:true},
@@ -885,7 +885,7 @@ function renderEquipo(){
       const cumpl=mval(f,"cumpl"), ritmo=mval(f,"ritmo");
       const meta=(f.meta!=null?f.meta:(f.factBaseline||0)*1.2), falta=Math.max(0,meta-f.factMes);
       const pcol=cumpl>=100?'var(--teal)':cumpl>=60?'var(--gold)':'var(--coral)';
-      prog = ext?`<div class="lbl">Facturado del mes: <b>${M(f.factMes)}</b></div><div class="prog"><i style="width:${Math.min(100,cumpl)}%;background:var(--teal-med)"></i></div>`
+      prog = ext?`<div class="lbl">Facturado del mes: <b>${M(f.factMesTotal)}</b></div><div class="prog"><i style="width:${Math.min(100,cumpl)}%;background:var(--teal-med)"></i></div>`
         : `<div class="lbl">Meta del mes · ${Math.round(cumpl)}%</div><div class="prog"><i style="width:${Math.min(100,cumpl)}%;background:${pcol}"></i></div>
            <div class="metaline">${M(f.factMes)} de <b>${M(meta)}</b> · ${cumpl>=100?'✓ cumplida':'faltan '+M(falta)}</div>`;
       const up=ritmo>=100; trend=`<span class="trend ${up?'up':'down'}">${up?'▲':'▼'} ${Math.round(ritmo)}%<span style="font-weight:600;color:var(--gris2)"> ritmo</span></span>`;
@@ -1008,15 +1008,15 @@ async function fichaData(uid, name, carteraIn, pfIn){
   const cartera=carteraIn||await EYG.rpc("res.partner","search",[[["user_id","=",uid]]]);
   const [movG,payG,ml,ordG,estG,pf,mg,waMsgs,ofVenG,ofEnvC]=await Promise.all([
     // facturas+NC por mes y tipo (190d) → factMes, baseline y desglose de facturación
-    EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",EYG.hace(190)]],["amount_untaxed:sum"],["invoice_date:month","move_type"]],{lazy:false}),
+    EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",EYG.hace(190)]],["amount_total:sum"],["invoice_date:month","move_type"]],{lazy:false}),
     // cobros entrantes por mes (100d) → cobrado del mes + objetivo (prom 3m)
     EYG.rpc("account.payment","read_group",[[["partner_id","in",cartera],["payment_type","=","inbound"],["state","=","posted"],["date",">=",EYG.hace(100)]],["amount:sum"],["date:month"]],{lazy:false}),
     // saldos a cobrar sin conciliar → por cobrar / vencido
     EYG.rpc("account.move.line","search_read",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],"|",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",uid],"&",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",452],["move_id.invoice_line_ids.sale_line_ids.order_id.partner_id.user_id","=",uid]]],{fields:["amount_residual","date_maturity"],limit:0}),
     // pedidos confirmados por mes y cliente (190d) → promedios, actividad, ticket y pedidos netos del mes
-    EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",EYG.hace(190)]],["amount_untaxed:sum"],["date_order:month","partner_id"]],{lazy:false}),
+    EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",EYG.hace(190)]],["amount_total:sum"],["date_order:month","partner_id"]],{lazy:false}),
     // órdenes del mes por estado → cancelados / presupuestos (desglose)
-    EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["date_order",">=",inicioMes]],["amount_untaxed:sum"],["state"]],{lazy:false}),
+    EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["date_order",">=",inicioMes]],["amount_total:sum"],["state"]],{lazy:false}),
     // cartera: datos de ficha + fecha de alta (para "nuevos" sin consulta aparte)
     pfIn?Promise.resolve(pfIn):EYG.rpc("res.partner","search_read",[[["user_id","=",uid]]],{fields:["vat","phone","mobile","email","street","create_date"],limit:0}),
     // margen del año → rentabilidad
@@ -1036,27 +1036,28 @@ async function fichaData(uid, name, carteraIn, pfIn){
   const waHoyMsg=_wh.length, waHoyCont=new Set(_wh.map(x=>x.res_id)).size, waHoyNuevo=_wh.filter(x=>x.ng==="nuevo").length, waSemMsg=_wm.length;
   // Facturación: neto por mes + desglose del mes
   const netMes={}; let facMonto=0,facN=0,ncMonto=0,ncN=0;
-  for(const r of movG){ const m=mkey(r,"invoice_date:month"), amt=r.amount_untaxed||0, inv=r.move_type==="out_invoice";
+  for(const r of movG){ const m=mkey(r,"invoice_date:month"), amt=r.amount_total||0, inv=r.move_type==="out_invoice";
     netMes[m]=(netMes[m]||0)+(inv?1:-1)*amt;
     if(m===mo){ if(inv){facMonto=amt;facN=r.__count||0;} else {ncMonto=amt;ncN=r.__count||0;} } }
   const facturadoMes=facMonto-ncMonto;   // facturado por cartera (para el desglose visual)
   // BASE de la comisión (desde agosto) = FACTURADO NETO atribuido a QUIEN GENERÓ EL PEDIDO (cruce factura→pedido→vendedor)
-  const fact={};
+  const fact={}, factT={};   // fact = facturado NETO (comisión) · factT = facturado TOTAL c/IVA (métrica)
   try{
     // HÍBRIDO: quien generó el pedido; si el pedido está bajo la genérica (452), el dueño del cliente
     const domF=(mt)=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",EYG.hace(210)],
       "|",["sale_line_ids.order_id.user_id","=",uid],
           "&",["sale_line_ids.order_id.user_id","=",452],["sale_line_ids.order_id.partner_id.user_id","=",uid]];
     const [fi,fr]=await Promise.all([
-      EYG.rpc("account.move.line","read_group",[domF("out_invoice"),["price_subtotal:sum"],["date:month"]],{lazy:false}),
-      EYG.rpc("account.move.line","read_group",[domF("out_refund"),["price_subtotal:sum"],["date:month"]],{lazy:false}),
+      EYG.rpc("account.move.line","read_group",[domF("out_invoice"),["price_subtotal:sum","price_total:sum"],["date:month"]],{lazy:false}),
+      EYG.rpc("account.move.line","read_group",[domF("out_refund"),["price_subtotal:sum","price_total:sum"],["date:month"]],{lazy:false}),
     ]);
-    for(const r of fi){ const rg=r.__range&&r.__range["date:month"]; const k=rg?rg.from.slice(0,7):null; if(k) fact[k]=(fact[k]||0)+(r.price_subtotal||0); }
-    for(const r of fr){ const rg=r.__range&&r.__range["date:month"]; const k=rg?rg.from.slice(0,7):null; if(k) fact[k]=(fact[k]||0)-(r.price_subtotal||0); }
+    for(const r of fi){ const rg=r.__range&&r.__range["date:month"]; const k=rg?rg.from.slice(0,7):null; if(k){ fact[k]=(fact[k]||0)+(r.price_subtotal||0); factT[k]=(factT[k]||0)+(r.price_total||0); } }
+    for(const r of fr){ const rg=r.__range&&r.__range["date:month"]; const k=rg?rg.from.slice(0,7):null; if(k){ fact[k]=(fact[k]||0)-(r.price_subtotal||0); factT[k]=(factT[k]||0)-(r.price_total||0); } }
   }catch(e){}
   const _cfg = await EYG.comisionesConfig().catch(()=>EYG.COMI_DEF);
   const _md = EYG.metaDesde(fact, mo, _cfg);
   const factMes=fact[mo]||0;             // base comisión = facturado neto por cruce
+  const factMesTotal=factT[mo]||0;       // métrica = facturado total con IVA (por cruce)
   const factBaseline=_md.baseline, metaMes=_md.meta;
   // Cobros
   let cobradoMes=0, cob3=0;
@@ -1066,7 +1067,7 @@ async function fichaData(uid, name, carteraIn, pfIn){
   let porCobrar=0,vencido=0; for(const l of ml){const r=l.amount_residual||0; if(r>0){porCobrar+=r; if(l.date_maturity&&l.date_maturity<t)vencido+=r;}}
   // Actividad / ticket / pedidos netos del mes (cada fila = un cliente en un mes)
   const bk={}; let sumTot=0,cnt=0, pedM=0,pedN=0;
-  for(const r of ordG){ const m=mkey(r,"date_order:month"), n=r.__count||0, amt=r.amount_untaxed||0;
+  for(const r of ordG){ const m=mkey(r,"date_order:month"), n=r.__count||0, amt=r.amount_total||0;
     (bk[m]=bk[m]||{ped:0,cli:0,tot:0}); bk[m].ped+=n; bk[m].cli+=1; bk[m].tot+=amt; sumTot+=amt; cnt+=n;
     if(m===mo){ pedM+=amt; pedN+=n; } }
   const prev=Object.keys(bk).filter(m=>m<mo), nP=prev.length||1;
@@ -1076,7 +1077,7 @@ async function fichaData(uid, name, carteraIn, pfIn){
   const avgTicket=cnt?sumTot/cnt:0;
   // Estados del mes: cancelados / presupuestos
   let canN=0,canM=0,draN=0,draM=0;
-  for(const r of estG){ const st=r.state, n=r.__count||0, amt=r.amount_untaxed||0;
+  for(const r of estG){ const st=r.state, n=r.__count||0, amt=r.amount_total||0;
     if(st==="cancel"){canN+=n;canM+=amt;} else if(st==="draft"||st==="sent"){draN+=n;draM+=amt;} }
   // Fichas + nuevos (de la cartera ya traída)
   const compl=pf.filter(p=>p.vat&&(p.phone||p.mobile)&&p.email&&p.street).length, fichasPct=pf.length?compl/pf.length:0;
@@ -1086,7 +1087,7 @@ async function fichaData(uid, name, carteraIn, pfIn){
   const perfil=EYGM.perfilDe(name, avgTicket);
   const desglose={ pedN, pedM, canN, canM, draN, draM, facN, facMonto, ncN, ncMonto };
   const ofVendidas=(ofVenG||[]).length, ofEnviadas=ofEnvC||0;
-  const d={nombre:name, perfil, factMes, factBaseline, meta:metaMes, metaMetodo:_cfg.metaMetodo, rates:_cfg.rates, externoCorte:_cfg.externoCorte, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, ofEnviadas, ofVendidas, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg, pedMes:pedM, desglose};
+  const d={nombre:name, perfil, factMes, factMesTotal, factBaseline, meta:metaMes, metaMetodo:_cfg.metaMetodo, rates:_cfg.rates, externoCorte:_cfg.externoCorte, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, ofEnviadas, ofVendidas, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg, pedMes:pedM, desglose};
   d.nivel=EYGM.nivel(d); d.salud=EYGM.salud(d); d.com=EYGM.comision(d);
   return d;
 }
@@ -1106,9 +1107,9 @@ function ventasHTML(d, opts){
   return `<div class="ventas">
       <div class="vhead"><div class="vt">${titulo}</div><button class="vinfo" onclick="toggleDesg('${id}')">🧮 Ver la cuenta</button></div>
       <div class="vmain">
-        <div class="vcol"><div class="vlab">Pedidos <span class="mut2">(neto)</span></div><div class="vbig">${Mabbr(d.pedMes)}</div><div class="vsrc">${cargaLbl}</div></div>
+        <div class="vcol"><div class="vlab">Pedidos <span class="mut2">(con IVA)</span></div><div class="vbig">${Mabbr(d.pedMes)}</div><div class="vsrc">${cargaLbl}</div></div>
         <div class="vsep">vs</div>
-        <div class="vcol"><div class="vlab">Facturado <span class="mut2">(neto)</span></div><div class="vbig2">${Mabbr((g.facMonto||0)-(g.ncMonto||0))}</div><div class="vsrc">${factLbl}</div></div>
+        <div class="vcol"><div class="vlab">Facturado <span class="mut2">(con IVA)</span></div><div class="vbig2">${Mabbr((g.facMonto||0)-(g.ncMonto||0))}</div><div class="vsrc">${factLbl}</div></div>
       </div>
       <div id="${id}" class="desg" style="display:none">
         <div class="desgh">Pedidos (por vendedor de la orden)</div>
@@ -1119,7 +1120,7 @@ function ventasHTML(d, opts){
         <div class="desgh" style="margin-top:12px">Facturación (por cliente de la cartera)</div>
         ${drow("📄","Facturas emitidas", g.facN, g.facMonto)}
         ${drow("↩️","Notas de crédito", g.ncN, g.ncMonto, true)}
-        <div class="drow2 tot"><span class="dl">= Facturado neto</span><b class="da">${M((g.facMonto||0)-(g.ncMonto||0))}</b></div>
+        <div class="drow2 tot"><span class="dl">= Facturado (con IVA)</span><b class="da">${M((g.facMonto||0)-(g.ncMonto||0))}</b></div>
         <div class="desgnote">Fuente: <b>Pedidos</b> = <code>sale.order</code> confirmados (estado venta/hecho), por el <b>vendedor de la orden</b>. <b>Facturado</b> = <code>account.move</code> (facturas − NC posteadas), por los <b>clientes de la cartera</b>. Difieren por tiempo (un pedido de fin de mes se factura después) y por atribución.</div>
       </div>
     </div>`;
@@ -1143,13 +1144,13 @@ async function desgloseEquipo(desde, hasta){
   if(!CARTERA_EQ) CARTERA_EQ=await EYG.rpc("res.partner","search",[[["user_id","in",UIDS]]]);
   const cartera=CARTERA_EQ;
   const rg=f=>{ const d=[[f,">=",desde]]; if(hasta) d.push([f,"<",hasta]); return d; };
-  const so=st=>EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],...st,...rg("date_order")],["amount_untaxed:sum"],[]],{lazy:false});
-  const am=mt=>EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=",mt],["state","=","posted"],...rg("invoice_date")],["amount_untaxed:sum"],[]],{lazy:false});
+  const so=st=>EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],...st,...rg("date_order")],["amount_total:sum"],[]],{lazy:false});
+  const am=mt=>EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","=",mt],["state","=","posted"],...rg("invoice_date")],["amount_total:sum"],[]],{lazy:false});
   const [ped,can,dra,fac,nc]=await Promise.all([
     so([["state","in",["sale","done"]]]), so([["state","=","cancel"]]), so([["state","in",["draft","sent"]]]),
     am("out_invoice"), am("out_refund"),
   ]);
-  const gN=g=>g&&g[0]?g[0].__count||0:0, gM=g=>g&&g[0]?g[0].amount_untaxed||0:0;
+  const gN=g=>g&&g[0]?g[0].__count||0:0, gM=g=>g&&g[0]?g[0].amount_total||0:0;
   const desglose={pedN:gN(ped),pedM:gM(ped),canN:gN(can),canM:gM(can),draN:gN(dra),draM:gM(dra),facN:gN(fac),facMonto:gM(fac),ncN:gN(nc),ncMonto:gM(nc)};
   return {n:COM.length, pedMes:desglose.pedM, factMes:desglose.facMonto-desglose.ncMonto, desglose};
 }
@@ -1184,13 +1185,13 @@ async function cargarHistorico(){
   try{
     if(!CARTERA_EQ) CARTERA_EQ=await EYG.rpc("res.partner","search",[[["user_id","in",UIDS]]]);
     const [movG,ordCom]=await Promise.all([
-      EYG.rpc("account.move","read_group",[[["partner_id","in",CARTERA_EQ],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",desde]],["amount_untaxed:sum"],["invoice_date:month","move_type"]],{lazy:false}),
-      EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],["amount_untaxed:sum"],["date_order:month","user_id"]],{lazy:false}),
+      EYG.rpc("account.move","read_group",[[["partner_id","in",CARTERA_EQ],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",desde]],["amount_total:sum"],["invoice_date:month","move_type"]],{lazy:false}),
+      EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],["state","in",["sale","done"]],["date_order",">=",desde]],["amount_total:sum"],["date_order:month","user_id"]],{lazy:false}),
     ]);
     const mk=(r,f)=>{const rg=r.__range&&r.__range[f];return rg?rg.from.slice(0,7):"";};
-    const teamNet={}; for(const r of movG){ const m=mk(r,"invoice_date:month"); if(m) teamNet[m]=(teamNet[m]||0)+(r.move_type==="out_invoice"?1:-1)*(r.amount_untaxed||0); }
+    const teamNet={}; for(const r of movG){ const m=mk(r,"invoice_date:month"); if(m) teamNet[m]=(teamNet[m]||0)+(r.move_type==="out_invoice"?1:-1)*(r.amount_total||0); }
     const byCom={}, teamPed={};
-    for(const r of ordCom){ const m=mk(r,"date_order:month"); const uid=r.user_id&&r.user_id[0], amt=r.amount_untaxed||0; if(!m)continue; teamPed[m]=(teamPed[m]||0)+amt; if(uid){ (byCom[uid]=byCom[uid]||{})[m]=(byCom[uid][m]||0)+amt; } }
+    for(const r of ordCom){ const m=mk(r,"date_order:month"); const uid=r.user_id&&r.user_id[0], amt=r.amount_total||0; if(!m)continue; teamPed[m]=(teamPed[m]||0)+amt; if(uid){ (byCom[uid]=byCom[uid]||{})[m]=(byCom[uid][m]||0)+amt; } }
     const meses=[...new Set([...Object.keys(teamNet),...Object.keys(teamPed)])].sort();
     HIST={meses, teamNet, teamPed, byCom};
   }catch(e){ HIST={meses:[],teamNet:{},teamPed:{},byCom:{}}; }
@@ -1209,7 +1210,7 @@ function renderHistorico(){
   const spark=vals=>`<span class="hspark">${vals.map((v,i)=>`<i style="height:${Math.max(2,Math.round((v/maxCom)*100))}%" class="${meses[i]<LAUNCH?'pre':''}${meses[i]===curM?' cur':''}" title="${mesLbl(meses[i])} ${meses[i].slice(0,4)}: ${M(v)}"></i>`).join("")}</span>`;
   box.innerHTML=`
     <div class="scopenote">📈 Evolución histórica del equipo. El sistema de <b>puntos y niveles arranca en agosto 2026</b> (lanzamiento). Los meses anteriores se muestran como <b>referencia</b> (en gris), sin puntaje.</div>
-    <div class="chartbox"><div class="ch-head"><h2>Facturado neto del equipo · por mes</h2></div>
+    <div class="chartbox"><div class="ch-head"><h2>Facturado del equipo · por mes (con IVA)</h2></div>
       ${barChart(serie)}
       <div class="muted" style="margin-top:4px">▪ gris = antes del lanzamiento (referencia) · ▪ coral = mes actual</div>
     </div>
@@ -1283,8 +1284,8 @@ function fuentesHTML(d){
   const ext=d.perfil==="externo";
   const li=(t,x)=>`<li><b>${t}:</b> ${x}</li>`;
   return `<ul>
-    ${li("Pedidos (neto)","suma de <code>sale.order.amount_untaxed</code> con estado confirmado (venta/hecho) del mes, donde el <b>vendedor de la orden</b> es el comercial.")}
-    ${li("Facturado (neto)","<code>account.move</code>: facturas (out_invoice) − notas de crédito (out_refund) posteadas del mes, de los <b>clientes de su cartera</b>.")}
+    ${li("Pedidos (con IVA)","suma de <code>sale.order.amount_total</code> con estado confirmado (venta/hecho) del mes, donde el <b>vendedor de la orden</b> es el comercial.")}
+    ${li("Facturado (con IVA)","<code>account.move</code>: facturas − notas de crédito posteadas, atribuidas a quien generó el pedido. Total con IVA (la comisión usa el neto).")}
     ${li("Comisión estimada", ext?"3% hasta $50M y 4% por encima, sobre el facturado neto (Externo).":"motor EyG sobre el <b>facturado neto</b> atribuido a quien generó el pedido (cruce factura↔pedido): tramos por meta, × nivel, menos recorte por salud.")}
     ${li("Cobrado del mes","<code>account.payment</code> entrantes posteados del mes, de su cartera.")}
     ${li("Vencido / por cobrar","líneas de cuentas por cobrar sin conciliar (<code>account.move.line</code>, cuenta receivable); vencido = las de fecha de vencimiento pasada.")}
