@@ -386,6 +386,12 @@ window.EYG = (function(){
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"direccion/tablero.html"},
     {key:"radiografia",dept:"direccion", cat:"Dirección", ico:"📊", titulo:"Radiografía", desc:"Ventas, facturación, márgenes, cobranza y stock de toda la droguería en un tablero.", roles:["direccion"], ready:false, path:()=>"direccion/radiografia.html"},
+    /* EN PRUEBAS: el mapa vivo del sistema (registro maestro / ley). Sólo super-admins
+       hasta liberarlo: borrar la línea `pruebas` de acá y el {pruebas:…} del
+       EYG.guard() de direccion/mapa.html. */
+    {key:"mapa", dept:"direccion", cat:"Dirección", ico:"🧠", titulo:"Mapa del sistema", desc:"El sistema entero en 3D: Odoo en el núcleo, los módulos del Core alrededor, Supabase, GitHub y la web, con cada conexión y cada fórmula nuestra. Es ley: todo cambio se registra acá.", roles:["direccion"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"direccion/mapa.html"},
     {key:"usuarios",  dept:"admin", cat:"Sistema", ico:"👤", titulo:"Usuarios y accesos", desc:"Altas de personal, roles y permisos por persona (qué módulos ve cada uno). Restablecé contraseñas por mail.", roles:["admin"], ready:true, path:()=>"admin/usuarios.html"},
   ];
   /* Acepta el perfil entero (o sólo el rol, por compatibilidad).
