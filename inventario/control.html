@@ -128,6 +128,8 @@
   .lbadge.slot{background:#FFF1D6;color:#8a6a1f}
   .lbadge.ghost{background:#ECE7F6;color:#584a86}
   .prio{font-size:10px;font-weight:800;background:var(--redbg);color:var(--red);border-radius:6px;padding:2px 7px;white-space:nowrap;display:inline-block}
+  .anom-help{font-size:12.5px;color:#7a2320;background:#FDECEA;border:1px solid #F3C9C4;border-radius:9px;padding:8px 11px;margin:0 0 11px;line-height:1.45}
+  .anom-help b{color:#5e1a17}
   /* mini-modal */
   .ctrl-ov{position:fixed;inset:0;background:rgba(6,65,62,.42);display:none;align-items:center;justify-content:center;z-index:1000;padding:16px}
   .ctrl-ov.on{display:flex}
@@ -301,7 +303,7 @@ function render(){
       </div>
     </div>
     <div class="hmetrics">
-      <div class="hm clk ${raroLines?'bad':'good'}" onclick="irRaro()" title="Productos con algo raro para priorizar: lote negativo, stock sin número de lote, o reserva pegada. Tocá para revisarlos."><div class="k">🚩 A revisar</div><div class="v">${raroLines}</div></div>
+      <div class="hm clk ${raroLines?'bad':'good'}" onclick="irRaro()" title="Productos con algo para corregir: lote en negativo, stock sin número de lote, o líneas sin stock apartadas por error. Tocá para revisarlos, cada uno te dice qué hacer."><div class="k">🚩 A revisar</div><div class="v">${raroLines}</div></div>
       <div class="hm clk ${negLines?'bad':'good'}" onclick="irNeg()" title="Lotes en negativo. Casi nunca es falta de stock: el producto suele tener stock en otros lotes. Tocá para verlos."><div class="k">⚠️ Lotes negativos</div><div class="v">${negLines}</div></div>
       <div class="hm clk ${g.torcido.length?'bad':'good'}" onclick="irTab('valuacion')" title="Productos donde Odoo perdió el valor del stock (negativo o casi cero). NO incluye los que solo están más baratos por inflación. Tocá para verlos y corregirlos."><div class="k">⚖️ Valor roto</div><div class="v">${g.torcido.length}</div></div>
       <div class="hm clk ${g.sincosto.length?'mid':'good'}" onclick="irTab('sincosto')" title="Productos con stock pero sin costo. Tocá para cargarles el costo."><div class="k">🏷️ Sin costo</div><div class="v">${g.sincosto.length}</div></div>
@@ -425,10 +427,14 @@ async function revalorizarSel(){
 // El "reservado" no se muestra (no es relevante para contar); si una reserva pegada traba el ajuste,
 // se libera por debajo automáticamente.
 // Anomalía de un lote (lo "raro" que hay que priorizar). null = normal.
+// Cada una trae una explicación EN CRIOLLO de qué es y qué hacer (se muestra a la vista, no en tooltip).
 function anomLote(qn){
-  if(qn.qty<0) return {cls:'neg',txt:'⚠️ negativo'};
-  if(!qn.lot && qn.qty!==0) return {cls:'slot',txt:'🏷️ sin lote'};
-  if(qn.qty===0 && qn.res>0) return {cls:'ghost',txt:'🔒 reserva pegada'};
+  if(qn.qty<0) return {cls:'neg',txt:'⚠️ en negativo',
+    help:'El sistema dice que hay <b>menos que cero</b>, y eso es imposible. Es un error de carga. Contá lo que hay <b>realmente</b> en el depósito y tocá <b>Guardar</b> para dejarlo bien.'};
+  if(!qn.lot && qn.qty!==0) return {cls:'slot',txt:'🏷️ sin N° de lote',
+    help:'Hay stock cargado <b>sin número de lote</b>. Tocá <b>🏷️＋</b> para ponerle el lote y su vencimiento (o <b>🗑️</b> si no corresponde).'};
+  if(qn.qty===0 && qn.res>0) return {cls:'ghost',txt:'🔒 sin stock, apartado por error',
+    help:`No hay stock físico (0), pero el sistema tiene <b>${nf(qn.res)} u apartadas</b> para un pedido que <b>ya no existe</b> — quedó colgado de una entrega vieja. <b>No hay nada para contar acá.</b> Tocá <b>🗑️</b> para limpiar esta línea.`};
   return null;
 }
 function prodRaro(r){ return r.quants.some(anomLote); }
@@ -454,7 +460,8 @@ function ultConteo(qn,pid){ const u=ULT[pid+"|"+(qn.lot||0)]; if(!u) return ""; 
 
 function lotConteo(r,qn){
   const key=`q${qn.id}`, a=anomLote(qn);
-  const badge=a?`<span class="lbadge ${a.cls}" title="Revisá y corregí esto">${a.txt}</span>`:"";
+  const badge=a?`<span class="lbadge ${a.cls}">${a.txt}</span>`:"";
+  const help=a?`<div class="anom-help">${a.help}</div>`:"";
   return `<div class="lotc ${a?'bad':''}" id="lot-${qn.id}">
     <div class="lotc-h">
       <div class="lotc-n">🏷️ <b>${esc(qn.lotName||"(sin lote)")}</b>
@@ -463,6 +470,7 @@ function lotConteo(r,qn){
         ${vtoDe(qn)}${badge}</div>
       <button class="ic del" onclick="eliminarLote(${qn.id})" title="Eliminar / dar de baja este lote">🗑️</button>
     </div>
+    ${help}
     <div class="lotc-b">
       <div class="sis">en sistema<br><b class="${qn.qty<0?'neg':''}">${nf(qn.qty)}</b></div>
       <div class="cntbox"><label>Conté</label><input class="cnt-in big" id="${key}" inputmode="decimal" placeholder="—" data-sis="${qn.qty}"></div>
@@ -498,11 +506,11 @@ function tabConteo(){
   const filtrando=CONT.q||CONT.filtro||CONT.cat!=="todos";
   const LIMIT=filtrando?9999:60;
   const cards=arr.slice(0,LIMIT).map(cardConteo).join("") || '<div class="pcard empty">Sin resultados. Buscá un producto por nombre o código.</div>';
-  return `<div class="note info">📋 <b>Conteo físico.</b> Buscá el producto, tocalo para ver <b>todos</b> sus lotes y anotá lo que <b>contaste</b> en cada uno → <b>Guardar</b> corrige el stock real en Odoo (queda registrado: fecha y quién). Podés corregir el N° de lote (✏️), eliminar (🗑️), archivar o agregar un lote. <b>🚩 revisar</b> = algo raro para priorizar: <b>⚠️ negativo</b>, <b>🏷️ sin lote</b> (stock sin número de lote) o <b>🔒 reserva pegada</b>. El disponible se recalcula solo.</div>
+  return `<div class="note info">📋 <b>Conteo físico.</b> Buscá el producto, tocalo para ver <b>todos</b> sus lotes y anotá lo que <b>contaste</b> en cada uno → <b>Guardar</b> corrige el stock real en Odoo (queda registrado: fecha y quién). Podés corregir el N° de lote (✏️), eliminar (🗑️), archivar o agregar un lote. <b>🚩 revisar</b> = tiene algo para corregir, y cada línea te explica <b>qué es y qué hacer</b>: <b>⚠️ en negativo</b> (marca menos que cero), <b>🏷️ sin N° de lote</b> o <b>🔒 sin stock, apartado por error</b>. El disponible se recalcula solo.</div>
    <div class="toolbar">
      <div class="search big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4-4"/></svg><input id="cq" placeholder="Buscar producto o código…" value="${esc(CONT.q)}"></div>
      <select id="ccat"><option value="todos">Todas las categorías</option>${cats.map(c=>`<option value="${esc(c)}" ${CONT.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
-     <button class="chip ${CONT.filtro==="raro"?'on':''}" onclick="setFiltro('raro')" title="Productos con algo raro: negativo, sin lote o reserva pegada.">🚩 A revisar${raroTotal?` (${raroTotal})`:''}</button>
+     <button class="chip ${CONT.filtro==="raro"?'on':''}" onclick="setFiltro('raro')" title="Productos con algo para corregir: en negativo, sin N° de lote, o sin stock apartado por error.">🚩 A revisar${raroTotal?` (${raroTotal})`:''}</button>
      <button class="chip ${CONT.filtro==="neg"?'on':''}" onclick="setFiltro('neg')" title="Productos con algún lote en negativo.">⚠️ Negativos${negTotal?` (${negTotal})`:''}</button>
    </div>
    <div class="count-line">${arr.length} producto${arr.length===1?'':'s'}${raroTotal?` · <b style="color:var(--red)">${raroTotal} a revisar</b>`:''}${!filtrando&&arr.length>LIMIT?` (mostrando ${LIMIT}, afiná la búsqueda)`:''}. Tocá un producto para contar sus lotes.</div>
