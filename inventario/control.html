@@ -459,6 +459,7 @@ function lotConteo(r,qn){
     <div class="lotc-h">
       <div class="lotc-n">🏷️ <b>${esc(qn.lotName||"(sin lote)")}</b>
         ${qn.lot?`<button class="ic" onclick="editarLote(${qn.lot},${qn.id})" title="Corregir el N° de lote y el vencimiento">✏️</button>`:""}
+        ${!qn.lot&&qn.qty>0?`<button class="ic" onclick="asignarLote(${qn.id})" title="Asignarle un N° de lote y vencimiento">🏷️＋</button>`:""}
         ${vtoDe(qn)}${badge}</div>
       <button class="ic del" onclick="eliminarLote(${qn.id})" title="Eliminar / dar de baja este lote">🗑️</button>
     </div>
@@ -585,6 +586,32 @@ function editarLote(lotId,qid){
     <input id="ed-vto" class="mi" type="date" value="${esc(vto)}">
     <div class="mbtns"><button class="mini-btn" onclick="cerrarModal()">Cancelar</button><button class="mini-btn pri" onclick="guardarLoteVto(${lotId},${qid})">Guardar</button></div>`);
   setTimeout(()=>{ const el=document.getElementById("ed-lote"); if(el){el.focus();el.select();} },30);
+}
+// Asignar un N° de lote (y vto) a un stock que quedó SIN lote: pasa las unidades al lote nuevo
+function asignarLote(qid){
+  let r=null,qn=null; for(const x of DATA){ const f=x.quants.find(q=>q.id===qid); if(f){r=x;qn=f;break;} } if(!qn) return;
+  modalHTML(`<h3 class="mh">Asignar N° de lote</h3>
+    <p class="mp">${esc(cleanName(r.name))} · ${nf(qn.qty)} u que hoy están <b>sin lote</b></p>
+    <label class="ml">N° de lote</label><input id="as-lote" class="mi" autocomplete="off">
+    <label class="ml">Vencimiento</label><input id="as-vto" class="mi" type="date">
+    <div class="mbtns"><button class="mini-btn" onclick="cerrarModal()">Cancelar</button><button class="mini-btn pri" onclick="guardarAsignarLote(${qid})">Asignar</button></div>`);
+  setTimeout(()=>{ const el=document.getElementById("as-lote"); if(el)el.focus(); },30);
+}
+async function guardarAsignarLote(qid){
+  let r=null,qn=null; for(const x of DATA){ const f=x.quants.find(q=>q.id===qid); if(f){r=x;qn=f;break;} } if(!qn) return;
+  const ln=(document.getElementById("as-lote").value||"").trim();
+  const vto=(document.getElementById("as-vto").value||"").trim();
+  if(!ln){ alert("Poné el N° de lote."); return; }
+  const cant=qn.qty;
+  try{
+    const lotVals={name:ln,product_id:r.id,company_id:1}; if(vto) lotVals.expiration_date=vto+" 00:00:00";
+    const lotId=await rpc("stock.lot","create",[lotVals],{context:ES});
+    await aplicarConteo(qid,0);                                   // vacía la línea sin lote
+    const nq=await rpc("stock.quant","create",[{product_id:r.id,location_id:qn.locId||8,lot_id:lotId,inventory_quantity:cant}],{context:ES});
+    await rpc("stock.quant","action_apply_inventory",[[nq]]);      // y crea la misma cantidad con el lote
+    registrarConteo({ email:(PERFIL&&PERFIL.email)||null, product_id:r.id, product_name:cleanName(r.name), lot_id:lotId, lot_name:ln, sistema:cant, contado:cant, diff:0, accion:'asignar lote' });
+    cerrarModal(); toast("✓ Lote asignado"); await cargar();
+  }catch(e){ alert("No se pudo asignar el lote: "+(e.message||e)); }
 }
 async function guardarLoteVto(lotId,qid){
   const nombre=(document.getElementById("ed-lote").value||"").trim();
