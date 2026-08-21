@@ -940,12 +940,16 @@ function diasHasta(d){ if(!d) return 99999; try{ const t=new Date(d+"T00:00:00")
    El comprometido son las unidades de pedidos YA CONFIRMADOS con entrega pendiente/parcial:
    están vendidas aunque sigan en el depósito, así que NO se pueden vender de nuevo.
    Un presupuesto (borrador) NO cuenta. */
+// Un pedido confirmado compromete stock por DIAS_COMPROMISO días. Pasado ese plazo sin entregar,
+// se libera solo (el stock vuelve a estar disponible) y logística/el comercial deben revisarlo.
+const DIAS_COMPROMISO = 10;
+function cutoffCompromiso(){ return new Date(Date.now()-DIAS_COMPROMISO*86400000).toISOString().slice(0,19).replace("T"," "); }
 async function cargarComprometido(force){
   const now=Date.now();
   if(!force && ST._compTs && (now-ST._compTs)<45000) return;   // throttle: no reconsultar tan seguido
   try{
     const g=await rpc("sale.order.line","read_group",
-      [[["order_id.state","=","sale"],["order_id.delivery_status","in",["pending","partial"]]],
+      [[["order_id.state","=","sale"],["order_id.delivery_status","in",["pending","partial"]],["order_id.date_order",">=",cutoffCompromiso()]],
        ["product_uom_qty:sum","qty_delivered:sum"],["product_id"]],{lazy:false,limit:5000,context:ES});
     const m={};
     for(const r of g){ if(!r.product_id) continue; const c=(r.product_uom_qty||0)-(r.qty_delivered||0); if(c>0.001) m[r.product_id[0]]=c; }
@@ -1392,7 +1396,7 @@ async function chequearDisponibilidad(){
   const pids=Object.keys(ST.want).filter(p=>ST.want[p]>0).map(Number);
   if(!pids.length) return null;
   const g=await rpc("sale.order.line","read_group",
-    [[["product_id","in",pids],["order_id.state","=","sale"],["order_id.delivery_status","in",["pending","partial"]]],
+    [[["product_id","in",pids],["order_id.state","=","sale"],["order_id.delivery_status","in",["pending","partial"]],["order_id.date_order",">=",cutoffCompromiso()]],
      ["product_uom_qty:sum","qty_delivered:sum"],["product_id"]],{lazy:false,context:ES});
   const comp={}; for(const r of g){ if(r.product_id) comp[r.product_id[0]]=Math.max(0,(r.product_uom_qty||0)-(r.qty_delivered||0)); }
   const prods=await rpc("product.product","read",[pids,["qty_available","name"]],{context:ES});
