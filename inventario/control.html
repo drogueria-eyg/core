@@ -94,6 +94,36 @@
   .prodhead b{font-size:15px}
   .row.bad{background:#FDF3F2}
   .lotname{color:var(--gris);padding-left:14px}.lotname b{color:var(--ink);font-weight:600}
+  /* ---------- Conteo físico tipo tablet ---------- */
+  .search.big{min-width:260px}.search.big input{font-size:16px}
+  .ccards{display:flex;flex-direction:column;gap:10px}
+  .ccard{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+  .ccard.bad{border-color:#F0B3B0}
+  .ph2{display:flex;align-items:center;gap:12px;padding:15px 16px;cursor:pointer;user-select:none}
+  .ph2:hover{background:#F7FBFA}
+  .ph2n{flex:1;min-width:0}.ph2n b{font-size:15px;display:block;overflow-wrap:anywhere;line-height:1.25}.ph2n span{font-size:12px;color:var(--gris)}
+  .ph2s{text-align:right;flex:none}.ph2s b{font-size:20px;font-weight:800}.ph2s span{display:block;font-size:10.5px;color:var(--gris);text-transform:uppercase;letter-spacing:.5px}
+  .ph2c{font-size:20px;color:var(--gris2);font-weight:800;width:20px;text-align:center}
+  .lotwrap{border-top:1px solid var(--line);background:#FAFDFC;padding:8px 10px 12px}
+  .lotc{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-top:8px}
+  .lotc.bad{background:#FDF3F2;border-color:#F0B3B0}
+  .lotc-h{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .lotc-n{flex:1;font-size:14px;overflow-wrap:anywhere}.lotc-n b{font-weight:700}
+  .lotc-b{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .sis{font-size:11px;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;text-align:center;line-height:1.3}.sis b{display:block;font-size:22px;color:var(--ink);text-transform:none}
+  .cntbox{display:flex;flex-direction:column;gap:3px}
+  .cntbox label{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--teal-deep)}
+  .cnt-in.big{width:110px;font-size:24px;font-weight:800;padding:10px 12px;height:auto}
+  .dif{min-width:70px;font-size:18px;font-weight:800}
+  .difpos{color:var(--green)}.difneg{color:var(--red)}.digual{color:var(--gris2);font-size:13px;font-weight:600}
+  .save{margin-left:auto;padding:12px 20px;font-size:15px}
+  .ultc{margin-top:9px;font-size:11.5px;color:var(--green);font-weight:600}
+  .ic{background:none;border:0;cursor:pointer;font-size:15px;padding:3px 5px;border-radius:7px;line-height:1}
+  .ic:hover{background:#EAF4F3}.ic.del:hover{background:#FDECEA}
+  .vtochip{font-size:11px;font-weight:700;background:#eef2f1;color:var(--gris);border-radius:6px;padding:2px 7px;margin-left:6px;white-space:nowrap}
+  .vtochip.corto{background:#FBE4E3;color:#b0322f}
+  .lotfoot{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:4px}
+  @media(max-width:560px){ .lotc-b{gap:10px} .cnt-in.big{width:92px;font-size:20px} .save{width:100%;margin-left:0} }
 </style>
 </head>
 <body>
@@ -141,8 +171,11 @@ function fuenteLbl(f){ return f==="manual"?"✎ costo manual":f==="compra"?"🧾
 // ===================== ESTADO =====================
 let DATA=[];      // por producto
 let PEND=[];      // pedidos confirmados sin entregar (delivery_status pending/partial)
+let EXP={};       // lot_id -> vencimiento (YYYY-MM-DD)
+let ULT={};       // "product|lot" -> último conteo {ts,email,contado}
+let PERFIL=null;  // perfil logueado (para registrar quién contó)
 let VIEW={tab:"valuacion"};
-let CONT={q:"",cat:"todos",filtro:""}; // filtro: "" | "neg" | "ghost"
+let CONT={q:"",cat:"todos",filtro:"",abiertos:new Set()}; // filtro: "" | "neg"
 let VAL={q:"",sel:new Set()};
 
 // ===================== CARGA =====================
@@ -186,8 +219,24 @@ async function cargar(){
       DATA.push(r);
     }
     try{ PEND=await cargarPendientes(); }catch(e){ PEND=[]; }
+    try{ EXP=await cargarVtos(); }catch(e){ EXP={}; }
+    try{ ULT=await cargarUltimosConteos(); }catch(e){ ULT={}; }
     render();
   }catch(e){ app.innerHTML='<div class="pcard empty">No se pudo cargar Odoo: '+esc(e.message||String(e))+'<br><br><button class="mini-btn pri" onclick="cargar()">Reintentar</button></div>'; }
+}
+// vencimientos por lote (de los lotes que tienen stock)
+async function cargarVtos(){
+  const ids=[...new Set(DATA.flatMap(r=>r.quants.map(q=>q.lot).filter(Boolean)))];
+  if(!ids.length) return {};
+  const lots=await rpc("stock.lot","read",[ids,["expiration_date"]],{context:ES});
+  const m={}; lots.forEach(l=>{ if(l.expiration_date) m[l.id]=String(l.expiration_date).slice(0,10); }); return m;
+}
+// último conteo por producto+lote (de la tabla de auditoría en Supabase)
+async function cargarUltimosConteos(){
+  try{
+    const {data}=await EYG.supa().from("deposito_conteos").select("product_id,lot_id,ts,email,contado").order("ts",{ascending:false}).limit(5000);
+    const m={}; (data||[]).forEach(x=>{ const k=x.product_id+"|"+(x.lot_id||0); if(!m[k]) m[k]=x; }); return m;
+  }catch(e){ return {}; }
 }
 // pedidos confirmados con entrega pendiente/parcial (+ días desde el pedido)
 async function cargarPendientes(){
@@ -222,7 +271,6 @@ function render(){
   const pct=total?Math.round(sanos/total*100):100;
   const gap=g.torcido.reduce((a,r)=>a+(r.valObj-r.val),0); // plata mal valuada (lo que falta para el valor real)
   const negLines=DATA.filter(r=>r.clase!=="basura").reduce((a,r)=>a+r.quants.filter(q=>q.qty<0).length,0);
-  const ghostLines=DATA.filter(r=>r.clase!=="basura").reduce((a,r)=>a+r.quants.filter(q=>q.qty===0&&q.res>0).length,0);
   const color=pct>=90?"var(--green)":pct>=70?"var(--org)":"var(--red)";
   const est=pct>=90?["g","Depósito sano"]:pct>=70?["y","Necesita atención"]:["r","Depósito desordenado"];
   const health=`
@@ -237,7 +285,6 @@ function render(){
     </div>
     <div class="hmetrics">
       <div class="hm clk ${negLines?'bad':'good'}" onclick="irNeg()" title="Lotes en negativo. Casi nunca es falta de stock: el producto suele tener stock en otros lotes (se descontó del lote equivocado). Tocá para ver el producto completo y reordenar sus lotes."><div class="k">⚠️ Lotes negativos</div><div class="v">${negLines}</div></div>
-      <div class="hm clk ${ghostLines?'bad':'good'}" onclick="irGhost()" title="Líneas en 0 con reserva pegada sin ninguna venta detrás. Son las que 'no dejan modificar'. Tocá para liberarlas."><div class="k">🔒 Reservas fantasma</div><div class="v">${ghostLines}</div></div>
       <div class="hm clk ${g.torcido.length?'bad':'good'}" onclick="irTab('valuacion')" title="Productos donde Odoo perdió el valor del stock (negativo o casi cero). NO incluye los que solo están más baratos por inflación. Tocá para verlos y corregirlos."><div class="k">⚖️ Valor roto</div><div class="v">${g.torcido.length}</div></div>
       <div class="hm clk ${g.sincosto.length?'mid':'good'}" onclick="irTab('sincosto')" title="Productos con stock pero sin costo. Tocá para cargarles el costo."><div class="k">🏷️ Sin costo</div><div class="v">${g.sincosto.length}</div></div>
       <div class="hm clk ${g.archivado.length?'mid':'good'}" onclick="irTab('archivado')" title="Productos archivados que todavía tienen stock. Tocá para resolverlos."><div class="k">🗃️ Archivados c/stock</div><div class="v">${g.archivado.length}</div></div>
@@ -269,7 +316,6 @@ function render(){
 }
 function irTab(k){ VIEW.tab=k; render(); }
 function irNeg(){ VIEW.tab="conteo"; CONT.filtro="neg"; CONT.q=""; CONT.cat="todos"; render(); }
-function irGhost(){ VIEW.tab="conteo"; CONT.filtro="ghost"; CONT.q=""; CONT.cat="todos"; render(); }
 function setFiltro(f){ CONT.filtro=CONT.filtro===f?"":f; repintarBody(); }
 function repintarBody(){
   const g={torcido:grupo("torcido"),sincosto:grupo("sincosto"),archivado:grupo("archivado"),basura:grupo("basura")};
@@ -355,126 +401,187 @@ async function revalorizarSel(){
   await cargar();
 }
 
-// ===================== TAB CONTEO FÍSICO =====================
-// líneas = un quant (producto + lote) para ajustar la cantidad real a lo que Martina cuenta.
-function lineasConteo(){
+// ===================== TAB CONTEO FÍSICO (consolidación por producto → lote) =====================
+// Martina cuenta lo FÍSICO. El conteo ajusta el stock real en Odoo; el disponible se recalcula solo.
+// El "reservado" no se muestra (no es relevante para contar); si una reserva pegada traba el ajuste,
+// se libera por debajo automáticamente.
+function lotesReales(r){ return r.quants.filter(q=>q.qty!==0); }   // ocultamos lotes vacíos (0) y fantasmas
+function prodsConteo(){
   const q=CONT.q.toLowerCase();
-  let arr=DATA.filter(r=>r.clase!=="basura");
+  let arr=DATA.filter(r=>r.clase!=="basura" && lotesReales(r).length>0);
   if(CONT.cat!=="todos") arr=arr.filter(r=>r.catTop===CONT.cat);
   if(q) arr=arr.filter(r=>r.name.toLowerCase().includes(q)||(r.code||"").toLowerCase().includes(q));
+  if(CONT.filtro==="neg") arr=arr.filter(r=>r.quants.some(x=>x.qty<0));
   return arr.sort((a,b)=>a.name.localeCompare(b.name));
 }
-const GRID6="grid-template-columns:2.5fr .7fr .7fr 96px .8fr 92px";       // lote/producto · sistema · reservado · conté · dif · acción
-const GRIDH="grid-template-columns:2.5fr .7fr .7fr 1.6fr"; // header producto (total de todos los lotes)
-// celdas de acción de una línea (contar/ajustar, o liberar si es fantasma)
-function celdasAccion(qn){
-  const key=`q${qn.id}`, ghost=(qn.qty===0&&qn.res>0);
-  if(ghost) return `<div class="tr-r" style="grid-column:span 2"><span class="pill red">🔒 reserva fantasma</span></div>
-     <div class="tr-r"><button class="mini-btn pri" onclick="liberar(${qn.id})" title="Libera la reserva pegada (no hay venta detrás) para desbloquear esta línea.">Liberar</button></div>`;
-  return `<div class="tr-r"><input class="cnt-in" id="${key}" inputmode="decimal" placeholder="conté" data-sis="${qn.qty}"></div>
-     <div class="tr-r" id="dif-${key}"></div>
-     <div class="tr-r"><button class="mini-btn" id="btn-${key}" disabled onclick="ajustar(${qn.id},'${key}')">Ajustar</button></div>`;
-}
-function filaLote(qn, indent, r){
-  const neg=qn.qty<0, ghost=(qn.qty===0&&qn.res>0);
-  const resTxt=qn.res>0?`<b class="neg">${nf(qn.res)}</b>`:'<span style="color:var(--gris2)">—</span>';
-  const nombre = indent
-    ? `<div class="lotname">🏷️ <b>${esc(qn.lotName||"(sin lote)")}</b></div>`
-    : `<div class="pname"><b>${esc(cleanName(r.name))}</b><span>${esc(r.code)} · ${esc(r.catTop)}</span></div>`;
-  return `<div class="row ${neg||ghost?'bad':''}" style="${GRID6}">
-    ${nombre}
-    <div class="tr-r"><b class="${neg?'neg':''}">${nf(qn.qty)}</b></div>
-    <div class="tr-r">${resTxt}</div>
-    ${celdasAccion(qn)}
+function diasVto(d){ try{ return Math.round((new Date(d+"T00:00:00")-new Date(EYG.argToday()+"T00:00:00"))/86400000); }catch(e){ return 99999; } }
+function fmtFecha(d){ const p=String(d).split("-"); return p.length===3?`${p[2]}/${p[1]}/${p[0].slice(2)}`:d; }
+function vtoDe(qn){ const d=qn.lot&&EXP[qn.lot]; if(!d) return ""; const dd=diasVto(d); return `<span class="vtochip ${dd<180?'corto':''}" title="Vencimiento del lote">⏳ ${fmtFecha(d)}</span>`; }
+function fmtTs(ts){ try{ return new Date(ts).toLocaleString("es-AR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch(e){ return ""; } }
+function ultConteo(qn,pid){ const u=ULT[pid+"|"+(qn.lot||0)]; if(!u) return ""; return `<div class="ultc">✓ último conteo: ${fmtTs(u.ts)}${u.email?` · ${esc(String(u.email).split("@")[0])}`:""}</div>`; }
+
+function lotConteo(r,qn){
+  const key=`q${qn.id}`, neg=qn.qty<0;
+  return `<div class="lotc ${neg?'bad':''}" id="lot-${qn.id}">
+    <div class="lotc-h">
+      <div class="lotc-n">🏷️ <b>${esc(qn.lotName||"(sin lote)")}</b>
+        ${qn.lot?`<button class="ic" onclick="renombrarLote(${qn.lot},${qn.id})" title="Corregir el número de lote">✏️</button>`:""}
+        ${vtoDe(qn)}</div>
+      <button class="ic del" onclick="eliminarLote(${qn.id})" title="Eliminar / dar de baja este lote">🗑️</button>
+    </div>
+    <div class="lotc-b">
+      <div class="sis">en sistema<br><b class="${neg?'neg':''}">${nf(qn.qty)}</b></div>
+      <div class="cntbox"><label>Conté</label><input class="cnt-in big" id="${key}" inputmode="decimal" placeholder="—" data-sis="${qn.qty}"></div>
+      <div class="dif" id="dif-${key}"></div>
+      <button class="mini-btn pri save" id="btn-${key}" disabled onclick="guardarConteo(${qn.id},'${key}')">Guardar</button>
+    </div>
+    ${ultConteo(qn,r.id)}
   </div>`;
 }
+function cardConteo(r){
+  const abierto=CONT.abiertos.has(r.id);
+  const lotes=lotesReales(r);
+  const neg=r.quants.some(x=>x.qty<0);
+  const head=`<div class="ph2" onclick="toggleProd(${r.id})">
+    <div class="ph2n"><b>${esc(cleanName(r.name))}</b><span>${esc(r.code)} · ${esc(r.catTop)}</span></div>
+    <div class="ph2s" id="phs-${r.id}"><b class="${r.qty<0?'neg':''}">${nf(r.qty)}</b><span>en sistema${lotes.length>1?` · ${lotes.length} lotes`:""}</span></div>
+    <div class="ph2c">${abierto?'▾':'▸'}</div>
+  </div>`;
+  if(!abierto) return `<div class="ccard ${neg?'bad':''}">${head}</div>`;
+  return `<div class="ccard open ${neg?'bad':''}">${head}
+    <div class="lotwrap">${lotes.map(qn=>lotConteo(r,qn)).join("")}
+      <div class="lotfoot">
+        <button class="mini-btn" onclick="agregarLote(${r.id})">＋ Agregar lote</button>
+        <button class="mini-btn" onclick="archivarProd(${r.id})" title="Da de baja el producto (reversible).">🗃️ Archivar producto</button>
+      </div>
+    </div></div>`;
+}
 function tabConteo(){
-  const cats=[...new Set(DATA.map(r=>r.catTop))].sort();
-  const nb=DATA.filter(r=>r.clase!=="basura");
-  const negTotal=nb.reduce((a,r)=>a+r.quants.filter(q=>q.qty<0).length,0);
-  const ghostTotal=nb.reduce((a,r)=>a+r.quants.filter(q=>q.qty===0&&q.res>0).length,0);
-  let arr=lineasConteo();
-  if(CONT.filtro==="neg") arr=arr.filter(r=>r.quants.some(q=>q.qty<0));
-  if(CONT.filtro==="ghost") arr=arr.filter(r=>r.quants.some(q=>q.qty===0&&q.res>0));
-  const LIMIT=CONT.filtro?9999:120;
-  const shown=arr.slice(0,LIMIT);
-  let out="", nProd=0;
-  for(const r of shown){
-    nProd++;
-    const lotes=r.quants.slice().sort((a,b)=>(a.qty<0||(a.qty===0&&a.res>0)?-1:0)-(b.qty<0||(b.qty===0&&b.res>0)?-1:0)); // el problemático primero
-    if(lotes.length>1){
-      // encabezado del producto con el TOTAL real (todos los lotes juntos)
-      out+=`<div class="prodhead" style="${GRIDH}">
-        <div class="pname"><b>${esc(cleanName(r.name))}</b><span>${esc(r.code)} · ${esc(r.catTop)} · ${lotes.length} lotes</span></div>
-        <div class="tr-r"><span class="k">a mano</span><br><b class="${r.qty<0?'neg':''}">${nf(r.qty)}</b></div>
-        <div class="tr-r"><span class="k">reservado</span><br><b class="${r.res>0?'neg':''}">${r.res>0?nf(r.res):'—'}</b></div>
-        <div class="tr-r"><span class="k">disponible</span><br><b>${nf(r.disp)}</b></div>
-      </div>`;
-      for(const qn of lotes) out+=filaLote(qn,true,r);
-    }else{
-      out+=filaLote(lotes[0],false,r);
-    }
-  }
-  return `<div class="note info">📋 <b>Conteo físico.</b> Contá lo que hay realmente y ponelo en <b>Conté</b> → <b>Ajustar</b> corrige Odoo (queda registrado). Cuando un producto tiene <b>varios lotes</b>, arriba va el <b>total del producto</b> (a mano / reservado / disponible) y debajo cada lote por separado — contá lote por lote. <b>⚠️ Un lote en negativo casi nunca es falta de stock</b>: el producto suele tener stock en otros lotes (se descontó del lote equivocado); mirá el total de arriba. <b>🔒 Reserva fantasma</b> = 0 con reserva pegada sin venta detrás (la línea que "no deja modificar") → <b>Liberar</b>.</div>
+  const cats=[...new Set(DATA.filter(r=>lotesReales(r).length).map(r=>r.catTop))].sort();
+  const negTotal=DATA.filter(r=>r.clase!=="basura").reduce((a,r)=>a+r.quants.filter(q=>q.qty<0).length,0);
+  const arr=prodsConteo();
+  const filtrando=CONT.q||CONT.filtro||CONT.cat!=="todos";
+  const LIMIT=filtrando?9999:60;
+  const cards=arr.slice(0,LIMIT).map(cardConteo).join("") || '<div class="pcard empty">Sin resultados. Buscá un producto por nombre o código.</div>';
+  return `<div class="note info">📋 <b>Conteo físico.</b> Buscá el producto, tocalo para ver sus lotes y anotá lo que <b>contaste</b> en cada uno → <b>Guardar</b> corrige el stock real en Odoo (queda registrado: fecha y quién). Podés corregir el N° de lote (✏️), eliminar un lote (🗑️) o archivar el producto. El disponible se recalcula solo.</div>
    <div class="toolbar">
-     <button class="chip ${CONT.filtro==="neg"?'on':''}" onclick="setFiltro('neg')" title="Productos con algún lote en cantidad negativa.">⚠️ Stock negativo${negTotal?` (${negTotal})`:''}</button>
-     <button class="chip ${CONT.filtro==="ghost"?'on':''}" onclick="setFiltro('ghost')" title="Productos con alguna reserva fantasma.">🔒 Reservas fantasma${ghostTotal?` (${ghostTotal})`:''}</button>
-     <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4-4"/></svg><input id="cq" placeholder="Buscar producto o código…" value="${esc(CONT.q)}"></div>
+     <div class="search big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4-4"/></svg><input id="cq" placeholder="Buscar producto o código…" value="${esc(CONT.q)}"></div>
      <select id="ccat"><option value="todos">Todas las categorías</option>${cats.map(c=>`<option value="${esc(c)}" ${CONT.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
+     <button class="chip ${CONT.filtro==="neg"?'on':''}" onclick="setFiltro('neg')" title="Productos con algún lote en negativo (error a corregir).">⚠️ Lotes negativos${negTotal?` (${negTotal})`:''}</button>
    </div>
-   <div class="count-line">${CONT.filtro==="neg"?'<b style="color:var(--red)">Solo productos con lote negativo (se muestran TODOS sus lotes).</b> ':CONT.filtro==="ghost"?'<b style="color:var(--red)">Solo productos con reserva fantasma.</b> ':''}Mostrando <b>${nProd}</b> producto${nProd===1?'':'s'}${!CONT.filtro&&arr.length>LIMIT?` (de los primeros ${LIMIT} — afiná la búsqueda para ver más)`:''}.</div>
-   <div class="tablecard">
-     <div class="thead" style="${GRID6}">
-       <div>Producto / lote</div><div class="tr-r">Sistema</div><div class="tr-r">Reservado</div><div class="tr-r">Conté</div><div class="tr-r">Diferencia</div><div></div>
-     </div>${out||'<div class="row">Sin resultados.</div>'}</div>`;
+   <div class="count-line">${arr.length} producto${arr.length===1?'':'s'}${!filtrando&&arr.length>LIMIT?` (mostrando ${LIMIT}, afiná la búsqueda)`:''}. Tocá un producto para contar sus lotes.</div>
+   <div class="ccards">${cards}</div>`;
 }
 function bindConteo(){
   const cq=document.getElementById("cq");
   if(cq) cq.oninput=EYG.debounce(e=>{ CONT.q=e.target.value; repintarBody(); },300);
   const cc=document.getElementById("ccat");
   if(cc) cc.onchange=e=>{ CONT.cat=e.target.value; repintarBody(); };
+  bindInputsConteo();
+}
+function bindInputsConteo(){
   document.querySelectorAll(".cnt-in").forEach(inp=>{
     inp.oninput=()=>{
-      const sis=parseFloat(inp.dataset.sis);
-      const v=inp.value.trim().replace(",",".");
-      const key=inp.id;
+      const sis=parseFloat(inp.dataset.sis); const v=inp.value.trim().replace(",","."); const key=inp.id;
       const difEl=document.getElementById("dif-"+key), btn=document.getElementById("btn-"+key);
-      if(v===""||isNaN(parseFloat(v))){ difEl.innerHTML=""; btn.disabled=true; return; }
-      const c=parseFloat(v), d=Math.round((c-sis)*100)/100;
-      difEl.innerHTML=d===0?'<span style="color:var(--gris)">igual</span>':`<span class="${d>0?'difpos':'difneg'}">${d>0?'+':''}${nf(d)}</span>`;
-      btn.disabled=false; btn.classList.toggle("pri",d!==0);
+      if(v===""||isNaN(parseFloat(v))){ if(difEl)difEl.innerHTML=""; if(btn)btn.disabled=true; return; }
+      const d=Math.round((parseFloat(v)-sis)*100)/100;
+      if(difEl) difEl.innerHTML=d===0?'<span class="digual">= igual</span>':`<span class="${d>0?'difpos':'difneg'}">${d>0?'+':''}${nf(d)}</span>`;
+      if(btn) btn.disabled=false;
     };
   });
 }
-async function ajustar(qid,key){
-  const inp=document.getElementById(key); if(!inp) return;
-  const contado=parseFloat(inp.value.trim().replace(",","."));
-  if(isNaN(contado)){ return; }
-  const sis=parseFloat(inp.dataset.sis);
-  if(!confirm(`Ajustar el stock a lo contado:\n\n• Sistema: ${nf(sis)} u\n• Contado: ${nf(contado)} u\n\nCorrige la cantidad en Odoo (ajuste de inventario). ¿Confirmás?`)) return;
-  const btn=document.getElementById("btn-"+key); if(btn){btn.disabled=true;btn.textContent="…";}
+function toggleProd(pid){ if(CONT.abiertos.has(pid))CONT.abiertos.delete(pid); else CONT.abiertos.add(pid); repintarBody(); }
+
+// registro de auditoría en Supabase (no bloquea si falla)
+async function registrarConteo(row){ try{ await EYG.supa().from("deposito_conteos").insert([row]); }catch(e){ console.warn("audit",e); } }
+// aplica el conteo; si Odoo lo traba por una reserva pegada, la libera y reintenta
+async function aplicarConteo(qid, contado){
   try{
     await rpc("stock.quant","write",[[qid],{inventory_quantity:contado}],{context:ES});
     await rpc("stock.quant","action_apply_inventory",[[qid]]);
-    toast("✓ Stock ajustado a "+nf(contado));
-    await cargar();
   }catch(e){
-    try{ await rpc("stock.quant","write",[[qid],{inventory_quantity_set:false}],{context:ES}); }catch(_){}
-    alert("No se pudo ajustar: "+(e.message||e)+"\n\n(Puede ser por la unidad de medida del producto: no admite ese decimal.)");
-    if(btn){btn.disabled=false;btn.textContent="Ajustar";}
+    try{ await rpc("stock.quant","write",[[qid],{reserved_quantity:0}],{context:ES}); }catch(_){}
+    await rpc("stock.quant","write",[[qid],{inventory_quantity:contado}],{context:ES});
+    await rpc("stock.quant","action_apply_inventory",[[qid]]);
   }
 }
-// Liberar una reserva fantasma: pone reserved_quantity=0 en el quant (no había venta que la respaldara).
-async function liberar(qid){
-  let r=null,qn=null;
-  for(const x of DATA){ const f=x.quants.find(q=>q.id===qid); if(f){ r=x; qn=f; break; } }
+async function guardarConteo(qid,key){
+  const inp=document.getElementById(key); if(!inp) return;
+  const v=inp.value.trim().replace(",","."); if(v===""||isNaN(parseFloat(v))) return;
+  const contado=parseFloat(v), sis=parseFloat(inp.dataset.sis);
+  let r=null,qn=null; for(const x of DATA){ const f=x.quants.find(q=>q.id===qid); if(f){r=x;qn=f;break;} }
   if(!qn) return;
-  if(!confirm(`Liberar la reserva fantasma de "${cleanName(r?r.name:"")}"${qn.lotName?` (lote ${qn.lotName})`:""}:\n\n• Reservado hoy: ${nf(qn.res)} u  ·  stock físico: ${nf(qn.qty)} u\n\nNo hay ninguna venta detrás de esa reserva. Se libera para desbloquear la línea. ¿Confirmás?`)) return;
+  const btn=document.getElementById("btn-"+key); if(btn){btn.disabled=true;btn.textContent="…";}
   try{
-    await rpc("stock.quant","write",[[qid],{reserved_quantity:0}],{context:ES});
-    toast("✓ Reserva liberada"); await cargar();
-  }catch(e){ alert("No se pudo liberar: "+(e.message||e)+"\n\nSi Odoo no lo permite, avisame y lo hacemos por otra vía."); }
+    await aplicarConteo(qid, contado);
+    registrarConteo({ email:(PERFIL&&PERFIL.email)||null, product_id:r.id, product_name:cleanName(r.name), lot_id:qn.lot||null, lot_name:qn.lotName||null, sistema:sis, contado, diff:Math.round((contado-sis)*100)/100, accion:'ajuste' });
+    // actualización local (sin recargar todo): el lote y el total del producto
+    qn.qty=contado; qn.res=Math.min(qn.res||0,contado>0?qn.res:0);
+    r.qty=Math.round(r.quants.reduce((a,q)=>a+q.qty,0)*100)/100; r.disp=Math.round((r.qty-r.res)*100)/100;
+    r.val=r.qty*r.costo; r.valObj=r.qty*r.costo; r.dif=r.val-r.valObj; r.clase=clasificar(r);
+    ULT[r.id+"|"+(qn.lot||0)]={ ts:new Date().toISOString(), email:(PERFIL&&PERFIL.email)||"", contado };
+    toast("✓ Guardado: "+nf(contado)+" u");
+    // refrescar solo esta card
+    const card=document.getElementById("lot-"+qid); if(card){ if(contado===0){ card.remove(); } else { card.outerHTML=lotConteo(r,qn); } bindInputsConteo(); }
+    const phs=document.getElementById("phs-"+r.id); if(phs) phs.innerHTML=`<b class="${r.qty<0?'neg':''}">${nf(r.qty)}</b><span>en sistema${lotesReales(r).length>1?` · ${lotesReales(r).length} lotes`:""}</span>`;
+  }catch(e){
+    try{ await rpc("stock.quant","write",[[qid],{inventory_quantity_set:false}],{context:ES}); }catch(_){}
+    alert("No se pudo guardar: "+(e.message||e)+"\n\n(Puede ser por la unidad de medida del producto: no admite ese número.)");
+    if(btn){btn.disabled=false;btn.textContent="Guardar";}
+  }
 }
+async function renombrarLote(lotId,qid){
+  let r=null,qn=null; for(const x of DATA){ const f=x.quants.find(q=>q.id===qid); if(f){r=x;qn=f;break;} } if(!qn) return;
+  const nuevo=prompt(`Corregir el N° de lote de "${cleanName(r.name)}"\n\nActual: ${qn.lotName||"(sin lote)"}\nNuevo:`, qn.lotName||""); if(nuevo==null) return;
+  const n=nuevo.trim(); if(!n || n===qn.lotName) return;
+  try{
+    await rpc("stock.lot","write",[[lotId],{name:n}],{context:ES});
+    for(const x of DATA) for(const q of x.quants) if(q.lot===lotId) q.lotName=n;
+    registrarConteo({ email:(PERFIL&&PERFIL.email)||null, product_id:r.id, product_name:cleanName(r.name), lot_id:lotId, lot_name:n, accion:'renombrar lote' });
+    toast("✓ Lote corregido"); repintarBody();
+  }catch(e){ alert("No se pudo corregir el lote: "+(e.message||e)); }
+}
+async function eliminarLote(qid){
+  let r=null,qn=null; for(const x of DATA){ const f=x.quants.find(q=>q.id===qid); if(f){r=x;qn=f;break;} } if(!qn) return;
+  const conStock=qn.qty>0;
+  const msg=conStock
+    ? `Eliminar el lote "${qn.lotName||''}" de "${cleanName(r.name)}" (${nf(qn.qty)} u)?\n\nManda esas unidades a descarte (scrap): salen del stock y queda registrado.`
+    : `Eliminar el lote "${qn.lotName||''}" de "${cleanName(r.name)}"?\n\nLo pone en 0 y lo saca del inventario.`;
+  if(!confirm(msg)) return;
+  try{
+    if(conStock){ const vals={product_id:r.id,scrap_qty:qn.qty,location_id:qn.locId,scrap_location_id:SCRAP_LOC}; if(qn.lot)vals.lot_id=qn.lot;
+      const sid=await rpc("stock.scrap","create",[vals],{context:ES}); await rpc("stock.scrap","action_validate",[[sid]]); }
+    else { await aplicarConteo(qid,0); }
+    registrarConteo({ email:(PERFIL&&PERFIL.email)||null, product_id:r.id, product_name:cleanName(r.name), lot_id:qn.lot||null, lot_name:qn.lotName||null, sistema:qn.qty, contado:0, diff:-qn.qty, accion:conStock?'scrap':'eliminar' });
+    toast("✓ Lote eliminado"); await cargar();
+  }catch(e){ alert("No se pudo eliminar: "+(e.message||e)); }
+}
+async function archivarProd(pid){
+  const r=DATA.find(x=>x.id===pid); if(!r) return;
+  if(!confirm(`Archivar "${cleanName(r.name)}"?\n\nSale del catálogo activo (reversible). Para productos que ya no se manejan.`)) return;
+  try{
+    await rpc("product.product","write",[[pid],{active:false}],{context:ES});
+    registrarConteo({ email:(PERFIL&&PERFIL.email)||null, product_id:pid, product_name:cleanName(r.name), accion:'archivar' });
+    toast("✓ Archivado"); await cargar();
+  }catch(e){ alert("No se pudo archivar: "+(e.message||e)); }
+}
+async function agregarLote(pid){
+  const r=DATA.find(x=>x.id===pid); if(!r) return;
+  const nombre=prompt(`Agregar un lote a "${cleanName(r.name)}"\n\nN° de lote:`); if(nombre==null) return; const ln=nombre.trim(); if(!ln) return;
+  const cantStr=prompt(`Cantidad contada del lote "${ln}":`,"0"); if(cantStr==null) return;
+  const cant=parseFloat(String(cantStr).replace(",",".")); if(isNaN(cant)||cant<0){ alert("Cantidad inválida."); return; }
+  try{
+    const lotId=await rpc("stock.lot","create",[{name:ln,product_id:r.id,company_id:1}],{context:ES});
+    const locId=(r.quants[0]&&r.quants[0].locId)||8;   // WH/Stock
+    const qid=await rpc("stock.quant","create",[{product_id:r.id,location_id:locId,lot_id:lotId,inventory_quantity:cant}],{context:ES});
+    await rpc("stock.quant","action_apply_inventory",[[qid]]);
+    registrarConteo({ email:(PERFIL&&PERFIL.email)||null, product_id:r.id, product_name:cleanName(r.name), lot_id:lotId, lot_name:ln, sistema:0, contado:cant, diff:cant, accion:'nuevo lote' });
+    toast("✓ Lote agregado"); await cargar();
+  }catch(e){ alert("No se pudo agregar el lote: "+(e.message||e)); }
+}
+
+// ===================== TAB SIN COSTO =====================
 
 // ===================== TAB SIN COSTO =====================
 function tabSinCosto(list){
@@ -600,6 +707,7 @@ async function cancelarPedido(id){
 
 // ===================== ARRANQUE =====================
 EYG.requireAuth(["inventario","maestro"], perfil=>{
+  PERFIL=perfil;
   document.body.innerHTML=EYG.layout(perfil,"deposito-control",
     `<h2 class="sec">🩺 Control de Depósito <span style="margin-left:auto;font-size:11px;font-weight:600;color:var(--gris)"><button class="mini-btn" onclick="cargar()">🔄 Actualizar</button></span></h2>
      <div id="cap"><div class="spin"></div></div>`,
