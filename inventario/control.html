@@ -123,6 +123,11 @@
   .vtochip{font-size:11px;font-weight:700;background:#eef2f1;color:var(--gris);border-radius:6px;padding:2px 7px;margin-left:6px;white-space:nowrap}
   .vtochip.corto{background:#FBE4E3;color:#b0322f}
   .lotfoot{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:4px}
+  .lbadge{font-size:10px;font-weight:800;border-radius:6px;padding:2px 7px;margin-left:6px;white-space:nowrap;display:inline-block}
+  .lbadge.neg{background:var(--redbg);color:var(--red)}
+  .lbadge.slot{background:#FFF1D6;color:#8a6a1f}
+  .lbadge.ghost{background:#ECE7F6;color:#584a86}
+  .prio{font-size:10px;font-weight:800;background:var(--redbg);color:var(--red);border-radius:6px;padding:2px 7px;white-space:nowrap;display:inline-block}
   @media(max-width:560px){ .lotc-b{gap:10px} .cnt-in.big{width:92px;font-size:20px} .save{width:100%;margin-left:0} }
 </style>
 </head>
@@ -271,6 +276,7 @@ function render(){
   const pct=total?Math.round(sanos/total*100):100;
   const gap=g.torcido.reduce((a,r)=>a+(r.valObj-r.val),0); // plata mal valuada (lo que falta para el valor real)
   const negLines=DATA.filter(r=>r.clase!=="basura").reduce((a,r)=>a+r.quants.filter(q=>q.qty<0).length,0);
+  const raroLines=DATA.filter(r=>r.clase!=="basura"&&prodRaro(r)).length;
   const color=pct>=90?"var(--green)":pct>=70?"var(--org)":"var(--red)";
   const est=pct>=90?["g","Depósito sano"]:pct>=70?["y","Necesita atención"]:["r","Depósito desordenado"];
   const health=`
@@ -284,7 +290,8 @@ function render(){
       </div>
     </div>
     <div class="hmetrics">
-      <div class="hm clk ${negLines?'bad':'good'}" onclick="irNeg()" title="Lotes en negativo. Casi nunca es falta de stock: el producto suele tener stock en otros lotes (se descontó del lote equivocado). Tocá para ver el producto completo y reordenar sus lotes."><div class="k">⚠️ Lotes negativos</div><div class="v">${negLines}</div></div>
+      <div class="hm clk ${raroLines?'bad':'good'}" onclick="irRaro()" title="Productos con algo raro para priorizar: lote negativo, stock sin número de lote, o reserva pegada. Tocá para revisarlos."><div class="k">🚩 A revisar</div><div class="v">${raroLines}</div></div>
+      <div class="hm clk ${negLines?'bad':'good'}" onclick="irNeg()" title="Lotes en negativo. Casi nunca es falta de stock: el producto suele tener stock en otros lotes. Tocá para verlos."><div class="k">⚠️ Lotes negativos</div><div class="v">${negLines}</div></div>
       <div class="hm clk ${g.torcido.length?'bad':'good'}" onclick="irTab('valuacion')" title="Productos donde Odoo perdió el valor del stock (negativo o casi cero). NO incluye los que solo están más baratos por inflación. Tocá para verlos y corregirlos."><div class="k">⚖️ Valor roto</div><div class="v">${g.torcido.length}</div></div>
       <div class="hm clk ${g.sincosto.length?'mid':'good'}" onclick="irTab('sincosto')" title="Productos con stock pero sin costo. Tocá para cargarles el costo."><div class="k">🏷️ Sin costo</div><div class="v">${g.sincosto.length}</div></div>
       <div class="hm clk ${g.archivado.length?'mid':'good'}" onclick="irTab('archivado')" title="Productos archivados que todavía tienen stock. Tocá para resolverlos."><div class="k">🗃️ Archivados c/stock</div><div class="v">${g.archivado.length}</div></div>
@@ -316,6 +323,7 @@ function render(){
 }
 function irTab(k){ VIEW.tab=k; render(); }
 function irNeg(){ VIEW.tab="conteo"; CONT.filtro="neg"; CONT.q=""; CONT.cat="todos"; render(); }
+function irRaro(){ VIEW.tab="conteo"; CONT.filtro="raro"; CONT.q=""; CONT.cat="todos"; render(); }
 function setFiltro(f){ CONT.filtro=CONT.filtro===f?"":f; repintarBody(); }
 function repintarBody(){
   const g={torcido:grupo("torcido"),sincosto:grupo("sincosto"),archivado:grupo("archivado"),basura:grupo("basura")};
@@ -405,14 +413,27 @@ async function revalorizarSel(){
 // Martina cuenta lo FÍSICO. El conteo ajusta el stock real en Odoo; el disponible se recalcula solo.
 // El "reservado" no se muestra (no es relevante para contar); si una reserva pegada traba el ajuste,
 // se libera por debajo automáticamente.
-function lotesReales(r){ return r.quants.filter(q=>q.qty!==0); }   // ocultamos lotes vacíos (0) y fantasmas
+// Anomalía de un lote (lo "raro" que hay que priorizar). null = normal.
+function anomLote(qn){
+  if(qn.qty<0) return {cls:'neg',txt:'⚠️ negativo'};
+  if(!qn.lot && qn.qty!==0) return {cls:'slot',txt:'🏷️ sin lote'};
+  if(qn.qty===0 && qn.res>0) return {cls:'ghost',txt:'🔒 reserva pegada'};
+  return null;
+}
+function prodRaro(r){ return r.quants.some(anomLote); }
+function lotesConStock(r){ return r.quants.filter(q=>q.qty!==0||q.res>0); }              // lotes "con algo" (para el conteo del header)
+function lotesOrden(r){ return r.quants.slice().sort((a,b)=>{ const ra=anomLote(a)?0:1, rb=anomLote(b)?0:1; return ra!==rb?ra-rb:(b.qty||0)-(a.qty||0); }); } // rarezas primero
 function prodsConteo(){
   const q=CONT.q.toLowerCase();
-  let arr=DATA.filter(r=>r.clase!=="basura" && lotesReales(r).length>0);
+  let arr=DATA.filter(r=>r.clase!=="basura");
+  // se incluye si tiene lotes con stock, o alguna rareza, o coincide con la búsqueda (así se puede contar hasta un producto en 0)
+  arr=arr.filter(r=> lotesConStock(r).length>0 || prodRaro(r) || (q&&(r.name.toLowerCase().includes(q)||(r.code||"").toLowerCase().includes(q))) );
   if(CONT.cat!=="todos") arr=arr.filter(r=>r.catTop===CONT.cat);
   if(q) arr=arr.filter(r=>r.name.toLowerCase().includes(q)||(r.code||"").toLowerCase().includes(q));
   if(CONT.filtro==="neg") arr=arr.filter(r=>r.quants.some(x=>x.qty<0));
-  return arr.sort((a,b)=>a.name.localeCompare(b.name));
+  if(CONT.filtro==="raro") arr=arr.filter(prodRaro);
+  // los raros primero, después alfabético
+  return arr.sort((a,b)=>{ const ra=prodRaro(a)?0:1, rb=prodRaro(b)?0:1; return ra!==rb?ra-rb:a.name.localeCompare(b.name); });
 }
 function diasVto(d){ try{ return Math.round((new Date(d+"T00:00:00")-new Date(EYG.argToday()+"T00:00:00"))/86400000); }catch(e){ return 99999; } }
 function fmtFecha(d){ const p=String(d).split("-"); return p.length===3?`${p[2]}/${p[1]}/${p[0].slice(2)}`:d; }
@@ -421,12 +442,13 @@ function fmtTs(ts){ try{ return new Date(ts).toLocaleString("es-AR",{day:"2-digi
 function ultConteo(qn,pid){ const u=ULT[pid+"|"+(qn.lot||0)]; if(!u) return ""; return `<div class="ultc">✓ último conteo: ${fmtTs(u.ts)}${u.email?` · ${esc(String(u.email).split("@")[0])}`:""}</div>`; }
 
 function lotConteo(r,qn){
-  const key=`q${qn.id}`, neg=qn.qty<0;
-  return `<div class="lotc ${neg?'bad':''}" id="lot-${qn.id}">
+  const key=`q${qn.id}`, a=anomLote(qn);
+  const badge=a?`<span class="lbadge ${a.cls}" title="Revisá y corregí esto">${a.txt}</span>`:"";
+  return `<div class="lotc ${a?'bad':''}" id="lot-${qn.id}">
     <div class="lotc-h">
       <div class="lotc-n">🏷️ <b>${esc(qn.lotName||"(sin lote)")}</b>
         ${qn.lot?`<button class="ic" onclick="renombrarLote(${qn.lot},${qn.id})" title="Corregir el número de lote">✏️</button>`:""}
-        ${vtoDe(qn)}</div>
+        ${vtoDe(qn)}${badge}</div>
       <button class="ic del" onclick="eliminarLote(${qn.id})" title="Eliminar / dar de baja este lote">🗑️</button>
     </div>
     <div class="lotc-b">
@@ -440,16 +462,16 @@ function lotConteo(r,qn){
 }
 function cardConteo(r){
   const abierto=CONT.abiertos.has(r.id);
-  const lotes=lotesReales(r);
-  const neg=r.quants.some(x=>x.qty<0);
+  const conStock=lotesConStock(r);
+  const raro=prodRaro(r);
   const head=`<div class="ph2" onclick="toggleProd(${r.id})">
-    <div class="ph2n"><b>${esc(cleanName(r.name))}</b><span>${esc(r.code)} · ${esc(r.catTop)}</span></div>
-    <div class="ph2s" id="phs-${r.id}"><b class="${r.qty<0?'neg':''}">${nf(r.qty)}</b><span>en sistema${lotes.length>1?` · ${lotes.length} lotes`:""}</span></div>
+    <div class="ph2n"><b>${esc(cleanName(r.name))}</b><span>${esc(r.code)} · ${esc(r.catTop)}</span>${raro?' <span class="prio">🚩 revisar</span>':''}</div>
+    <div class="ph2s" id="phs-${r.id}"><b class="${r.qty<0?'neg':''}">${nf(r.qty)}</b><span>en sistema${conStock.length>1?` · ${conStock.length} lotes`:""}</span></div>
     <div class="ph2c">${abierto?'▾':'▸'}</div>
   </div>`;
-  if(!abierto) return `<div class="ccard ${neg?'bad':''}">${head}</div>`;
-  return `<div class="ccard open ${neg?'bad':''}">${head}
-    <div class="lotwrap">${lotes.map(qn=>lotConteo(r,qn)).join("")}
+  if(!abierto) return `<div class="ccard ${raro?'bad':''}">${head}</div>`;
+  return `<div class="ccard open ${raro?'bad':''}">${head}
+    <div class="lotwrap">${lotesOrden(r).map(qn=>lotConteo(r,qn)).join("")}
       <div class="lotfoot">
         <button class="mini-btn" onclick="agregarLote(${r.id})">＋ Agregar lote</button>
         <button class="mini-btn" onclick="archivarProd(${r.id})" title="Da de baja el producto (reversible).">🗃️ Archivar producto</button>
@@ -457,19 +479,21 @@ function cardConteo(r){
     </div></div>`;
 }
 function tabConteo(){
-  const cats=[...new Set(DATA.filter(r=>lotesReales(r).length).map(r=>r.catTop))].sort();
+  const cats=[...new Set(DATA.filter(r=>lotesConStock(r).length||prodRaro(r)).map(r=>r.catTop))].sort();
   const negTotal=DATA.filter(r=>r.clase!=="basura").reduce((a,r)=>a+r.quants.filter(q=>q.qty<0).length,0);
+  const raroTotal=DATA.filter(r=>r.clase!=="basura"&&prodRaro(r)).length;
   const arr=prodsConteo();
   const filtrando=CONT.q||CONT.filtro||CONT.cat!=="todos";
   const LIMIT=filtrando?9999:60;
   const cards=arr.slice(0,LIMIT).map(cardConteo).join("") || '<div class="pcard empty">Sin resultados. Buscá un producto por nombre o código.</div>';
-  return `<div class="note info">📋 <b>Conteo físico.</b> Buscá el producto, tocalo para ver sus lotes y anotá lo que <b>contaste</b> en cada uno → <b>Guardar</b> corrige el stock real en Odoo (queda registrado: fecha y quién). Podés corregir el N° de lote (✏️), eliminar un lote (🗑️) o archivar el producto. El disponible se recalcula solo.</div>
+  return `<div class="note info">📋 <b>Conteo físico.</b> Buscá el producto, tocalo para ver <b>todos</b> sus lotes y anotá lo que <b>contaste</b> en cada uno → <b>Guardar</b> corrige el stock real en Odoo (queda registrado: fecha y quién). Podés corregir el N° de lote (✏️), eliminar (🗑️), archivar o agregar un lote. <b>🚩 revisar</b> = algo raro para priorizar: <b>⚠️ negativo</b>, <b>🏷️ sin lote</b> (stock sin número de lote) o <b>🔒 reserva pegada</b>. El disponible se recalcula solo.</div>
    <div class="toolbar">
      <div class="search big"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4-4"/></svg><input id="cq" placeholder="Buscar producto o código…" value="${esc(CONT.q)}"></div>
      <select id="ccat"><option value="todos">Todas las categorías</option>${cats.map(c=>`<option value="${esc(c)}" ${CONT.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
-     <button class="chip ${CONT.filtro==="neg"?'on':''}" onclick="setFiltro('neg')" title="Productos con algún lote en negativo (error a corregir).">⚠️ Lotes negativos${negTotal?` (${negTotal})`:''}</button>
+     <button class="chip ${CONT.filtro==="raro"?'on':''}" onclick="setFiltro('raro')" title="Productos con algo raro: negativo, sin lote o reserva pegada.">🚩 A revisar${raroTotal?` (${raroTotal})`:''}</button>
+     <button class="chip ${CONT.filtro==="neg"?'on':''}" onclick="setFiltro('neg')" title="Productos con algún lote en negativo.">⚠️ Negativos${negTotal?` (${negTotal})`:''}</button>
    </div>
-   <div class="count-line">${arr.length} producto${arr.length===1?'':'s'}${!filtrando&&arr.length>LIMIT?` (mostrando ${LIMIT}, afiná la búsqueda)`:''}. Tocá un producto para contar sus lotes.</div>
+   <div class="count-line">${arr.length} producto${arr.length===1?'':'s'}${raroTotal?` · <b style="color:var(--red)">${raroTotal} a revisar</b>`:''}${!filtrando&&arr.length>LIMIT?` (mostrando ${LIMIT}, afiná la búsqueda)`:''}. Tocá un producto para contar sus lotes.</div>
    <div class="ccards">${cards}</div>`;
 }
 function bindConteo(){
@@ -524,7 +548,7 @@ async function guardarConteo(qid,key){
     toast("✓ Guardado: "+nf(contado)+" u");
     // refrescar solo esta card
     const card=document.getElementById("lot-"+qid); if(card){ if(contado===0){ card.remove(); } else { card.outerHTML=lotConteo(r,qn); } bindInputsConteo(); }
-    const phs=document.getElementById("phs-"+r.id); if(phs) phs.innerHTML=`<b class="${r.qty<0?'neg':''}">${nf(r.qty)}</b><span>en sistema${lotesReales(r).length>1?` · ${lotesReales(r).length} lotes`:""}</span>`;
+    const phs=document.getElementById("phs-"+r.id); if(phs) phs.innerHTML=`<b class="${r.qty<0?'neg':''}">${nf(r.qty)}</b><span>en sistema${lotesConStock(r).length>1?` · ${lotesConStock(r).length} lotes`:""}</span>`;
   }catch(e){
     try{ await rpc("stock.quant","write",[[qid],{inventory_quantity_set:false}],{context:ES}); }catch(_){}
     alert("No se pudo guardar: "+(e.message||e)+"\n\n(Puede ser por la unidad de medida del producto: no admite ese número.)");
