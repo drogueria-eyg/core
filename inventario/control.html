@@ -128,6 +128,17 @@
   .lbadge.slot{background:#FFF1D6;color:#8a6a1f}
   .lbadge.ghost{background:#ECE7F6;color:#584a86}
   .prio{font-size:10px;font-weight:800;background:var(--redbg);color:var(--red);border-radius:6px;padding:2px 7px;white-space:nowrap;display:inline-block}
+  /* mini-modal */
+  .ctrl-ov{position:fixed;inset:0;background:rgba(6,65,62,.42);display:none;align-items:center;justify-content:center;z-index:1000;padding:16px}
+  .ctrl-ov.on{display:flex}
+  .ctrl-mod{background:var(--surface);border-radius:16px;box-shadow:0 20px 60px rgba(6,65,62,.3);padding:22px;width:360px;max-width:96vw}
+  .ctrl-mod .mh{font-size:18px;font-weight:800;color:var(--teal-deep)}
+  .ctrl-mod .mp{font-size:13px;color:var(--gris);margin:2px 0 14px;overflow-wrap:anywhere}
+  .ctrl-mod .ml{display:block;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);margin:12px 0 4px}
+  .ctrl-mod .mi{width:100%;font-family:inherit;font-size:16px;padding:11px 12px;border:1px solid var(--line);border-radius:10px;color:var(--ink)}
+  .ctrl-mod .mi:focus{outline:none;border-color:var(--teal)}
+  .ctrl-mod .mbtns{display:flex;gap:8px;justify-content:flex-end;margin-top:20px}
+  .ctrl-mod .mbtns .mini-btn{padding:11px 18px;font-size:14px}
   @media(max-width:560px){ .lotc-b{gap:10px} .cnt-in.big{width:92px;font-size:20px} .save{width:100%;margin-left:0} }
 </style>
 </head>
@@ -447,7 +458,7 @@ function lotConteo(r,qn){
   return `<div class="lotc ${a?'bad':''}" id="lot-${qn.id}">
     <div class="lotc-h">
       <div class="lotc-n">🏷️ <b>${esc(qn.lotName||"(sin lote)")}</b>
-        ${qn.lot?`<button class="ic" onclick="renombrarLote(${qn.lot},${qn.id})" title="Corregir el número de lote">✏️</button>`:""}
+        ${qn.lot?`<button class="ic" onclick="editarLote(${qn.lot},${qn.id})" title="Corregir el N° de lote y el vencimiento">✏️</button>`:""}
         ${vtoDe(qn)}${badge}</div>
       <button class="ic del" onclick="eliminarLote(${qn.id})" title="Eliminar / dar de baja este lote">🗑️</button>
     </div>
@@ -555,16 +566,38 @@ async function guardarConteo(qid,key){
     if(btn){btn.disabled=false;btn.textContent="Guardar";}
   }
 }
-async function renombrarLote(lotId,qid){
+// mini-modal propio del módulo
+function modalHTML(html){
+  let ov=document.getElementById("ctrl-ov");
+  if(!ov){ ov=document.createElement("div"); ov.id="ctrl-ov"; ov.className="ctrl-ov"; ov.onclick=e=>{ if(e.target===ov) cerrarModal(); }; document.body.appendChild(ov); }
+  ov.innerHTML=`<div class="ctrl-mod">${html}</div>`; ov.classList.add("on");
+}
+function cerrarModal(){ const ov=document.getElementById("ctrl-ov"); if(ov) ov.classList.remove("on"); }
+// Editar N° de lote Y vencimiento en la misma ventana
+function editarLote(lotId,qid){
   let r=null,qn=null; for(const x of DATA){ const f=x.quants.find(q=>q.id===qid); if(f){r=x;qn=f;break;} } if(!qn) return;
-  const nuevo=prompt(`Corregir el N° de lote de "${cleanName(r.name)}"\n\nActual: ${qn.lotName||"(sin lote)"}\nNuevo:`, qn.lotName||""); if(nuevo==null) return;
-  const n=nuevo.trim(); if(!n || n===qn.lotName) return;
+  const vto=(qn.lot&&EXP[qn.lot])||"";
+  modalHTML(`<h3 class="mh">Corregir lote</h3>
+    <p class="mp">${esc(cleanName(r.name))}</p>
+    <label class="ml">N° de lote</label>
+    <input id="ed-lote" class="mi" value="${esc(qn.lotName||"")}" autocomplete="off">
+    <label class="ml">Vencimiento</label>
+    <input id="ed-vto" class="mi" type="date" value="${esc(vto)}">
+    <div class="mbtns"><button class="mini-btn" onclick="cerrarModal()">Cancelar</button><button class="mini-btn pri" onclick="guardarLoteVto(${lotId},${qid})">Guardar</button></div>`);
+  setTimeout(()=>{ const el=document.getElementById("ed-lote"); if(el){el.focus();el.select();} },30);
+}
+async function guardarLoteVto(lotId,qid){
+  const nombre=(document.getElementById("ed-lote").value||"").trim();
+  const vto=(document.getElementById("ed-vto").value||"").trim();
+  if(!nombre){ alert("El N° de lote no puede quedar vacío."); return; }
+  let r=null; for(const x of DATA){ if(x.quants.some(q=>q.id===qid)){ r=x; break; } }
   try{
-    await rpc("stock.lot","write",[[lotId],{name:n}],{context:ES});
-    for(const x of DATA) for(const q of x.quants) if(q.lot===lotId) q.lotName=n;
-    registrarConteo({ email:(PERFIL&&PERFIL.email)||null, product_id:r.id, product_name:cleanName(r.name), lot_id:lotId, lot_name:n, accion:'renombrar lote' });
-    toast("✓ Lote corregido"); repintarBody();
-  }catch(e){ alert("No se pudo corregir el lote: "+(e.message||e)); }
+    await rpc("stock.lot","write",[[lotId],{name:nombre, expiration_date: vto? (vto+" 00:00:00") : false}],{context:ES});
+    for(const x of DATA) for(const q of x.quants) if(q.lot===lotId) q.lotName=nombre;
+    if(vto) EXP[lotId]=vto; else delete EXP[lotId];
+    registrarConteo({ email:(PERFIL&&PERFIL.email)||null, product_id:r?r.id:null, product_name:r?cleanName(r.name):null, lot_id:lotId, lot_name:nombre, accion:'editar lote/vto' });
+    cerrarModal(); toast("✓ Lote actualizado"); repintarBody();
+  }catch(e){ alert("No se pudo guardar: "+(e.message||e)); }
 }
 async function eliminarLote(qid){
   let r=null,qn=null; for(const x of DATA){ const f=x.quants.find(q=>q.id===qid); if(f){r=x;qn=f;break;} } if(!qn) return;
@@ -590,18 +623,31 @@ async function archivarProd(pid){
     toast("✓ Archivado"); await cargar();
   }catch(e){ alert("No se pudo archivar: "+(e.message||e)); }
 }
-async function agregarLote(pid){
+function agregarLote(pid){
   const r=DATA.find(x=>x.id===pid); if(!r) return;
-  const nombre=prompt(`Agregar un lote a "${cleanName(r.name)}"\n\nN° de lote:`); if(nombre==null) return; const ln=nombre.trim(); if(!ln) return;
-  const cantStr=prompt(`Cantidad contada del lote "${ln}":`,"0"); if(cantStr==null) return;
-  const cant=parseFloat(String(cantStr).replace(",",".")); if(isNaN(cant)||cant<0){ alert("Cantidad inválida."); return; }
+  modalHTML(`<h3 class="mh">Agregar lote</h3>
+    <p class="mp">${esc(cleanName(r.name))}</p>
+    <label class="ml">N° de lote</label><input id="ad-lote" class="mi" autocomplete="off">
+    <label class="ml">Vencimiento</label><input id="ad-vto" class="mi" type="date">
+    <label class="ml">Cantidad contada</label><input id="ad-cant" class="mi" inputmode="decimal" value="0">
+    <div class="mbtns"><button class="mini-btn" onclick="cerrarModal()">Cancelar</button><button class="mini-btn pri" onclick="crearLoteNuevo(${pid})">Agregar</button></div>`);
+  setTimeout(()=>{ const el=document.getElementById("ad-lote"); if(el)el.focus(); },30);
+}
+async function crearLoteNuevo(pid){
+  const r=DATA.find(x=>x.id===pid); if(!r) return;
+  const ln=(document.getElementById("ad-lote").value||"").trim();
+  const vto=(document.getElementById("ad-vto").value||"").trim();
+  const cant=parseFloat((document.getElementById("ad-cant").value||"").replace(",","."));
+  if(!ln){ alert("Poné el N° de lote."); return; }
+  if(isNaN(cant)||cant<0){ alert("Cantidad inválida."); return; }
   try{
-    const lotId=await rpc("stock.lot","create",[{name:ln,product_id:r.id,company_id:1}],{context:ES});
+    const lotVals={name:ln,product_id:r.id,company_id:1}; if(vto) lotVals.expiration_date=vto+" 00:00:00";
+    const lotId=await rpc("stock.lot","create",[lotVals],{context:ES});
     const locId=(r.quants[0]&&r.quants[0].locId)||8;   // WH/Stock
     const qid=await rpc("stock.quant","create",[{product_id:r.id,location_id:locId,lot_id:lotId,inventory_quantity:cant}],{context:ES});
     await rpc("stock.quant","action_apply_inventory",[[qid]]);
     registrarConteo({ email:(PERFIL&&PERFIL.email)||null, product_id:r.id, product_name:cleanName(r.name), lot_id:lotId, lot_name:ln, sistema:0, contado:cant, diff:cant, accion:'nuevo lote' });
-    toast("✓ Lote agregado"); await cargar();
+    cerrarModal(); toast("✓ Lote agregado"); await cargar();
   }catch(e){ alert("No se pudo agregar el lote: "+(e.message||e)); }
 }
 
