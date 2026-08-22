@@ -282,16 +282,20 @@ async function cargar(silent){
         rpc("res.country.state","search_read",[[["country_id.code","=","AR"]]],{fields:["id","name"],limit:0}),
         rpc("res.users","search_read",[[["share","=",false],["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}}),
         // organigrama real: empleados ACTIVOS del depto Ventas → los comerciales de verdad
-        rpc("hr.employee","search_read",[[["department_id.name","ilike","venta"],["active","=",true]]],{fields:["name","job_title","user_id"],context:{lang:"es_AR"}})
+        rpc("hr.employee","search_read",[[["department_id.name","ilike","venta"],["active","=",true]]],{fields:["name","job_title","user_id","parent_id"],context:{lang:"es_AR"}})
       ]);
       CAT={fiscal,idt,prov};
       PROVIDX={}; prov.forEach(p=>{ PROVIDX[NORM(p.name.replace(/\s*\((AR|IT)\)$/,""))]=p.id; });
       // roster de usuarios internos (para reasignar cualquier contacto)
       COMLIST=users.filter(u=>u.id>1).map(u=>({id:u.id,name:u.name})).sort((a,b)=>rolRank(a.name)-rolRank(b.name)||a.name.localeCompare(b.name));
-      // COMERCIALES REALES = depto Ventas activo, SIN líderes/dirección (para "Enviar a comercial").
-      // Se limpia solo cuando alguien entra/sale de Ventas en Odoo. /l.der/ tolera el "L�der" mal codificado.
-      const esLider=t=>/l.der|gerente|direcc/i.test(t||"");
-      COMROSTER=(vent||[]).filter(e=>e.user_id && !esLider(e.job_title)).map(e=>({id:e.user_id[0],name:e.user_id[1]})).sort((a,b)=>a.name.localeCompare(b.name));
+      // COMERCIALES + LÍDERES para "Enviar a comercial": depto Ventas activo (incluye a Marcela)
+      // + sus jefes de arriba que NO están en Ventas (Germán, Diego). Se limpia solo con el organigrama.
+      const vf=(vent||[]).filter(e=>e.user_id);
+      const rmap={}; vf.forEach(e=>{ rmap[e.user_id[0]]={id:e.user_id[0],name:e.user_id[1]}; });
+      const ventEmp=new Set(vf.map(e=>e.id));
+      const jefeIds=[...new Set(vf.map(e=>e.parent_id&&e.parent_id[0]).filter(pid=>pid&&!ventEmp.has(pid)))];
+      if(jefeIds.length){ try{ const jefes=await rpc("hr.employee","read",[jefeIds],{fields:["user_id"],context:{lang:"es_AR"}}); jefes.forEach(j=>{ if(j.user_id) rmap[j.user_id[0]]={id:j.user_id[0],name:j.user_id[1]}; }); }catch(_){} }
+      COMROSTER=Object.values(rmap).sort((a,b)=>rolRank(a.name)-rolRank(b.name)||a.name.localeCompare(b.name));
     }
     // bóveda: el último marcador por contacto manda (salir = fuera)
     BOVEDA={}; bovMsgs.sort((a,b)=>(b.date||"").localeCompare(a.date||"")); const _vb=new Set();
