@@ -229,7 +229,7 @@ const rolRank=n=>(n==="German Banquero"||n==="Diego Velazquez")?0:n==="Marcela C
 const COMERCIALES=["German Banquero","Diego Velazquez","Marcela Carranza","Natividad Sanchez","Claudia Dominguez","Samanta Luna","Ruth Aguayo","Antonella Infanti","Maricruz Finochietti","Lucía Oviedo","Marianela Soto"];
 
 let PERFIL=null;
-let DATA=[], COMS=[], COMLIST=[], VENTA={}, DUPVAT={}, DUPNAME={};
+let DATA=[], COMS=[], COMLIST=[], COMROSTER=[], VENTA={}, DUPVAT={}, DUPNAME={};
 let CAT={fiscal:[],idt:[],prov:[]}, PROVIDX={};
 let UNI=null, CREADOS=new Set(), BOVEDA={}, SEL=new Set(), _bajaTag=null, _riesgoAt=0, NUEVOS=[];
 // Prospectos YA ASIGNADOS a la carpeta "A conquistar" de algún comercial (eyg.conquistar): no
@@ -276,16 +276,22 @@ async function cargar(silent){
     ]);
     // catálogos + roster de comerciales: no cambian seguido → se cargan 1 sola vez
     if(!CAT.prov.length){
-      const [fiscal,idt,prov,users]=await Promise.all([
+      const [fiscal,idt,prov,users,vent]=await Promise.all([
         rpc("l10n_ar.afip.responsibility.type","search_read",[[]],{fields:["id","name"],context:{lang:"es_AR"}}),
         rpc("l10n_latam.identification.type","search_read",[[["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}}),
         rpc("res.country.state","search_read",[[["country_id.code","=","AR"]]],{fields:["id","name"],limit:0}),
-        rpc("res.users","search_read",[[["share","=",false],["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}})
+        rpc("res.users","search_read",[[["share","=",false],["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}}),
+        // organigrama real: empleados ACTIVOS del depto Ventas → los comerciales de verdad
+        rpc("hr.employee","search_read",[[["department_id.name","ilike","venta"],["active","=",true]]],{fields:["name","job_title","user_id"],context:{lang:"es_AR"}})
       ]);
       CAT={fiscal,idt,prov};
       PROVIDX={}; prov.forEach(p=>{ PROVIDX[NORM(p.name.replace(/\s*\((AR|IT)\)$/,""))]=p.id; });
-      // roster para asignar (incluye comerciales nuevos con 0 cartera, ej. Lucía/Marianela)
+      // roster de usuarios internos (para reasignar cualquier contacto)
       COMLIST=users.filter(u=>u.id>1).map(u=>({id:u.id,name:u.name})).sort((a,b)=>rolRank(a.name)-rolRank(b.name)||a.name.localeCompare(b.name));
+      // COMERCIALES REALES = depto Ventas activo, SIN líderes/dirección (para "Enviar a comercial").
+      // Se limpia solo cuando alguien entra/sale de Ventas en Odoo. /l.der/ tolera el "L�der" mal codificado.
+      const esLider=t=>/l.der|gerente|direcc/i.test(t||"");
+      COMROSTER=(vent||[]).filter(e=>e.user_id && !esLider(e.job_title)).map(e=>({id:e.user_id[0],name:e.user_id[1]})).sort((a,b)=>a.name.localeCompare(b.name));
     }
     // bóveda: el último marcador por contacto manda (salir = fuera)
     BOVEDA={}; bovMsgs.sort((a,b)=>(b.date||"").localeCompare(a.date||"")); const _vb=new Set();
@@ -696,7 +702,7 @@ function renderProspectos(){
         <button class="mini-btn" style="background:var(--teal);color:#fff;border-color:var(--teal)" onclick="crearProspecto(${p.idx})">+ Crear contacto</button>
         <select class="mini-sel" onchange="enviarAConquistar(${p.idx}, this.value); this.selectedIndex=0" title="Enviar a la carpeta 'A conquistar' de un comercial">
           <option value="">📨 Enviar a comercial…</option>
-          ${COMLIST.filter(o=>o.name && rolRank(o.name)>=2).map(o=>`<option value="${esc(o.name)}">${esc(o.name)}</option>`).join("")}
+          ${COMROSTER.map(o=>`<option value="${esc(o.name)}">${esc(o.name)}</option>`).join("")}
         </select>
       </div>
     </div>`;
@@ -710,7 +716,7 @@ function pBulkBarHTML(){
   return `<div id="pbulkwrap" class="bulkbar">
     <label class="ba"><input type="checkbox" ${allSel?'checked':''} onchange="pselAll(this.checked)"> Seleccionar los ${vis.length}</label>
     ${n?`<span class="bcount">${n} seleccionados</span>
-      <select class="bsel" onchange="enviarAConquistarLote(this.value);this.selectedIndex=0"><option value="">📨 Enviar a comercial…</option>${COMLIST.filter(o=>o.name && rolRank(o.name)>=2).map(o=>`<option value="${esc(o.name)}">${esc(o.name)}</option>`).join("")}</select>
+      <select class="bsel" onchange="enviarAConquistarLote(this.value);this.selectedIndex=0"><option value="">📨 Enviar a comercial…</option>${COMROSTER.map(o=>`<option value="${esc(o.name)}">${esc(o.name)}</option>`).join("")}</select>
       <button class="bbtn ghost" onclick="PSEL.clear();renderProspectos()">✕ Limpiar</button>`
     :`<span class="muted" style="font-size:12px">Tildá establecimientos y enviálos en lote a la carpeta "A conquistar" de un comercial.</span>`}
   </div>`;
