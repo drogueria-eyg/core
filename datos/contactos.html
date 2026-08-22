@@ -235,10 +235,13 @@ let UNI=null, CREADOS=new Set(), BOVEDA={}, SEL=new Set(), _bajaTag=null, _riesg
 // Prospectos YA ASIGNADOS a la carpeta "A conquistar" de algún comercial (eyg.conquistar): no
 // vuelven a mostrarse en "Por conquistar" (para no reasignarlos). Clave = nombre|localidad.
 let ASIGNADOS=new Set(), PSEL=new Set();   // PSEL = prospectos tildados para enviar en lote
+// Marcas manuales sobre prospectos del padrón (no son registros Odoo → se guardan por cqKey en un parámetro):
+//   'descartado' = ya es cliente / no aplica → sale de la lista · 'pendiente' = intenté por WhatsApp sin éxito → queda marcado
+let MARCAS={}; const MARCAS_KEY="eyg.contactos.marcas_conquistar";
 const cqKey=(nombre,loc)=>((nombre||"")+"|"+(loc||"")).toLowerCase().replace(/\s+/g," ").trim();
 async function cargarAsignados(){ try{ const c=await EYG.conquistarLeer(); ASIGNADOS=new Set((c||[]).map(x=>cqKey(x.nombre,x.loc))); }catch(e){} }
 const NUEVO_TAG="[CONTACTO-NUEVO]"; // marca de contacto creado desde el Core (guarda el creador real)
-let filtro={tab:"nuestros", com:"", seg:"", issue:"", rubro:"", boveda:false, proveedores:false, q:"", ocultarRuido:true, pTipo:"", pProv:"", pLoc:"", pQ:""};
+let filtro={tab:"nuestros", com:"", seg:"", issue:"", rubro:"", boveda:false, proveedores:false, q:"", ocultarRuido:true, pTipo:"", pProv:"", pLoc:"", pQ:"", pEstado:"activo"};
 const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador en el chatter del contacto (fuente de verdad, reversible)
 
 /* Rubro (campo Studio) → chip de color para identificar de un vistazo. */
@@ -341,7 +344,7 @@ async function cargar(silent){
     recalcComs();
     if(silent){ const y=window.scrollY; render(); window.scrollTo(0,y); } else render();
     if(!UNI) cargarUniverso();   // el padrón (~900 KB) se trae 1 vez y actualiza los cruces al llegar
-    cargarAsignados().then(()=>{ if(filtro.tab==="conquistar") renderProspectos(); });   // ocultar los ya asignados
+    Promise.all([cargarAsignados(),cargarMarcas()]).then(()=>{ if(filtro.tab==="conquistar") renderConquistar(); });   // ocultar asignados + aplicar marcas (descartado/pendiente)
     if(!silent || Date.now()-_riesgoAt>180000) cargarRiesgos();   // alerta de crédito (más liviana: cada ~3 min)
     if(!silent) cargarNuevos();   // historial de contactos nuevos (se refresca al abrir la pestaña)
     if(!silent) cargarPortalEstado();   // estado del acceso al portal por contacto (para el ícono de la fila)
@@ -476,19 +479,40 @@ function cruzar(){
 function porConquistar(){
   if(!UNI) return [];
   const provOk = filtro.pProv ? NORM(filtro.pProv) : null;
+  const est = filtro.pEstado||"activo";   // activo | pendiente | descartado
   const out=[];
   UNI.est.forEach((e,idx)=>{
-    if(e[6]) return; if(CREADOS.has(idx)) return;
     const L=UNI.locs[e[1]]; if(!L) return;
-    if(ASIGNADOS.size && ASIGNADOS.has(cqKey(titulo(e[0]), L[0]))) return;   // ya asignado a un comercial
+    const nombre=titulo(e[0]); const ck=cqKey(nombre, L[0]);
+    const m=MARCAS[ck]||null; const mEstado=m&&m.estado;
+    if(est==="descartado"){
+      if(mEstado!=="descartado") return;                    // vista de descartados: solo esos
+    } else {
+      if(e[6]) return; if(CREADOS.has(idx)) return;          // ya es contacto / recién creado
+      if(ASIGNADOS.size && ASIGNADOS.has(ck)) return;        // ya asignado a un comercial
+      if(mEstado==="descartado") return;                     // descartado a mano → fuera
+      if(est==="pendiente" && mEstado!=="pendiente") return; // vista de pendientes: solo los marcados
+    }
     if(provOk && NORM(L[1])!==provOk) return;
     if(filtro.pTipo==="farm" && e[2]!==0) return;
     if(filtro.pTipo==="inst" && e[2]!==1) return;
     if(filtro.pLoc && NORM(L[0])!==NORM(filtro.pLoc)) return;
-    if(filtro.pQ){ const q=filtro.pQ.toLowerCase(); if(!(titulo(e[0]).toLowerCase().includes(q)||(L[0]||"").toLowerCase().includes(q))) return; }
-    out.push({idx,nombre:titulo(e[0]),tipo:e[2],loc:L[0],prov:L[1],dom:e[3]||""});
+    if(filtro.pQ){ const q=filtro.pQ.toLowerCase(); if(!(nombre.toLowerCase().includes(q)||(L[0]||"").toLowerCase().includes(q))) return; }
+    out.push({idx,nombre,tipo:e[2],loc:L[0],prov:L[1],dom:e[3]||"", cqKey:ck, marca:m});
   });
   return out;
+}
+// contadores de marcas por provincia (para los chips de estado)
+function marcasEnProv(estado){ const p=filtro.pProv?NORM(filtro.pProv):null; return Object.values(MARCAS).filter(m=>m&&m.estado===estado&&(!p||NORM(m.prov||"")===p)).length; }
+async function cargarMarcas(){ try{ MARCAS=JSON.parse(await rpc("ir.config_parameter","get_param",[MARCAS_KEY])||"{}")||{}; }catch(e){ MARCAS={}; } }
+// items: [{cqKey,nombre,loc,prov}]. estado=null quita la marca. RMW para no pisar a otros usuarios.
+async function marcarProspectos(items, estado, nota){
+  if(!items||!items.length) return;
+  let fresh; try{ fresh=JSON.parse(await rpc("ir.config_parameter","get_param",[MARCAS_KEY])||"{}")||{}; }catch(e){ fresh={}; }
+  const por=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—", fecha=new Date().toISOString();
+  items.forEach(it=>{ if(!it||!it.cqKey) return; if(estado===null) delete fresh[it.cqKey]; else fresh[it.cqKey]={estado, por, fecha, nombre:it.nombre||"", loc:it.loc||"", prov:it.prov||"", nota:nota||""}; });
+  await rpc("ir.config_parameter","set_param",[MARCAS_KEY, JSON.stringify(fresh)]);
+  MARCAS=fresh;
 }
 /* provincias del padrón que traen detalle uno por uno (SF/ER/CBA) */
 function provinciasConquista(){ return (UNI&&UNI.detalle)?UNI.detalle.map(p=>titulo(p)):[]; }
@@ -668,6 +692,11 @@ function renderConquistar(){
       <div class="kpi"><div class="n">${cob?cob.pct+"%":"—"}</div><div class="l">Cobertura</div></div>
       <div class="kpi"><div class="n" style="color:var(--coral)">${cob?cob.falta.toLocaleString("es-AR"):"—"}</div><div class="l">Por conquistar</div></div>
     </div>
+    <div class="rubchips" style="margin-bottom:12px">
+      <button class="rchip ${filtro.pEstado==="activo"?"on":""}" onclick="setPEstado('activo')">🎯 Por conquistar</button>
+      <button class="rchip ${filtro.pEstado==="pendiente"?"on":""}" onclick="setPEstado('pendiente')">⏳ Pendientes WhatsApp <span class="rc">${marcasEnProv('pendiente')}</span></button>
+      <button class="rchip ${filtro.pEstado==="descartado"?"on":""}" onclick="setPEstado('descartado')">🚫 Descartados <span class="rc">${marcasEnProv('descartado')}</span></button>
+    </div>
     <div class="toolbar">
       <select onchange="PSEL.clear();filtro.pProv=this.value;filtro.pLoc='';render()">${provs.map(p=>`<option ${filtro.pProv===p?"selected":""}>${esc(p)}</option>`).join("")}</select>
       <select onchange="PSEL.clear();filtro.pTipo=this.value;render()">
@@ -688,13 +717,14 @@ function renderConquistar(){
 function renderProspectos(){
   const w=document.getElementById("plistwrap"); if(!w) return;
   let list=porConquistar().sort((a,b)=> a.loc.localeCompare(b.loc)||a.nombre.localeCompare(b.nombre));
-  if(!list.length){w.innerHTML='<div class="tablecard"><div class="empty">No quedan establecimientos por conquistar con ese filtro. 🎉</div></div>';return;}
-  const head=`<div class="count-line">Mostrando <b>${Math.min(list.length,600)}</b> de ${list.length} por conquistar</div>`;
+  const et=filtro.pEstado==="pendiente"?"pendientes de WhatsApp":filtro.pEstado==="descartado"?"descartados":"por conquistar";
+  if(!list.length){w.innerHTML=pBulkBarHTML()+'<div class="tablecard"><div class="empty">'+(filtro.pEstado==="pendiente"?"No hay prospectos marcados como pendientes.":filtro.pEstado==="descartado"?"No hay descartados.":"No quedan establecimientos por conquistar con ese filtro. 🎉")+'</div></div>';return;}
+  const head=`<div class="count-line">Mostrando <b>${Math.min(list.length,600)}</b> de ${list.length} ${et}</div>`;
   const rows=list.slice(0,600).map(p=>{
     const g=`https://www.google.com/search?q=${encodeURIComponent(p.nombre+" "+p.loc+" "+p.prov+" teléfono")}`;
     const mp=`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.nombre+" "+(p.dom||"")+" "+p.loc+" "+p.prov)}`;
     return `<div class="row ${PSEL.has(p.idx)?'selrow':''}" style="cursor:default;grid-template-columns:2.4fr 1.5fr 1fr">
-      <div style="display:flex;gap:9px;align-items:flex-start"><input type="checkbox" class="rowchk" ${PSEL.has(p.idx)?'checked':''} onclick="event.stopPropagation();togglePSel(${p.idx})"><div style="min-width:0;flex:1"><div class="cname">${esc(p.nombre)}</div><div class="padr">📍 <b>${esc(p.dom||"sin dirección")}</b></div><div class="cmeta">${esc(p.loc)}${p.prov?" · "+esc(p.prov):""}</div></div></div>
+      <div style="display:flex;gap:9px;align-items:flex-start"><input type="checkbox" class="rowchk" ${PSEL.has(p.idx)?'checked':''} onclick="event.stopPropagation();togglePSel(${p.idx})"><div style="min-width:0;flex:1"><div class="cname">${esc(p.nombre)}</div><div class="padr">📍 <b>${esc(p.dom||"sin dirección")}</b></div><div class="cmeta">${esc(p.loc)}${p.prov?" · "+esc(p.prov):""}</div>${p.marca&&p.marca.estado==="pendiente"?'<div style="margin-top:3px"><span class="rub" style="background:#FBF0DA;color:#9A6B12">⏳ pendiente · buscar WhatsApp por otro medio</span></div>':''}</div></div>
       <div><span class="badge ${p.tipo===0?'teal':'warn'}">${p.tipo===0?'💊 Farmacia':'🏥 Institución'}</span>
         <div style="margin-top:6px;display:flex;gap:7px;flex-wrap:wrap"><a class="plink" href="${g}" target="_blank" rel="noopener">🔎 Google</a><a class="plink" href="${mp}" target="_blank" rel="noopener">📍 Maps</a></div>
         <div style="margin-top:6px;display:flex;gap:5px;align-items:center">
@@ -708,6 +738,12 @@ function renderProspectos(){
           <option value="">📨 Enviar a comercial…</option>
           ${COMROSTER.map(o=>`<option value="${esc(o.name)}">${esc(o.name)}</option>`).join("")}
         </select>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${p.marca&&p.marca.estado==="pendiente"
+            ? `<a class="plink" style="border:0;padding:2px 4px;color:var(--ok)" onclick="pendienteUno(${p.idx},false)">✓ quitar pendiente</a>`
+            : `<a class="plink" style="border:0;padding:2px 4px;color:#9A6B12" onclick="pendienteUno(${p.idx},true)" title="Intenté por WhatsApp con los números públicos y no logré contactar">⏳ sin WhatsApp</a>`}
+          <a class="plink" style="border:0;padding:2px 4px;color:var(--bad)" onclick="descartarUno(${p.idx})" title="Ya es cliente / no aplica: sacar de la lista">🚫 descartar</a>
+        </div>
       </div>
     </div>`;
   }).join("");
@@ -716,14 +752,16 @@ function renderProspectos(){
 }
 /* Barra de acciones en lote de prospectos (enviar a comercial los tildados). */
 function pBulkBarHTML(){
-  const list=porConquistar(); const vis=list.slice(0,600); const allSel=vis.length>0 && vis.every(p=>PSEL.has(p.idx)); const n=PSEL.size;
-  return `<div id="pbulkwrap" class="bulkbar">
-    <label class="ba"><input type="checkbox" ${allSel?'checked':''} onchange="pselAll(this.checked)"> Seleccionar los ${vis.length}</label>
-    ${n?`<span class="bcount">${n} seleccionados</span>
+  const list=porConquistar(); const vis=list.slice(0,600); const allSel=vis.length>0 && vis.every(p=>PSEL.has(p.idx)); const n=PSEL.size; const est=filtro.pEstado||"activo";
+  let acc;
+  if(!n){ acc=`<span class="muted" style="font-size:12px">Tildá establecimientos para enviarlos a un comercial, marcarlos "sin WhatsApp" o descartarlos en lote.</span>`; }
+  else if(est==="descartado"){ acc=`<span class="bcount">${n} seleccionados</span><button class="bbtn" onclick="restaurarLote()">↩ Restaurar a la lista</button><button class="bbtn ghost" onclick="PSEL.clear();renderProspectos()">✕ Limpiar</button>`; }
+  else{ acc=`<span class="bcount">${n} seleccionados</span>
       <select class="bsel" onchange="enviarAConquistarLote(this.value);this.selectedIndex=0"><option value="">📨 Enviar a comercial…</option>${COMROSTER.map(o=>`<option value="${esc(o.name)}">${esc(o.name)}</option>`).join("")}</select>
-      <button class="bbtn ghost" onclick="PSEL.clear();renderProspectos()">✕ Limpiar</button>`
-    :`<span class="muted" style="font-size:12px">Tildá establecimientos y enviálos en lote a la carpeta "A conquistar" de un comercial.</span>`}
-  </div>`;
+      ${est==="pendiente"?`<button class="bbtn" onclick="restaurarLote()">✓ Quitar pendiente</button>`:`<button class="bbtn" style="background:#FBF0DA;border-color:#EAD6A6;color:#9A6B12" onclick="pendienteLote()">⏳ Sin WhatsApp</button>`}
+      <button class="bbtn danger" onclick="descartarLote()">🚫 Descartar</button>
+      <button class="bbtn ghost" onclick="PSEL.clear();renderProspectos()">✕ Limpiar</button>`; }
+  return `<div id="pbulkwrap" class="bulkbar"><label class="ba"><input type="checkbox" ${allSel?'checked':''} onchange="pselAll(this.checked)"> Seleccionar los ${vis.length}</label>${acc}</div>`;
 }
 function togglePSel(idx){ if(PSEL.has(idx))PSEL.delete(idx); else PSEL.add(idx); const bw=document.getElementById("pbulkwrap"); if(bw) bw.outerHTML=pBulkBarHTML(); }
 function pselAll(on){ const ids=porConquistar().slice(0,600).map(p=>p.idx); if(on) ids.forEach(i=>PSEL.add(i)); else ids.forEach(i=>PSEL.delete(i)); renderProspectos(); }
@@ -752,6 +790,15 @@ function enviarAConquistar(idx, comName){
       toast(n?("📨 Enviado a la carpeta de "+comName):("Ya estaba en la carpeta de "+comName)); })
     .catch(()=>toast("⚠ No se pudo enviar"));
 }
+
+/* ===== Marcas sobre prospectos: descartar (ya es cliente/no aplica) y pendiente (busqué WhatsApp sin éxito) ===== */
+function setPEstado(e){ filtro.pEstado=e; PSEL.clear(); render(); }
+function itemDe(idx){ const e=UNI.est[idx]; if(!e) return null; const L=UNI.locs[e[1]]||[]; const nombre=titulo(e[0]); return {cqKey:cqKey(nombre,L[0]||""), nombre, loc:L[0]||"", prov:L[1]||""}; }
+async function descartarUno(idx){ const it=itemDe(idx); if(!it) return; if(!confirm(`¿Sacar "${it.nombre}" de la lista? (ya es cliente o no aplica). Reversible desde "Descartados".`)) return; try{ await marcarProspectos([it],"descartado"); toast("🚫 Descartado de la lista"); renderConquistar(); }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function pendienteUno(idx,on){ const it=itemDe(idx); if(!it) return; try{ await marcarProspectos([it], on?"pendiente":null); toast(on?"⏳ Marcado: buscar WhatsApp por otro medio":"✓ Quitado de pendientes"); renderConquistar(); }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function descartarLote(){ if(!PSEL.size) return; const items=[...PSEL].map(itemDe).filter(Boolean); if(!confirm(`¿Descartar ${items.length} de la lista? (ya son clientes o no aplican). Reversible.`)) return; try{ await marcarProspectos(items,"descartado"); PSEL.clear(); toast(`🚫 ${items.length} descartado(s)`); renderConquistar(); }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function pendienteLote(){ if(!PSEL.size) return; const items=[...PSEL].map(itemDe).filter(Boolean); try{ await marcarProspectos(items,"pendiente"); PSEL.clear(); toast(`⏳ ${items.length} marcado(s): buscar WhatsApp`); renderConquistar(); }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function restaurarLote(){ if(!PSEL.size) return; const items=[...PSEL].map(itemDe).filter(Boolean); try{ await marcarProspectos(items,null); PSEL.clear(); toast(`↩ ${items.length} restaurado(s)`); renderConquistar(); }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
 
 /* ================= Interacción filtros ================= */
 let sT; function onSearch(v){filtro.q=v;clearTimeout(sT);sT=setTimeout(renderLista,180);}
