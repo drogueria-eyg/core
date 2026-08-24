@@ -721,21 +721,25 @@ async function cargar(){
     // ---- Cuentas corrientes = campos NATIVOS de Odoo (Adeudo total / Total atrasado) + migración. ----
     // Deuda = total_due. Vencido = total_overdue (netea NC vencidas) + saldo de MIGRACIÓN sin fecha
     // (deuda vieja impaga = vencida, criterio del usuario). Mismo criterio EXACTO que Cobranzas.
-    let migMap={}, ncMap={};
-    try{ const [mg,nc]=await Promise.all([
+    let migMap={}, ncMap={}, migArch={};
+    try{ const [mg,nc,mk]=await Promise.all([
         rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["date_maturity","=",false],["partner_id","in",ids]],["amount_residual:sum"],["partner_id"]],{lazy:false}),
-        rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["move_id.move_type","=","out_refund"],["amount_residual","!=",0],["partner_id","in",ids]],["amount_residual:sum"],["partner_id"]],{lazy:false})
+        rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["move_id.move_type","=","out_refund"],["amount_residual","!=",0],["partner_id","in",ids]],["amount_residual:sum"],["partner_id"]],{lazy:false}),
+        // marcador de "deuda migrada archivada" que pone Cobranzas → el comercial ve el MISMO estado
+        rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["body","like","[MIG-ARCHIVADA]"]]],{fields:["res_id","body","date"],limit:0})
       ]);
       (mg||[]).forEach(g=>{ if(g.partner_id) migMap[g.partner_id[0]]=g.amount_residual||0; });
       (nc||[]).forEach(g=>{ if(g.partner_id) ncMap[g.partner_id[0]]=Math.abs(g.amount_residual||0); });
+      (mk||[]).sort((a,b)=>(b.date||"").localeCompare(a.date||"")); const _vm=new Set();
+      (mk||[]).forEach(m=>{ if(_vm.has(m.res_id))return; _vm.add(m.res_id); if(/salir/i.test((m.body||"").replace(/<[^>]+>/g," "))) return; migArch[m.res_id]=true; });
     }catch(e){}
     const porP={};
     for(const c of (ccLines||[])){
       if(!c) continue;
-      const deuda=(typeof c.total_due==="number")?c.total_due:0;
       const over=(typeof c.total_overdue==="number")?c.total_overdue:0;
-      const mig=migMap[c.id]||0;
-      porP[c.id]={ deuda, vencido:Math.max(0,over+mig), venc:null, mig, ncSin:(ncMap[c.id]||0) };
+      const mig=migMap[c.id]||0, arch=!!migArch[c.id];
+      const deuda=((typeof c.total_due==="number")?c.total_due:0) - (arch?mig:0);
+      porP[c.id]={ deuda, vencido:Math.max(0,over+(arch?0:mig)), venc:null, mig, migArch:arch, ncSin:(ncMap[c.id]||0) };
     }
     let porCobrar=0, vencido=0, nDeud=0;
     for(const pid in porP){ const d=porP[pid].deuda; if(d>1){porCobrar+=d; vencido+=porP[pid].vencido; nDeud++;} }
@@ -2031,7 +2035,7 @@ function ccBlock(c){
       <div class="b"><div class="v" style="color:${dv>1?'#A5312E':'inherit'}">${money(dv)}</div><div class="l">vencido</div></div>
       <div class="b"><div class="v">${dias==null?'—':(dias>0?dias+'d':'al día')}</div><div class="l">mora</div></div>
     </div>
-    ${dd&&dd.mig>1?`<div style="font-size:11px;color:var(--gris2);margin-top:6px">↳ incluye ${money(dd.mig)} de saldo inicial de migración — deuda vieja sin factura</div>`:''}
+    ${dd&&dd.mig>1?`<div style="font-size:11px;color:${dd.migArch?'#6E5527':'var(--gris2)'};margin-top:6px">📦 ${money(dd.mig)} de saldo inicial de migración — deuda vieja sin factura${dd.migArch?' · <b>archivada</b> (fuera de lo adeudado)':''}</div>`:''}
     ${dd&&dd.ncSin>1?`<div style="font-size:11px;color:#A5312E;margin-top:4px">⚠️ ${money(dd.ncSin)} en NC sin aplicar — conviene conciliarlas contra su factura en Odoo (afecta el vencido)</div>`:''}
     ${wa?`<a class="wa-contact" style="background:var(--warn)" href="https://api.whatsapp.com/send?phone=${wa}&text=${encodeURIComponent(msgCobro(c,deuda))}" target="_blank" onclick="confirmarEnvio(${c.id},'cobranza')">💰 Recordar pago por WhatsApp</a>`:''}
     <div style="text-align:right;margin-top:8px"><a href="${odoo('id='+c.id+'&model=res.partner&view_type=form')}" target="_blank" style="font-size:12px;font-weight:700;color:var(--teal);text-decoration:none">Ver cuenta corriente en Odoo ↗</a></div>

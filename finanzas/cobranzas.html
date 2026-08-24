@@ -308,8 +308,9 @@ const hoyStr=hoy.toISOString().slice(0,10);
 const diasMora=f=> f? Math.floor((hoy-new Date(f+"T00:00:00"))/86400000) : 0;
 const fmtFecha=f=> f? f.split("-").reverse().join("/") : "—";
 
-let CLI=[], EVO=[], BOVEDA={}, DESEMP=null, filtro={tramo:"", comercial:"", rubro:"", q:"", orden:"prioridad", boveda:false};
+let CLI=[], EVO=[], BOVEDA={}, MIGARCH={}, DESEMP=null, filtro={tramo:"", comercial:"", rubro:"", q:"", orden:"prioridad", boveda:false, migrada:false};
 const BOV_TAG="[BOVEDA]"; // marcador en el chatter del contacto (fuente de verdad, con historial)
+const MIG_TAG="[MIG-ARCHIVADA]"; // deuda migrada archivada: sale de "lo adeudado" y del vencido (reversible)
 let CONTACTOS={};          // partnerId → fecha/hora (UTC) del último contacto de cobranzas
 const CONTACTO_TAG="[COBRO-CONTACTO]";
 let NOTAS={};              // partnerId → {texto, fecha} última nota/acuerdo de cobranza
@@ -399,17 +400,21 @@ async function cargar(silent){
     // res_id acotado por la cartera igual conviene un solo round-trip (Odoo Online tarda
     // ~2-4s por query). Traemos los 3 marcadores en OR y partimos en el cliente por cuál
     // marcador contiene el cuerpo. Ver [[eyg-odoo-carga-performance]].
-    BOVEDA={}; CONTACTOS={}; NOTAS={};
+    BOVEDA={}; CONTACTOS={}; NOTAS={}; MIGARCH={};
     if(ids.length){
       const msgs=await rpc("mail.message","search_read",
         [[["model","=","res.partner"],["res_id","in",ids],
-          "|","|",["body","like","[BOVEDA]"],["body","like","[COBRO-CONTACTO]"],["body","like","[COBRO-NOTA]"]]],
+          "|","|","|",["body","like","[BOVEDA]"],["body","like","[COBRO-CONTACTO]"],["body","like","[COBRO-NOTA]"],["body","like","[MIG-ARCHIVADA]"]]],
         {fields:["res_id","body","date"],limit:0});
       msgs.sort((a,b)=>(b.date||"").localeCompare(a.date||""));   // más nuevo primero
-      const vbov=new Set();
+      const vbov=new Set(), vmig=new Set();
       for(const msg of msgs){
         const body=(msg.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," ");
-        if(body.includes("[BOVEDA]")){
+        if(body.includes("[MIG-ARCHIVADA]")){
+          if(vmig.has(msg.res_id)) continue; vmig.add(msg.res_id);   // solo el último manda
+          if(/salir/i.test(body)) continue;                          // se desarchivó
+          MIGARCH[msg.res_id]=true;
+        }else if(body.includes("[BOVEDA]")){
           if(vbov.has(msg.res_id)) continue; vbov.add(msg.res_id);   // solo el último [BOVEDA] manda
           if(/salir/i.test(body)) continue;                          // salió de la bóveda
           const tipo=/incobrable/i.test(body)?"incobrable":"acuerdo";
@@ -440,10 +445,11 @@ async function cargar(silent){
       // DEUDA = campo NATIVO de Odoo (Adeudo total del reporte de seguimiento).
       // VENCIDO = atrasado real de Odoo (total_overdue, ya netea NC vencidas) + saldo de MIGRACIÓN sin fecha.
       // Criterio del usuario: la deuda de migración no pagada está vencida igual, aunque venga de otro sistema.
-      const deudaReal=(typeof c.total_due==="number")?c.total_due:(saldoReal-borrador);
+      const migVenc=p.migSinFecha||0;   // saldo inicial de migración
+      const migArch=!!MIGARCH[p.id];    // si se archivó, sale de "lo adeudado" y del vencido (reversible)
+      const deudaReal=((typeof c.total_due==="number")?c.total_due:(saldoReal-borrador)) - (migArch?migVenc:0);
       const overdueOdoo=(typeof c.total_overdue==="number")?c.total_overdue:(p.vencidoGross-gris);
-      const migVenc=p.migSinFecha||0;   // saldo inicial de migración (se muestra como observación en la ficha)
-      let vencidoReal=Math.max(0, overdueOdoo + migVenc);
+      let vencidoReal=Math.max(0, overdueOdoo + (migArch?0:migVenc));
       vencidoReal=Math.min(vencidoReal, Math.max(0,deudaReal));
 
       let situacion, tramo, mora;
@@ -465,7 +471,7 @@ async function cargar(silent){
       return {
         id:p.id, nombre:p.nombre, movs:p.movs,
         saldoReal, deudaReal, deudaFac:p.deudaFac, saldoIni:p.saldoIni, base, pctDebe,
-        cobradoSinImp:p.cobradoSinImp, borrador, gris, vencidoReal, migVenc, minMig:p.minMig, ncSinAplicar:p.ncSinAplicar, mora, tramo, situacion, tieneGris, prioridad,
+        cobradoSinImp:p.cobradoSinImp, borrador, gris, vencidoReal, migVenc, migArch, minMig:p.minMig, ncSinAplicar:p.ncSinAplicar, mora, tramo, situacion, tieneGris, prioridad,
         venc:p.minVencVenc||p.minVencAny, nfac:p.movs.filter(m=>m.tipo==="factura"&&m.r>0).length,
         drafts:DRAFT[p.id]||[],
         wa:waNumber(c.mobile,c.phone), tellink:telLink(c.mobile,c.phone),
@@ -491,6 +497,7 @@ async function cargar(silent){
 function visibles(){
   return CLI.filter(c=>{
     if(filtro.boveda){ if(!c.boveda) return false; return !filtro.q || c.nombre.toLowerCase().includes(filtro.q.toLowerCase()); }
+    if(filtro.migrada){ if(!(c.migVenc>1)) return false; return !filtro.q || c.nombre.toLowerCase().includes(filtro.q.toLowerCase()); }
     if(c.boveda) return false;   // los de bóveda no aparecen en la vista principal
     if(filtro.tramo==='gris'){ if(!c.tieneGris) return false; }
     else if(filtro.tramo==='cubierto'){ if(c.situacion!=='cubierto') return false; }
@@ -880,6 +887,10 @@ function render(){
   const cub=porTramo["cubierto"];
   const favN=activos.filter(c=>c.situacion==="afavor").length;
   const favM=activos.filter(c=>c.situacion==="afavor").reduce((s,c)=>s+(-c.saldoReal),0);
+  // Deuda migrada (saldos del sistema anterior, difíciles de cobrar). Activa = no archivada.
+  const migList=CLI.filter(c=>c.migVenc>1 && !c.migArch);
+  const migN=migList.length, migM=migList.reduce((s,c)=>s+c.migVenc,0);
+  const migArchN=CLI.filter(c=>c.migVenc>1 && c.migArch).length;
   const comMap={}; activos.forEach(c=>comMap[c.comercial]=(comMap[c.comercial]||0)+1);
   const comercialOpts=`<option value="">Todos los comerciales</option>`+Object.entries(comMap).sort((a,b)=>b[1]-a[1]).map(([n,c])=>`<option value="${esc(n)}" ${filtro.comercial===n?"selected":""}>${esc(n)} (${c})</option>`).join("");
   // Deuda por RUBRO (tarjetas filtro)
@@ -912,6 +923,9 @@ function render(){
         <div class="kpi ${filtro.boveda?'on':''}" onclick="toggleBoveda()" style="${bovN?'':'opacity:.5'}">
           <div class="n">${bovN}</div><div class="money">${money(bovM)}</div>
           <div class="l"><span class="dot" style="background:var(--treg)"></span>🔒 Bóveda</div></div>
+        <div class="kpi ${filtro.migrada?'on':''}" onclick="toggleMigrada()" style="${migN||migArchN?'':'opacity:.5'}">
+          <div class="n">${migN}</div><div class="money">${money(migM)}</div>
+          <div class="l"><span class="dot" style="background:#8B6D3F"></span>📦 Deuda migrada${migArchN?` · ${migArchN} arch.`:''}</div></div>
       </div>
     </div>
 
@@ -944,7 +958,8 @@ function renderLista(){
   const list=ordenar(visibles());
   const w=document.getElementById("listwrap");
   if(!list.length){w.innerHTML='<div class="tablecard"><div class="empty">No hay clientes con ese filtro.</div></div>';return;}
-  const banner=filtro.boveda?`<div class="bovbanner"><span>🔒 <b>Bóveda</b> — incobrables y clientes con acuerdo (fuera de la gestión activa)</span><a onclick="toggleBoveda()">← Volver a cobranzas</a></div>`:'';
+  const banner=filtro.boveda?`<div class="bovbanner"><span>🔒 <b>Bóveda</b> — incobrables y clientes con acuerdo (fuera de la gestión activa)</span><a onclick="toggleBoveda()">← Volver a cobranzas</a></div>`
+    :filtro.migrada?`<div class="bovbanner" style="background:#F3ECDD;border-color:#D8C9A8;color:#6E5527"><span>📦 <b>Deuda migrada</b> — saldos que venían del sistema anterior (sin factura, difíciles de cobrar). Podés <b>archivar</b> cada uno para sacarlo de lo adeudado; queda registrado y es reversible.</span><a onclick="toggleMigrada()" style="color:#6E5527">← Volver a cobranzas</a></div>`:'';
   const head=banner+`<div class="count-line">Mostrando <b>${list.length}</b> cliente${list.length===1?"":"s"} · saldo al ${fmtFecha(hoyStr)} · <span style="color:var(--teal)">🔄 se actualiza solo</span></div>`;
   const rows=list.map(c=>{
     const t=c.tramo;
@@ -952,7 +967,7 @@ function renderLista(){
     const cont=fmtContacto(c.contactado);
     return `<div class="row ${cont&&cont.esHoy?'contactado':''}" onclick="abrir(${c.id})">
       <div><div class="cname">${esc(c.nombre)} ${c.tieneGris?`<span class="gflag">📄 ${money(c.gris)} en gris</span>`:''}${c.boveda?`<span class="bovtag ${c.boveda.tipo==='incobrable'?'inc':'acu'}">🔒 ${c.boveda.tipo==='incobrable'?'Incobrable':'Acuerdo'}</span>`:''}</div>
-        <div class="cmeta">${c.plazo?`<span class="plz">⏱ ${esc(c.plazo)}</span> `:''}${esc(c.ciudad||"—")}${cont?` · <span class="ctag">📞 contactado ${cont.texto}</span>`:''}${c.nota?` · <span class="plz" style="background:#EDE7F6;color:#5B3FA6" title="${esc(c.nota.texto)}">📝 nota</span>`:''}${c.rubro?` · <span class="plz" style="background:#E8F3F1;color:var(--teal-deep)">🏷️ ${esc(c.rubro)}</span>`:''}</div></div>
+        <div class="cmeta">${c.plazo?`<span class="plz">⏱ ${esc(c.plazo)}</span> `:''}${esc(c.ciudad||"—")}${cont?` · <span class="ctag">📞 contactado ${cont.texto}</span>`:''}${c.nota?` · <span class="plz" style="background:#EDE7F6;color:#5B3FA6" title="${esc(c.nota.texto)}">📝 nota</span>`:''}${c.rubro?` · <span class="plz" style="background:#E8F3F1;color:var(--teal-deep)">🏷️ ${esc(c.rubro)}</span>`:''}${filtro.migrada?` · <span class="plz" style="background:#F3ECDD;color:#6E5527">📦 migrada ${money(c.migVenc)}${c.migArch?' · archivada':''}</span>`:''}</div></div>
       <div class="num">${money(aCobrar)}
         <div class="pbar" title="Pagó ${Math.round((1-c.pctDebe)*100)}% de lo facturado${(1-c.pctDebe)>0.01&&aCobrar>1?' · pago parcial':''}"><i style="width:${((1-c.pctDebe)*100).toFixed(1)}%"></i></div>
         <div class="muted">${(1-c.pctDebe)>0.01&&aCobrar>1?'pagó '+Math.round((1-c.pctDebe)*100)+'%':c.nfac+' fac.'}${c.saldoIni>1?' · +saldo ant.':''}</div></div>
@@ -961,6 +976,7 @@ function renderLista(){
         ${c.vencidoReal>1&&c.situacion!=="cubierto"?`<div class="muted" style="margin-top:3px">venc. ${money(c.vencidoReal)}</div>`:''}</div>
       <div class="hide-sm muted">${esc(c.comercial)}</div>
       <div class="actions" onclick="event.stopPropagation()">
+        ${filtro.migrada?`<span class="icobtn" onclick="${c.migArch?`desarchivarMig(${c.id})`:`archivarMig(${c.id})`}" title="${c.migArch?'Desarchivar: la deuda migrada vuelve a lo adeudado':'Archivar: sacar la deuda migrada de lo adeudado'}" style="${c.migArch?'background:#EDE7F6;border-color:#C9B8E6;color:#5B3FA6':'background:#F3ECDD;border-color:#D8C9A8;color:#6E5527'}">${c.migArch?'♻️':'📦'}</span>`:''}
         <span class="icobtn" onclick="marcarContacto(${c.id})" title="${cont?'Último contacto '+cont.texto+' — marcar de nuevo':'Marcar como contactado'}" style="${cont&&cont.esHoy?'background:var(--t0bg);border-color:var(--t0);color:var(--t0)':''}">📞</span>
         ${c.wa?`<a class="icobtn wa" href="https://api.whatsapp.com/send?phone=${c.wa}&text=${encodeURIComponent(mensajeCobro(c))}" target="_blank" onclick="marcarContacto(${c.id})" title="${c.situacion==='cubierto'?'Pedir certificado/OP':'Recordar pago'} por WhatsApp"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2z"/></svg></a>`
              :`<span class="icobtn wa" data-off><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2z" opacity=".5"/></svg></span>`}
@@ -989,7 +1005,25 @@ function mensajeCobro(c){
 window.onSearch = EYG.buscador(v => { filtro.q=v; renderLista(); });
 function setTramo(k){filtro.boveda=false;filtro.tramo=filtro.tramo===k?"":k;render();}
 function setRubro(v){filtro.rubro=filtro.rubro===v?"":v;render();}
-function toggleBoveda(){filtro.boveda=!filtro.boveda;filtro.tramo="";render();}
+function toggleBoveda(){filtro.boveda=!filtro.boveda;filtro.migrada=false;filtro.tramo="";render();}
+function toggleMigrada(){filtro.migrada=!filtro.migrada;filtro.boveda=false;filtro.tramo="";render();}
+async function archivarMig(id){
+  const c=CLI.find(x=>x.id===id); if(!c) return;
+  if(!confirm(`¿Archivar la deuda migrada de ${c.nombre} (${money(c.migVenc)})?\n\nSale de "lo adeudado" y del vencido. Queda registrado y se puede desarchivar.`)) return;
+  try{
+    await rpc("res.partner","message_post",[[id]],{body:`📦 ${MIG_TAG} monto=${Math.round(c.migVenc||0)}`,message_type:"comment"});
+    toast("📦 Deuda migrada archivada · fuera de lo adeudado"); await cargar(true);
+    const dr=document.getElementById("drawer"); if(dr&&dr.classList.contains("on")) abrir(id);
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
+}
+async function desarchivarMig(id){
+  const c=CLI.find(x=>x.id===id); if(!c) return;
+  try{
+    await rpc("res.partner","message_post",[[id]],{body:`♻️ ${MIG_TAG} salir`,message_type:"comment"});
+    toast("♻️ Deuda migrada vuelve a lo adeudado"); await cargar(true);
+    const dr=document.getElementById("drawer"); if(dr&&dr.classList.contains("on")) abrir(id);
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
+}
 async function marcarContacto(id){
   const c=CLI.find(x=>x.id===id); if(!c) return;
   const iso=new Date().toISOString().slice(0,19).replace("T"," "); // UTC (fmtContacto lo convierte a hora AR)
@@ -1060,8 +1094,9 @@ function abrir(id){
         ${c.borrador>1?`<div class="kv"><span class="k">− Pagos en borrador</span><span class="v" style="color:var(--treg)">− ${money(c.borrador)}</span></div>`:''}
         <div class="kv" style="border-top:2px solid var(--line);padding-top:8px;margin-top:2px"><span class="k"><b>Deuda real a cobrar</b></span><span class="v"><b>${money(Math.max(0,c.deudaReal))}</b></span></div>
         <div class="kv" style="border:0"><span class="k">Vencida (con mora)</span><span class="v" style="color:var(--t5)">${money(c.vencidoReal)}</span></div>
-        ${c.migVenc>1?`<div class="kv" style="border:0;padding-top:0"><span class="k" style="font-size:11px;color:var(--gris2)">↳ incluye ${money(c.migVenc)} de saldo inicial de migración${c.minMig?` (${c.minMig.split("-").reverse().join("/")})`:''} — deuda vieja sin factura</span><span class="v"></span></div>`:''}
+        ${c.migVenc>1?`<div class="kv" style="border:0;padding-top:0"><span class="k" style="font-size:11px;color:${c.migArch?'#6E5527':'var(--gris2)'}">📦 ${money(c.migVenc)} de saldo inicial de migración${c.minMig?` (${c.minMig.split("-").reverse().join("/")})`:''} — deuda vieja sin factura${c.migArch?' · <b>archivada</b> (fuera de lo adeudado)':''}</span><span class="v"></span></div>`:''}
         ${c.ncSinAplicar>1?`<div class="kv" style="border:0;padding-top:2px"><span class="k" style="font-size:11px;color:#A5312E">⚠️ ${money(c.ncSinAplicar)} en NC sin aplicar — conviene conciliarlas contra su factura en Odoo (afecta el vencido)</span><span class="v"></span></div>`:''}
+        ${c.migVenc>1?`<div style="margin-top:8px"><button class="editbtn" style="margin-top:0;background:${c.migArch?'#EDE7F6':'#F3ECDD'};border-color:${c.migArch?'#C9B8E6':'#D8C9A8'};color:${c.migArch?'#5B3FA6':'#6E5527'}" onclick="${c.migArch?`desarchivarMig(${c.id})`:`archivarMig(${c.id})`}">${c.migArch?'♻️ Desarchivar deuda migrada · vuelve a lo adeudado':'📦 Archivar deuda migrada · sacarla de lo adeudado'}</button></div>`:''}
         <a class="odoo-link" href="${partnerUrl}" target="_blank">Ver reporte de seguimiento en Odoo →</a>
       </div>
 
@@ -1297,7 +1332,7 @@ async function tick(){
       // marcadores nuevos llevan fecha de hoy, así que una ventana de 3 días detecta igual el
       // cambio y el escaneo se achica muchísimo. La red de 55s cubre el borde al envejecer.
       const _pd=new Date(Date.now()-3*86400000).toISOString().slice(0,10)+" 00:00:00";
-      const r=await rpc("mail.message","search_read",[[["model","=","res.partner"],["date",">=",_pd],"|",["body","like","[COBRO-"],["body","like","[BOVEDA]"]],["id"]],{limit:1,order:"id desc"});
+      const r=await rpc("mail.message","search_read",[[["model","=","res.partner"],["date",">=",_pd],"|","|",["body","like","[COBRO-"],["body","like","[BOVEDA]"],["body","like","[MIG-ARCHIVADA]"]],["id"]],{limit:1,order:"id desc"});
       sig = r.length ? r[0].id : 0;
     }catch(e){ return; }                     // si el probe falla, no pasa nada (reintenta)
     if(_sig===null){ _sig=sig; return; }     // baseline en el 1er chequeo
