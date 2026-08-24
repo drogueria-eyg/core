@@ -678,8 +678,10 @@ async function cargar(){
       rpc("sale.order","read_group",[[["partner_id","in",ids],["state","in",["sale","done"]]],["date_order:max","amount_total:sum"],["partner_id"]],{lazy:false}),
       // Mensajes de WhatsApp registrados (confirmados) de la SEMANA: [EyGWA] tipo/nuevo|seg. Incluye legacy [EyGCRM].
       rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",hace(7)+" 00:00:00"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id","date","body"],limit:0}),
-      // CUENTA CORRIENTE = saldo REAL contable (líneas de cuentas por cobrar sin conciliar). Ya neteado de pagos a cuenta recibidos.
-      rpc("account.move.line","search_read",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],"|",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",ST.userId],"&",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",452],["move_id.invoice_line_ids.sale_line_ids.order_id.partner_id.user_id","=",ST.userId]]],{fields:["partner_id","amount_residual","date_maturity"],limit:0}),
+      // DEUDA y VENCIDO del cliente = campos NATIVOS de Odoo (Adeudo total / Total atrasado, del reporte
+      // de seguimiento). NO calculamos nada propio: leemos lo que dice Odoo → idéntico a Cobranzas.
+      // total_overdue ya netea las NC vencidas y NO cuenta el saldo de migración (que no tiene fecha).
+      rpc("res.partner","read",[ids],{fields:["total_due","total_overdue"],context:{lang:"es_AR"}}),
       // cobrado del mes = pagos entrantes (posted) de la cartera → base de la comisión
       rpc("account.payment","read_group",[[["partner_id","in",ids],["payment_type","=","inbound"],["state","=","posted"],["date",">=",inicioMes]],["amount:sum"],[]],{lazy:false}),
       // SIN FACTURAR = "Importe a facturar" (sale.order.amount_to_invoice) de sus pedidos a facturar → coincide exacto con Odoo
@@ -716,17 +718,18 @@ async function cargar(){
     ST.fact={ mes:facM-ncM, sem:facS-ncS, mesFac:facM, mesNC:ncM, semFac:facS, semNC:ncS };
     // ---- Sin facturar = "Importe a facturar" de sus pedidos "a facturar" (coincide con Odoo) ----
     const afSin = aFact[0]?.amount_to_invoice||0;
-    // ---- Cuentas corrientes ----
+    // ---- Cuentas corrientes = campos NATIVOS de Odoo (Adeudo total / Total atrasado). ----
+    // NO calculamos deuda ni vencido propios: leemos lo que dice Odoo → imposible que difiera de Odoo
+    // ni del módulo Cobranzas (que lee lo mismo). total_overdue ya netea NC vencidas; ≤0 = sin atraso real.
     const porP={};
-    for(const l of ccLines){
-      if(!l.partner_id) continue; const pid=l.partner_id[0];
-      const res=l.amount_residual||0;
-      const p=porP[pid]||(porP[pid]={deuda:0,vencido:0,venc:null});
-      p.deuda+=res;
-      if(l.date_maturity && l.date_maturity<hoyStr){ p.vencido+=res; if(res>0 && (!p.venc || l.date_maturity<p.venc)) p.venc=l.date_maturity; }
+    for(const c of (ccLines||[])){
+      if(!c) continue;
+      const deuda=(typeof c.total_due==="number")?c.total_due:0;
+      const venc=(typeof c.total_overdue==="number")?c.total_overdue:0;
+      porP[c.id]={ deuda, vencido:Math.max(0,venc), venc:null };
     }
     let porCobrar=0, vencido=0, nDeud=0;
-    for(const pid in porP){ const d=porP[pid].deuda; if(d>1){porCobrar+=d; vencido+=Math.max(0,porP[pid].vencido); nDeud++;} }
+    for(const pid in porP){ const d=porP[pid].deuda; if(d>1){porCobrar+=d; vencido+=porP[pid].vencido; nDeud++;} }
     ST.cc={ porP, porCobrar, vencido, cobradoMes:cobrado[0]?.amount||0, aFacturar:afSin, nDeud };
     // Perfil crediticio: historial de pago interno (riesgoCartera) + umbral + cache BCRA. Alimentan
     // el badge abreviado de la lista Y el detalle de la ficha. El BCRA se completa en 2º plano (trickle).

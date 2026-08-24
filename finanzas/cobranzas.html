@@ -297,7 +297,7 @@ const digits=soloDig;
 function fmtDoc(raw,idtypeId){const d=digits(raw);if(!d)return"";if(idtypeId===IDT.dni){if(d.length<7||d.length>8)return raw.trim();return d.replace(/\B(?=(\d{3})+(?!\d))/g,".");}if(idtypeId===IDT.cuit||idtypeId===IDT.cuil){if(d.length!==11)return raw.trim();return d.slice(0,2)+"-"+d.slice(2,10)+"-"+d.slice(10);}return raw.trim();}
 function fmtTel(raw){let d=digits(raw);if(!d)return"";if(d.startsWith("0054"))d=d.slice(4);if(d.startsWith("54"))d=d.slice(2);d=d.replace(/^0/,"");if(d.length>10)d=d.replace(/^(\d{2,4})15(\d{6,8})$/,"$1$2");if(d.length<8)return raw.trim();let area,local;if(d.length===10){if(d.startsWith("11")){area="11";local=d.slice(2);}else{area=d.slice(0,3);local=d.slice(3);}}else if(d.length===11){area=d.slice(0,4);local=d.slice(4);}else return"+54 "+d;const ls=local.length>=8?local.slice(0,4)+"-"+local.slice(4):local.slice(0,3)+"-"+local.slice(3);return"+54 "+area+" "+ls;}
 function oracion(s){s=(s||"").trim().replace(/\s+/g," ");if(!s)return"";return s.charAt(0).toUpperCase()+s.slice(1).toLowerCase();}
-const PFIELDS_COB=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","property_payment_term_id","x_studio_selection_field_6ui_1j42g6fu9","commercial_partner_id"];
+const PFIELDS_COB=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","property_payment_term_id","x_studio_selection_field_6ui_1j42g6fu9","commercial_partner_id","total_due","total_overdue"];
 // Plazo de pago → badge corto: "30 días"→"30 d", "CONTADO"→"contado", etc.
 function plazoCorto(term){ if(!term) return ""; const n=Array.isArray(term)?term[1]:term; if(/contado|inmediat/i.test(n)) return "contado"; const m=n.match(/(\d+)\s*d/i); if(m) return m[1]+" d"; return n.length>12?n.slice(0,11)+"…":n; }
 let CAT={fiscal:[],idt:[],prov:[]};
@@ -362,10 +362,9 @@ async function cargar(silent){
       else if(tipo==="inicial") p.saldoIni+=r;
       if(r>0){
         p.baseBruto+=(l.balance||r); // monto original de lo abierto (para la barra de % cobrado)
-        if(venc){
-          if(!p.minVencAny||venc<p.minVencAny) p.minVencAny=venc;
-          if(venc<hoyStr){ p.vencidoGross+=r; if(!p.minVencVenc||venc<p.minVencVenc) p.minVencVenc=venc; }
-        }
+        if(venc && (!p.minVencAny||venc<p.minVencAny)) p.minVencAny=venc;
+        // días de mora: SOLO facturas con fecha de vencimiento REAL pasada (la migración sin fecha no cuenta).
+        if(l.date_maturity && l.date_maturity<hoyStr){ p.vencidoGross+=r; if(!p.minVencVenc||l.date_maturity<p.minVencVenc) p.minVencVenc=l.date_maturity; }
       }
       p.movs.push({name:l.move_name,tipo,fecha:l.date,venc,r});
     }
@@ -434,10 +433,12 @@ async function cargar(silent){
       const c=byId[p.id]||{};
       const borrador=draftMap[p.id]||0;
       const saldoReal=p.saldo;
-      const deudaReal=saldoReal-borrador;
       const gris=p.cobradoSinImp+borrador;
-      // vencido real: la plata en gris se aplica primero a lo vencido (aprox., el gris no está mapeado a facturas puntuales)
-      let vencidoReal=Math.max(0, p.vencidoGross-gris);
+      // DEUDA y VENCIDO = campos NATIVOS de Odoo (Adeudo total / Total atrasado del reporte de seguimiento).
+      // NO calculamos un vencido propio: lo real lo dice Odoo. total_overdue ya netea NC vencidas y no cuenta
+      // el saldo de migración (sin fecha). Si Odoo no devolviera el dato, cae a la cuenta por líneas.
+      const deudaReal=(typeof c.total_due==="number")?c.total_due:(saldoReal-borrador);
+      let vencidoReal=(typeof c.total_overdue==="number")?Math.max(0,c.total_overdue):Math.max(0,p.vencidoGross-gris);
       vencidoReal=Math.min(vencidoReal, Math.max(0,deudaReal));
 
       let situacion, tramo, mora;
