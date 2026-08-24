@@ -349,7 +349,7 @@ async function cargar(silent){
       const r=l.amount_residual||0;
       if(Math.abs(r)<0.5) continue;
       const p=P[id]||(P[id]={id,nombre:l.partner_id[1],saldo:0,deudaFac:0,saldoIni:0,cobradoSinImp:0,
-                              baseBruto:0,vencidoGross:0,minVencVenc:null,minVencAny:null,movs:[]});
+                              baseBruto:0,vencidoGross:0,migSinFecha:0,minMig:null,minVencVenc:null,minVencAny:null,movs:[]});
       let tipo;
       if(l.move_type==="out_invoice") tipo="factura";
       else if(l.move_type==="out_refund") tipo="nc";
@@ -365,6 +365,8 @@ async function cargar(silent){
         if(venc && (!p.minVencAny||venc<p.minVencAny)) p.minVencAny=venc;
         // días de mora: SOLO facturas con fecha de vencimiento REAL pasada (la migración sin fecha no cuenta).
         if(l.date_maturity && l.date_maturity<hoyStr){ p.vencidoGross+=r; if(!p.minVencVenc||l.date_maturity<p.minVencVenc) p.minVencVenc=l.date_maturity; }
+        // saldo de migración (impago sin fecha): cuenta como vencido igual (deuda vieja que no se pagó).
+        if(!l.date_maturity){ p.migSinFecha+=r; const dm=l.date||null; if(dm && (!p.minMig||dm<p.minMig)) p.minMig=dm; }
       }
       p.movs.push({name:l.move_name,tipo,fecha:l.date,venc,r});
     }
@@ -434,11 +436,13 @@ async function cargar(silent){
       const borrador=draftMap[p.id]||0;
       const saldoReal=p.saldo;
       const gris=p.cobradoSinImp+borrador;
-      // DEUDA y VENCIDO = campos NATIVOS de Odoo (Adeudo total / Total atrasado del reporte de seguimiento).
-      // NO calculamos un vencido propio: lo real lo dice Odoo. total_overdue ya netea NC vencidas y no cuenta
-      // el saldo de migración (sin fecha). Si Odoo no devolviera el dato, cae a la cuenta por líneas.
+      // DEUDA = campo NATIVO de Odoo (Adeudo total del reporte de seguimiento).
+      // VENCIDO = atrasado real de Odoo (total_overdue, ya netea NC vencidas) + saldo de MIGRACIÓN sin fecha.
+      // Criterio del usuario: la deuda de migración no pagada está vencida igual, aunque venga de otro sistema.
       const deudaReal=(typeof c.total_due==="number")?c.total_due:(saldoReal-borrador);
-      let vencidoReal=(typeof c.total_overdue==="number")?Math.max(0,c.total_overdue):Math.max(0,p.vencidoGross-gris);
+      const overdueOdoo=(typeof c.total_overdue==="number")?c.total_overdue:(p.vencidoGross-gris);
+      const migVenc=p.migSinFecha||0;   // saldo inicial de migración (se muestra como observación en la ficha)
+      let vencidoReal=Math.max(0, overdueOdoo + migVenc);
       vencidoReal=Math.min(vencidoReal, Math.max(0,deudaReal));
 
       let situacion, tramo, mora;
@@ -460,7 +464,7 @@ async function cargar(silent){
       return {
         id:p.id, nombre:p.nombre, movs:p.movs,
         saldoReal, deudaReal, deudaFac:p.deudaFac, saldoIni:p.saldoIni, base, pctDebe,
-        cobradoSinImp:p.cobradoSinImp, borrador, gris, vencidoReal, mora, tramo, situacion, tieneGris, prioridad,
+        cobradoSinImp:p.cobradoSinImp, borrador, gris, vencidoReal, migVenc, minMig:p.minMig, mora, tramo, situacion, tieneGris, prioridad,
         venc:p.minVencVenc||p.minVencAny, nfac:p.movs.filter(m=>m.tipo==="factura"&&m.r>0).length,
         drafts:DRAFT[p.id]||[],
         wa:waNumber(c.mobile,c.phone), tellink:telLink(c.mobile,c.phone),
@@ -1055,6 +1059,7 @@ function abrir(id){
         ${c.borrador>1?`<div class="kv"><span class="k">− Pagos en borrador</span><span class="v" style="color:var(--treg)">− ${money(c.borrador)}</span></div>`:''}
         <div class="kv" style="border-top:2px solid var(--line);padding-top:8px;margin-top:2px"><span class="k"><b>Deuda real a cobrar</b></span><span class="v"><b>${money(Math.max(0,c.deudaReal))}</b></span></div>
         <div class="kv" style="border:0"><span class="k">Vencida (con mora)</span><span class="v" style="color:var(--t5)">${money(c.vencidoReal)}</span></div>
+        ${c.migVenc>1?`<div class="kv" style="border:0;padding-top:0"><span class="k" style="font-size:11px;color:var(--gris2)">↳ incluye ${money(c.migVenc)} de saldo inicial de migración${c.minMig?` (${c.minMig.split("-").reverse().join("/")})`:''} — deuda vieja sin factura</span><span class="v"></span></div>`:''}
         <a class="odoo-link" href="${partnerUrl}" target="_blank">Ver reporte de seguimiento en Odoo →</a>
       </div>
 

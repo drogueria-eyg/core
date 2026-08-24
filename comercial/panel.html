@@ -718,15 +718,19 @@ async function cargar(){
     ST.fact={ mes:facM-ncM, sem:facS-ncS, mesFac:facM, mesNC:ncM, semFac:facS, semNC:ncS };
     // ---- Sin facturar = "Importe a facturar" de sus pedidos "a facturar" (coincide con Odoo) ----
     const afSin = aFact[0]?.amount_to_invoice||0;
-    // ---- Cuentas corrientes = campos NATIVOS de Odoo (Adeudo total / Total atrasado). ----
-    // NO calculamos deuda ni vencido propios: leemos lo que dice Odoo → imposible que difiera de Odoo
-    // ni del módulo Cobranzas (que lee lo mismo). total_overdue ya netea NC vencidas; ≤0 = sin atraso real.
+    // ---- Cuentas corrientes = campos NATIVOS de Odoo (Adeudo total / Total atrasado) + migración. ----
+    // Deuda = total_due. Vencido = total_overdue (netea NC vencidas) + saldo de MIGRACIÓN sin fecha
+    // (deuda vieja impaga = vencida, criterio del usuario). Mismo criterio EXACTO que Cobranzas.
+    let migMap={};
+    try{ const mg=await rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["date_maturity","=",false],["partner_id","in",ids]],["amount_residual:sum"],["partner_id"]],{lazy:false});
+      (mg||[]).forEach(g=>{ if(g.partner_id) migMap[g.partner_id[0]]=g.amount_residual||0; }); }catch(e){}
     const porP={};
     for(const c of (ccLines||[])){
       if(!c) continue;
       const deuda=(typeof c.total_due==="number")?c.total_due:0;
-      const venc=(typeof c.total_overdue==="number")?c.total_overdue:0;
-      porP[c.id]={ deuda, vencido:Math.max(0,venc), venc:null };
+      const over=(typeof c.total_overdue==="number")?c.total_overdue:0;
+      const mig=migMap[c.id]||0;
+      porP[c.id]={ deuda, vencido:Math.max(0,over+mig), venc:null };
     }
     let porCobrar=0, vencido=0, nDeud=0;
     for(const pid in porP){ const d=porP[pid].deuda; if(d>1){porCobrar+=d; vencido+=porP[pid].vencido; nDeud++;} }
