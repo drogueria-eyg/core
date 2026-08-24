@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=35"></script>
+<script src="../assets/core.js?v=36"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF; --agua:#E2F1EF;
@@ -40,6 +40,10 @@
   .btn.ghost{background:var(--surface);color:var(--teal-deep);border:1.5px solid var(--line)}
   .btn.big{font-size:17px;padding:16px 26px;border-radius:14px}
   .btn.grn{background:var(--ok);color:#fff}
+  .btn.gold{background:#C9A227;color:#fff}
+  .pfrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 4px;border-bottom:1px solid var(--line);cursor:pointer}
+  .pfrow:hover{background:#F7FBFA}
+  .pfsel{background:#EEF6F5;border:1px solid #BFE0DC;border-radius:9px;padding:9px 12px;font-size:14px}
   .btn.red{background:#fff;color:var(--bad);border:1.5px solid #f0c4c2}
   .btn:disabled{opacity:.55;cursor:default}
 
@@ -1042,7 +1046,7 @@ function hintHtml(pid,q){
 function renderGrid(){
   const el=document.getElementById("gridWrap"); if(!el) return;
   if(ST.cargandoCat){ el.innerHTML='<div class="loading"><div class="spinner"></div>Leyendo catálogo…</div>'; return; }
-  if(!ST.prods.length){ el.innerHTML='<div class="empty">'+(ST.qProd?"No encontré productos con ese nombre (y stock).":(ST.fam==="OFERTAS"?"No hay ofertas vigentes con stock por ahora.":"No hay productos con stock en esta familia."))+'</div>'; return; }
+  if(!ST.prods.length){ el.innerHTML='<div class="empty">'+(ST.qProd?`No encontré productos <b>con stock</b> con ese nombre.<br><br>Si el cliente lo necesita igual, dejalo anotado para reponer:<br><br><button class="btn gold" onclick="dejarPendiente('${esc((ST.qProd||"").replace(/'/g,""))}')">📋 Dejar pendiente (sin stock)</button>`:(ST.fam==="OFERTAS"?"No hay ofertas vigentes con stock por ahora.":"No hay productos con stock en esta familia."))+'</div>'; return; }
   // PVP por producto (list_price): en éticos = PVP Alfabeta. Base para mostrar el descuento como en la web.
   ST.pvp={}; ST.prods.forEach(p=>{ ST.pvp[p.id]=p.list_price||0; });
   const cuerpo = ST.vista==="grilla"
@@ -1300,7 +1304,7 @@ function vVenta(){
             <button class="vbtn ${ST.vista==='grilla'?'on':''}" data-v="grilla" onclick="setVista('grilla')" title="Vista en grilla">▦</button>
           </div>
         </div>
-        <div class="fams">${FAMILIAS.map(f=>`<button class="fam ${ST.fam===f.k&&!ST.qProd?"on":""}" data-fam="${f.k}" onclick="setFam('${f.k}')">${esc(f.label)}</button>`).join("")}<button class="fam of ${ST.fam==='OFERTAS'&&!ST.qProd?'on':''}" data-fam="OFERTAS" onclick="setFam('OFERTAS')">🏷️ Ofertas</button></div>
+        <div class="fams">${FAMILIAS.map(f=>`<button class="fam ${ST.fam===f.k&&!ST.qProd?"on":""}" data-fam="${f.k}" onclick="setFam('${f.k}')">${esc(f.label)}</button>`).join("")}<button class="fam of ${ST.fam==='OFERTAS'&&!ST.qProd?'on':''}" data-fam="OFERTAS" onclick="setFam('OFERTAS')">🏷️ Ofertas</button><button class="fam" onclick="dejarPendiente()" style="margin-left:auto;border-color:#E0B84A;color:#8a6a1f;background:#FBF4E3" title="Cargar un producto sin stock como pendiente de reposición">📋 Falta sin stock</button></div>
       </div>
       <div id="gridWrap"></div>
     </div>
@@ -1492,6 +1496,67 @@ function modal(html){ document.getElementById("modalHost").innerHTML=`<div class
 function cerrarModal(){ document.getElementById("modalHost").innerHTML=""; }
 function modal(html){ document.getElementById("modalHost").innerHTML=`<div class="scrim" onclick="if(event.target===this)cerrarModal()"><div class="modal">${html}</div></div>`; }
 function cerrarModal(){ document.getElementById("modalHost").innerHTML=""; }
+
+/* ===== Dejar pendiente (producto SIN stock) → lista de reposición (Supabase) ===== */
+let _PEND={prod:null,results:[]};
+const _limpiaNom=n=>(n||"").replace(/^\[[^\]]*\]\s*/,"").trim();
+function dejarPendiente(pre){
+  if(!ST.order){ toast("Primero elegí el cliente y abrí el pedido"); return; }
+  _PEND={prod:null,results:[]};
+  modal(`<h3>📋 Producto sin stock — dejar pendiente</h3>
+    <p style="font-size:13px;color:var(--gris);margin:2px 0 10px">Para <b>${esc(ST.order.partnerName||"")}</b>. Se guarda en la lista de reposición que ven Dirección y Compras. <b>No entra al pedido ni genera entrega.</b></p>
+    <div class="search2" style="margin-bottom:8px">🔎 <input id="pfBuscar" placeholder="Buscar producto (nombre o código)…" oninput="pendBuscar(this.value)" value="${esc(pre||"")}"></div>
+    <div id="pfRes"><p style="color:var(--gris);font-size:13px">Escribí para buscar…</p></div>
+    <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cerrar</button><a class="btn ghost" href="${EYG.abs('inventario/pendientes.html')}" style="text-decoration:none">Ver mis pendientes →</a></div>`);
+  setTimeout(()=>{ const i=document.getElementById("pfBuscar"); if(i){ i.focus(); if(pre) pendBuscar(pre); } },40);
+}
+let _pfT=null;
+function pendBuscar(q){
+  clearTimeout(_pfT);
+  _pfT=setTimeout(async ()=>{
+    const res=document.getElementById("pfRes"); if(!res) return;
+    q=(q||"").trim(); if(q.length<2){ res.innerHTML='<p style="color:var(--gris);font-size:13px">Escribí al menos 2 letras…</p>'; return; }
+    res.innerHTML='<p style="color:var(--gris);font-size:13px">Buscando…</p>';
+    try{
+      const rows=await rpc("product.product","search_read",[["&",["sale_ok","=",true],"|",["name","ilike",q],["default_code","ilike",q]],["id","default_code","name","qty_available"]],{limit:25,context:ES});
+      _PEND.results=rows;
+      if(!rows.length){ res.innerHTML='<p style="color:var(--gris);font-size:13px">Sin resultados.</p>'; return; }
+      res.innerHTML=rows.map(p=>`<div class="pfrow" onclick="pendElegir(${p.id})">
+        <div><b>${esc(_limpiaNom(p.name))}</b><br><span style="font-size:11.5px;color:var(--gris)">${esc(p.default_code||"")} · stock ${Math.round(p.qty_available||0)}</span></div>
+        <span class="btn ghost" style="padding:5px 12px">Elegir</span></div>`).join("");
+    }catch(e){ res.innerHTML='<p style="color:#8A1F1C;font-size:13px">No se pudo buscar.</p>'; }
+  }, 300);
+}
+function pendElegir(id){
+  const p=(_PEND.results||[]).find(x=>x.id===id); if(!p) return; _PEND.prod=p;
+  document.getElementById("pfRes").innerHTML=`
+    <div class="pfsel"><b>${esc(_limpiaNom(p.name))}</b> <span style="color:var(--gris)">(${esc(p.default_code||"")} · stock ${Math.round(p.qty_available||0)})</span></div>
+    <div style="display:flex;gap:10px;margin-top:10px;align-items:flex-end;flex-wrap:wrap">
+      <label style="font-size:12px;font-weight:700">Cantidad<br><input id="pfCant" type="number" min="1" value="1" style="width:90px;font-size:16px;padding:8px;border:1px solid var(--line);border-radius:8px"></label>
+      <label style="flex:1;min-width:150px;font-size:12px;font-weight:700">Nota (opcional)<br><input id="pfNota" placeholder="ej: urgente" style="width:100%;font-size:15px;padding:8px;border:1px solid var(--line);border-radius:8px"></label>
+    </div>
+    <button class="btn grn" style="margin-top:12px;width:100%" onclick="pendGuardar()">📋 Cargar como pendiente</button>
+    <button class="btn ghost" style="margin-top:6px;width:100%" onclick="pendVolver()">← Elegir otro</button>`;
+  setTimeout(()=>{ const c=document.getElementById("pfCant"); if(c){c.focus();c.select();} },30);
+}
+function pendVolver(){ _PEND.prod=null; const r=document.getElementById("pfRes"); if(r) r.innerHTML='<p style="color:var(--gris);font-size:13px">Escribí para buscar…</p>'; const i=document.getElementById("pfBuscar"); if(i){i.value="";i.focus();} }
+async function pendGuardar(){
+  const p=_PEND.prod; if(!p) return;
+  const cant=parseInt((document.getElementById("pfCant").value||"0"),10);
+  if(!(cant>0)){ toast("Poné una cantidad"); return; }
+  const nota=(document.getElementById("pfNota").value||"").trim();
+  try{
+    const {error}=await EYG.supa().from("pendientes_reposicion").insert([{
+      comercial:COMERCIAL, comercial_email:(ST.perfil&&ST.perfil.email)||null,
+      cliente_id:ST.order.partnerId, cliente_nombre:ST.order.partnerName,
+      producto_id:p.id, producto_codigo:p.default_code||"", producto_nombre:_limpiaNom(p.name),
+      cantidad:cant, nota:nota||null, estado:"pendiente"
+    }]);
+    if(error) throw error;
+    cerrarModal(); toast("✓ Cargado en pendientes de reposición");
+  }catch(e){ alert("No se pudo cargar el pendiente: "+(e.message||e)); }
+}
+
 
 /* Alto real de la topbar → variable CSS --topH, para que el catálogo y el carrito
    (position:sticky) queden justo debajo y no tapen la primera fila de productos. */
