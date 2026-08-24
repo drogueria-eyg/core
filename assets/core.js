@@ -392,6 +392,14 @@ window.EYG = (function(){
     {key:"mapa", dept:"direccion", cat:"Dirección", ico:"🧠", titulo:"Mapa del sistema", desc:"El sistema entero en 3D: Odoo en el núcleo, los módulos del Core alrededor, Supabase, GitHub y la web, con cada conexión y cada fórmula nuestra. Es ley: todo cambio se registra acá.", roles:["direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"direccion/mapa.html"},
+    /* EN PRUEBAS: el Asistente EyG (superagente, Fase 1). Chat con IA conectado a
+       Odoo (solo lectura), al buscador del catálogo y a la web. Los precios y el
+       stock salen SIEMPRE de Odoo. Cerebro: edge function eyg-agente (Supabase).
+       Para liberarlo: borrar la línea `pruebas` de acá y el {pruebas:…} del
+       EYG.guard() de direccion/agente.html, y ampliar roles si hace falta. */
+    {key:"agente", dept:"direccion", cat:"Dirección", ico:"✨", titulo:"Asistente EyG", desc:"El experto interno en un HUD en vivo: preguntale por ventas, precios, stock, clientes o deuda y consulta Odoo al instante, mostrando el conocimiento que va adquiriendo. La web solo para lo externo, citando fuente.", roles:["direccion"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"direccion/agente.html"},
     {key:"usuarios",  dept:"admin", cat:"Sistema", ico:"👤", titulo:"Usuarios y accesos", desc:"Altas de personal, roles y permisos por persona (qué módulos ve cada uno). Restablecé contraseñas por mail.", roles:["admin"], ready:true, path:()=>"admin/usuarios.html"},
   ];
   /* Acepta el perfil entero (o sólo el rol, por compatibilidad).
