@@ -954,7 +954,8 @@ window.EYG = (function(){
       <div class="nmbody"><div class="meta">${esc(c.autor||"")}${c.ts?" · "+_fFecha(c.ts.slice(0,10)):""}</div><div class="bd">${esc(c.cuerpo||"")||"(sin texto)"}</div></div>
       <div class="nmfoot">
         <button onclick="EYG.comArchivarDesde('${c.id}',${arch?'false':'true'})">${arch?'♻️ Restaurar':'🗂️ Archivar'}</button>
-        <button class="pri" onclick="EYG.comCerrarOverlay()">Cerrar</button>
+        ${c.link?`<button class="pri" onclick="EYG.comCerrarOverlay();location.href=EYG.abs('${esc(c.link)}')">${esc(c.linkLabel||'Ir →')}</button>`:''}
+        <button class="${c.link?'':'pri'}" onclick="EYG.comCerrarOverlay()">Cerrar</button>
       </div>
     </div></div>`;
   }
