@@ -1545,15 +1545,21 @@ async function pendGuardar(){
   const cant=parseInt((document.getElementById("pfCant").value||"0"),10);
   if(!(cant>0)){ toast("Poné una cantidad"); return; }
   const nota=(document.getElementById("pfNota").value||"").trim();
+  const yo=COMERCIAL, email=(ST.perfil&&ST.perfil.email)||null, sb=EYG.supa();
   try{
-    const {error}=await EYG.supa().from("pendientes_reposicion").insert([{
-      comercial:COMERCIAL, comercial_email:(ST.perfil&&ST.perfil.email)||null,
-      cliente_id:ST.order.partnerId, cliente_nombre:ST.order.partnerName,
-      producto_id:p.id, producto_codigo:p.default_code||"", producto_nombre:_limpiaNom(p.name),
-      cantidad:cant, nota:nota||null, estado:"pendiente"
-    }]);
-    if(error) throw error;
-    cerrarModal(); toast("✓ Cargado en pendientes de reposición");
+    // ¿ya hay una orden de reposición ABIERTA para este producto? → sumo. Si no, la creo.
+    let {data:ex}=await sb.from("reposicion_orden").select("id").eq("producto_id",p.id).eq("estado","abierta").limit(1);
+    let ordenId, nueva=false;
+    if(ex&&ex.length){ ordenId=ex[0].id; }
+    else{
+      const {data:ins,error:e1}=await sb.from("reposicion_orden").insert([{producto_id:p.id,producto_codigo:p.default_code||"",producto_nombre:_limpiaNom(p.name),estado:"abierta",creada_por:yo,creada_email:email}]).select("id");
+      if(e1) throw e1; ordenId=ins[0].id; nueva=true;
+    }
+    const {error:e2}=await sb.from("reposicion_linea").insert([{orden_id:ordenId,comercial:yo,comercial_email:email,cliente_id:ST.order.partnerId,cliente_nombre:ST.order.partnerName,cantidad:cant,nota:nota||null}]);
+    if(e2) throw e2;
+    await sb.from("reposicion_log").insert([{orden_id:ordenId,accion:(nueva?"crear":"agregar"),por:yo,por_email:email,detalle:`${cant} u para ${ST.order.partnerName||""}`}]);
+    await sb.from("reposicion_orden").update({ult_mod_por:yo,ult_mod_ts:new Date().toISOString()}).eq("id",ordenId);
+    cerrarModal(); toast(nueva?"✓ Orden de reposición creada — se avisa a los demás":"✓ Sumado a la orden de reposición");
   }catch(e){ alert("No se pudo cargar el pendiente: "+(e.message||e)); }
 }
 
