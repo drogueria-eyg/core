@@ -313,6 +313,16 @@ window.EYG = (function(){
     {key:"portal", dept:"portal", cat:"Portal web", ico:"🌐", titulo:"Portal web",
       desc:"Cómo viene el portal de clientes: visitas, pedidos online y clientes que entran. Además, la cinta de avisos que ven en el portal y las noticias que se publican.",
       roles:["lider"], ready:true, path:()=>"portal/portal.html"},
+    /* EN PRUEBAS: WhatsApp de EyG. Bandeja propia en Core (los mensajes viven en
+       Odoo, que es quien habla con Meta) + interruptor del asistente wsp-agente.
+       La config del bot es el parámetro eyg.wsp_bot (activo / números de prueba /
+       conversaciones tomadas por el equipo). Para liberarlo: borrar la línea
+       `pruebas` de acá y el {pruebas:…} del EYG.guard() de comunicaciones/whatsapp.html. */
+    {key:"whatsapp", dept:"comercial", cat:"Comercial", ico:"💬", titulo:"WhatsApp",
+      desc:"Los mensajes de los clientes: leelos y respondelos desde acá. Con el asistente que atiende consultas simples y te deriva lo importante — lo encendés y apagás vos.",
+      roles:["comercial","lider"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"comunicaciones/whatsapp.html"},
     {key:"comunicaciones", dept:"direccion", cat:"Dirección", ico:"📣",
       titulo:p=>(p.rol==="admin"||p.rol==="direccion"||p.rol==="lider")?"Comunicaciones":"Novedades",
       desc:p=>(p.rol==="admin"||p.rol==="direccion")?"Bajá novedades a toda la empresa o a un área y seguí quién las leyó."
