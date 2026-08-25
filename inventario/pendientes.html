@@ -69,14 +69,14 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=38"></script>
+<script src="../assets/core.js?v=37"></script>
 <script>
 const esc=s=>(s||"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
 const nf=n=>Math.round(n||0).toLocaleString("es-AR");
 function toast(m){ let t=document.getElementById("toast"); if(!t){t=document.createElement("div");t.id="toast";document.body.appendChild(t);} t.textContent=m; t.classList.add("on"); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove("on"),2600); }
 function fdt(ts){ try{ return new Date(ts).toLocaleString("es-AR",{day:"2-digit",month:"2-digit",year:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch(e){ return ""; } }
 const EST_LBL={abierta:"Abierta — se puede sumar",aceptada:"Aceptada",en_compra:"En compra",repuesta:"Repuesta",entregada:"Entregada",cancelada:"Cancelada"};
-const ACC_LBL={crear:"abrió la orden",agregar:"sumó unidades",editar_recibir:"editó la cantidad a recibir",aceptar:"aceptó la orden",en_compra:"pasó a en compra",repuesta:"marcó repuesta",entregada:"marcó entregada",cancelada:"canceló"};
+const ACC_LBL={crear:"abrió la orden",agregar:"sumó unidades",editar_recibir:"editó la cantidad a recibir",editar_producto:"cambió el producto que va a ingresar",aceptar:"aceptó la orden",en_compra:"pasó a en compra",repuesta:"marcó repuesta",entregada:"marcó entregada",cancelada:"canceló"};
 const cerrada=o=>o.estado!=="abierta";
 
 let PERFIL=null, GESTION=false, MIREF="", MIEMAIL="";
@@ -152,6 +152,7 @@ function obodyGestion(o){
       <button class="mini-btn pri" onclick="editarRecibir(${o.id})">Guardar</button>
       <span style="font-size:12px;color:var(--gris)">Pedido por los comerciales: <b>${nf(o.total)}</b></span></div>` : "";
   const acts=[];
+  if(o.estado!=="cancelada"&&o.estado!=="entregada") acts.push(`<button class="mini-btn" onclick="editarProducto(${o.id})">✏️ Editar producto (otra marca)</button>`);
   if(o.estado==="abierta") acts.push(`<button class="mini-btn grn" onclick="aceptar(${o.id})">✔ Aceptar (cierra el agregado)</button>`);
   if(o.estado==="aceptada") acts.push(`<button class="mini-btn gold" onclick="setEstado(${o.id},'en_compra')">🛒 En compra</button>`);
   if(o.estado==="aceptada"||o.estado==="en_compra") acts.push(`<button class="mini-btn grn" onclick="setEstado(${o.id},'repuesta')">✅ Repuesta</button>`);
@@ -236,6 +237,50 @@ async function guardarAgregar(id){
     await _log(id,"agregar",`${nf(cant)} u${cli?` para ${cli}`:""}`); await _touch(id);
     cerrarOv(); toast("✓ Sumaste "+nf(cant)+" unidades"); await cargar();
   }catch(e){ alert("No se pudo sumar: "+(e.message||e)); }
+}
+// gestión (Germán/Diego): editar el PRODUCTO que va a ingresar (ej: se compró otra marca) y
+// avisar a los comerciales que lo pidieron, así saben qué producto/marca llega para el cliente.
+function editarProducto(id){
+  const o=BYID.get(id); if(!o) return;
+  const nCom=(o.lineas||[]).length;
+  const ov=document.getElementById("ov");
+  ov.innerHTML=`<div class="modbox"><h3>✏️ Editar producto a ingresar</h3>
+    <p style="font-size:13px;color:var(--gris);margin:4px 0 6px">Si vas a comprar <b>otra marca o presentación</b>, cambialo acá. Se avisa a ${nCom===1?"el comercial":`los ${nCom} comerciales`} que lo pidi${nCom===1?"ó":"eron"} para que sepan qué va a ingresar.</p>
+    <label>Producto que va a ingresar</label><input id="ep-nom" value="${esc(o.producto_nombre||"")}">
+    <label>Código (opcional)</label><input id="ep-cod" value="${esc(o.producto_codigo||"")}">
+    <label>Motivo del cambio (opcional)</label><input id="ep-mot" placeholder="ej: se compró otra marca">
+    <div class="mb"><button class="mini-btn" onclick="cerrarOv()">Cancelar</button><button class="mini-btn pri" onclick="guardarEditarProducto(${id})">Guardar y avisar</button></div></div>`;
+  ov.classList.add("on"); setTimeout(()=>{const c=document.getElementById("ep-nom");if(c){c.focus();c.select();}},30);
+}
+async function guardarEditarProducto(id){
+  const o=BYID.get(id); if(!o) return;
+  const nuevo=(document.getElementById("ep-nom").value||"").trim();
+  const cod=(document.getElementById("ep-cod").value||"").trim();
+  const mot=(document.getElementById("ep-mot").value||"").trim();
+  if(!nuevo){ toast("Poné el nombre del producto"); return; }
+  const viejo=o.producto_nombre||"";
+  if(nuevo===viejo && cod===(o.producto_codigo||"")){ cerrarOv(); toast("No cambiaste nada"); return; }
+  try{
+    const {error}=await EYG.supa().from("reposicion_orden").update({producto_nombre:nuevo, producto_codigo:cod||null, ult_mod_por:(PERFIL.nombre||PERFIL.email), ult_mod_ts:new Date().toISOString()}).eq("id",id);
+    if(error) throw error;
+    await _log(id,"editar_producto", `de "${viejo}" a "${nuevo}"${mot?` · ${mot}`:""}`);
+    // AVISO a los comerciales que pidieron este producto (por su campanita, dirigido por email)
+    try{
+      const emails=[...new Set((o.lineas||[]).map(l=>l.comercial_email).filter(Boolean))];
+      if(emails.length && EYG.comsLeer && EYG.comsGuardar){
+        const arr=await EYG.comsLeer();
+        arr.push({ id:"repoedit-"+id+"-"+Date.now(), clase:"novedad", activo:true,
+          alcance:"personas", personas:emails,
+          titulo:"📦 Reposición: cambió el producto que va a ingresar",
+          cuerpo:`Tu pedido de reposición de "${viejo}" se va a reponer con "${nuevo}"${mot?` (${mot})`:""}. Avisale al cliente qué producto/marca llega.`,
+          autor:(PERFIL.nombre||PERFIL.email), ts:new Date().toISOString(),
+          hasta:new Date(Date.now()+14*86400000).toISOString().slice(0,10),
+          link:"inventario/pendientes.html", linkLabel:"Ver pendientes →", leidoPor:[] });
+        await EYG.comsGuardar(arr);
+      }
+    }catch(e){}
+    cerrarOv(); toast("✓ Producto actualizado — se avisó a los comerciales"); await cargar();
+  }catch(e){ alert("No se pudo guardar: "+(e.message||e)); }
 }
 // gestión: editar cantidad a recibir
 async function editarRecibir(id){
