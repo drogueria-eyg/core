@@ -1048,12 +1048,23 @@ function hintHtml(pid,q){
 function renderGrid(){
   const el=document.getElementById("gridWrap"); if(!el) return;
   if(ST.cargandoCat){ el.innerHTML='<div class="loading"><div class="spinner"></div>Leyendo catálogo…</div>'; return; }
-  if(!ST.prods.length){ el.innerHTML='<div class="empty">'+(ST.qProd?`No encontré productos <b>con stock</b> con ese nombre.<br><br>Si el cliente lo necesita igual, dejalo anotado para reponer:<br><br><button class="btn gold" onclick="dejarPendiente('${esc((ST.qProd||"").replace(/'/g,""))}')">📋 Dejar pendiente (sin stock)</button>`:(ST.fam==="OFERTAS"?"No hay ofertas vigentes con stock por ahora.":"No hay productos con stock en esta familia."))+'</div>'; return; }
+  // El comercial SÓLO ve lo DISPONIBLE (físico − comprometido > 0). Lo comprometido/sin stock
+  // no aparece en el catálogo: se pide por Reposición ("📋 Falta sin stock" o el buscador).
+  const vis = ST.prods.filter(p=>dispDe(p.id)>0);
+  if(!vis.length){
+    const hayComprometido = ST.prods.length>0;   // había productos pero todos sin disponible
+    el.innerHTML='<div class="empty">'+(ST.qProd
+      ? `No encontré productos <b>con stock disponible</b> con ese nombre.<br><br>Si el cliente lo necesita igual, pedilo a reposición:<br><br><button class="btn gold" onclick="dejarPendiente('${esc((ST.qProd||"").replace(/'/g,""))}')">📋 Pedir reposición</button>`
+      : hayComprometido
+        ? `Estos productos están <b>sin stock disponible</b> (comprometidos a pedidos ya confirmados), por eso no aparecen. Si el cliente los necesita, pedilos a reposición.<br><br><button class="btn gold" onclick="dejarPendiente()">📋 Pedir reposición</button>`
+        : (ST.fam==="OFERTAS"?"No hay ofertas vigentes con stock por ahora.":"No hay productos con stock disponible en esta familia."))+'</div>';
+    return;
+  }
   // PVP por producto (list_price): en éticos = PVP Alfabeta. Base para mostrar el descuento como en la web.
-  ST.pvp={}; ST.prods.forEach(p=>{ ST.pvp[p.id]=p.list_price||0; });
+  ST.pvp={}; vis.forEach(p=>{ ST.pvp[p.id]=p.list_price||0; });
   const cuerpo = ST.vista==="grilla"
-    ? '<div class="grid">'+ST.prods.map(cardProd).join("")+'</div>'
-    : '<div class="rows">'+ST.prods.map(rowProd).join("")+'</div>';
+    ? '<div class="grid">'+vis.map(cardProd).join("")+'</div>'
+    : '<div class="rows">'+vis.map(rowProd).join("")+'</div>';
   el.innerHTML = cuerpo +
     (ST.prods.length>=200?'<div style="text-align:center;color:var(--gris2);font-size:12px;padding:0 0 16px">Mostrando los primeros 200. Afiná con el buscador.</div>':"");
   // imágenes: <img loading="lazy" src="/web/image/..."> directo (ver thumbHtml), fuera del canal RPC
