@@ -407,6 +407,7 @@ function render(){
   document.getElementById("ld").innerHTML = `${headerLider()}
     <div class="tabs">
       <button class="tab ${VISTA==='rendimiento'?'on':''}" onclick="setVista('rendimiento')">📊 Rendimiento</button>
+      <button class="tab ${VISTA==='mensajeria'?'on':''}" onclick="setVista('mensajeria')">💬 Mensajería</button>
       <button class="tab ${VISTA==='historico'?'on':''}" onclick="setVista('historico')">📈 Histórico</button>
       <button class="tab ${VISTA==='ofertas'?'on':''}" onclick="setVista('ofertas')">🎁 Ofertas</button>
       <button class="tab ${VISTA==='actividad'?'on':''}" onclick="setVista('actividad')">🟢 Actividad</button>
@@ -427,6 +428,9 @@ function pintarVista(){
     renderKpis(); renderVentasEq(); renderChart(); renderEquipo(); renderProds();
     renderDescartados(); cargarDescartados();
     if(EYG.cardOfertasSemana) EYG.cardOfertasSemana("ofSemana");
+  }else if(VISTA==="mensajeria"){
+    v.innerHTML=`<div id="msgEq"></div>`;
+    renderMensajeria(); cargarMensajeria();
   }else if(VISTA==="historico"){
     v.innerHTML=`<div id="hist"></div>`;
     cargarHistorico();
@@ -779,6 +783,123 @@ function renderActividadLider(){
           <div style="margin-top:6px;max-height:280px;overflow:auto">${x.acts.map(a=>`<div style="display:flex;gap:8px;font-size:12.5px;padding:3px 0;border-bottom:1px solid #f2f5f4"><span style="color:var(--gris2);font-variant-numeric:tabular-nums;min-width:42px">${horaAR(a.t)}</span><span style="flex:none">${a.ic}</span><span style="color:#3a4a47">${esc(a.tx)}</span></div>`).join("")}</div></details>`:'<div style="font-size:12px;color:var(--gris2)">Sin actividad registrada hoy.</div>'}
       </div>`;
     }).join("")}
+    </div>`;
+}
+
+/* ===== Pieza 3: Mensajería del equipo — rendimiento del mes + histórico =====
+   Scope estricto al equipo del líder: contactos WhatsApp sobre la cartera del equipo
+   (notas [EyGWA]/[EyGCRM] con res_id ∈ cartera), ofertas compartidas ([EyGOFENV] en el
+   partner de cada comercial) y campañas masivas ([EyGWA] campana/… recibidas por sus
+   clientes). "Existente vs nuevo" se cruza con el historial REAL de compras (pedido
+   confirmado antes del mes). Todo lo enviado por fuera de la plataforma no es medible. */
+let MSG_LIDER=null;
+async function cargarMensajeria(){
+  const box=document.getElementById("msgEq");
+  if(!UIDS.length){ renderMensajeria(); return; }
+  const norm=s=>EYG._normNom?EYG._normNom(s):(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();
+  try{
+    const hoy=argToday(), inicioMes=hoy.slice(0,7)+"-01", mesActual=hoy.slice(0,7);
+    const desde6=EYG.hace(190)+" 00:00:00";                       // ~6 meses para el histórico
+    const [users,cart]=await Promise.all([
+      EYG.rpc("res.users","read",[UIDS,["partner_id","name"]]).catch(()=>[]),
+      EYG.rpc("res.partner","search_read",[[["user_id","in",UIDS]]],{fields:["user_id"],limit:0}).catch(()=>[]),
+    ]);
+    const uidName={}, partIds=[], nameToUid={};
+    users.forEach(u=>{ uidName[u.id]=u.name; nameToUid[norm(u.name)]=u.id; if(u.partner_id) partIds.push(u.partner_id[0]); });
+    const P2UID={}, cartIds=[]; cart.forEach(p=>{ if(p.user_id){ P2UID[p.id]=p.user_id[0]; cartIds.push(p.id); } });
+    const [wa,ofe]=await Promise.all([
+      cartIds.length?EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",cartIds],["date",">=",desde6],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id","date","body"],limit:0}).catch(()=>[]):[],
+      partIds.length?EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",partIds],["date",">=",desde6],["body","like","EyGOFENV"]]],{fields:["res_id","date","body"],limit:0}).catch(()=>[]):[],
+    ]);
+    const strip=b=>(b||"").replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim();
+    const perCom={}; UIDS.forEach(u=>perCom[u]={cli:new Set(),cliExist:new Set(),cliNuevo:new Set(),msgs:0,of:0});
+    const histWA={}, histCamp={}, histOf={}, histWAcom={};        // "YYYY-MM" -> conteo
+    const contactoIds=new Set(), perComMesRows=[];                // clientes contacto del mes (para clasificar)
+    let campMesMsgs=0; const campMesCli=new Set();
+    for(const w of wa){
+      const b=strip(w.body); const mm=argParts(w.date).date.slice(0,7);
+      const tm=b.match(/\[EyGWA\]\s*(\w+)\//); const tipo=tm?tm[1]:(/EyGCRM/.test(b)?"contacto":"?");
+      if(tipo==="campana"){ histCamp[mm]=(histCamp[mm]||0)+1; if(mm===mesActual){ campMesMsgs++; campMesCli.add(w.res_id); } continue; }
+      if(tipo!=="contacto") continue;                            // cobranza u otros: no es mensajería comercial
+      histWA[mm]=(histWA[mm]||0)+1;
+      const por=(b.match(/por\s+(.+?)\s*$/)||[])[1];
+      const uid=(por&&nameToUid[norm(por)])||P2UID[w.res_id];
+      if(uid){ (histWAcom[uid]=histWAcom[uid]||{})[mm]=(histWAcom[uid][mm]||0)+1; }
+      if(mm===mesActual){ contactoIds.add(w.res_id); if(uid&&perCom[uid]){ perCom[uid].msgs++; perCom[uid].cli.add(w.res_id); perComMesRows.push({uid,id:w.res_id}); } }
+    }
+    for(const o of ofe){
+      const b=strip(o.body); const mm=argParts(o.date).date.slice(0,7);
+      histOf[mm]=(histOf[mm]||0)+1;
+      if(mm===mesActual){ const por=(b.match(/\[EyGOFENV\]\s*(.+?)\s*·/)||[])[1]; const uid=por&&nameToUid[norm(por)]; if(uid&&perCom[uid]) perCom[uid].of++; }
+    }
+    // Existente vs nuevo: ¿el cliente contactado ya tenía pedido confirmado ANTES del mes?
+    const ids=[...contactoIds]; let before=new Set();
+    if(ids.length){
+      try{
+        const ord=await EYG.rpc("sale.order","search_read",[[["state","in",["sale","done"]],["date_order","<",inicioMes+" 00:00:00"],"|",["partner_id","in",ids],["commercial_partner_id","in",ids]]],{fields:["partner_id","commercial_partner_id"],limit:0});
+        const idset=new Set(ids);
+        ord.forEach(r=>{ [r.partner_id&&r.partner_id[0], r.commercial_partner_id&&r.commercial_partner_id[0]].forEach(x=>{ if(idset.has(x)) before.add(x); }); });
+      }catch(e){}
+    }
+    perComMesRows.forEach(r=>{ const g=perCom[r.uid]; if(!g)return; if(before.has(r.id)) g.cliExist.add(r.id); else g.cliNuevo.add(r.id); });
+    const meses=[...new Set([...Object.keys(histWA),...Object.keys(histOf),...Object.keys(histCamp)])].sort();
+    MSG_LIDER={uidName, perCom, meses, histWA, histCamp, histOf, histWAcom, mesActual,
+      teamCli:ids.length, teamMsgs:Object.values(perCom).reduce((s,g)=>s+g.msgs,0),
+      teamExist:before.size, teamNuevo:ids.length-before.size,
+      teamOf:Object.values(perCom).reduce((s,g)=>s+g.of,0),
+      campMsgs:campMesMsgs, campCli:campMesCli.size};
+    renderMensajeria();
+  }catch(e){ if(box) box.innerHTML='<div class="scopenote">No pude cargar la mensajería del equipo. '+esc(e.message||"")+'</div>'; }
+}
+// Barras de conteo por mes (no monetarias): reservado alto, coral = mes actual.
+function barsCount(meses, map, curM){
+  if(!meses.length) return '<div class="muted" style="padding:10px 0">Sin datos todavía.</div>';
+  const max=Math.max(1,...meses.map(m=>map[m]||0));
+  return `<div style="display:flex;align-items:flex-end;gap:6px;height:118px;padding:4px 0">
+    ${meses.map(m=>{ const v=map[m]||0, h=Math.max(3,Math.round(v/max*100)), cur=m===curM;
+      return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;justify-content:flex-end;height:100%">
+        <div style="font-size:11.5px;font-weight:800;color:${cur?'var(--coral)':'var(--teal-deep)'}">${v}</div>
+        <div style="width:100%;height:${h}%;min-height:3px;background:${cur?'var(--coral)':'linear-gradient(180deg,#0AA89F,#7ad5cc)'};border-radius:5px 5px 0 0" title="${mesLbl(m)} ${m.slice(0,4)}: ${v}"></div>
+        <div style="font-size:10.5px;color:var(--gris2)">${mesLbl(m)}</div>
+      </div>`; }).join("")}
+  </div>`;
+}
+function renderMensajeria(){
+  const box=document.getElementById("msgEq"); if(!box) return;
+  if(!UIDS.length){ box.innerHTML='<div class="scopenote">Este panel todavía no tiene comerciales a cargo. Cuando se asignen, vas a ver acá el rendimiento de mensajería de tu equipo.</div>'; return; }
+  if(!MSG_LIDER){ box.innerHTML='<div class="floading" style="padding:26px;text-align:center;color:var(--gris)"><span class="spin-sm"></span> cargando la mensajería del equipo…</div>'; return; }
+  const D=MSG_LIDER, fn=uid=>(D.uidName[uid]||"?");
+  const col=uid=>((COM.find(c=>c.uid===uid)||{}).color||"#048782");
+  const mesTxt=(MESES[(+D.mesActual.split("-")[1])-1]||"")+" "+D.mesActual.slice(0,4);
+  const kpi=(ic,v,l,s)=>`<div style="flex:1;min-width:148px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:13px 15px;box-shadow:var(--shadow)"><div style="font-size:12px;color:var(--gris)">${ic} ${l}</div><div style="font-size:24px;font-weight:900;color:var(--teal-deep);letter-spacing:-.4px">${v}</div>${s?`<div style="font-size:11.5px;color:var(--gris2)">${s}</div>`:""}</div>`;
+  const GC="grid-template-columns:1.4fr 1fr 1fr 1fr .9fr";
+  const filas=UIDS.map(uid=>({uid, g:D.perCom[uid], cliN:D.perCom[uid].cli.size})).sort((a,b)=>b.cliN-a.cliN || b.g.msgs-a.g.msgs);
+  const maxWAcom=Math.max(1,...UIDS.flatMap(uid=>D.meses.map(m=>(D.histWAcom[uid]&&D.histWAcom[uid][m])||0)));
+  const sparkN=uid=>`<span class="hspark">${D.meses.map(m=>{ const v=(D.histWAcom[uid]&&D.histWAcom[uid][m])||0; return `<i style="height:${Math.max(2,Math.round(v/maxWAcom*100))}%" class="${m===D.mesActual?'cur':''}" title="${mesLbl(m)} ${m.slice(0,4)}: ${v} msjs"></i>`; }).join("")}</span>`;
+  const filasHist=UIDS.map(uid=>{ const vals=D.meses.map(m=>(D.histWAcom[uid]&&D.histWAcom[uid][m])||0); return {uid, cur:(D.histWAcom[uid]&&D.histWAcom[uid][D.mesActual])||0, tot:vals.reduce((a,b)=>a+b,0)}; }).sort((a,b)=>b.tot-a.tot);
+  box.innerHTML=`
+    <div class="scopenote">💬 Rendimiento de <b>mensajería de tu equipo</b>: contactos por WhatsApp, ofertas compartidas y campañas — todo <b>registrado en la plataforma</b> (lo enviado por fuera no se puede medir). Ves <b>sólo a tu equipo</b>. "Existente vs nuevo" se define por el <b>historial real de compras</b> (si el cliente ya había comprado antes del mes).</div>
+    <div class="eqhead"><h2>📅 Este mes · ${esc(mesTxt)}</h2></div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      ${kpi("💬", D.teamCli, "Clientes contactados", D.teamMsgs+" mensaje"+(D.teamMsgs===1?"":"s"))}
+      ${kpi("🔁", D.teamExist, "Clientes existentes", "ya compraban")}
+      ${kpi("🆕", D.teamNuevo, "Nuevos / a conquistar", "nunca compraron")}
+      ${kpi("🎁", D.teamOf, "Ofertas compartidas", "")}
+      ${kpi("📢", D.campCli, "Campañas recibidas", D.campMsgs+" envío"+(D.campMsgs===1?"":"s"))}
+    </div>
+    <div class="eqhead"><h2>👥 Por comercial <span class="muted" style="font-weight:600;font-size:12px">· este mes</span></h2></div>
+    <div class="tbl" style="margin-bottom:22px">
+      <div class="row head" style="${GC}"><div>Comercial</div><div class="num">Clientes</div><div class="num">Existentes</div><div class="num">Nuevos</div><div class="num">Ofertas</div></div>
+      ${filas.map(f=>`<div class="row" style="${GC}"><div class="nm"><span class="dotc" style="background:${col(f.uid)}"></span>${esc(fn(f.uid))}</div><div class="num hoy">${f.cliN}<span class="sub">${f.g.msgs} msjs</span></div><div class="num">${f.g.cliExist.size}</div><div class="num">${f.g.cliNuevo.size}</div><div class="num">${f.g.of}</div></div>`).join("")}
+    </div>
+    <div class="eqhead"><h2>📈 Histórico del equipo <span class="muted" style="font-weight:600;font-size:12px">· últimos meses</span></h2></div>
+    <div class="chartbox"><div class="ch-head"><h2>💬 Mensajes de WhatsApp por mes</h2></div>${barsCount(D.meses,D.histWA,D.mesActual)}</div>
+    <div class="chartbox"><div class="ch-head"><h2>🎁 Ofertas compartidas por mes</h2></div>${barsCount(D.meses,D.histOf,D.mesActual)}</div>
+    <div class="chartbox"><div class="ch-head"><h2>📢 Campañas recibidas (envíos) por mes</h2></div>${barsCount(D.meses,D.histCamp,D.mesActual)}</div>
+    <div class="eqhead"><h2>👥 Evolución por comercial <span class="muted" style="font-weight:600;font-size:12px">· mensajes WhatsApp por mes</span></h2></div>
+    <div class="tbl">
+      <div class="hrow head"><div>Comercial</div><div>Evolución</div><div class="num">Este mes</div><div class="num">Total 6m</div></div>
+      ${filasHist.map(r=>`<div class="hrow"><div class="nm"><span class="dotc" style="background:${col(r.uid)}"></span>${esc(fn(r.uid))}</div><div>${sparkN(r.uid)}</div><div class="num">${r.cur}</div><div class="num">${r.tot}</div></div>`).join("")}
     </div>`;
 }
 
