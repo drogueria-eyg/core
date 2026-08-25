@@ -163,6 +163,8 @@
   .cmp{font-size:10px;font-weight:800;color:#B42318;background:#FDECEA;border-radius:6px;padding:1px 6px;white-space:nowrap;margin-left:4px}
   .add .plus.out{background:#F0EDEA;color:#9A8F86;cursor:not-allowed}
   .add .plus.out:active{transform:none}
+  .add .plus.repo{background:#FBF4E3;color:#8a6a1f;border:1px solid #E0B84A}
+  .add .plus.repo:active{transform:scale(.97)}
   .stkline{margin-top:3px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .lotlist{display:flex;flex-direction:column;gap:7px;max-height:44vh;overflow:auto}
   .lotrow{display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px}
@@ -1107,7 +1109,8 @@ function cardProd(p){
 // parte dinámica de la tarjeta (aviso de tramo + botón/stepper), depende de la cantidad
 function dynHtml(pid,q){
   const disp=dispDe(pid);
-  if(disp<=0 && !(q>0)) return `<div class="add"><button class="plus out" disabled title="Estas unidades están comprometidas a pedidos ya confirmados. No se pueden vender de nuevo.">⛔ Sin stock</button></div>`;
+  // Sin stock disponible: NO se puede vender ni cotizar. El único camino es pedirlo a reposición.
+  if(disp<=0 && !(q>0)) return `<div class="add"><button class="plus repo" onclick="reponerProd(${pid})" title="Sin stock disponible: no se puede vender. Cargalo a la lista de reposición.">📋 Pedir reposición</button></div>`;
   return hintHtml(pid,q)+
     `<div class="add">${q>0?stepper(pid,q):`<button class="plus" onclick="addProd(${pid})">＋ Agregar</button>`}</div>`;
 }
@@ -1164,7 +1167,7 @@ function _avisarTope(pid,n){
   if(t<=0) toast("Sin stock disponible: está comprometido a pedidos confirmados. Podés dejarlo en presupuesto, pero no vas a poder confirmarlo.",true);
   else if(n>t) toast(`Ojo: solo hay ${Math.round(t)} disponibles (el resto está comprometido). Podés presupuestarlo, pero al confirmar te va a frenar.`,true);
 }
-function addProd(pid){ ST.want[pid]=(ST.want[pid]||0)+1; _avisarTope(pid,ST.want[pid]); refrescarCelda(pid); marcarDirty(); }
+function addProd(pid){ if(dispDe(pid)<=0){ reponerProd(pid); return; }  /* sin stock: no cotiza, va a reposición */ ST.want[pid]=(ST.want[pid]||0)+1; _avisarTope(pid,ST.want[pid]); refrescarCelda(pid); marcarDirty(); }
 function chgQty(pid,d){ ST.want[pid]=Math.max(0,(ST.want[pid]||0)+d); if(ST.want[pid]===0) delete ST.want[pid]; else if(d>0) _avisarTope(pid,ST.want[pid]); refrescarCelda(pid); marcarDirty(); }
 function setQty(pid,v){ let n=Math.max(0,Math.floor(+v||0)); if(n===0) delete ST.want[pid]; else { ST.want[pid]=n; _avisarTope(pid,n); } refrescarCelda(pid); marcarDirty(); }
 
@@ -1500,6 +1503,19 @@ function cerrarModal(){ document.getElementById("modalHost").innerHTML=""; }
 /* ===== Dejar pendiente (producto SIN stock) → lista de reposición (Supabase) ===== */
 let _PEND={prod:null,results:[]};
 const _limpiaNom=n=>(n||"").replace(/^\[[^\]]*\]\s*/,"").trim();
+// Producto SIN stock disponible tocado desde el catálogo → directo al paso de cantidad de reposición
+// (ya con el producto elegido, sin tener que buscarlo). No entra al pedido: sólo a reposición.
+function reponerProd(pid){
+  if(!ST.order){ toast("Primero elegí el cliente y abrí el pedido"); return; }
+  const p=(ST.prods||[]).find(x=>x.id===pid);
+  if(!p){ dejarPendiente(); return; }
+  _PEND={prod:p, results:[p]};
+  modal(`<h3>📋 Sin stock — pedir reposición</h3>
+    <p style="font-size:13px;color:var(--gris);margin:2px 0 10px"><b>${esc(_limpiaNom(p.name))}</b> no tiene stock disponible, así que <b>no se puede agregar al pedido</b>. Cargalo a la <b>lista de reposición</b> para <b>${esc(ST.order.partnerName||"")}</b> (la ven Dirección y Compras). No genera pedido ni entrega.</p>
+    <div id="pfRes"></div>
+    <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cerrar</button><a class="btn ghost" href="${EYG.abs('inventario/pendientes.html')}" style="text-decoration:none">Ver pendientes →</a></div>`);
+  setTimeout(()=>pendElegir(pid),30);
+}
 function dejarPendiente(pre){
   if(!ST.order){ toast("Primero elegí el cliente y abrí el pedido"); return; }
   _PEND={prod:null,results:[]};
