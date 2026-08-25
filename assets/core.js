@@ -34,10 +34,25 @@ window.EYG = (function(){
     return new Promise(res=>_rpcQ.push(()=>res(_rpcRun(fn))));
   }
 
+  /* ---- Credencial para la puerta de Odoo -------------------------------
+     odoo-rpc dejó de ser una puerta abierta: exige la sesión de un usuario
+     ACTIVO del Core (su URL está en este archivo, que es público). Todo el que
+     hable con Odoo tiene que mandar el token de sesión. Los módulos que arman
+     su propio fetch a odoo-rpc deben usar EYG.authHeaders(). */
+  async function authHeaders(){
+    const h = {"Content-Type":"application/json"};
+    try{
+      const s = await session();
+      if(s && s.access_token){ h["Authorization"]="Bearer "+s.access_token; h["apikey"]=SUPABASE_ANON; }
+    }catch(e){}
+    return h;
+  }
+
   /* ---- Odoo (edge function odoo-rpc) ---- */
   async function rpc(model,method,args=[],kwargs={}){
     for(let i=0;i<4;i++){ try{
-      const r = await gate(()=>fetch(RPC_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model,method,args,kwargs})}));
+      const H = await authHeaders();
+      const r = await gate(()=>fetch(RPC_URL,{method:"POST",headers:H,body:JSON.stringify({model,method,args,kwargs})}));
       const j = await r.json(); if(j.error) throw new Error(typeof j.error==="string"?j.error:JSON.stringify(j.error));
       return j.result ?? j;
     }catch(e){ if(i===3) throw e; await new Promise(res=>setTimeout(res,900*(i+1))); } }
@@ -1355,7 +1370,7 @@ window.EYG = (function(){
     return { baseline, meta, meses, nUsados:nums.length };
   }
 
-  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
+  return { supa, rpc, gate, authHeaders, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
