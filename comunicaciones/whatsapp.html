@@ -200,7 +200,41 @@
   .modal input{width:100%;font-family:var(--mono);font-size:13px;color:var(--hud-txt);background:#0A171B;border:1px solid var(--hud-line);border-radius:9px;padding:10px 12px;outline:none}
   .modal input:focus{border-color:var(--hud-teal)}
   .modal .hint{font-size:11.5px;color:var(--hud-dim);margin-top:7px;line-height:1.6}
-  .modal .acc{display:flex;gap:9px;justify-content:flex-end;margin-top:20px}
+  .modal .acc{display:flex;gap:9px;justify-content:flex-end;margin-top:20px;align-items:center}
+  .modal.ancho{max-width:760px}
+  /* memoria */
+  .membox{background:#0A171B;border:1px solid var(--hud-line);border-radius:10px;padding:12px 13px}
+  .memcifras{display:flex;flex-wrap:wrap;gap:14px;font-size:11.5px;color:var(--hud-txt2);margin-bottom:10px}
+  .memcifras b{color:var(--hud-txt);font-family:var(--mono);font-size:13px}
+  .memcifras .alerta b{color:#E8B84B}
+  .memlista{list-style:none;display:flex;flex-direction:column;gap:7px}
+  .memlista li{font-size:12px;color:var(--hud-txt);line-height:1.5}
+  .memlista .memmas{color:var(--hud-dim);font-size:11px}
+  .memvacio{font-size:12px;color:var(--hud-dim);line-height:1.6}
+  .memcat{display:inline-block;font-family:var(--mono);font-size:8.5px;font-weight:700;letter-spacing:1px;
+          text-transform:uppercase;color:var(--hud-teal);border:1px solid var(--hud-line2);
+          border-radius:5px;padding:2px 6px;margin-right:7px;vertical-align:1px}
+  .memquien{font-size:11px;color:var(--hud-txt2);margin-right:7px}
+  .memveces{font-family:var(--mono);font-size:10px;color:var(--hud-dim);margin-right:7px}
+  .memtabs{display:flex;gap:7px;margin:16px 0 12px}
+  .memtab{font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:1.2px;color:var(--hud-txt2);
+          background:transparent;border:1px solid var(--hud-line);border-radius:8px;padding:7px 11px;cursor:pointer}
+  .memtab.act{color:var(--hud-teal);border-color:var(--hud-teal);background:rgba(4,135,130,.1)}
+  .memcuerpo{max-height:44vh;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
+  .memfila{display:flex;align-items:flex-start;gap:10px;background:#0A171B;border:1px solid var(--hud-line);
+           border-radius:9px;padding:9px 11px}
+  .memtxt{flex:1;font-size:12px;color:var(--hud-txt);line-height:1.55}
+  .memacc{display:flex;gap:5px;flex-shrink:0}
+  .memb{width:26px;height:26px;border-radius:7px;border:1px solid var(--hud-line);background:transparent;
+        color:var(--hud-txt2);cursor:pointer;font-size:12px;line-height:1}
+  .memb:hover{border-color:var(--hud-teal);color:var(--hud-teal)}
+  .memb.on{color:#E8B84B;border-color:#E8B84B}
+  .memb.ok:hover{border-color:#4BC07A;color:#4BC07A}
+  .memb.no:hover{border-color:#D2564B;color:#D2564B}
+  .memnueva{display:flex;gap:7px;margin-top:14px}
+  .memnueva select{font-family:var(--mono);font-size:11px;color:var(--hud-txt);background:#0A171B;
+                   border:1px solid var(--hud-line);border-radius:9px;padding:9px 8px;outline:none}
+  .memnueva input{flex:1;width:auto}
   .gente{display:flex;flex-direction:column;gap:5px;margin-top:6px}
   .quien{display:flex;align-items:center;gap:10px;border:1px solid var(--hud-line);border-radius:9px;padding:10px 12px;cursor:pointer;transition:border-color .14s,background .14s}
   .quien:hover{border-color:var(--hud-lila);background:rgba(159,140,255,.07)}
@@ -762,6 +796,149 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     }catch(e){ /* las métricas no son críticas */ }
   }
 
+  /* ══ memoria del asistente ═══════════════════════════════════════════════
+     Todo lo que se habla queda guardado (wsp_mensajes) y de ahí sale, solo,
+     lo que el asistente aprende (wsp_memoria). Acá se mira, se corrige y se
+     le enseña a mano. Lo que el bot cree que es una regla de la empresa NO
+     se activa solo: cae en POR APROBAR.                                     */
+  const CATS={horarios:"Horarios",envios:"Envíos",pagos:"Pagos",productos:"Productos",
+              preferencias:"Preferencias",contacto:"Contacto",instruccion:"Instrucción",otro:"Otro"};
+  const catNom=c=>CATS[c]||c;
+
+  async function memEstado(){ try{ const {data}=await EYG.supa().rpc("wsp_memoria_estado"); return data||{}; }catch(e){ return {}; } }
+
+  async function memLeer(filtro){
+    let q=EYG.supa().from("wsp_memoria").select("id,ambito,partner,categoria,dato,fuente,destacado,activo,veces");
+    if(filtro==="empresa")      q=q.eq("ambito","global").eq("activo",true);
+    else if(filtro==="clientes") q=q.eq("ambito","cliente").eq("activo",true);
+    else                         q=q.eq("activo",false);
+    const {data}=await q.order("destacado",{ascending:false}).order("veces",{ascending:false}).order("id",{ascending:false}).limit(300);
+    return data||[];
+  }
+
+  async function nombresDe(ids){
+    const u=[...new Set(ids.filter(Boolean))]; if(!u.length) return {};
+    try{ const r=await EYG.rpc("res.partner","read",[u,["name"]]); const m={}; (r||[]).forEach(p=>m[p.id]=p.name); return m; }
+    catch(e){ return {}; }
+  }
+
+  /* el vistazo que va dentro de Configurar */
+  async function pintarResumenMemoria(caja){
+    if(!caja) return;
+    const [e,reglas]=await Promise.all([memEstado(), memLeer("empresa")]);
+    const cifras=`<div class="memcifras">
+      <span><b>${e.datos||0}</b> datos aprendidos</span>
+      <span><b>${e.mensajes||0}</b> mensajes guardados</span>
+      ${e.sugeridos?`<span class="alerta"><b>${e.sugeridos}</b> por aprobar</span>`:""}
+    </div>`;
+    const lista=reglas.length
+      ? `<ul class="memlista">${reglas.slice(0,6).map(r=>
+          `<li><span class="memcat">${esc(catNom(r.categoria))}</span>${esc(r.dato)}</li>`).join("")}
+         ${reglas.length>6?`<li class="memmas">y ${reglas.length-6} más…</li>`:""}</ul>`
+      : `<div class="memvacio">Todavía no tiene reglas de la empresa cargadas. Entrá a <b>Administrar memoria</b> y anotá los horarios, los medios de envío y las formas de pago: eso es lo primero que le van a preguntar.</div>`;
+    caja.innerHTML=cifras+lista;
+  }
+
+  /* el administrador completo */
+  async function abrirMemoria(){
+    const d=document.createElement("div");
+    d.className="scrim";
+    d.innerHTML=`<div class="modal ancho">
+      <h3>Memoria del asistente</h3>
+      <p>Guarda <b>todas</b> las conversaciones y de ahí saca solo lo que conviene recordar. Lo de la empresa vale para todos; lo de cada cliente se usa únicamente cuando escribe ese cliente.</p>
+      <div class="memtabs">
+        <button class="memtab act" data-f="empresa">DE LA EMPRESA</button>
+        <button class="memtab" data-f="clientes">DE CADA CLIENTE</button>
+        <button class="memtab" data-f="aprobar">POR APROBAR</button>
+      </div>
+      <div id="memCuerpo" class="memcuerpo"><div class="memvacio">leyendo…</div></div>
+      <div class="memnueva">
+        <select id="memCat">${Object.entries(CATS).map(([k,v])=>`<option value="${k}"${k==="instruccion"?" selected":""}>${v}</option>`).join("")}</select>
+        <input id="memTxt" placeholder="Enseñale algo. Ej: Repartimos en Rosario de lunes a viernes de 9 a 17.">
+        <button class="hb go sm" id="memAdd">ANOTAR</button>
+      </div>
+      <div class="hint">Lo que anotes acá el asistente lo tiene siempre presente cuando contesta. Escribilo como una regla corta y clara.</div>
+      <div class="acc"><button class="hb sm" id="memRefrescar">RELEER LAS CHARLAS</button><span style="flex:1"></span><button class="hb sm" id="memX">CERRAR</button></div>
+    </div>`;
+    document.body.appendChild(d);
+    let filtro="empresa";
+    const cuerpo=d.querySelector("#memCuerpo");
+
+    async function pintar(){
+      cuerpo.innerHTML=`<div class="memvacio">leyendo…</div>`;
+      const filas=await memLeer(filtro);
+      if(!filas.length){
+        cuerpo.innerHTML=`<div class="memvacio">${filtro==="aprobar"
+          ? "No hay nada esperando aprobación."
+          : (filtro==="clientes" ? "Todavía no aprendió nada de ningún cliente. Va a ir apareciendo solo a medida que conversen."
+                                 : "Nada cargado todavía.")}</div>`;
+        return;
+      }
+      const nombres=filtro==="clientes" ? await nombresDe(filas.map(f=>f.partner)) : {};
+      cuerpo.innerHTML=filas.map(f=>`
+        <div class="memfila" data-id="${f.id}">
+          <div class="memtxt">
+            <span class="memcat">${esc(catNom(f.categoria))}</span>
+            ${filtro==="clientes"&&f.partner?`<span class="memquien">${esc(nombres[f.partner]||("cliente "+f.partner))}</span>`:""}
+            ${f.veces>1?`<span class="memveces">×${f.veces}</span>`:""}
+            <span>${esc(f.dato)}</span>
+          </div>
+          <div class="memacc">
+            ${filtro==="aprobar"
+              ? `<button class="memb ok" data-a="aprobar" title="Aprobar: pasa a valer para todos">✓</button>`
+              : `<button class="memb ${f.destacado?"on":""}" data-a="destacar" title="Fijar: se lo lleva siempre encima">★</button>`}
+            <button class="memb no" data-a="borrar" title="Olvidar">✕</button>
+          </div>
+        </div>`).join("");
+    }
+
+    cuerpo.onclick=async e=>{
+      const b=e.target.closest(".memb"); if(!b) return;
+      const fila=b.closest(".memfila"), id=Number(fila.dataset.id), sb=EYG.supa();
+      b.disabled=true;
+      try{
+        if(b.dataset.a==="borrar"){ await sb.from("wsp_memoria").delete().eq("id",id); fila.remove(); anotar("sis","memoria: dato olvidado"); }
+        else if(b.dataset.a==="aprobar"){ await sb.from("wsp_memoria").update({activo:true,destacado:true,fuente:"aprobado"}).eq("id",id); fila.remove(); anotar("sis","memoria: sugerencia aprobada"); }
+        else { const on=!b.classList.contains("on"); await sb.from("wsp_memoria").update({destacado:on}).eq("id",id); b.classList.toggle("on",on); }
+      }catch(err){ alert("No se pudo: "+(err.message||err)); b.disabled=false; }
+    };
+
+    d.querySelectorAll(".memtab").forEach(t=>t.onclick=()=>{
+      filtro=t.dataset.f;
+      d.querySelectorAll(".memtab").forEach(o=>o.classList.toggle("act",o===t));
+      pintar();
+    });
+
+    d.querySelector("#memAdd").onclick=async()=>{
+      const txt=(d.querySelector("#memTxt").value||"").trim();
+      if(txt.length<8){ alert("Escribí la regla completa, así el asistente la entiende."); return; }
+      try{
+        await EYG.supa().from("wsp_memoria").insert({
+          ambito:"global", categoria:d.querySelector("#memCat").value, dato:txt,
+          fuente:"cargado a mano", destacado:true, activo:true });
+        d.querySelector("#memTxt").value="";
+        anotar("sis","memoria: se le enseñó algo nuevo");
+        if(filtro!=="empresa"){ filtro="empresa"; d.querySelectorAll(".memtab").forEach(o=>o.classList.toggle("act",o.dataset.f==="empresa")); }
+        pintar();
+      }catch(err){ alert(String(err.message||err).includes("duplicate") ? "Eso ya lo tenía anotado." : "No se pudo guardar: "+(err.message||err)); }
+    };
+    d.querySelector("#memTxt").addEventListener("keydown",e=>{ if(e.key==="Enter") d.querySelector("#memAdd").click(); });
+
+    d.querySelector("#memRefrescar").onclick=async ev=>{
+      ev.target.disabled=true; ev.target.textContent="LEYENDO…";
+      try{
+        await EYG.supa().rpc("wsp_memoria_ahora",{que:"historial"});
+        await EYG.supa().rpc("wsp_memoria_ahora",{que:"destilar"});
+        anotar("sis","memoria: releyendo las conversaciones");
+        setTimeout(()=>{ ev.target.textContent="RELEER LAS CHARLAS"; ev.target.disabled=false; pintar(); },6000);
+      }catch(err){ alert("No se pudo: "+(err.message||err)); ev.target.disabled=false; ev.target.textContent="RELEER LAS CHARLAS"; }
+    };
+
+    d.querySelector("#memX").onclick=()=>d.remove();
+    d.onclick=e=>{ if(e.target===d) d.remove(); };
+    pintar();
+  }
+
   /* ══ acciones ══ */
   $("btnCfg").onclick=()=>{
     const d=document.createElement("div");
@@ -782,7 +959,9 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
           </div>`).join("")}
       </div>
       <div class="hint">Con «habla si le hablan», el asistente contesta con una nota de voz cuando el cliente le manda una. Si la respuesta lleva precios, además le manda el texto, para que pueda leerlos.</div>
-      <div class="acc"><button class="hb sm" id="cfgX">CANCELAR</button><button class="hb go sm" id="cfgOk">GUARDAR</button></div>
+      <label>MEMORIA</label>
+      <div id="cfgMemBox" class="membox"><div class="memvacio">leyendo la memoria…</div></div>
+      <div class="acc"><button class="hb sm" id="cfgMem">ADMINISTRAR MEMORIA</button><span style="flex:1"></span><button class="hb sm" id="cfgX">CANCELAR</button><button class="hb go sm" id="cfgOk">GUARDAR</button></div>
     </div>`;
     document.body.appendChild(d);
     let vozElegida=cfg.voz;
@@ -790,6 +969,8 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       vozElegida=el.dataset.voz;
       d.querySelectorAll(".quien.voz").forEach(o=>o.classList.toggle("act",o.dataset.voz===vozElegida));
     });
+    pintarResumenMemoria(d.querySelector("#cfgMemBox"));
+    d.querySelector("#cfgMem").onclick=()=>{ d.remove(); abrirMemoria(); };
     d.querySelector("#cfgX").onclick=()=>d.remove();
     d.onclick=e=>{ if(e.target===d) d.remove(); };
     d.querySelector("#cfgOk").onclick=async()=>{
