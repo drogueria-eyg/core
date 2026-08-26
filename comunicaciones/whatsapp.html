@@ -109,7 +109,7 @@
   .nada b{font-size:32px;opacity:.22}
 
   /* ── derecha: el asistente ── */
-  .der .cuerpo{flex:1;overflow-y:auto}
+  .der .cuerpo{flex:1;overflow-y:auto;min-height:0}
   .orbzone{position:relative;flex:none;padding:6px 0 0}
   #orb{display:block;width:100%;height:214px}
   .orbtxt{text-align:center;font-family:var(--mono);font-size:10px;letter-spacing:2.6px;color:var(--hud-dim);
@@ -150,14 +150,18 @@
   .dato .v{color:var(--hud-txt);font-weight:600;text-align:right}
   .dato .v.warn{color:var(--hud-gold)} .dato .v.err{color:var(--hud-err)}
 
-  .log{padding:8px 16px 14px;display:flex;flex-direction:column;gap:2px;font-family:var(--mono);font-size:10.5px;line-height:1.75}
-  .lg{display:flex;gap:7px;animation:entra .3s ease-out}
+  /* Registro corto y con scroll propio: es una consola de eventos, no el chat. */
+  .log{padding:8px 16px 12px;display:flex;flex-direction:column;gap:1px;font-family:var(--mono);
+       font-size:10px;line-height:1.7;max-height:150px;overflow-y:auto}
+  .lg{display:flex;gap:7px;animation:entra .3s ease-out;white-space:nowrap}
   @keyframes entra{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
   .lg .h{color:var(--hud-dim);flex:none}
+  .lg span:last-child{overflow:hidden;text-overflow:ellipsis}
   .lg.cli{color:var(--hud-txt)} .lg.bot{color:var(--wsp)} .lg.ped{color:var(--hud-gold)}
   .lg.eq{color:var(--hud-coral)} .lg.sis{color:var(--hud-txt2)} .lg.asig{color:var(--hud-lila)}
+  .lg.voz{color:var(--hud-aqua)}
 
-  .metricas{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;padding:8px 16px 18px}
+  .metricas{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;padding:8px 16px 16px;flex:none}
   .met{border:1px solid var(--hud-line);border-radius:9px;padding:9px 8px;text-align:center;background:rgba(10,168,159,.03)}
   .met .v{font-size:19px;font-weight:900;color:var(--hud-txt);line-height:1.1}
   .met .k{font-family:var(--mono);font-size:8px;letter-spacing:1px;color:var(--hud-dim);margin-top:4px;line-height:1.4}
@@ -230,13 +234,15 @@
 
       <div class="ptitle">EN VIVO</div>
       <div class="log" id="log"></div>
+    </div>
 
-      <div class="ptitle">HOY</div>
-      <div class="metricas">
-        <div class="met"><div class="v" id="mConv">—</div><div class="k">CHATS<br>ABIERTOS</div></div>
-        <div class="met"><div class="v" id="mMsg">—</div><div class="k">MENSAJES<br>RECIBIDOS</div></div>
-        <div class="met"><div class="v" id="mPed">—</div><div class="k">PEDIDOS<br>ARMADOS</div></div>
-      </div>
+    <!-- Los números del día quedan clavados abajo: se ven siempre, no hay que
+         bajar hasta el final del panel para encontrarlos. -->
+    <div class="ptitle">HOY</div>
+    <div class="metricas">
+      <div class="met"><div class="v" id="mConv">—</div><div class="k">CHATS<br>ABIERTOS</div></div>
+      <div class="met"><div class="v" id="mMsg">—</div><div class="k">MENSAJES<br>RECIBIDOS</div></div>
+      <div class="met"><div class="v" id="mPed">—</div><div class="k">PEDIDOS<br>ARMADOS</div></div>
     </div>
   </aside>
 </div>
@@ -411,9 +417,9 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       if(!primeraCarga){
         for(const v of nuevas){
           const antes=convs.find(x=>x.id===v.id);
-          if(!antes) anotar("cli","Conversación nueva: "+(nom1(v.whatsapp_partner_id)||v.whatsapp_number||"sin nombre"));
+          if(!antes) anotar("cli","conversación nueva · "+(nom1(v.whatsapp_partner_id)||v.whatsapp_number||"sin nombre"));
           else if(antes.write_date!==v.write_date && (!sel||sel.id!==v.id))
-            anotar("cli","Movimiento en "+(nom1(v.whatsapp_partner_id)||v.whatsapp_number||"un chat"));
+            anotar("cli","mensaje nuevo · "+(nom1(v.whatsapp_partner_id)||v.whatsapp_number||"un chat"));
         }
       }
       convs=nuevas;
@@ -471,17 +477,42 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     refrescarOrbe();
   }
 
-  /* lo que pasó desde la última mirada, al registro de la derecha */
+  /* El registro cuenta QUÉ PASÓ, no qué se dijo: el contenido ya está en el
+     chat, al lado. Acá van los eventos y los tiempos de respuesta. */
+  const instante=s=>new Date(String(s||"").replace(" ","T")+"Z").getTime();
+  function demora(m){
+    const pid=id1(sel&&sel.whatsapp_partner_id);
+    const i=msgs.findIndex(x=>x.id===m.id);
+    for(let j=i-1;j>=0;j--){
+      const p=msgs[j];
+      if(Array.isArray(p.author_id)&&pid&&p.author_id[0]===pid&&!esDelBot(p)){
+        const s=Math.round((instante(m.date)-instante(p.date))/1000);
+        return (s>0&&s<900) ? ` · ${s} s` : "";
+      }
+    }
+    return "";
+  }
   function detectarNovedades(){
     const pid=id1(sel&&sel.whatsapp_partner_id);
+    const quien=(nom1(sel&&sel.whatsapp_partner_id)||sel.whatsapp_number||"").split(" ")[0];
     for(const m of msgs){
       if(m.id<=vistoId) continue;
       if(vistoId){
-        const txt=limpiar(m.body).slice(0,58);
-        if(esNota(m)) anotar(/📝|presupuesto|pedido/i.test(m.body)?"ped":"eq", txt);
-        else if(Array.isArray(m.author_id)&&pid&&m.author_id[0]===pid&&!esDelBot(m)) anotar("cli","Cliente: "+txt);
-        else if(esDelBot(m)){ anotar("bot","Asistente: "+txt); hablandoHasta=Date.now()+3400; }
-        else anotar("eq",(nom1(m.author_id)||"Equipo")+": "+txt);
+        const delCliente=Array.isArray(m.author_id)&&pid&&m.author_id[0]===pid&&!esDelBot(m);
+        if(esNota(m)){
+          const nro=(limpiar(m.body).match(/\b\d{6,}\b/)||[])[0];
+          if(/presupuesto|pedido|📝/.test(m.body)) anotar("ped", nro?`presupuesto ${nro} actualizado`:"pedido actualizado");
+          else anotar("eq","derivado al equipo");
+        } else if(delCliente){
+          if((m.attachment_ids||[]).length) anotar("voz",`nota de voz de ${quien}`);
+          else anotar("cli",`mensaje de ${quien} · ${limpiar(m.body).split(/\s+/).length} palabras`);
+        } else if(esDelBot(m)){
+          const largo=limpiar(m.body).length;
+          anotar("bot",`respondió el asistente${demora(m)} · ${largo} caracteres`);
+          hablandoHasta=Date.now()+3400;
+        } else {
+          anotar("eq","respondió el equipo · "+String(nom1(m.author_id)||"").split(" ")[0]);
+        }
       }
       vistoId=Math.max(vistoId,m.id);
     }
@@ -508,7 +539,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     $("btnTomar").onclick=async()=>{
       if(eq) cfg.pausadas=cfg.pausadas.filter(x=>x!==sel.id);
       else cfg.pausadas=[...new Set([...cfg.pausadas,sel.id])];
-      anotar("eq",eq?"La conversación vuelve al asistente":"La toma el equipo");
+      anotar("eq",eq?"vuelve al asistente":"la toma el equipo");
       await guardarCfg(); pintarChat(true);
     };
     $("btnAsig").onclick=abrirAsignar;
@@ -668,7 +699,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     d.querySelector("#cerrar").onclick=()=>d.remove();
     d.onclick=e=>{ if(e.target===d) d.remove(); };
     const q=d.querySelector("#quitar");
-    if(q) q.onclick=async()=>{ delete cfg.asignadas[sel.id]; anotar("asig","Se quitó la asignación"); await guardarCfg(); pintarChat(true); d.remove(); };
+    if(q) q.onclick=async()=>{ delete cfg.asignadas[sel.id]; anotar("asig","asignación quitada"); await guardarCfg(); pintarChat(true); d.remove(); };
     d.querySelectorAll(".quien").forEach(el=>el.onclick=async()=>{
       const c=comerciales.find(x=>x.id===Number(el.dataset.id));
       if(!c) return;
@@ -680,7 +711,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
         {body:`👤 <b>Conversación asignada a ${esc(c.nombre)}</b><br/>El asistente deja de responder en este chat.`,
          message_type:"comment", subtype_xmlid:"mail.mt_note"}).catch(()=>{});
       if(c.partner) EYG.rpc("discuss.channel","add_members",[[sel.id]],{partner_ids:[c.partner]}).catch(()=>{});
-      anotar("asig","Asignada a "+c.nombre);
+      anotar("asig","asignada a "+c.nombre);
       pintarChat(true); d.remove();
     });
   }
@@ -732,7 +763,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     d.querySelector("#cfgOk").onclick=async()=>{
       cfg.numeros=(d.querySelector("#cfgNums").value||"").split(",").map(x=>x.replace(/\D/g,"")).filter(Boolean);
       cfg.voz=vozElegida;
-      await guardarCfg(); anotar("sis","Configuración guardada · voz: "+VOCES[cfg.voz].toLowerCase()); d.remove();
+      await guardarCfg(); anotar("sis","configuración guardada · voz "+VOCES[cfg.voz].toLowerCase()); d.remove();
     };
   };
 
@@ -741,13 +772,13 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       if(!confirm("El asistente va a responderle AUTOMÁTICAMENTE a todos los clientes que escriban.\n\nSi querés probarlo primero, cancelá y cargá tu número en Configurar.\n\n¿Encender igual?")) return;
     }
     cfg.activo=!cfg.activo;
-    anotar("sis",cfg.activo?"Asistente encendido":"Asistente apagado");
+    anotar("sis",cfg.activo?"asistente encendido":"asistente apagado");
     await guardarCfg();
   };
   $("btnRef").onclick=async()=>{ await leerCfg(); await cargarConvs(); if(sel){ await abrir(sel.id,true); cargarFicha(); } cargarMetricas(); };
 
   (async()=>{
-    anotar("sis","Consola iniciada");
+    anotar("sis","consola iniciada");
     await leerCfg(); await cargarConvs(); pintarChat(); cargarMetricas();
   })();
 
