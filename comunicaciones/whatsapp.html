@@ -381,9 +381,11 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
 
   /* ══ registro en vivo ══ */
   const EVENTOS=[];
-  function anotar(clase,texto){
-    const d=new Date(), p=n=>String(n).padStart(2,"0");
-    EVENTOS.unshift({h:`${p(d.getHours())}:${p(d.getMinutes())}`,clase,texto});
+  const ahoraHM=()=>{ const d=new Date(), p=n=>String(n).padStart(2,"0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
+  /* Si el evento viene de un mensaje, se usa LA HORA DEL MENSAJE, no la de
+     ahora: si no, todo el historial aparece con el horario en que se abrió. */
+  function anotar(clase,texto,cuando){
+    EVENTOS.unshift({h:(cuando&&hora(cuando))||ahoraHM(),clase,texto});
     if(EVENTOS.length>40) EVENTOS.pop();
     $("log").innerHTML=EVENTOS.map(e=>`<div class="lg ${e.clase}"><span class="h">${e.h}</span><span>${esc(e.texto)}</span></div>`).join("");
   }
@@ -446,7 +448,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
           const antes=convs.find(x=>x.id===v.id);
           if(!antes) anotar("cli","conversación nueva · "+(nom1(v.whatsapp_partner_id)||v.whatsapp_number||"sin nombre"));
           else if(antes.write_date!==v.write_date && (!sel||sel.id!==v.id))
-            anotar("cli","mensaje nuevo · "+(nom1(v.whatsapp_partner_id)||v.whatsapp_number||"un chat"));
+            anotar("cli","mensaje nuevo · "+(nom1(v.whatsapp_partner_id)||v.whatsapp_number||"otro chat"), v.write_date);
         }
       }
       convs=nuevas;
@@ -522,23 +524,26 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   function detectarNovedades(){
     const pid=id1(sel&&sel.whatsapp_partner_id);
     const quien=(nom1(sel&&sel.whatsapp_partner_id)||sel.whatsapp_number||"").split(" ")[0];
+    /* La primera vez que se abre un chat NO se registra nada: el historial ya
+       está a la vista, y volcarlo entero llenaría el registro de ruido viejo. */
+    const primeraMirada = vistoId===0;
     for(const m of msgs){
       if(m.id<=vistoId) continue;
-      if(vistoId){
+      if(!primeraMirada){
         const delCliente=Array.isArray(m.author_id)&&pid&&m.author_id[0]===pid&&!esDelBot(m);
         if(esNota(m)){
           const nro=(limpiar(m.body).match(/\b\d{6,}\b/)||[])[0];
-          if(/presupuesto|pedido|📝/.test(m.body)) anotar("ped", nro?`presupuesto ${nro} actualizado`:"pedido actualizado");
-          else anotar("eq","derivado al equipo");
+          if(/presupuesto|pedido|📝/.test(m.body)) anotar("ped", nro?`presupuesto ${nro} actualizado`:"pedido actualizado", m.date);
+          else anotar("eq","derivado al equipo", m.date);
         } else if(delCliente){
-          if((m.attachment_ids||[]).length) anotar("voz",`nota de voz de ${quien}`);
-          else anotar("cli",`mensaje de ${quien} · ${limpiar(m.body).split(/\s+/).length} palabras`);
+          if((m.attachment_ids||[]).length) anotar("voz",`nota de voz de ${quien}`, m.date);
+          else anotar("cli",`mensaje de ${quien} · ${limpiar(m.body).split(/\s+/).length} palabras`, m.date);
         } else if(esDelBot(m)){
           const largo=limpiar(m.body).length;
-          anotar("bot",`respondió el asistente${demora(m)} · ${largo} caracteres`);
+          anotar("bot",`respondió el asistente${demora(m)} · ${largo} caracteres`, m.date);
           hablandoHasta=Date.now()+3400;
         } else {
-          anotar("eq","respondió el equipo · "+String(nom1(m.author_id)||"").split(" ")[0]);
+          anotar("eq","respondió el equipo · "+String(nom1(m.author_id)||"").split(" ")[0], m.date);
         }
       }
       vistoId=Math.max(vistoId,m.id);
