@@ -235,6 +235,12 @@
   .memnueva select{font-family:var(--mono);font-size:11px;color:var(--hud-txt);background:#0A171B;
                    border:1px solid var(--hud-line);border-radius:9px;padding:9px 8px;outline:none}
   .memnueva input{flex:1;width:auto}
+  .verarch{font-family:var(--mono);font-size:8.5px;font-weight:700;letter-spacing:1.1px;
+           color:var(--hud-dim);background:transparent;border:1px solid var(--hud-line);border-radius:6px;
+           padding:3px 7px;cursor:pointer}
+  .verarch:hover{color:var(--hud-teal);border-color:var(--hud-teal)}
+  .verarch.act{color:#E8B84B;border-color:#E8B84B}
+  .peligro{border-color:#D2564B!important;color:#D2564B!important}
   .gente{display:flex;flex-direction:column;gap:5px;margin-top:6px}
   .quien{display:flex;align-items:center;gap:10px;border:1px solid var(--hud-line);border-radius:9px;padding:10px 12px;cursor:pointer;transition:border-color .14s,background .14s}
   .quien:hover{border-color:var(--hud-lila);background:rgba(159,140,255,.07)}
@@ -258,7 +264,8 @@
 
   <!-- ── IZQUIERDA: solo conversaciones ── -->
   <aside class="col izq">
-    <div class="ptitle">CONVERSACIONES <span class="n" id="nConv"></span></div>
+    <div class="ptitle">CONVERSACIONES <span class="n" id="nConv"></span>
+      <button class="verarch" id="btnArch" title="Ver las conversaciones archivadas">ARCHIVADAS</button></div>
     <div class="buscador"><input id="buscar" placeholder="Buscar por nombre o número…" autocomplete="off"></div>
     <div class="convs" id="convs"><div class="vacio">CARGANDO…</div></div>
   </aside>
@@ -318,6 +325,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   let convs=[], sel=null, msgs=[], ficha=null, comerciales=[];
   let cargando=false, filtro="", vistoId=0, primeraCarga=true;
   let firmaConvs="", firmaMsgs="", firmaFicha="";
+  let verArchivadas=false;
   $("app").style.display="";
 
   const esc=EYG.esc;
@@ -473,11 +481,15 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   /* ══ bandeja ══ */
   async function cargarConvs(){
     try{
-      const r=await EYG.rpc("discuss.channel","search_read",[[["channel_type","=","whatsapp"]]],
+      /* Odoo esconde lo archivado salvo que el dominio nombre "active" */
+      const dominio=verArchivadas
+        ? [["channel_type","=","whatsapp"],["active","=",false]]
+        : [["channel_type","=","whatsapp"]];
+      const r=await EYG.rpc("discuss.channel","search_read",[dominio],
         {fields:["name","whatsapp_number","whatsapp_partner_id","whatsapp_channel_valid_until","write_date"],order:"write_date desc",limit:60});
       const nuevas=r||[];
       /* avisar en el registro cuando entra actividad nueva */
-      if(!primeraCarga){
+      if(!primeraCarga && !verArchivadas){
         for(const v of nuevas){
           const antes=convs.find(x=>x.id===v.id);
           if(!antes) anotar("cli","conversación nueva · "+(nom1(v.whatsapp_partner_id)||v.whatsapp_number||"sin nombre"));
@@ -503,7 +515,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     if(firma===firmaConvs) return;
     firmaConvs=firma;
     const c=$("convs");
-    if(!lista.length){ c.innerHTML=`<div class="vacio">${f?"NADA COINCIDE":"SIN CONVERSACIONES<br>—<br>APARECEN SOLAS CUANDO<br>UN CLIENTE ESCRIBE"}</div>`; return; }
+    if(!lista.length){ c.innerHTML=`<div class="vacio">${f?"NADA COINCIDE":(verArchivadas?"NO HAY NADA ARCHIVADO":"SIN CONVERSACIONES<br>—<br>APARECEN SOLAS CUANDO<br>UN CLIENTE ESCRIBE")}</div>`; return; }
     c.innerHTML=lista.map(v=>{
       const eq=cfg.pausadas.includes(v.id), asig=cfg.asignadas[v.id];
       const nom=nom1(v.whatsapp_partner_id)||v.name||v.whatsapp_number||"Sin nombre";
@@ -517,6 +529,13 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     c.querySelectorAll(".conv").forEach(el=>el.onclick=()=>abrir(Number(el.dataset.id)));
   }
   $("buscar").addEventListener("input",e=>{ filtro=e.target.value; firmaConvs=""; pintarConvs(); });
+  $("btnArch").onclick=async()=>{
+    verArchivadas=!verArchivadas;
+    $("btnArch").classList.toggle("act",verArchivadas);
+    $("btnArch").textContent=verArchivadas?"VOLVER":"ARCHIVADAS";
+    sel=null; msgs=[]; firmaConvs=""; firmaMsgs="";
+    pintarChat(); await cargarConvs();
+  };
 
   /* ══ chat ══ */
   async function abrir(id,silencioso){
@@ -601,7 +620,8 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     $("chatH").innerHTML=`<div class="av">${esc(inicial(nom))}</div>
       <div><b>${esc(nom)}</b><br><span class="num">${esc(sel.whatsapp_number||"")}${asig?" · asignada a "+esc(asig.nombre):""}</span></div>
       <button class="hb ${eq?"":"stop"}" id="btnTomar" style="margin-left:auto;flex:none">${eq?"DEVOLVER AL BOT":"TOMAR"}</button>
-      <button class="hb lila" id="btnAsig" style="flex:none">ASIGNAR</button>`;
+      <button class="hb lila" id="btnAsig" style="flex:none">ASIGNAR</button>
+      <button class="hb" id="btnMas" style="flex:none" title="Archivar o eliminar">⋯</button>`;
     $("btnTomar").onclick=async()=>{
       if(eq) cfg.pausadas=cfg.pausadas.filter(x=>x!==sel.id);
       else cfg.pausadas=[...new Set([...cfg.pausadas,sel.id])];
@@ -609,6 +629,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       await guardarCfg(); pintarChat(true);
     };
     $("btnAsig").onclick=abrirAsignar;
+    $("btnMas").onclick=()=>abrirGestionChat(nom);
 
     const pid=id1(sel.whatsapp_partner_id);
     const firma=msgs.map(m=>m.id).join(",")+"|"+(esperandoRespuesta()?1:0);
@@ -794,6 +815,70 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       $("mMsg").textContent=msg??"—";
       $("mPed").textContent=ped??"—";
     }catch(e){ /* las métricas no son críticas */ }
+  }
+
+  /* ══ archivar o eliminar una conversación ════════════════════════════════
+     Archivar la saca de la bandeja y se puede recuperar. Eliminar la borra de
+     Odoo y no vuelve. En los dos casos lo que el asistente aprendió queda: la
+     memoria tiene su propia copia y no se toca.                              */
+  async function abrirGestionChat(nombre){
+    if(!sel) return;
+    const chat=sel, archivada=verArchivadas;
+    const d=document.createElement("div");
+    d.className="scrim";
+    d.innerHTML=`<div class="modal">
+      <h3>${esc(nombre)}</h3>
+      <p>${archivada
+        ? "Esta conversación está archivada. Podés devolverla a la bandeja o borrarla del todo."
+        : "Sacala de la bandeja sin perder nada, o borrala definitivamente de Odoo."}</p>
+      <div class="gente">
+        <div class="quien" data-a="${archivada?"desarchivar":"archivar"}">
+          <span class="ini">${archivada?"↩":"📁"}</span>
+          <span class="nm">${archivada?"Devolver a la bandeja":"Archivar"}</span>
+          <span class="ct">se puede deshacer</span>
+        </div>
+        <div class="quien" data-a="borrar">
+          <span class="ini" style="background:linear-gradient(135deg,#D2564B,#9B3229)">✕</span>
+          <span class="nm">Eliminar definitivamente</span>
+          <span class="ct">no vuelve</span>
+        </div>
+      </div>
+      <div class="hint">Lo que el asistente aprendió de este cliente <b>no se borra</b>: la memoria guarda su propia copia de las conversaciones.</div>
+      <div class="acc"><button class="hb sm" id="gcX">CANCELAR</button></div>
+    </div>`;
+    document.body.appendChild(d);
+    const cerrar=()=>d.remove();
+    d.querySelector("#gcX").onclick=cerrar;
+    d.onclick=e=>{ if(e.target===d) cerrar(); };
+
+    d.querySelectorAll(".quien").forEach(el=>el.onclick=async()=>{
+      const a=el.dataset.a;
+      if(a==="borrar"){
+        const escrito=prompt(`Se va a borrar la conversación con ${nombre} y todos sus mensajes en Odoo.\n\nEsto no se puede deshacer. Escribí BORRAR para confirmar:`);
+        if((escrito||"").trim().toUpperCase()!=="BORRAR") return;
+      }
+      d.querySelectorAll(".quien").forEach(o=>o.style.pointerEvents="none");
+      try{
+        if(a==="borrar"){
+          await EYG.rpc("discuss.channel","unlink",[[chat.id]]);
+          anotar("sis","conversación eliminada · "+nombre);
+        }else{
+          await EYG.rpc("discuss.channel","write",[[chat.id],{active:a==="desarchivar"}]);
+          anotar("sis",(a==="archivar"?"conversación archivada · ":"conversación recuperada · ")+nombre);
+        }
+        /* que no siga pausada ni asignada una conversación que ya no está */
+        if(a!=="desarchivar"){
+          cfg.pausadas=cfg.pausadas.filter(x=>x!==chat.id);
+          if(cfg.asignadas[chat.id]){ delete cfg.asignadas[chat.id]; }
+          await guardarCfg().catch(()=>{});
+        }
+        sel=null; firmaConvs=""; firmaMsgs=""; msgs=[];
+        cerrar(); pintarChat(); await cargarConvs();
+      }catch(err){
+        alert("No se pudo: "+(err.message||err));
+        d.querySelectorAll(".quien").forEach(o=>o.style.pointerEvents="");
+      }
+    });
   }
 
   /* ══ memoria del asistente ═══════════════════════════════════════════════
