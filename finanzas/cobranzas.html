@@ -311,6 +311,8 @@ const fmtFecha=f=> f? f.split("-").reverse().join("/") : "—";
 let CLI=[], EVO=[], BOVEDA={}, MIGARCH={}, DESEMP=null, filtro={tramo:"", comercial:"", rubro:"", q:"", orden:"prioridad", boveda:false, migrada:false};
 const BOV_TAG="[BOVEDA]"; // marcador en el chatter del contacto (fuente de verdad, con historial)
 const MIG_TAG="[MIG-ARCHIVADA]"; // deuda migrada archivada: sale de "lo adeudado" y del vencido (reversible)
+const BLK_TAG="[BLOQUEO]";       // gestión de cuentas bloqueadas por deuda (sale_warn de Odoo) desde Cobranzas
+let BLOQUEOS={blocked:[],temp:[]};  // {blocked:[cuentas con sale_warn=block], temp:[levantadas por un plazo]}
 let CONTACTOS={};          // partnerId → fecha/hora (UTC) del último contacto de cobranzas
 const CONTACTO_TAG="[COBRO-CONTACTO]";
 let NOTAS={};              // partnerId → {texto, fecha} última nota/acuerdo de cobranza
@@ -486,6 +488,7 @@ async function cargar(silent){
         nota:NOTAS[p.id]||null
       };
     });
+    try{ await cargarBloqueos(); }catch(e){ console.warn("No pude cargar bloqueos", e); }
     const _sy = silent ? window.scrollY : 0;
     render();
     if(silent) window.scrollTo(0, _sy);
@@ -928,6 +931,9 @@ function render(){
         <div class="kpi ${filtro.migrada?'on':''}" onclick="toggleMigrada()" style="${migN||migArchN?'':'opacity:.5'}">
           <div class="n">${migN}</div><div class="money">${money(migM)}</div>
           <div class="l"><span class="dot" style="background:#8B6D3F"></span>📦 Deuda migrada${migArchN?` · ${migArchN} arch.`:''}</div></div>
+        <div class="kpi" onclick="openBloqueados()" style="${(BLOQUEOS.blocked.length||BLOQUEOS.temp.length)?'':'opacity:.5'}">
+          <div class="n">${BLOQUEOS.blocked.length}</div><div class="money">${BLOQUEOS.temp.length?BLOQUEOS.temp.length+' con permiso':'gestionar'}</div>
+          <div class="l"><span class="dot" style="background:#A5312E"></span>🚫 Bloqueados</div></div>
       </div>
     </div>
 
@@ -1026,6 +1032,118 @@ async function desarchivarMig(id){
     const dr=document.getElementById("drawer"); if(dr&&dr.classList.contains("on")) abrir(id);
   }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
 }
+
+/* ===== Gestión de cuentas BLOQUEADAS por deuda (sale_warn de Odoo, manejado por Cobranzas) ===== */
+const _BLKFIELDS=["id","name","sale_warn_msg","total_due","total_overdue","user_id","city","phone","mobile"];
+async function cargarBloqueos(){
+  const hoy=hoyStr.slice(0,10);
+  let blocked=await rpc("res.partner","search_read",[[["sale_warn","=","block"]],_BLKFIELDS],{context:{lang:"es_AR"},limit:0});
+  // historial [BLOQUEO] → estado temporal + re-bloqueo de vencidos
+  const msgs=await rpc("mail.message","search_read",[[["model","=","res.partner"],["body","like","[BLOQUEO]"]]],{fields:["res_id","body","date"],limit:0});
+  msgs.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  const ult={};
+  for(const m of msgs){ if(ult[m.res_id]) continue;
+    const body=(m.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," ");
+    const hasta=(body.match(/hasta=(\d{4}-\d{2}-\d{2})/)||[])[1]||null;
+    const tipo=/temporal/i.test(body)?"temporal":(/baja/i.test(body)?"baja":(/bloque/i.test(body)?"bloqueo":"otro"));
+    const nota=(body.split("|").slice(1).join("|")||"").trim();
+    ult[m.res_id]={tipo,hasta,nota};
+  }
+  const blockedIds=new Set(blocked.map(p=>p.id));
+  // temporales: último marcador "temporal", NO bloqueadas hoy. Si venció → re-bloquear solo.
+  const reblock=[], temp=[];
+  for(const rid in ult){ const u=ult[rid], id=+rid;
+    if(u.tipo==="temporal" && !blockedIds.has(id)){
+      if(u.hasta && u.hasta<hoy) reblock.push({id,hasta:u.hasta}); else temp.push({id,hasta:u.hasta,nota:u.nota});
+    }
+  }
+  for(const rb of reblock){ try{
+      await rpc("res.partner","write",[[rb.id],{sale_warn:"block"}]);
+      await rpc("res.partner","message_post",[[rb.id]],{body:`🔒 ${BLK_TAG} bloqueado | re-bloqueo automático: venció el permiso temporal (${rb.hasta})`,message_type:"comment"});
+    }catch(e){ console.warn("no pude re-bloquear",rb.id,e); } }
+  if(reblock.length){ try{ blocked=await rpc("res.partner","search_read",[[["sale_warn","=","block"]],_BLKFIELDS],{context:{lang:"es_AR"},limit:0}); }catch(e){} }
+  // info de las que siguen con permiso temporal
+  const stillTemp=temp.filter(t=>!reblock.find(r=>r.id===t.id));
+  let tempInfo=[];
+  if(stillTemp.length){ try{
+    const ti=await rpc("res.partner","read",[stillTemp.map(t=>t.id),["id","name","total_due","total_overdue","user_id"]],{context:{lang:"es_AR"}});
+    const byId={}; ti.forEach(p=>byId[p.id]=p);
+    tempInfo=stillTemp.map(t=>Object.assign({id:t.id,name:"?"},byId[t.id]||{},{hasta:t.hasta,nota:t.nota}));
+  }catch(e){} }
+  blocked=blocked.map(p=>Object.assign({},p,{nota:(ult[p.id]&&ult[p.id].nota)||""}));
+  BLOQUEOS={blocked,temp:tempInfo};
+  const bset=new Set(blocked.map(p=>p.id)); const tset=new Set(tempInfo.map(p=>p.id));
+  CLI.forEach(c=>{ c.bloqueado=bset.has(c.id); c.permisoTemp=tset.has(c.id); });
+}
+function _blkNota(id){ const el=document.getElementById("blknota_"+id); return el?el.value.trim():""; }
+async function _blkWrite(id,vals,marker){ await rpc("res.partner","write",[[id],vals]); await rpc("res.partner","message_post",[[id]],{body:marker,message_type:"comment"}); }
+async function recargarBloq(){ try{ await cargarBloqueos(); }catch(e){} const m=document.getElementById("blkmodal"); if(m&&m.classList.contains("on")) m.innerHTML=blkModalHTML(); render(); }
+async function levantarTemp(id,dias){ const nota=_blkNota(id); const d=new Date(); d.setDate(d.getDate()+dias);
+  const hasta=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  try{ await _blkWrite(id,{sale_warn:"no-message"},`🔓 ${BLK_TAG} temporal hasta=${hasta}${nota?` | ${nota}`:""}`);
+    toast(`🔓 Levantado hasta ${hasta.split("-").reverse().join("/")} · se re-bloquea solo al vencer`); await recargarBloq();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function levantarTempFecha(id){ const el=document.getElementById("blkfecha_"+id); const hasta=el?el.value:"";
+  if(!hasta){ toast("Elegí una fecha"); return; } const nota=_blkNota(id);
+  try{ await _blkWrite(id,{sale_warn:"no-message"},`🔓 ${BLK_TAG} temporal hasta=${hasta}${nota?` | ${nota}`:""}`);
+    toast(`🔓 Levantado hasta ${hasta.split("-").reverse().join("/")}`); await recargarBloq();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function levantarDef(id){ const nota=_blkNota(id);
+  if(!confirm("¿Levantar el bloqueo DEFINITIVAMENTE? La cuenta queda habilitada para vender.")) return;
+  try{ await _blkWrite(id,{sale_warn:"no-message"},`✅ ${BLK_TAG} baja definitiva${nota?` | ${nota}`:""}`);
+    toast("✅ Bloqueo levantado (definitivo)"); await recargarBloq();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function reBloquear(id){ const nota=_blkNota(id)||"Bloqueo por deuda";
+  try{ await _blkWrite(id,{sale_warn:"block",sale_warn_msg:"CUENTA BLOQUEADA POR DEUDA"},`🔒 ${BLK_TAG} bloqueado | ${nota}`);
+    toast("🔒 Cuenta bloqueada"); await recargarBloq();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function editarAlerta(id){ const cur=(BLOQUEOS.blocked.find(p=>p.id===id)||{}).sale_warn_msg||"";
+  const msg=prompt("Texto de la alerta que ve la comercial al intentar vender:",cur||"CUENTA BLOQUEADA POR DEUDA"); if(msg===null) return;
+  try{ await rpc("res.partner","write",[[id],{sale_warn_msg:msg}]); toast("✏️ Alerta actualizada"); await recargarBloq();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function bloquearCuenta(id){ const msg=prompt("Motivo / texto de la alerta al intentar vender:","CUENTA BLOQUEADA POR DEUDA"); if(msg===null) return;
+  try{ await _blkWrite(id,{sale_warn:"block",sale_warn_msg:msg},`🔒 ${BLK_TAG} bloqueado | ${msg}`);
+    toast("🔒 Cuenta bloqueada"); await cargarBloqueos(); render(); const dr=document.getElementById("drawer"); if(dr&&dr.classList.contains("on")) abrir(id);
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+function openBloqueados(){
+  let sc=document.getElementById("scrim2"); if(!sc){ sc=document.createElement("div"); sc.className="scrim2"; sc.id="scrim2"; document.body.appendChild(sc); } sc.onclick=cerrarBloq;
+  let m=document.getElementById("blkmodal"); if(!m){ m=document.createElement("div"); m.className="chartmodal"; m.id="blkmodal"; document.body.appendChild(m); }
+  m.innerHTML=blkModalHTML(); sc.classList.add("on"); m.classList.add("on");
+}
+function cerrarBloq(){ const s=document.getElementById("scrim2"),m=document.getElementById("blkmodal"); if(s)s.classList.remove("on"); if(m)m.classList.remove("on"); }
+function blkModalHTML(){
+  const B=BLOQUEOS.blocked||[], T=BLOQUEOS.temp||[];
+  const rowB=p=>`<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px">
+      <div><b>${esc(p.name||"?")}</b> <span style="color:var(--gris2);font-size:12px">· ${p.user_id?esc(p.user_id[1]):"s/comercial"}</span>
+        <div style="font-size:12px;color:var(--gris);margin-top:2px">Debe ${money(p.total_due||0)} · atrasado ${money(p.total_overdue||0)}</div>
+        <div style="font-size:11.5px;color:#A5312E;margin-top:3px">🚫 ${esc(p.sale_warn_msg||"Bloqueado")}</div></div>
+      <input type="text" id="blknota_${p.id}" placeholder="Nota / motivo (opcional, queda registrado)" style="width:100%;margin-top:9px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px">
+      <div style="margin-top:8px;display:flex;gap:7px;flex-wrap:wrap;align-items:center">
+        <span style="font-size:12px;color:var(--gris)">Levantar:</span>
+        <button class="mini-btn" onclick="levantarTemp(${p.id},15)">15 días</button>
+        <button class="mini-btn" onclick="levantarTemp(${p.id},30)">30 días</button>
+        <input type="date" id="blkfecha_${p.id}" style="padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12px">
+        <button class="mini-btn" onclick="levantarTempFecha(${p.id})">hasta fecha</button>
+        <button class="mini-btn" style="background:var(--teal);color:#fff;border-color:var(--teal)" onclick="levantarDef(${p.id})">✓ Definitivo</button>
+        <button class="mini-btn" onclick="editarAlerta(${p.id})">✏️ Alerta</button>
+      </div></div>`;
+  const rowT=p=>`<div style="border:1px solid #EAD6A6;background:#FBF6E9;border-radius:12px;padding:12px 14px;margin-bottom:10px">
+      <div><b>${esc(p.name||"?")}</b> <span style="color:var(--gris2);font-size:12px">· ${p.user_id?esc(p.user_id[1]):""}</span>
+        <div style="font-size:12px;color:var(--gris);margin-top:2px">Debe ${money(p.total_due||0)} · atrasado ${money(p.total_overdue||0)}</div>
+        <div style="font-size:11.5px;color:#7A5B12;margin-top:3px">🕒 Permiso hasta <b>${p.hasta?p.hasta.split("-").reverse().join("/"):"?"}</b>${p.nota?` · ${esc(p.nota)}`:""} — al vencer se re-bloquea solo</div></div>
+      <input type="text" id="blknota_${p.id}" placeholder="Nota (opcional)" style="width:100%;margin-top:9px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px">
+      <div style="margin-top:8px;display:flex;gap:7px;flex-wrap:wrap">
+        <button class="mini-btn" onclick="levantarTemp(${p.id},30)">Extender 30 días</button>
+        <button class="mini-btn" style="background:var(--teal);color:#fff;border-color:var(--teal)" onclick="levantarDef(${p.id})">✓ Definitivo</button>
+        <button class="mini-btn" style="background:#FBE4E3;border-color:#F3B5B2;color:#8A2E2B" onclick="reBloquear(${p.id})">🔒 Volver a bloquear</button>
+      </div></div>`;
+  return `<div class="cm-head"><h3>🚫 Cuentas bloqueadas por deuda</h3><span class="x" onclick="cerrarBloq()">✕</span></div>
+    <div style="padding:16px 22px;overflow:auto">
+      <div style="font-size:12.5px;color:var(--gris);margin-bottom:12px">Estas cuentas están <b>bloqueadas en Odoo</b>: las comerciales no pueden cargarles pedido. Cobranzas decide cuándo levantar el bloqueo (por un plazo o definitivo) y deja una nota. Los permisos temporales <b>se re-bloquean solos</b> al vencer.</div>
+      ${B.length?`<div style="font-weight:800;font-size:13px;margin:4px 0 8px">Bloqueadas (${B.length})</div>${B.map(rowB).join("")}`:'<div style="color:var(--gris);font-size:13px;margin-bottom:12px">No hay cuentas bloqueadas.</div>'}
+      ${T.length?`<div style="font-weight:800;font-size:13px;margin:14px 0 8px">🕒 Con permiso temporal (${T.length})</div>${T.map(rowT).join("")}`:''}
+    </div>`;
+}
 async function marcarContacto(id){
   const c=CLI.find(x=>x.id===id); if(!c) return;
   const iso=new Date().toISOString().slice(0,19).replace("T"," "); // UTC (fmtContacto lo convierte a hora AR)
@@ -1118,6 +1236,17 @@ function abrir(id){
           <p class="muted" style="margin:-4px 0 8px">Sacar de la gestión activa: incobrable, o con acuerdo ya cerrado (el acuerdo lo anotás arriba 👆).</p>
           <select id="bovtipo" style="width:100%;margin-bottom:8px"><option value="acuerdo">Con acuerdo de pago</option><option value="incobrable">Incobrable</option></select>
           <button class="editbtn" style="margin-top:0" onclick="moverBoveda(${c.id})">🔒 Mover a bóveda</button>
+        `}
+      </div>
+
+      <div class="dsec">
+        <h4>🚫 Bloqueo de cuenta ${c.bloqueado?`· <span style="color:#A5312E">Bloqueada</span>`:(c.permisoTemp?`· <span style="color:#7A5B12">Permiso temporal</span>`:'')}</h4>
+        ${c.bloqueado?`
+          <p class="muted" style="margin:-4px 0 8px">Las comerciales no le pueden cargar pedido. Se gestiona (levantar por un plazo o definitivo) en la sección 🚫 Bloqueados.</p>
+          <button class="editbtn" style="width:100%;margin:0" onclick="openBloqueados()">🚫 Gestionar en Bloqueados</button>
+        `:`
+          <p class="muted" style="margin:-4px 0 8px">Bloquear = las comerciales no le pueden cargar pedido hasta que Cobranzas lo levante.</p>
+          <button class="editbtn" style="margin-top:0;background:#FBE4E3;border-color:#F3B5B2;color:#8A2E2B" onclick="bloquearCuenta(${c.id})">🔒 Bloquear cuenta por deuda</button>
         `}
       </div>
 
@@ -1334,7 +1463,7 @@ async function tick(){
       // marcadores nuevos llevan fecha de hoy, así que una ventana de 3 días detecta igual el
       // cambio y el escaneo se achica muchísimo. La red de 55s cubre el borde al envejecer.
       const _pd=new Date(Date.now()-3*86400000).toISOString().slice(0,10)+" 00:00:00";
-      const r=await rpc("mail.message","search_read",[[["model","=","res.partner"],["date",">=",_pd],"|","|",["body","like","[COBRO-"],["body","like","[BOVEDA]"],["body","like","[MIG-ARCHIVADA]"]],["id"]],{limit:1,order:"id desc"});
+      const r=await rpc("mail.message","search_read",[[["model","=","res.partner"],["date",">=",_pd],"|","|","|",["body","like","[COBRO-"],["body","like","[BOVEDA]"],["body","like","[MIG-ARCHIVADA]"],["body","like","[BLOQUEO]"]],["id"]],{limit:1,order:"id desc"});
       sig = r.length ? r[0].id : 0;
     }catch(e){ return; }                     // si el probe falla, no pasa nada (reintenta)
     if(_sig===null){ _sig=sig; return; }     // baseline en el 1er chequeo

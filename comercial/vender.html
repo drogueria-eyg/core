@@ -358,7 +358,7 @@ async function cargar(){
       // CONTACTOS-persona de la empresa (a los que no se factura): la sucursal aparece en el paso
       // "¿a dónde entregás?" y las personas irán a la libreta de contactos de la ficha.
       rpc("res.partner","search_read",[[["user_id","=",ST.userId],["parent_id","=",false]]],
-        {fields:["id","name","property_product_pricelist","property_payment_term_id","city","vat"], limit:0, context:ES}),
+        {fields:["id","name","property_product_pricelist","property_payment_term_id","city","vat","sale_warn","sale_warn_msg"], limit:0, context:ES}),
       rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["draft","sent"]]]],
         {fields:["id","name","partner_id","amount_total","order_line","write_date"], order:"write_date desc", limit:50}),
     ]);
@@ -1298,6 +1298,8 @@ function vVenta(){
         <button class="btn ghost" onclick="irAlPanel()">🏠 Panel</button>
       </div>
     </div>
+    ${(function(){const bmsg=clienteBloqueado(o.partnerId); if(!bmsg)return"";
+      return `<div style="grid-column:1/-1;background:#FBE4E3;border:1px solid #E88;color:#8A2E2B;border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:13.5px">🚫 <b>Cuenta bloqueada por Cobranzas:</b> ${esc(bmsg)}<br><span style="font-size:12.5px">Podés armar el presupuesto, pero <b>no se puede confirmar el pedido</b> hasta que Cobranzas lo habilite.</span></div>`;})()}
     ${(function(){const r=ST.riesgos[o.partnerId]; if(!r||!r.nivel||r.nivel==="ok")return""; const alto=r.nivel==="alto";
       return `<div style="grid-column:1/-1;background:${alto?'#FBE4E3':'#FBF0DA'};border:1px solid ${alto?'#F3B5B2':'#EAD6A6'};color:${alto?'#8A2E2B':'#7A5B12'};border-radius:12px;padding:11px 14px;margin-bottom:12px;font-size:13.5px">⚠ ${alto?'<b>Riesgo de pago — no ofrecer plazos.</b>':'<b>Atención:</b> este cliente tiene deuda vencida.'}${r.motivo?` · <span>${esc(r.motivo)}</span>`:''}</div>`;})()}
 
@@ -1382,8 +1384,16 @@ function quitar(pid){ delete ST.want[pid]; refrescarCelda(pid); marcarDirty(); r
 /* ============================================================
    CONFIRMAR / DESCARTAR
    ============================================================ */
+// Cuenta bloqueada por Cobranzas (sale_warn de Odoo): se puede presupuestar pero NO confirmar el pedido.
+function clienteBloqueado(pid){ const c=(ST.cartera||[]).find(x=>x.id===pid); return (c && c.sale_warn==="block") ? (c.sale_warn_msg||"CUENTA BLOQUEADA POR DEUDA") : null; }
 function confirmarVenta(){
   if(!nItems()) return toast("Cargá al menos un producto");
+  const bmsg=clienteBloqueado(ST.order.partnerId);
+  if(bmsg){ return modal(`<h3>🚫 Cuenta bloqueada</h3>
+    <p><b>${esc(ST.order.partnerName)}</b> está bloqueada por Cobranzas:</p>
+    <p style="background:#FBE4E3;border:1px solid #F3B5B2;color:#8A2E2B;border-radius:10px;padding:10px 12px;font-weight:600;margin:6px 0 10px">${esc(bmsg)}</p>
+    <p>El presupuesto queda guardado, pero <b>no se puede confirmar el pedido</b> hasta que Cobranzas levante el bloqueo. Consultá con Cobranzas (Bárbara / Vanesa).</p>
+    <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Entendido</button></div>`); }
   modal(`<h3>Confirmar venta</h3>
     <p>Vas a confirmar el pedido de <b>${esc(ST.order.partnerName)}</b> por <b>${money(ST.amount.total)}</b> (${nItems()} producto${nItems()===1?"":"s"}).<br><br>Queda como pedido de venta confirmado en Odoo.</p>
     <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cancelar</button><button class="btn grn" onclick="doConfirmar()">Sí, confirmar</button></div>`);
