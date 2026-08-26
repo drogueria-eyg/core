@@ -127,6 +127,10 @@
   .hb.lila{color:var(--hud-lila);border-color:rgba(159,140,255,.3);background:rgba(159,140,255,.07)}
   .hb.lila:hover{background:rgba(159,140,255,.17)}
   .hb.sm{flex:none;padding:8px 11px}
+  .vozlbl{font-family:var(--mono);font-size:9px;letter-spacing:1.6px;color:var(--hud-dim);text-align:center;padding:0 16px 14px;margin-top:-6px}
+  .vozlbl b{color:var(--hud-aqua);font-weight:700}
+  .m .voznota{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:9px;letter-spacing:1px;
+              opacity:.75;border:1px solid currentColor;border-radius:20px;padding:1px 7px;margin-bottom:5px}
 
   .ficha{padding:12px 16px 14px}
   .ficha .nom{font-size:15px;font-weight:800;color:var(--hud-txt);line-height:1.3}
@@ -219,6 +223,7 @@
         <button class="hb sm" id="btnCfg" title="Configurar">⚙</button>
         <button class="hb sm" id="btnRef" title="Actualizar">↻</button>
       </div>
+      <div class="vozlbl" id="vozlbl">—</div>
 
       <div class="ptitle">EL CONTACTO</div>
       <div class="ficha" id="ficha"><div class="vacio">SIN CONVERSACIÓN ABIERTA</div></div>
@@ -242,7 +247,8 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   const PARAM="eyg.wsp_bot";
   const FIRMA="​";                          /* marca invisible de los mensajes del bot */
   const ORIGEN="WhatsApp · asistente EyG";
-  let cfg={activo:false,numeros:[],pausadas:[],asignadas:{}};
+  const VOCES={off:"NO HABLA",espejo:"HABLA SI LE HABLAN",siempre:"SIEMPRE HABLA"};
+  let cfg={activo:false,numeros:[],pausadas:[],asignadas:{},voz:"espejo"};
   let convs=[], sel=null, msgs=[], ficha=null, comerciales=[];
   let cargando=false, filtro="", vistoId=0, primeraCarga=true;
   let firmaConvs="", firmaMsgs="", firmaFicha="";
@@ -376,8 +382,9 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     try{
       const c=JSON.parse((await EYG.rpc("ir.config_parameter","get_param",[PARAM]))||"{}")||{};
       cfg={activo:c.activo===true, numeros:Array.isArray(c.numeros)?c.numeros:[],
-           pausadas:Array.isArray(c.pausadas)?c.pausadas:[], asignadas:c.asignadas&&typeof c.asignadas==="object"?c.asignadas:{}};
-    }catch(e){ cfg={activo:false,numeros:[],pausadas:[],asignadas:{}}; }
+           pausadas:Array.isArray(c.pausadas)?c.pausadas:[], asignadas:c.asignadas&&typeof c.asignadas==="object"?c.asignadas:{},
+           voz:VOCES[c.voz]?c.voz:"espejo"};
+    }catch(e){ cfg={activo:false,numeros:[],pausadas:[],asignadas:{},voz:"espejo"}; }
     pintarBot();
   }
   async function guardarCfg(){
@@ -390,6 +397,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     const b=$("btnSw");
     b.className="hb "+(cfg.activo?"stop":"go");
     b.textContent=cfg.activo?"APAGAR":"ENCENDER";
+    $("vozlbl").innerHTML="VOZ · <b>"+esc(VOCES[cfg.voz]||"—")+"</b>";
     refrescarOrbe();
   }
 
@@ -506,13 +514,16 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       const caja=$("msgs");
       const abajo=!mantener || (caja.scrollHeight-caja.scrollTop-caja.clientHeight)<90;
       let html=msgs.map(m=>{
-        const txt=limpiar(m.body);
+        let txt=limpiar(m.body);
         if(!txt) return "";
         if(esNota(m)) return `<div class="m nota">${esc(txt)}<span class="hora">${esc(hora(m.date))}</span></div>`;
         const delCliente=Array.isArray(m.author_id)&&pid&&m.author_id[0]===pid&&!esDelBot(m);
         const delBot=!delCliente&&esDelBot(m);
+        /* el asistente marca con 🎙️ lo que salió como nota de voz */
+        let voz="";
+        if(txt.startsWith("🎙️")){ txt=txt.replace(/^🎙️\s*/,""); voz='<span class="voznota">🎙️ NOTA DE VOZ</span><br>'; }
         const quien=!delCliente?`<span class="qui">${delBot?"ASISTENTE":esc(nom1(m.author_id)||"EQUIPO")}</span>`:"";
-        return `<div class="m ${delCliente?"in":"out"}${delBot?" bot":""}">${quien}${esc(txt)}<span class="hora">${esc(hora(m.date))}</span></div>`;
+        return `<div class="m ${delCliente?"in":"out"}${delBot?" bot":""}">${quien}${voz}${esc(txt)}<span class="hora">${esc(hora(m.date))}</span></div>`;
       }).join("");
       if(!html) html='<div class="nada"><b>💬</b>SIN MENSAJES</div>';
       if(esperandoRespuesta()) html+='<div class="tipeo"><i></i><i></i><i></i></div>';
@@ -692,14 +703,30 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       <label>NÚMEROS DE PRUEBA</label>
       <input id="cfgNums" value="${esc(cfg.numeros.join(", "))}" placeholder="3412809081, 3415551234">
       <div class="hint">Mientras haya números acá, el asistente <b>solo</b> le responde a ellos. Dejalo vacío para que atienda a todos los clientes.</div>
+      <label>NOTAS DE VOZ</label>
+      <div class="gente">
+        ${Object.entries(VOCES).map(([k,v])=>`
+          <div class="quien voz ${cfg.voz===k?"act":""}" data-voz="${k}">
+            <span class="ini">${k==="off"?"✕":"🎙"}</span>
+            <span class="nm">${esc(v)}</span>
+            <span class="ct">${k==="espejo"?"recomendado":(k==="off"?"solo texto":"siempre audio")}</span>
+          </div>`).join("")}
+      </div>
+      <div class="hint">Con «habla si le hablan», el asistente contesta con una nota de voz cuando el cliente le manda una. Si la respuesta lleva precios, además le manda el texto, para que pueda leerlos.</div>
       <div class="acc"><button class="hb sm" id="cfgX">CANCELAR</button><button class="hb go sm" id="cfgOk">GUARDAR</button></div>
     </div>`;
     document.body.appendChild(d);
+    let vozElegida=cfg.voz;
+    d.querySelectorAll(".quien.voz").forEach(el=>el.onclick=()=>{
+      vozElegida=el.dataset.voz;
+      d.querySelectorAll(".quien.voz").forEach(o=>o.classList.toggle("act",o.dataset.voz===vozElegida));
+    });
     d.querySelector("#cfgX").onclick=()=>d.remove();
     d.onclick=e=>{ if(e.target===d) d.remove(); };
     d.querySelector("#cfgOk").onclick=async()=>{
       cfg.numeros=(d.querySelector("#cfgNums").value||"").split(",").map(x=>x.replace(/\D/g,"")).filter(Boolean);
-      await guardarCfg(); anotar("sis","Configuración guardada"); d.remove();
+      cfg.voz=vozElegida;
+      await guardarCfg(); anotar("sis","Configuración guardada · voz: "+VOCES[cfg.voz].toLowerCase()); d.remove();
     };
   };
 
