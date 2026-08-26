@@ -685,8 +685,19 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     }
     const nom=nom1(sel.whatsapp_partner_id)||sel.name||sel.whatsapp_number;
     const eq=cfg.pausadas.includes(sel.id), asig=cfg.asignadas[sel.id];
+    /* De un vistazo: de qué farmacia escribe y quién es su comercial. */
+    const casaH=delEquipo(sel.whatsapp_number);
+    const firmaCli=ficha ? (nom1(ficha.parent_id)||ficha.name||"") : "";
+    const comercialCli=ficha ? nom1(ficha.user_id) : "";
+    const bajo=[
+      esc(sel.whatsapp_number||""),
+      casaH ? "· "+esc(casaH.cargo||ROTULO_NIVEL[casaH.nivel]||"equipo") : "",
+      (!casaH && firmaCli && firmaCli!==nom) ? "· "+esc(firmaCli) : "",
+      (!casaH && comercialCli) ? "· comercial "+esc(String(comercialCli).split(" ")[0]) : "",
+      asig ? "· asignada a "+esc(asig.nombre) : "",
+    ].filter(Boolean).join(" ");
     $("chatH").innerHTML=`<div class="av">${esc(inicial(nom))}</div>
-      <div><b>${esc(nom)}</b><br><span class="num">${esc(sel.whatsapp_number||"")}${asig?" · asignada a "+esc(asig.nombre):""}</span></div>
+      <div><b>${esc(nom)}</b>${casaH?'<span class="pin casa" style="margin-left:7px">'+(ROTULO_NIVEL[casaH.nivel]||"EQUIPO")+'</span>':""}<br><span class="num">${bajo}</span></div>
       <button class="hb ${eq?"":"stop"}" id="btnTomar" style="margin-left:auto;flex:none">${eq?"DEVOLVER AL BOT":"TOMAR"}</button>
       <button class="hb lila" id="btnAsig" style="flex:none">ASIGNAR</button>`;
     $("btnTomar").onclick=async()=>{
@@ -760,11 +771,19 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   /* ══ ficha del contacto ══ */
   async function cargarFicha(){
     if(!sel){ ficha=null; pintarFicha(); return; }
-    const cola=String(sel.whatsapp_number||"").replace(/\D/g,"").slice(-8);
+    /* En Odoo los teléfonos están escritos a mano ("+54 341 372-8663"), así que
+       buscar los últimos 8 dígitos seguidos no encuentra nada: el guion los
+       parte. Se busca por los últimos 4 —el único pedazo que queda junto en
+       todos los formatos— y después se compara dígito contra dígito. */
+    const dig=String(sel.whatsapp_number||"").replace(/\D/g,"");
+    const ocho=dig.slice(-8);
     ficha=null;
     try{
-      const cands=await EYG.rpc("res.partner","search_read",[["|",["phone","like",cola],["mobile","like",cola]]],
-        {fields:["name","customer_rank","parent_id","property_product_pricelist","user_id","city","total_due","total_overdue"],limit:8});
+      const todos=await EYG.rpc("res.partner","search_read",[["|",["phone","like",dig.slice(-4)],["mobile","like",dig.slice(-4)]]],
+        {fields:["name","customer_rank","parent_id","property_product_pricelist","user_id","city","total_due","total_overdue","phone","mobile"],limit:150});
+      const cands=(todos||[]).filter(p=>[p.phone,p.mobile].some(x=>{
+        const t=String(x||"").replace(/\D/g,""); return t.length>=8 && t.slice(-8)===ocho;
+      }));
       const reales=(cands||[]).filter(p=>(p.customer_rank||0)>0);
       ficha=reales.sort((a,b)=>(b.customer_rank||0)-(a.customer_rank||0))[0]||(cands||[])[0]||null;
       if(ficha){
