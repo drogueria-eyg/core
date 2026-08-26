@@ -362,15 +362,20 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     const nucleo=i<430;
     const r=nucleo?(0.32+Math.random()*0.34):(0.72+Math.random()*0.32);
     PARTS.push({x:r*Math.sin(th)*Math.cos(ph), y:r*Math.cos(th), z:r*Math.sin(th)*Math.sin(ph),
-                s:Math.random(), f:Math.random()*6.3, capa:nucleo?0:1});
+                s:Math.random(), f:Math.random()*6.3, capa:nucleo?0:1,
+                /* el lugar que ocupa cuando la esfera se estira en onda sonora */
+                u:(i/760)*2-1+(Math.random()-0.5)*0.02});
   }
   const TONOS={
-    off:      {c:[96,124,122], halo:"rgba(96,124,122,.05)",  vel:.0028, tilt:.0011, pul:1300, amp:.010, def:.02, anillo:.10, txt:"EN REPOSO",    cls:""},
-    escucha:  {c:[95,200,191], halo:"rgba(10,168,159,.10)",  vel:.0055, tilt:.0022, pul:1000, amp:.022, def:.05, anillo:.26, txt:"A LA ESCUCHA", cls:"on"},
-    pensando: {c:[240,177,90], halo:"rgba(240,177,90,.14)",  vel:.030,  tilt:.013,  pul:210,  amp:.085, def:.20, anillo:.85, txt:"PENSANDO",     cls:"think"},
-    hablando: {c:[37,211,102], halo:"rgba(37,211,102,.15)",  vel:.017,  tilt:.007,  pul:330,  amp:.060, def:.24, anillo:.55, txt:"RESPONDIENDO", cls:"talk"},
+    off:      {c:[96,124,122], halo:"rgba(96,124,122,.05)",  vel:.0028, tilt:.0011, pul:1300, amp:.010, def:.02, anillo:.10, onda:0, txt:"EN REPOSO",    cls:""},
+    escucha:  {c:[95,200,191], halo:"rgba(10,168,159,.10)",  vel:.0055, tilt:.0022, pul:1000, amp:.022, def:.05, anillo:.26, onda:0, txt:"A LA ESCUCHA", cls:"on"},
+    pensando: {c:[240,177,90], halo:"rgba(240,177,90,.14)",  vel:.030,  tilt:.013,  pul:210,  amp:.085, def:.20, anillo:.85, onda:0, txt:"PENSANDO",     cls:"think"},
+    hablando: {c:[37,211,102], halo:"rgba(37,211,102,.15)",  vel:.017,  tilt:.007,  pul:330,  amp:.060, def:.24, anillo:.55, onda:0, txt:"RESPONDIENDO", cls:"talk"},
+    /* La esfera se estira en onda sonora, sin perder ninguna partícula:
+       son las mismas, ordenadas de otra manera. Solo cuando manda un audio. */
+    voz:      {c:[37,211,102], halo:"rgba(37,211,102,.13)",  vel:.006,  tilt:.002,  pul:520,  amp:.030, def:.10, anillo:.00, onda:1, txt:"NOTA DE VOZ",  cls:"talk"},
   };
-  let estado="off", tono=TONOS.off, mezcla={c:[96,124,122],vel:.003,tilt:.001,pul:1300,amp:.01,def:.02,anillo:.1};
+  let estado="off", tono=TONOS.off, mezcla={c:[96,124,122],vel:.003,tilt:.001,pul:1300,amp:.01,def:.02,anillo:.1,onda:0};
   let ang=0, angY=0, giroAnillo=0;
   function setEstado(e){
     if(e===estado) return;
@@ -390,6 +395,8 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     mezcla.vel=hacia(mezcla.vel,tono.vel,k);   mezcla.tilt=hacia(mezcla.tilt,tono.tilt,k);
     mezcla.pul=hacia(mezcla.pul,tono.pul,k);   mezcla.amp=hacia(mezcla.amp,tono.amp,k);
     mezcla.def=hacia(mezcla.def,tono.def,k);   mezcla.anillo=hacia(mezcla.anillo,tono.anillo,k);
+    /* la metamorfosis va más lenta que el resto: se tiene que ver el cambio */
+    mezcla.onda=hacia(mezcla.onda,tono.onda||0,0.035);
 
     const R=Math.min(W,H)*0.38, cxp=W/2, cyp=H/2, t=Date.now();
     ang+=mezcla.vel; angY+=mezcla.tilt; giroAnillo+=0.004+mezcla.anillo*0.02;
@@ -411,6 +418,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       cx.restore();
     }
 
+    const on=mezcla.onda, suave=on*on*(3-2*on);   /* arranca y termina despacio */
     for(const p of PARTS){
       /* la deformación es lo que hace que "cambie de forma" al hablar */
       const d=1+mezcla.def*Math.sin(p.f+t/240+p.y*2.6);
@@ -418,10 +426,26 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       const y2=y*cy2-z*sy2; z=y*sy2+z*cy2; y=y2;
       x*=d; y*=d; z*=d;
       const e=1/(1.75-z*0.7);
-      const a=(Math.max(0,(z+1)/2)*0.8+0.06)*(p.capa?0.55:1);
+      let px=cxp+x*R*e*puls, py=cyp+y*R*e*puls, rad=(p.s*(p.capa?1.1:1.7)+0.4)*e;
+      let a=(Math.max(0,(z+1)/2)*0.8+0.06)*(p.capa?0.55:1);
+
+      if(suave>0.002){
+        /* Las mismas partículas, puestas en fila: cada una toma su lugar a lo
+           ancho y sube o baja con la onda. Tres armónicos para que respire
+           como un audio de verdad y no como un seno perfecto. */
+        const env=Math.pow(Math.max(0,Math.cos(p.u*Math.PI/2)),0.75);
+        const w=Math.sin(p.u*7.5+t/165)*0.55
+               +Math.sin(p.u*13.9-t/225)*0.26
+               +Math.sin(p.u*3.1 +t/330)*0.32;
+        const alto=w*env*(p.capa?0.5:1)*(0.4+p.s*0.6);
+        const ox=cxp+p.u*R*1.62, oy=cyp+alto*R*0.62;
+        px=px+(ox-px)*suave; py=py+(oy-py)*suave;
+        rad=rad+((0.5+p.s*1.1)-rad)*suave;
+        a=a+((0.30+env*0.55)-a)*suave;
+      }
       cx.beginPath();
       cx.fillStyle=`rgba(${cr+z*22|0},${cg+z*20|0},${cb+z*22|0},${a})`;
-      cx.arc(cxp+x*R*e*puls, cyp+y*R*e*puls, (p.s*(p.capa?1.1:1.7)+0.4)*e, 0, 7);
+      cx.arc(px, py, rad, 0, 7);
       cx.fill();
     }
     const g=cx.createRadialGradient(cxp,cyp,R*0.15,cxp,cyp,R*1.45);
@@ -449,7 +473,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   }
 
   /* ══ estado del orbe ══ */
-  let hablandoHasta=0;
+  let hablandoHasta=0, vozHasta=0;
   function esperandoRespuesta(){
     if(!sel || cfg.pausadas.includes(sel.id) || !cfg.activo) return false;
     const pid=id1(sel.whatsapp_partner_id);
@@ -461,7 +485,10 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     return false;
   }
   function refrescarOrbe(){
-    setEstado(Date.now()<hablandoHasta ? "hablando" : (!cfg.activo ? "off" : (esperandoRespuesta() ? "pensando" : "escucha")));
+    const ahora=Date.now();
+    setEstado(ahora<vozHasta ? "voz"
+      : (ahora<hablandoHasta ? "hablando"
+      : (!cfg.activo ? "off" : (esperandoRespuesta() ? "pensando" : "escucha"))));
   }
   setInterval(refrescarOrbe,500);
 
@@ -619,8 +646,9 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
           else anotar("cli",`mensaje de ${quien} · ${limpiar(m.body).split(/\s+/).length} palabras`, m.date);
         } else if(esDelBot(m)){
           const largo=limpiar(m.body).length;
-          anotar("bot",`respondió el asistente${demora(m)} · ${largo} caracteres`, m.date);
-          hablandoHasta=Date.now()+3400;
+          const conVoz=/^\s*🎙️/.test(String(m.body||"").replace(/<[^>]*>/g,""));
+          anotar(conVoz?"voz":"bot",`${conVoz?"contestó hablando":"respondió el asistente"}${demora(m)} · ${largo} caracteres`, m.date);
+          if(conVoz) vozHasta=Date.now()+6500; else hablandoHasta=Date.now()+3400;
         } else {
           anotar("eq","respondió el equipo · "+String(nom1(m.author_id)||"").split(" ")[0], m.date);
         }
