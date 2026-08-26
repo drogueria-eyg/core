@@ -771,56 +771,70 @@ let DIARIO=null, GRAF={gran:"mes",data:null,geom:null};
 async function fetchDiarioCob(){
   if(DIARIO) return DIARIO;
   const ini=new Date(hoy.getFullYear(),hoy.getMonth()-24,1).toISOString().slice(0,10);
-  const [inv,ref,pay]=await Promise.all([
+  const [inv,ref,pay,bal]=await Promise.all([
     rpc("account.move","read_group",[[["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",ini]],["amount_total:sum"],["invoice_date:day"]],{lazy:false,limit:3000}),
     rpc("account.move","read_group",[[["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",ini]],["amount_total:sum"],["invoice_date:day"]],{lazy:false,limit:3000}),
     rpc("account.payment","read_group",[[["partner_type","=","customer"],["payment_type","=","inbound"],["state","=","posted"],["is_internal_transfer","=",false],["date",">=",ini]],["amount:sum"],["date:day"]],{lazy:false,limit:3000}),
+    // DEUDA = saldo del receivable (balance) por día, SIN filtro de fecha para acumular todo el histórico → nivel real de deuda
+    rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"]],["balance:sum"],["date:day"]],{lazy:false,limit:10000}),
   ]);
   const kd=(g,fld)=>{const rk=g.__range&&g.__range[fld+":day"];return rk?rk.from.slice(0,10):null;};
   const F={},C={}; let min=hoyStr;
   for(const g of inv){const k=kd(g,"invoice_date");if(k){F[k]=(F[k]||0)+(g.amount_total||0);if(k<min)min=k;}}
   for(const g of ref){const k=kd(g,"invoice_date");if(k)F[k]=(F[k]||0)-(g.amount_total||0);}
   for(const g of pay){const k=kd(g,"date");if(k){C[k]=(C[k]||0)+(g.amount||0);if(k<min)min=k;}}
-  DIARIO={F,C,min};
+  // Deuda diaria acumulada (nivel de saldo del receivable al cierre de cada día)
+  const deuda=[]; let accd=0;
+  bal.map(g=>({k:kd(g,"date"),v:g.balance||0})).filter(x=>x.k).sort((a,b)=>a.k<b.k?-1:1)
+     .forEach(x=>{ accd+=x.v; deuda.push({k:x.k,val:accd}); });
+  DIARIO={F,C,min,deuda};
   return DIARIO;
 }
+function deudaAl(ymd){ const bd=(DIARIO&&DIARIO.deuda)||[]; let v=0; for(const p of bd){ if(p.k<=ymd) v=p.val; else break; } return v; }
 function aggregar(gran){
   const {F,C,min}=DIARIO;
   const start=new Date(min+"T00:00:00"), end=new Date(hoy), out=[];
   if(gran==="dia"){
     for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
-      out.push({lab:`${pad2(d.getDate())}/${pad2(d.getMonth()+1)}`,sub:`${pad2(d.getDate())}/${pad2(d.getMonth()+1)}/${d.getFullYear()}`,f:F[k]||0,c:C[k]||0});}
+      out.push({lab:`${pad2(d.getDate())}/${pad2(d.getMonth()+1)}`,sub:`${pad2(d.getDate())}/${pad2(d.getMonth()+1)}/${d.getFullYear()}`,f:F[k]||0,c:C[k]||0,d:deudaAl(k)});}
   } else if(gran==="semana"){
     const b={},lunes=dt=>{const x=new Date(dt);const wd=(x.getDay()+6)%7;x.setDate(x.getDate()-wd);x.setHours(0,0,0,0);return x;};
-    for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;const mk=lunes(d),kk=`${mk.getFullYear()}-${pad2(mk.getMonth()+1)}-${pad2(mk.getDate())}`;const o=b[kk]||(b[kk]={mk,f:0,c:0});o.f+=F[k]||0;o.c+=C[k]||0;}
-    Object.values(b).sort((a,b)=>a.mk-b.mk).forEach(o=>out.push({lab:`${pad2(o.mk.getDate())}/${pad2(o.mk.getMonth()+1)}`,sub:`semana del ${pad2(o.mk.getDate())}/${pad2(o.mk.getMonth()+1)}/${o.mk.getFullYear()}`,f:o.f,c:o.c}));
+    for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;const mk=lunes(d),kk=`${mk.getFullYear()}-${pad2(mk.getMonth()+1)}-${pad2(mk.getDate())}`;const o=b[kk]||(b[kk]={mk,f:0,c:0,last:k});o.f+=F[k]||0;o.c+=C[k]||0;o.last=k;}
+    Object.values(b).sort((a,b)=>a.mk-b.mk).forEach(o=>out.push({lab:`${pad2(o.mk.getDate())}/${pad2(o.mk.getMonth()+1)}`,sub:`semana del ${pad2(o.mk.getDate())}/${pad2(o.mk.getMonth()+1)}/${o.mk.getFullYear()}`,f:o.f,c:o.c,d:deudaAl(o.last)}));
   } else {
     const b={};
-    for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;const mk=`${d.getFullYear()}-${pad2(d.getMonth()+1)}`;const o=b[mk]||(b[mk]={y:d.getFullYear(),m:d.getMonth(),f:0,c:0});o.f+=F[k]||0;o.c+=C[k]||0;}
-    Object.keys(b).sort().forEach(mk=>{const o=b[mk];out.push({lab:`${MESES_ES[o.m]}'${String(o.y).slice(2)}`,sub:`${MESES_ES[o.m]} ${o.y}`,f:o.f,c:o.c});});
+    for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;const mk=`${d.getFullYear()}-${pad2(d.getMonth()+1)}`;const o=b[mk]||(b[mk]={y:d.getFullYear(),m:d.getMonth(),f:0,c:0,last:k});o.f+=F[k]||0;o.c+=C[k]||0;o.last=k;}
+    Object.keys(b).sort().forEach(mk=>{const o=b[mk];out.push({lab:`${MESES_ES[o.m]}'${String(o.y).slice(2)}`,sub:`${MESES_ES[o.m]} ${o.y}`,f:o.f,c:o.c,d:deudaAl(o.last)});});
   }
   return out;
 }
+const DEUDA_COL="#7C3AED";  // color de la línea de deuda (eje derecho)
 function chartSVG(data){
-  const W=960,H=360,padL=64,padR=18,padT=18,padB=44;
+  const W=960,H=360,padL=64,padR=66,padT=18,padB=44;
   const n=data.length||1, plotW=W-padL-padR, plotH=H-padT-padB;
   const mx=Math.max(1,...data.map(d=>Math.max(d.f,d.c)));
+  const mxD=Math.max(1,...data.map(d=>d.d||0));   // escala propia de la deuda (stock, mucho mayor)
   const X=i=>padL+(n===1?plotW/2:i*plotW/(n-1));
-  const Y=v=>padT+plotH-v/mx*plotH;
-  let grid="",ylab=""; const GL=4;
-  for(let g=0;g<=GL;g++){const yy=(padT+plotH-g/GL*plotH).toFixed(1),val=mx*g/GL;
+  const Y=v=>padT+plotH-v/mx*plotH;               // eje izquierdo: flujos (cobrado/facturado)
+  const Yd=v=>padT+plotH-v/mxD*plotH;             // eje derecho: deuda
+  let grid="",ylab="",ylabR=""; const GL=4;
+  for(let g=0;g<=GL;g++){const yy=(padT+plotH-g/GL*plotH).toFixed(1),val=mx*g/GL,valD=mxD*g/GL;
     grid+=`<line x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}" stroke="var(--line)" stroke-width="1"/>`;
-    ylab+=`<text x="${padL-8}" y="${(+yy+4)}" text-anchor="end" font-size="11" fill="var(--gris2)">${fmtM(val)}</text>`;}
+    ylab+=`<text x="${padL-8}" y="${(+yy+4)}" text-anchor="end" font-size="11" fill="var(--gris2)">${fmtM(val)}</text>`;
+    ylabR+=`<text x="${W-padR+8}" y="${(+yy+4)}" text-anchor="start" font-size="11" fill="${DEUDA_COL}">${fmtM(valD)}</text>`;}
   const step=Math.max(1,Math.ceil(n/11)); let xlab="";
   for(let i=0;i<n;i+=step) xlab+=`<text x="${X(i).toFixed(1)}" y="${H-padB+18}" text-anchor="middle" font-size="10.5" fill="var(--gris2)">${data[i].lab}</text>`;
-  const line=(f,col,w)=>`<polyline fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" stroke-linecap="round" points="${data.map((d,i)=>X(i).toFixed(1)+","+Y(f(d)).toFixed(1)).join(" ")}"/>`;
+  const line=(f,col,w,Yfn)=>`<polyline fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" stroke-linecap="round" points="${data.map((d,i)=>X(i).toFixed(1)+","+(Yfn||Y)(f(d)).toFixed(1)).join(" ")}"/>`;
   const area=`${X(0).toFixed(1)},${(padT+plotH).toFixed(1)} ${data.map((d,i)=>X(i).toFixed(1)+","+Y(d.c).toFixed(1)).join(" ")} ${X(n-1).toFixed(1)},${(padT+plotH).toFixed(1)}`;
-  GRAF.geom={W,H,padL,padR,padT,padB,plotW,plotH,mx,n};
-  return `<svg id="cmSvg" viewBox="0 0 ${W} ${H}">${grid}${ylab}${xlab}
+  GRAF.geom={W,H,padL,padR,padT,padB,plotW,plotH,mx,mxD,n};
+  return `<svg id="cmSvg" viewBox="0 0 ${W} ${H}">${grid}${ylab}${ylabR}${xlab}
+    <text x="${W-padR+8}" y="${padT-5}" font-size="10" fill="${DEUDA_COL}" text-anchor="start">deuda</text>
     <polygon points="${area}" fill="var(--cobr)" opacity=".08"/>
+    ${line(d=>d.d||0,DEUDA_COL,2.2,Yd)}
     ${line(d=>d.f,"var(--fact)",2)}
     ${line(d=>d.c,"var(--cobr)",2.4)}
     <line id="cmGuide" x1="0" y1="${padT}" x2="0" y2="${padT+plotH}" stroke="var(--gris2)" stroke-width="1" stroke-dasharray="4 3" opacity="0"/>
+    <circle id="cmDotD" r="4" fill="${DEUDA_COL}" opacity="0"/>
     <circle id="cmDotF" r="4" fill="var(--fact)" opacity="0"/>
     <circle id="cmDotC" r="4.5" fill="var(--cobr)" opacity="0"/>
     <rect id="cmHit" x="${padL}" y="${padT}" width="${plotW}" height="${plotH}" fill="transparent"/>
@@ -830,10 +844,10 @@ function ensureChartModal(){
   if(document.getElementById("chartmodal")) return;
   const sc=document.createElement("div"); sc.className="scrim2"; sc.id="scrim2"; sc.onclick=cerrarGraf; document.body.appendChild(sc);
   const m=document.createElement("div"); m.className="chartmodal"; m.id="chartmodal";
-  m.innerHTML=`<div class="cm-head"><h3>📈 Evolución: cobrado vs facturado</h3><span class="x" onclick="cerrarGraf()">✕</span></div>
+  m.innerHTML=`<div class="cm-head"><h3>📈 Evolución: cobrado, facturado y deuda</h3><span class="x" onclick="cerrarGraf()">✕</span></div>
     <div class="cm-bar">
       <div class="segs" id="cmSegs"><button data-g="dia" onclick="setGran('dia')">Día</button><button data-g="semana" onclick="setGran('semana')">Semana</button><button data-g="mes" class="on" onclick="setGran('mes')">Mes</button></div>
-      <div class="cm-legend"><span><i style="background:var(--cobr)"></i>Cobrado</span><span><i style="background:var(--fact)"></i>Facturado neto</span></div>
+      <div class="cm-legend"><span><i style="background:var(--cobr)"></i>Cobrado</span><span><i style="background:var(--fact)"></i>Facturado neto</span><span><i style="background:#7C3AED"></i>Deuda (eje der.)</span></div>
     </div>
     <div class="cm-chart" id="cmChart"></div>
     <div class="cm-note" id="cmResumen"></div>`;
@@ -858,7 +872,9 @@ function renderGrafico(g){
   svg.addEventListener("mouseleave",hideHover);
   const tf=data.reduce((a,d)=>a+d.f,0), tc=data.reduce((a,d)=>a+d.c,0);
   const un=g==="dia"?"días":g==="semana"?"semanas":"meses";
-  document.getElementById("cmResumen").innerHTML=`En este período: cobrado <b>${fmtM(tc)}</b> · facturado neto <b>${fmtM(tf)}</b> · cobraste el <b>${tf>0?Math.round(tc/tf*100):0}%</b> de lo facturado · ${data.length} ${un}. Pasá el mouse por el gráfico para ver cada ${g==="dia"?"día":g==="semana"?"semana":"mes"}.`;
+  const d0=(data[0]&&data[0].d)||0, d1=(data[data.length-1]&&data[data.length-1].d)||0, dd=d1-d0;
+  const deudaTxt=`la deuda ${dd>0?'<b style="color:#8A2E2B">subió</b>':dd<0?'<b style="color:#0E5C46">bajó</b>':'quedó igual'} ${fmtM(Math.abs(dd))} (de ${fmtM(d0)} a <b style="color:#7C3AED">${fmtM(d1)}</b>)`;
+  document.getElementById("cmResumen").innerHTML=`En este período: cobrado <b>${fmtM(tc)}</b> · facturado neto <b>${fmtM(tf)}</b> · cobraste el <b>${tf>0?Math.round(tc/tf*100):0}%</b> de lo facturado · ${deudaTxt} · ${data.length} ${un}. Pasá el mouse para ver cada ${g==="dia"?"día":g==="semana"?"semana":"mes"}.`;
 }
 function onHover(e){
   const g=GRAF.geom, data=GRAF.data; if(!g||!data) return;
@@ -868,15 +884,16 @@ function onHover(e){
   idx=Math.max(0,Math.min(data.length-1,idx));
   const X=g.padL+(g.n===1?g.plotW/2:idx*g.plotW/(g.n-1));
   const Yc=g.padT+g.plotH-data[idx].c/g.mx*g.plotH, Yf=g.padT+g.plotH-data[idx].f/g.mx*g.plotH;
+  const Yd=g.padT+g.plotH-(data[idx].d||0)/g.mxD*g.plotH;
   const set=(id,at)=>{const el=document.getElementById(id);if(!el)return;for(const k in at)el.setAttribute(k,at[k]);};
-  set("cmGuide",{x1:X,x2:X,opacity:.6}); set("cmDotC",{cx:X,cy:Yc,opacity:1}); set("cmDotF",{cx:X,cy:Yf,opacity:1});
+  set("cmGuide",{x1:X,x2:X,opacity:.6}); set("cmDotC",{cx:X,cy:Yc,opacity:1}); set("cmDotF",{cx:X,cy:Yf,opacity:1}); set("cmDotD",{cx:X,cy:Yd,opacity:1});
   const tip=document.getElementById("cmTip");
-  tip.innerHTML=`<b>${data[idx].sub}</b><br>🟢 Cobrado ${money(data[idx].c)}<br>🟡 Facturado ${money(data[idx].f)}`;
+  tip.innerHTML=`<b>${data[idx].sub}</b><br>🟢 Cobrado ${money(data[idx].c)}<br>🟡 Facturado ${money(data[idx].f)}<br>🟣 Deuda ${money(data[idx].d||0)}`;
   tip.style.opacity="1";
   const px=svg.offsetLeft+(X/g.W)*r.width; let left=px+14; const cw=svg.parentElement.clientWidth; if(left>cw-160) left=px-160;
   tip.style.left=Math.max(4,left)+"px"; tip.style.top="14px";
 }
-function hideHover(){["cmGuide","cmDotC","cmDotF"].forEach(id=>{const el=document.getElementById(id);if(el)el.setAttribute("opacity","0");});const t=document.getElementById("cmTip");if(t)t.style.opacity="0";}
+function hideHover(){["cmGuide","cmDotC","cmDotF","cmDotD"].forEach(id=>{const el=document.getElementById(id);if(el)el.setAttribute("opacity","0");});const t=document.getElementById("cmTip");if(t)t.style.opacity="0";}
 function cerrarGraf(){const s=document.getElementById("scrim2"),m=document.getElementById("chartmodal");if(s)s.classList.remove("on");if(m)m.classList.remove("on");}
 
 function render(){
