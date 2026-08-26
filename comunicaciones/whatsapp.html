@@ -72,6 +72,8 @@
   .pin.bot{background:rgba(37,211,102,.13);color:var(--wsp)}
   .pin.eq{background:rgba(236,139,94,.13);color:var(--hud-coral)}
   .pin.asig{background:rgba(159,140,255,.14);color:var(--hud-lila)}
+  /* Gente de casa: sin relleno, solo un contorno tenue. No compite con el resto. */
+  .pin.casa{background:transparent;border:1px solid var(--hud-line2);color:var(--hud-txt2);letter-spacing:1px;padding:1px 6px}
   .vacio{padding:24px 6px;text-align:center;color:var(--hud-dim);font-family:var(--mono);font-size:10px;letter-spacing:1px;line-height:2}
 
   /* ── centro: el chat ── */
@@ -342,6 +344,16 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   let cargando=false, filtro="", vistoId=0, primeraCarga=true;
   let firmaConvs="", firmaMsgs="", firmaFicha="";
   let verArchivadas=false;
+  /* Los teléfonos del equipo, para distinguir en la bandeja quién es de casa */
+  let EQUIPO={};
+  const ROTULO_NIVEL={direccion:"DIRECCIÓN",lider:"LÍDER",comercial:"COMERCIAL",finanzas:"FINANZAS",deposito:"DEPÓSITO"};
+  const delEquipo=num=>EQUIPO[String(num||"").replace(/\D/g,"").slice(-10)]||null;
+  async function cargarEquipo(){
+    try{
+      const {data}=await EYG.supa().from("wsp_equipo").select("telefono,nombre,nivel,cargo").eq("activo",true);
+      (data||[]).forEach(p=>EQUIPO[p.telefono]=p);
+    }catch(e){ /* si falla, la bandeja funciona igual, sin badge */ }
+  }
   $("app").style.display="";
 
   const esc=EYG.esc;
@@ -554,7 +566,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     });
     $("nConv").textContent=lista.length?lista.length:"";
     /* sin parpadeo: si nada cambió, no se toca el DOM */
-    const firma=lista.map(v=>`${v.id}|${v.write_date}|${cfg.pausadas.includes(v.id)?1:0}|${cfg.asignadas[v.id]||""}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0);
+    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.write_date}|${cfg.pausadas.includes(v.id)?1:0}|${cfg.asignadas[v.id]||""}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0);
     if(firma===firmaConvs) return;
     firmaConvs=firma;
     const c=$("convs");
@@ -562,8 +574,10 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     c.innerHTML=lista.map(v=>{
       const eq=cfg.pausadas.includes(v.id), asig=cfg.asignadas[v.id];
       const nom=nom1(v.whatsapp_partner_id)||v.name||v.whatsapp_number||"Sin nombre";
-      const marca=asig?`<span class="pin asig">${esc(String(asig.nombre||"").split(" ")[0].toUpperCase())}</span>`
-                      :(eq?'<span class="pin eq">EQUIPO</span>':(cfg.activo?'<span class="pin bot">BOT</span>':""));
+      const casa=delEquipo(v.whatsapp_number);
+      const marca=casa?`<span class="pin casa" title="${esc(casa.nombre)}${casa.cargo?" · "+esc(casa.cargo):""}">${ROTULO_NIVEL[casa.nivel]||"EQUIPO"}</span>`
+                      :(asig?`<span class="pin asig">${esc(String(asig.nombre||"").split(" ")[0].toUpperCase())}</span>`
+                      :(eq?'<span class="pin eq">EQUIPO</span>':(cfg.activo?'<span class="pin bot">BOT</span>':"")));
       return `<div class="conv ${sel&&sel.id===v.id?"act":""}" data-id="${v.id}" data-nom="${esc(nom)}">
         <div class="n"><b>${esc(nom)}</b>${marca}</div>
         <div class="t"><span>${esc(v.whatsapp_number||"")}</span><span>${esc(dia(v.write_date))}</span></div>
@@ -1093,7 +1107,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
 
   (async()=>{
     anotar("sis","consola iniciada");
-    await leerCfg(); await cargarConvs(); pintarChat(); cargarMetricas();
+    await leerCfg(); await cargarEquipo(); await cargarConvs(); pintarChat(); cargarMetricas();
   })();
 
   /* Refresco vivo: el chat abierto cada 5 s, la bandeja cada 20 s y las métricas
