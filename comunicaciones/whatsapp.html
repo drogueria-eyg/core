@@ -179,6 +179,10 @@
   .hb.sm{flex:none;padding:8px 11px}
   .m .voznota{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:9px;letter-spacing:1px;
               opacity:.75;border:1px solid currentColor;border-radius:20px;padding:1px 7px;margin-bottom:5px}
+  /* Lo que dijo en el audio va en cursiva: se lee igual, pero se distingue de lo
+     que escribió de puño y letra. Nadie tiene que dudar de dónde salió el texto. */
+  .m .dicho{font-style:italic;opacity:.94}
+  .m .pendiente{font-style:italic;opacity:.5;font-size:11px}
 
   .ficha{padding:10px 16px 10px}
   .ficha .nom{font-size:15px;font-weight:800;color:var(--hud-txt);line-height:1.3}
@@ -740,13 +744,32 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     }
     try{
       const r=await EYG.rpc("mail.message","search_read",[[["model","=","discuss.channel"],["res_id","=",id]]],
-        {fields:["body","author_id","message_type","date","subtype_id"],order:"id desc",limit:80});
+        {fields:["body","author_id","message_type","date","subtype_id","attachment_ids"],order:"id desc",limit:80});
       msgs=(r||[]).slice().reverse();
     }catch(e){ if(!silencioso) msgs=[]; }
     detectarNovedades();
     pintarChat(mismo);
+    traerTranscripciones();
     if(!mismo) cargarFicha();
     refrescarOrbe();
+  }
+
+  /* Las notas de voz pasadas a texto. El bot ya transcribe lo que contesta y lo
+     deja en `wsp_audios`; esto trae lo que falte —los audios que entraron con el
+     bot apagado, o viejos— y los cachea igual. La transcripción es SOLO para
+     leer acá adentro: nunca se le escribe al cliente. */
+  let transcritos={}, transcribiendo=false, pedidosYa=new Set();
+  async function traerTranscripciones(){
+    const ids=[...new Set(msgs.flatMap(m=>m.attachment_ids||[]))]
+      .filter(a=>!transcritos[a] && !pedidosYa.has(a));
+    if(!ids.length) return;
+    ids.forEach(a=>pedidosYa.add(a));
+    transcribiendo=true; firmaMsgs=""; pintarChat(true);
+    try{
+      const {data}=await EYG.supa().functions.invoke("wsp-transcribir",{body:{adjuntos:ids}});
+      Object.assign(transcritos, (data&&data.textos)||{});
+    }catch(e){ /* si falla queda "sin transcribir", no rompe el chat */ }
+    transcribiendo=false; firmaMsgs=""; pintarChat(true);
   }
 
   /* El registro cuenta QUÉ PASÓ, no qué se dijo: el contenido ya está en el
@@ -832,13 +855,28 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     $("btnAsig").onclick=abrirAsignar;
 
     const pid=id1(sel.whatsapp_partner_id);
-    const firma=msgs.map(m=>m.id).join(",")+"|"+(esperandoRespuesta()?1:0);
+    const firma=msgs.map(m=>m.id).join(",")+"|"+(esperandoRespuesta()?1:0)+"|"+Object.keys(transcritos).length;
     if(firma!==firmaMsgs){
       firmaMsgs=firma;
       const caja=$("msgs");
       const abajo=!mantener || (caja.scrollHeight-caja.scrollTop-caja.clientHeight)<90;
       let html=msgs.map(m=>{
         let txt=limpiar(m.body);
+        /* Una nota de voz llega SIN texto: antes se descartaba la burbuja entera
+           y en el panel no figuraba que el cliente había dicho algo. Desde acá no
+           se pueden escuchar los audios, así que se muestra la transcripción. */
+        const adj=(m.attachment_ids||[]);
+        if(!txt && adj.length){
+          const dicho=adj.map(a=>transcritos[a]).filter(Boolean).join(" ");
+          const soyCli=Array.isArray(m.author_id)&&pid&&m.author_id[0]===pid&&!esDelBot(m);
+          const qn=!soyCli?`<span class="qui">${esDelBot(m)?"ASISTENTE":esc(nom1(m.author_id)||"EQUIPO")}</span>`:"";
+          const cuerpo=dicho
+            ? `<span class="dicho">${esc(dicho)}</span>`
+            : `<span class="pendiente">${transcribiendo?"pasando a texto…":"nota de voz (sin transcribir)"}</span>`;
+          return `<div class="m ${soyCli?"in":"out"}${esDelBot(m)?" bot":""}">${qn}`+
+                 `<span class="voznota">🎙️ NOTA DE VOZ</span><br>${cuerpo}`+
+                 `<span class="hora">${esc(hora(m.date))}</span></div>`;
+        }
         if(!txt) return "";
         if(esNota(m)) return `<div class="m nota">${esc(txt)}<span class="hora">${esc(hora(m.date))}</span></div>`;
         const delCliente=Array.isArray(m.author_id)&&pid&&m.author_id[0]===pid&&!esDelBot(m);
