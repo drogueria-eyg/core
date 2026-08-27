@@ -784,7 +784,7 @@ function tabPendientes(){
   const viejos=PEND.filter(o=>o.dias>X);
   const rows=PEND.map(o=>{
     const v=o.dias>X;
-    return `<div class="row ${v?'bad':''}" style="grid-template-columns:1fr 1.7fr 1.2fr .6fr 1fr 190px">
+    return `<div class="row ${v?'bad':''}" style="grid-template-columns:1fr 1.7fr 1.2fr .6fr 1fr 265px">
       <div class="pname"><b>${esc(o.name)}</b><span>${o.delivery_status==='partial'?'entrega parcial':'sin entregar'}</span></div>
       <div style="overflow-wrap:anywhere">${esc((o.partner_id&&o.partner_id[1])||'—')}</div>
       <div style="font-size:12px;color:var(--gris)">${esc((o.user_id&&o.user_id[1])||'—')}</div>
@@ -792,16 +792,79 @@ function tabPendientes(){
       <div class="tr-r">${money(o.amount_total)}</div>
       <div style="display:flex;gap:6px;justify-content:flex-end">
         <button class="mini-btn" onclick="abrirPedidoOdoo(${o.id})" title="Abre el pedido en Odoo para entregarlo o revisarlo.">Abrir</button>
-        <button class="mini-btn" onclick="cancelarPedido(${o.id})" title="Cancela el pedido en Odoo. Reversible (se puede volver a borrador).">Cancelar</button>
+        <button class="mini-btn pri" onclick="liberarPedido(${o.id})" title="Borra las entregas de salida que quedaron en borrador o sin hacer, con sus líneas. Lo ya entregado y las devoluciones NO se tocan. No cancela el pedido.">Liberar</button>
+        <button class="mini-btn" onclick="cancelarPedido(${o.id})" title="Cancela el pedido entero en Odoo. Si ya tiene entregas hechas, Odoo no va a dejar: usá Liberar.">Cancelar</button>
       </div>
     </div>`;
   }).join('');
-  return `<div class="note">📦 <b>Pedidos sin entregar.</b> Pedidos ya confirmados que todavía no salieron. Los de <b>más de ${X} días</b> (en rojo) ya <b>liberaron su stock</b> para vender (dejaron de comprometerlo): revisalos con logística — entregar cuanto antes, o <b>cancelar</b> si el pedido ya no va (los muy viejos suelen ser abandonados). <b>Cancelar</b> es reversible en Odoo; si el pedido tiene factura, primero hay que anularla allá.</div>
+  return `<div class="note">📦 <b>Pedidos sin entregar.</b> Pedidos ya confirmados que todavía no salieron. Los de <b>más de ${X} días</b> (en rojo) ya <b>liberaron su stock</b> para vender (dejaron de comprometerlo): revisalos con logística — entregar cuanto antes, o <b>cancelar</b> si el pedido ya no va (los muy viejos suelen ser abandonados). <b>Cancelar</b> es reversible en Odoo; si el pedido tiene factura, primero hay que anularla allá.<br><br>🔓 <b>Liberar</b> es para el caso más común: el pedido ya se entregó (o se entregó una parte) pero quedó colgada una <b>entrega en borrador o sin hacer</b> que lo deja para siempre como “sin entregar” y no deja cancelarlo. <b>Liberar</b> borra esas entregas pendientes con sus líneas y <b>no toca ni lo ya entregado ni las devoluciones</b>. El pedido queda como está.</div>
    <div class="count-line"><b>${PEND.length}</b> pedidos sin entregar · <b style="color:var(--red)">${viejos.length}</b> con más de ${X} días (stock ya liberado, a revisar).</div>
    <div class="tablecard">
-     <div class="thead" style="grid-template-columns:1fr 1.7fr 1.2fr .6fr 1fr 190px"><div>Pedido</div><div>Cliente</div><div>Comercial</div><div class="tr-r">Días</div><div class="tr-r">Monto</div><div></div></div>
+     <div class="thead" style="grid-template-columns:1fr 1.7fr 1.2fr .6fr 1fr 265px"><div>Pedido</div><div>Cliente</div><div>Comercial</div><div class="tr-r">Días</div><div class="tr-r">Monto</div><div></div></div>
      ${rows}</div>`;
 }
+/* ---------- LIBERAR las entregas pendientes de un pedido ----------
+   El caso real: el pedido ya se entregó (entero o en parte) pero quedó colgada una
+   entrega de salida en borrador que nunca se hizo. Eso deja el pedido como "sin
+   entregar" para siempre, y Odoo no deja cancelarlo porque ya hay mercadería
+   entregada. Esto borra SOLO esas entregas de salida sin hacer, con sus líneas.
+   NO toca: las entregas ya hechas (done), las canceladas, ni las DEVOLUCIONES
+   (WH/IN — son entradas y llegan ligadas al mismo pedido; borrarlas sería borrar
+   el remito de lo que el cliente devolvió). El pedido no se cancela. */
+const PICK_EST = {draft:"borrador", waiting:"en espera", confirmed:"sin hacer", assigned:"preparada"};
+async function liberarPedido(id){
+  const o = PEND.find(x=>x.id===id); const name = o?o.name:("#"+id);
+  let pick=[];
+  try{
+    pick = await rpc("stock.picking","search_read",
+      [[["sale_id","=",id]],["name","state","picking_type_code","move_ids"]],{context:ES});
+  }catch(e){ alert("No se pudieron leer las entregas del pedido: "+(e.message||e)); return; }
+
+  // solo salidas sin hacer: las devoluciones (incoming) y lo ya entregado quedan
+  const soltar = pick.filter(p=>p.picking_type_code==="outgoing" && !["done","cancel"].includes(p.state));
+  const quedan = pick.filter(p=>soltar.indexOf(p)<0 && p.state!=="cancel");
+  const comoEsta = p => p.state==="done" ? "ya entregada"
+                      : p.picking_type_code==="incoming" ? "devolución"
+                      : (PICK_EST[p.state]||p.state);
+  if(!soltar.length){
+    alert(`El pedido ${name} no tiene entregas pendientes para liberar.\n\n`+
+      (quedan.length ? "Lo que tiene:\n"+quedan.map(p=>`   • ${p.name} — ${comoEsta(p)}`).join("\n")
+                     : "No tiene entregas."));
+    return;
+  }
+  const lineas  = soltar.reduce((a,p)=>a+(p.move_ids||[]).length,0);
+  const detalle = soltar.map(p=>`   • ${p.name} — ${PICK_EST[p.state]||p.state}, ${(p.move_ids||[]).length} línea(s)`).join("\n");
+  const intactas = quedan.length ? "\n\nNO se tocan:\n"+quedan.map(p=>`   • ${p.name} — ${comoEsta(p)}`).join("\n") : "";
+  if(!confirm(`Liberar el pedido ${name}\n\nSe van a BORRAR ${soltar.length} entrega(s) sin hacer y sus ${lineas} línea(s):\n${detalle}${intactas}\n\nEl pedido NO se cancela. Esto no se puede deshacer.\n\n¿Seguimos?`)) return;
+
+  let ok=0, cancel=0, err=0; const errores=[];
+  for(const p of soltar){
+    try{
+      // 1) cancelar libera la reserva y destraba el borrado
+      try{ await rpc("stock.picking","action_cancel",[[p.id]],{context:ES}); }catch(_){}
+      // 2) sacar las líneas y después la entrega
+      if((p.move_ids||[]).length){ try{ await rpc("stock.move","unlink",[p.move_ids],{context:ES}); }catch(_){} }
+      await rpc("stock.picking","unlink",[[p.id]],{context:ES});
+      ok++;
+    }catch(e){
+      // si Odoo no deja borrarla, al menos queda cancelada: ya no compromete nada
+      let cancelada=false;
+      try{ const r=await rpc("stock.picking","read",[[p.id],["state"]],{context:ES}); cancelada = r&&r[0]&&r[0].state==="cancel"; }catch(_){}
+      if(cancelada) cancel++; else { err++; errores.push(p.name+": "+(e.message||e)); }
+    }
+  }
+  registrarConteo({ email:(PERFIL&&PERFIL.email)||null, product_name:`pedido ${name}`,
+    accion:`liberar entregas (${ok} borradas, ${cancel} canceladas, ${err} con error)` });
+
+  let msg = `Pedido ${name}: ${ok} entrega(s) borrada(s)`;
+  if(cancel) msg += `, ${cancel} quedaron canceladas (Odoo no dejó borrarlas)`;
+  if(err)    msg += `, ${err} con error`;
+  toast("✓ "+msg);
+  if(errores.length) alert("Algunas no se pudieron liberar:\n\n"+errores.join("\n"));
+  try{ PEND = await cargarPendientes(); }catch(e){}
+  render();
+}
+
 function abrirPedidoOdoo(id){ window.open(`${ODOO_BASE}/web#id=${id}&model=sale.order&view_type=form`,"_blank"); }
 async function cancelarPedido(id){
   const o=PEND.find(x=>x.id===id); const name=o?o.name:("#"+id);
