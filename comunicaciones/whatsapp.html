@@ -194,15 +194,29 @@
   .dato .v.warn{color:var(--hud-gold)} .dato .v.err{color:var(--hud-err)}
 
   /* Registro corto y con scroll propio: es una consola de eventos, no el chat. */
-  .log{padding:8px 16px 12px;display:flex;flex-direction:column;gap:1px;font-family:var(--mono);
+  /* La actividad como un monitor: cada cosa que pasa deja su pulso y el
+     tiempo corre hacia la izquierda. Abajo, en una línea, lo último. */
+  .pulsera{position:relative;padding:6px 12px 0}
+  #pulsos{display:block;width:100%;height:74px}
+  .ultimo{padding:2px 16px 8px;font-family:var(--mono);font-size:10px;line-height:1.6;
+          display:flex;gap:7px;white-space:nowrap;min-height:17px}
+  .ultimo .h{color:var(--hud-dim);flex:none}
+  .ultimo .t{overflow:hidden;text-overflow:ellipsis;transition:color .3s}
+  .leyenda{display:flex;flex-wrap:wrap;gap:9px;padding:0 16px 10px;font-family:var(--mono);font-size:8px;
+           letter-spacing:.6px;color:var(--hud-dim)}
+  .leyenda i{display:inline-block;width:5px;height:5px;border-radius:50%;margin-right:4px;vertical-align:middle}
+  .log{padding:0 16px 12px;display:none;flex-direction:column;gap:1px;font-family:var(--mono);
        font-size:10px;line-height:1.7;max-height:150px;overflow-y:auto}
-  .lg{display:flex;gap:7px;animation:entra .3s ease-out;white-space:nowrap}
-  @keyframes entra{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
+  .log.abierto{display:flex}
+  .lg{display:flex;gap:7px;white-space:nowrap}
   .lg .h{color:var(--hud-dim);flex:none}
   .lg span:last-child{overflow:hidden;text-overflow:ellipsis}
   .lg.cli{color:var(--hud-txt)} .lg.bot{color:var(--wsp)} .lg.ped{color:var(--hud-gold)}
   .lg.eq{color:var(--hud-coral)} .lg.sis{color:var(--hud-txt2)} .lg.asig{color:var(--hud-lila)}
   .lg.voz{color:var(--hud-aqua)}
+  .verlog{margin-left:auto;font-family:var(--mono);font-size:8px;letter-spacing:1px;color:var(--hud-dim);
+          background:transparent;border:1px solid var(--hud-line);border-radius:5px;padding:2px 6px;cursor:pointer}
+  .verlog:hover{color:var(--hud-teal);border-color:var(--hud-teal)}
 
   .metricas{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;padding:8px 16px 16px;flex:none}
   .met{border:1px solid var(--hud-line);border-radius:9px;padding:9px 8px;text-align:center;background:rgba(10,168,159,.03)}
@@ -317,7 +331,16 @@
       <div class="ptitle">EL CONTACTO</div>
       <div class="ficha" id="ficha"><div class="vacio">SIN CONVERSACIÓN ABIERTA</div></div>
 
-      <div class="ptitle">EN VIVO</div>
+      <div class="ptitle">EN VIVO <button class="verlog" id="verLog">DETALLE</button></div>
+      <div class="pulsera"><canvas id="pulsos"></canvas></div>
+      <div class="ultimo" id="ultimo"></div>
+      <div class="leyenda">
+        <span><i style="background:var(--hud-txt)"></i>CLIENTE</span>
+        <span><i style="background:var(--wsp)"></i>ASISTENTE</span>
+        <span><i style="background:var(--hud-aqua)"></i>VOZ</span>
+        <span><i style="background:var(--hud-gold)"></i>PEDIDO</span>
+        <span><i style="background:var(--hud-coral)"></i>EQUIPO</span>
+      </div>
       <div class="log" id="log"></div>
     </div>
 
@@ -478,11 +501,87 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   const ahoraHM=()=>{ const d=new Date(), p=n=>String(n).padStart(2,"0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
   /* Si el evento viene de un mensaje, se usa LA HORA DEL MENSAJE, no la de
      ahora: si no, todo el historial aparece con el horario en que se abrió. */
+  /* ══════ la actividad como monitor de pulsos ══════
+     Cada cosa que pasa deja su pulso, con el color de quién fue. El tiempo
+     corre hacia la izquierda y los pulsos se van apagando. Abajo, en una
+     línea, el último evento; el detalle en texto sigue disponible a un clic. */
+  const COLOR_EV={cli:[214,222,221], bot:[37,211,102], voz:[95,200,191], ped:[240,177,90],
+                  eq:[236,139,94], asig:[159,140,255], sis:[130,150,149]};
+  const PULSOS=[];
   function anotar(clase,texto,cuando){
     EVENTOS.unshift({h:(cuando&&hora(cuando))||ahoraHM(),clase,texto});
     if(EVENTOS.length>40) EVENTOS.pop();
-    $("log").innerHTML=EVENTOS.map(e=>`<div class="lg ${e.clase}"><span class="h">${e.h}</span><span>${esc(e.texto)}</span></div>`).join("");
+    /* el pulso nace a la derecha; la altura la da qué tan importante es */
+    const peso={ped:1, bot:.78, cli:.72, voz:.8, eq:.66, asig:.66, sis:.34}[clase]||.5;
+    PULSOS.push({x:1, alto:peso, clase, n:Date.now(), vida:1});
+    if(PULSOS.length>90) PULSOS.shift();
+    const u=$("ultimo");
+    if(u){
+      const c=COLOR_EV[clase]||COLOR_EV.sis;
+      u.innerHTML=`<span class="h">${EVENTOS[0].h}</span><span class="t" style="color:rgb(${c.join(",")})">${esc(texto)}</span>`;
+    }
+    const lg=$("log");
+    if(lg) lg.innerHTML=EVENTOS.map(e=>`<div class="lg ${e.clase}"><span class="h">${e.h}</span><span>${esc(e.texto)}</span></div>`).join("");
   }
+
+  (function pulsera(){
+    const cv=$("pulsos"); if(!cv) return;
+    const cx=cv.getContext("2d");
+    let t=0;
+    (function dibujar(){
+      const W=cv.clientWidth, H=cv.clientHeight;
+      if(!W||!H){ requestAnimationFrame(dibujar); return; }
+      if(cv.width!==W*2||cv.height!==H*2){ cv.width=W*2; cv.height=H*2; }
+      cx.setTransform(2,0,0,2,0,0); cx.clearRect(0,0,W,H);
+      t+=0.02;
+      const base=H*0.72;
+
+      /* la línea de base, con una respiración apenas perceptible */
+      cx.beginPath(); cx.strokeStyle="rgba(120,150,148,.16)"; cx.lineWidth=1;
+      for(let x=0;x<=W;x+=4){
+        const y=base+Math.sin(x*0.045+t*1.6)*(cfg && cfg.activo?1.5:0.4);
+        x?cx.lineTo(x,y):cx.moveTo(x,y);
+      }
+      cx.stroke();
+
+      /* cada evento, su pulso; se corren a la izquierda y se apagan */
+      for(let i=PULSOS.length-1;i>=0;i--){
+        const p=PULSOS[i];
+        p.x-=0.0016; p.vida=Math.max(0,p.vida-0.0016);
+        if(p.x<-0.05){ PULSOS.splice(i,1); continue; }
+        const px=p.x*W, alto=p.alto*(H*0.6), c=COLOR_EV[p.clase]||COLOR_EV.sis;
+        const joven=Math.min(1,(Date.now()-p.n)/420);
+        const a=p.vida*(0.25+0.75*joven);
+        /* el trazo: sube, hace punta y vuelve */
+        cx.beginPath();
+        cx.strokeStyle=`rgba(${c[0]},${c[1]},${c[2]},${a})`;
+        cx.lineWidth=1.6; cx.lineJoin="round";
+        cx.moveTo(px-9,base);
+        cx.lineTo(px-4,base-alto*0.25);
+        cx.lineTo(px,base-alto*joven);
+        cx.lineTo(px+4,base-alto*0.18);
+        cx.lineTo(px+9,base);
+        cx.stroke();
+        /* el resplandor de la punta, que se apaga rápido */
+        if(joven<1){
+          const g=cx.createRadialGradient(px,base-alto,0,px,base-alto,16);
+          g.addColorStop(0,`rgba(${c[0]},${c[1]},${c[2]},${(1-joven)*0.5})`);
+          g.addColorStop(1,"rgba(0,0,0,0)");
+          cx.fillStyle=g; cx.fillRect(px-16,base-alto-16,32,32);
+        }
+        cx.beginPath();
+        cx.fillStyle=`rgba(${c[0]},${c[1]},${c[2]},${a})`;
+        cx.arc(px,base-alto*joven,1.7,0,7); cx.fill();
+      }
+
+      /* el cabezal: donde entra lo próximo que pase */
+      const lat=0.5+Math.sin(t*3)*0.5;
+      cx.beginPath();
+      cx.strokeStyle=`rgba(10,168,159,${0.2+lat*0.35})`; cx.lineWidth=1;
+      cx.moveTo(W-1,base-H*0.5); cx.lineTo(W-1,base+6); cx.stroke();
+      requestAnimationFrame(dibujar);
+    })();
+  })();
 
   /* ══ estado del orbe ══ */
   let hablandoHasta=0, vozHasta=0;
@@ -595,6 +694,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       accionChat(Number(fila.dataset.id), fila.dataset.nom, b.dataset.a);
     });
   }
+  $("verLog").onclick=()=>{ const l=$("log"); l.classList.toggle("abierto"); $("verLog").textContent=l.classList.contains("abierto")?"OCULTAR":"DETALLE"; };
   $("buscar").addEventListener("input",e=>{ filtro=e.target.value; firmaConvs=""; pintarConvs(); });
   $("btnArch").onclick=async()=>{
     verArchivadas=!verArchivadas;
