@@ -1481,11 +1481,38 @@ EYG.guard(["direccion","comercial","lider","admin"],{
   /* Refresco vivo: el chat abierto cada 5 s, la bandeja cada 20 s y las métricas
      cada minuto. Como todo compara antes de repintar, no se ve ningún parpadeo. */
   let vueltas=0;
+  /* ═══ El latido ═══════════════════════════════════════════════════════════
+     Antes esta vuelta consultaba Odoo cada 5 segundos, POR PESTAÑA ABIERTA.
+     Con seis comerciales adentro eran ~90 consultas por minuto: el pool de
+     conexiones de Odoo se llenaba ("The Connection Pool Is Full"), una consulta
+     trivial pasaba a tardar 19 segundos y EL BOT DEJABA DE CONTESTARLE A LOS
+     CLIENTES. Una pantalla de monitoreo no puede romper la atención.
+
+     Ahora se le pregunta a Supabase (milisegundos, no toca Odoo) si pasó algo.
+     Solo si cambió —o cada 45 s por las dudas— se va a Odoo de verdad.        */
+  let marcaPulso="", ultimoOdoo=0;
+  async function huboNovedad(){
+    try{
+      const {data}=await EYG.supa().rpc("wsp_pulso");
+      const m=Array.isArray(data)?(data[0]&&data[0].marca):(data&&data.marca)||data;
+      if(m && m!==marcaPulso){ marcaPulso=m; return true; }
+    }catch(e){ return true; }   // si el latido falla, se refresca igual
+    return false;
+  }
+  /* Si la pestaña está en segundo plano no se refresca nada: nadie la está
+     mirando y el navegador la deja abierta todo el día. */
+  const mirando=()=>document.visibilityState==="visible";
+  document.addEventListener("visibilitychange",()=>{ if(mirando()) ultimoOdoo=0; });
+
   setInterval(async()=>{
-    if(cargando) return;
+    if(cargando || !mirando()) return;
+    const viejo = Date.now()-ultimoOdoo > 45000;
+    const nuevo = await huboNovedad();
+    if(!nuevo && !viejo) return;          // nada que hacer: Odoo ni se entera
+    ultimoOdoo=Date.now();
     vueltas++;
-    if(vueltas%4===0) await cargarConvs();
-    if(vueltas%12===0){ cargarMetricas(); if(sel) cargarFicha(); }
+    if(nuevo || vueltas%3===0) await cargarConvs();
+    if(vueltas%8===0){ cargarMetricas(); if(sel) cargarFicha(); }
     if(sel) await abrir(sel.id,true);
   },5000);
 });
