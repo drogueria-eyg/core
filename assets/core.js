@@ -459,7 +459,7 @@ window.EYG = (function(){
        sus clientes por el servidor. Pasa por encima del candado "en pruebas"
        a propósito: el interruptor es el que manda. */
     const wspOk = m.key==="whatsapp" && p._cfg && p._cfg.wsp_comerciales===true
-                  && (p.rol==="comercial" || p.rol==="lider");
+                  && (p.rol==="comercial" || p.rol==="lider" || p.rol==="cobranzas");
     if(wspOk) return true;
     if(p.rol==="comercial") return m.key==="panel";   // comercial: sólo su panel (salvo concesión explícita, ya resuelta arriba)
     if(m.pruebas && m.pruebas.length && !m.pruebas.includes(p._h)) return false;

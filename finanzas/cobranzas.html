@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=42"></script>
+<script src="../assets/core.js?v=37"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
@@ -47,6 +47,10 @@
   .kpi .l{font-size:11.5px;color:var(--gris);font-weight:600;margin-top:3px}
   .kpi .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}
   .kpi.rub .l{color:var(--teal-deep)}
+  /* Tarjetas de GESTIÓN (bóveda, migrada, bloqueados): destacadas con fondo propio */
+  .kpi.gest{border-width:1.5px;box-shadow:0 1px 3px rgba(6,65,62,.07)}
+  .kpi.gest .l{font-weight:800}
+  .kpi.gest:hover{filter:brightness(.985)}
   /* Secciones de tarjetas (separan mora de rubros) */
   .cardsec{border-radius:var(--radius);padding:13px 15px 15px;margin-bottom:14px;border:1px solid var(--line)}
   .cardsec.sec-mora{background:#F2F7F6;border-color:#DDE9E7}
@@ -311,6 +315,8 @@ const fmtFecha=f=> f? f.split("-").reverse().join("/") : "—";
 let CLI=[], EVO=[], BOVEDA={}, MIGARCH={}, DESEMP=null, filtro={tramo:"", comercial:"", rubro:"", q:"", orden:"prioridad", boveda:false, migrada:false};
 const BOV_TAG="[BOVEDA]"; // marcador en el chatter del contacto (fuente de verdad, con historial)
 const MIG_TAG="[MIG-ARCHIVADA]"; // deuda migrada archivada: sale de "lo adeudado" y del vencido (reversible)
+const BLK_TAG="[BLOQUEO]";       // gestión de cuentas bloqueadas por deuda (sale_warn de Odoo) desde Cobranzas
+let BLOQUEOS={blocked:[],temp:[]};  // {blocked:[cuentas con sale_warn=block], temp:[levantadas por un plazo]}
 let CONTACTOS={};          // partnerId → fecha/hora (UTC) del último contacto de cobranzas
 const CONTACTO_TAG="[COBRO-CONTACTO]";
 let NOTAS={};              // partnerId → {texto, fecha} última nota/acuerdo de cobranza
@@ -486,6 +492,7 @@ async function cargar(silent){
         nota:NOTAS[p.id]||null
       };
     });
+    try{ await cargarBloqueos(); }catch(e){ console.warn("No pude cargar bloqueos", e); }
     const _sy = silent ? window.scrollY : 0;
     render();
     if(silent) window.scrollTo(0, _sy);
@@ -764,56 +771,70 @@ let DIARIO=null, GRAF={gran:"mes",data:null,geom:null};
 async function fetchDiarioCob(){
   if(DIARIO) return DIARIO;
   const ini=new Date(hoy.getFullYear(),hoy.getMonth()-24,1).toISOString().slice(0,10);
-  const [inv,ref,pay]=await Promise.all([
+  const [inv,ref,pay,bal]=await Promise.all([
     rpc("account.move","read_group",[[["move_type","=","out_invoice"],["state","=","posted"],["invoice_date",">=",ini]],["amount_total:sum"],["invoice_date:day"]],{lazy:false,limit:3000}),
     rpc("account.move","read_group",[[["move_type","=","out_refund"],["state","=","posted"],["invoice_date",">=",ini]],["amount_total:sum"],["invoice_date:day"]],{lazy:false,limit:3000}),
     rpc("account.payment","read_group",[[["partner_type","=","customer"],["payment_type","=","inbound"],["state","=","posted"],["is_internal_transfer","=",false],["date",">=",ini]],["amount:sum"],["date:day"]],{lazy:false,limit:3000}),
+    // DEUDA = saldo del receivable (balance) por día, SIN filtro de fecha para acumular todo el histórico → nivel real de deuda
+    rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"]],["balance:sum"],["date:day"]],{lazy:false,limit:10000}),
   ]);
   const kd=(g,fld)=>{const rk=g.__range&&g.__range[fld+":day"];return rk?rk.from.slice(0,10):null;};
   const F={},C={}; let min=hoyStr;
   for(const g of inv){const k=kd(g,"invoice_date");if(k){F[k]=(F[k]||0)+(g.amount_total||0);if(k<min)min=k;}}
   for(const g of ref){const k=kd(g,"invoice_date");if(k)F[k]=(F[k]||0)-(g.amount_total||0);}
   for(const g of pay){const k=kd(g,"date");if(k){C[k]=(C[k]||0)+(g.amount||0);if(k<min)min=k;}}
-  DIARIO={F,C,min};
+  // Deuda diaria acumulada (nivel de saldo del receivable al cierre de cada día)
+  const deuda=[]; let accd=0;
+  bal.map(g=>({k:kd(g,"date"),v:g.balance||0})).filter(x=>x.k).sort((a,b)=>a.k<b.k?-1:1)
+     .forEach(x=>{ accd+=x.v; deuda.push({k:x.k,val:accd}); });
+  DIARIO={F,C,min,deuda};
   return DIARIO;
 }
+function deudaAl(ymd){ const bd=(DIARIO&&DIARIO.deuda)||[]; let v=0; for(const p of bd){ if(p.k<=ymd) v=p.val; else break; } return v; }
 function aggregar(gran){
   const {F,C,min}=DIARIO;
   const start=new Date(min+"T00:00:00"), end=new Date(hoy), out=[];
   if(gran==="dia"){
     for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
-      out.push({lab:`${pad2(d.getDate())}/${pad2(d.getMonth()+1)}`,sub:`${pad2(d.getDate())}/${pad2(d.getMonth()+1)}/${d.getFullYear()}`,f:F[k]||0,c:C[k]||0});}
+      out.push({lab:`${pad2(d.getDate())}/${pad2(d.getMonth()+1)}`,sub:`${pad2(d.getDate())}/${pad2(d.getMonth()+1)}/${d.getFullYear()}`,f:F[k]||0,c:C[k]||0,d:deudaAl(k)});}
   } else if(gran==="semana"){
     const b={},lunes=dt=>{const x=new Date(dt);const wd=(x.getDay()+6)%7;x.setDate(x.getDate()-wd);x.setHours(0,0,0,0);return x;};
-    for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;const mk=lunes(d),kk=`${mk.getFullYear()}-${pad2(mk.getMonth()+1)}-${pad2(mk.getDate())}`;const o=b[kk]||(b[kk]={mk,f:0,c:0});o.f+=F[k]||0;o.c+=C[k]||0;}
-    Object.values(b).sort((a,b)=>a.mk-b.mk).forEach(o=>out.push({lab:`${pad2(o.mk.getDate())}/${pad2(o.mk.getMonth()+1)}`,sub:`semana del ${pad2(o.mk.getDate())}/${pad2(o.mk.getMonth()+1)}/${o.mk.getFullYear()}`,f:o.f,c:o.c}));
+    for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;const mk=lunes(d),kk=`${mk.getFullYear()}-${pad2(mk.getMonth()+1)}-${pad2(mk.getDate())}`;const o=b[kk]||(b[kk]={mk,f:0,c:0,last:k});o.f+=F[k]||0;o.c+=C[k]||0;o.last=k;}
+    Object.values(b).sort((a,b)=>a.mk-b.mk).forEach(o=>out.push({lab:`${pad2(o.mk.getDate())}/${pad2(o.mk.getMonth()+1)}`,sub:`semana del ${pad2(o.mk.getDate())}/${pad2(o.mk.getMonth()+1)}/${o.mk.getFullYear()}`,f:o.f,c:o.c,d:deudaAl(o.last)}));
   } else {
     const b={};
-    for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;const mk=`${d.getFullYear()}-${pad2(d.getMonth()+1)}`;const o=b[mk]||(b[mk]={y:d.getFullYear(),m:d.getMonth(),f:0,c:0});o.f+=F[k]||0;o.c+=C[k]||0;}
-    Object.keys(b).sort().forEach(mk=>{const o=b[mk];out.push({lab:`${MESES_ES[o.m]}'${String(o.y).slice(2)}`,sub:`${MESES_ES[o.m]} ${o.y}`,f:o.f,c:o.c});});
+    for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){const k=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;const mk=`${d.getFullYear()}-${pad2(d.getMonth()+1)}`;const o=b[mk]||(b[mk]={y:d.getFullYear(),m:d.getMonth(),f:0,c:0,last:k});o.f+=F[k]||0;o.c+=C[k]||0;o.last=k;}
+    Object.keys(b).sort().forEach(mk=>{const o=b[mk];out.push({lab:`${MESES_ES[o.m]}'${String(o.y).slice(2)}`,sub:`${MESES_ES[o.m]} ${o.y}`,f:o.f,c:o.c,d:deudaAl(o.last)});});
   }
   return out;
 }
+const DEUDA_COL="#7C3AED";  // color de la línea de deuda (eje derecho)
 function chartSVG(data){
-  const W=960,H=360,padL=64,padR=18,padT=18,padB=44;
+  const W=960,H=360,padL=64,padR=66,padT=18,padB=44;
   const n=data.length||1, plotW=W-padL-padR, plotH=H-padT-padB;
   const mx=Math.max(1,...data.map(d=>Math.max(d.f,d.c)));
+  const mxD=Math.max(1,...data.map(d=>d.d||0));   // escala propia de la deuda (stock, mucho mayor)
   const X=i=>padL+(n===1?plotW/2:i*plotW/(n-1));
-  const Y=v=>padT+plotH-v/mx*plotH;
-  let grid="",ylab=""; const GL=4;
-  for(let g=0;g<=GL;g++){const yy=(padT+plotH-g/GL*plotH).toFixed(1),val=mx*g/GL;
+  const Y=v=>padT+plotH-v/mx*plotH;               // eje izquierdo: flujos (cobrado/facturado)
+  const Yd=v=>padT+plotH-v/mxD*plotH;             // eje derecho: deuda
+  let grid="",ylab="",ylabR=""; const GL=4;
+  for(let g=0;g<=GL;g++){const yy=(padT+plotH-g/GL*plotH).toFixed(1),val=mx*g/GL,valD=mxD*g/GL;
     grid+=`<line x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}" stroke="var(--line)" stroke-width="1"/>`;
-    ylab+=`<text x="${padL-8}" y="${(+yy+4)}" text-anchor="end" font-size="11" fill="var(--gris2)">${fmtM(val)}</text>`;}
+    ylab+=`<text x="${padL-8}" y="${(+yy+4)}" text-anchor="end" font-size="11" fill="var(--gris2)">${fmtM(val)}</text>`;
+    ylabR+=`<text x="${W-padR+8}" y="${(+yy+4)}" text-anchor="start" font-size="11" fill="${DEUDA_COL}">${fmtM(valD)}</text>`;}
   const step=Math.max(1,Math.ceil(n/11)); let xlab="";
   for(let i=0;i<n;i+=step) xlab+=`<text x="${X(i).toFixed(1)}" y="${H-padB+18}" text-anchor="middle" font-size="10.5" fill="var(--gris2)">${data[i].lab}</text>`;
-  const line=(f,col,w)=>`<polyline fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" stroke-linecap="round" points="${data.map((d,i)=>X(i).toFixed(1)+","+Y(f(d)).toFixed(1)).join(" ")}"/>`;
+  const line=(f,col,w,Yfn)=>`<polyline fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" stroke-linecap="round" points="${data.map((d,i)=>X(i).toFixed(1)+","+(Yfn||Y)(f(d)).toFixed(1)).join(" ")}"/>`;
   const area=`${X(0).toFixed(1)},${(padT+plotH).toFixed(1)} ${data.map((d,i)=>X(i).toFixed(1)+","+Y(d.c).toFixed(1)).join(" ")} ${X(n-1).toFixed(1)},${(padT+plotH).toFixed(1)}`;
-  GRAF.geom={W,H,padL,padR,padT,padB,plotW,plotH,mx,n};
-  return `<svg id="cmSvg" viewBox="0 0 ${W} ${H}">${grid}${ylab}${xlab}
+  GRAF.geom={W,H,padL,padR,padT,padB,plotW,plotH,mx,mxD,n};
+  return `<svg id="cmSvg" viewBox="0 0 ${W} ${H}">${grid}${ylab}${ylabR}${xlab}
+    <text x="${W-padR+8}" y="${padT-5}" font-size="10" fill="${DEUDA_COL}" text-anchor="start">deuda</text>
     <polygon points="${area}" fill="var(--cobr)" opacity=".08"/>
+    ${line(d=>d.d||0,DEUDA_COL,2.2,Yd)}
     ${line(d=>d.f,"var(--fact)",2)}
     ${line(d=>d.c,"var(--cobr)",2.4)}
     <line id="cmGuide" x1="0" y1="${padT}" x2="0" y2="${padT+plotH}" stroke="var(--gris2)" stroke-width="1" stroke-dasharray="4 3" opacity="0"/>
+    <circle id="cmDotD" r="4" fill="${DEUDA_COL}" opacity="0"/>
     <circle id="cmDotF" r="4" fill="var(--fact)" opacity="0"/>
     <circle id="cmDotC" r="4.5" fill="var(--cobr)" opacity="0"/>
     <rect id="cmHit" x="${padL}" y="${padT}" width="${plotW}" height="${plotH}" fill="transparent"/>
@@ -823,10 +844,10 @@ function ensureChartModal(){
   if(document.getElementById("chartmodal")) return;
   const sc=document.createElement("div"); sc.className="scrim2"; sc.id="scrim2"; sc.onclick=cerrarGraf; document.body.appendChild(sc);
   const m=document.createElement("div"); m.className="chartmodal"; m.id="chartmodal";
-  m.innerHTML=`<div class="cm-head"><h3>📈 Evolución: cobrado vs facturado</h3><span class="x" onclick="cerrarGraf()">✕</span></div>
+  m.innerHTML=`<div class="cm-head"><h3>📈 Evolución: cobrado, facturado y deuda</h3><span class="x" onclick="cerrarGraf()">✕</span></div>
     <div class="cm-bar">
       <div class="segs" id="cmSegs"><button data-g="dia" onclick="setGran('dia')">Día</button><button data-g="semana" onclick="setGran('semana')">Semana</button><button data-g="mes" class="on" onclick="setGran('mes')">Mes</button></div>
-      <div class="cm-legend"><span><i style="background:var(--cobr)"></i>Cobrado</span><span><i style="background:var(--fact)"></i>Facturado neto</span></div>
+      <div class="cm-legend"><span><i style="background:var(--cobr)"></i>Cobrado</span><span><i style="background:var(--fact)"></i>Facturado neto</span><span><i style="background:#7C3AED"></i>Deuda (eje der.)</span></div>
     </div>
     <div class="cm-chart" id="cmChart"></div>
     <div class="cm-note" id="cmResumen"></div>`;
@@ -851,7 +872,9 @@ function renderGrafico(g){
   svg.addEventListener("mouseleave",hideHover);
   const tf=data.reduce((a,d)=>a+d.f,0), tc=data.reduce((a,d)=>a+d.c,0);
   const un=g==="dia"?"días":g==="semana"?"semanas":"meses";
-  document.getElementById("cmResumen").innerHTML=`En este período: cobrado <b>${fmtM(tc)}</b> · facturado neto <b>${fmtM(tf)}</b> · cobraste el <b>${tf>0?Math.round(tc/tf*100):0}%</b> de lo facturado · ${data.length} ${un}. Pasá el mouse por el gráfico para ver cada ${g==="dia"?"día":g==="semana"?"semana":"mes"}.`;
+  const d0=(data[0]&&data[0].d)||0, d1=(data[data.length-1]&&data[data.length-1].d)||0, dd=d1-d0;
+  const deudaTxt=`la deuda ${dd>0?'<b style="color:#8A2E2B">subió</b>':dd<0?'<b style="color:#0E5C46">bajó</b>':'quedó igual'} ${fmtM(Math.abs(dd))} (de ${fmtM(d0)} a <b style="color:#7C3AED">${fmtM(d1)}</b>)`;
+  document.getElementById("cmResumen").innerHTML=`En este período: cobrado <b>${fmtM(tc)}</b> · facturado neto <b>${fmtM(tf)}</b> · cobraste el <b>${tf>0?Math.round(tc/tf*100):0}%</b> de lo facturado · ${deudaTxt} · ${data.length} ${un}. Pasá el mouse para ver cada ${g==="dia"?"día":g==="semana"?"semana":"mes"}.`;
 }
 function onHover(e){
   const g=GRAF.geom, data=GRAF.data; if(!g||!data) return;
@@ -861,15 +884,16 @@ function onHover(e){
   idx=Math.max(0,Math.min(data.length-1,idx));
   const X=g.padL+(g.n===1?g.plotW/2:idx*g.plotW/(g.n-1));
   const Yc=g.padT+g.plotH-data[idx].c/g.mx*g.plotH, Yf=g.padT+g.plotH-data[idx].f/g.mx*g.plotH;
+  const Yd=g.padT+g.plotH-(data[idx].d||0)/g.mxD*g.plotH;
   const set=(id,at)=>{const el=document.getElementById(id);if(!el)return;for(const k in at)el.setAttribute(k,at[k]);};
-  set("cmGuide",{x1:X,x2:X,opacity:.6}); set("cmDotC",{cx:X,cy:Yc,opacity:1}); set("cmDotF",{cx:X,cy:Yf,opacity:1});
+  set("cmGuide",{x1:X,x2:X,opacity:.6}); set("cmDotC",{cx:X,cy:Yc,opacity:1}); set("cmDotF",{cx:X,cy:Yf,opacity:1}); set("cmDotD",{cx:X,cy:Yd,opacity:1});
   const tip=document.getElementById("cmTip");
-  tip.innerHTML=`<b>${data[idx].sub}</b><br>🟢 Cobrado ${money(data[idx].c)}<br>🟡 Facturado ${money(data[idx].f)}`;
+  tip.innerHTML=`<b>${data[idx].sub}</b><br>🟢 Cobrado ${money(data[idx].c)}<br>🟡 Facturado ${money(data[idx].f)}<br>🟣 Deuda ${money(data[idx].d||0)}`;
   tip.style.opacity="1";
   const px=svg.offsetLeft+(X/g.W)*r.width; let left=px+14; const cw=svg.parentElement.clientWidth; if(left>cw-160) left=px-160;
   tip.style.left=Math.max(4,left)+"px"; tip.style.top="14px";
 }
-function hideHover(){["cmGuide","cmDotC","cmDotF"].forEach(id=>{const el=document.getElementById(id);if(el)el.setAttribute("opacity","0");});const t=document.getElementById("cmTip");if(t)t.style.opacity="0";}
+function hideHover(){["cmGuide","cmDotC","cmDotF","cmDotD"].forEach(id=>{const el=document.getElementById(id);if(el)el.setAttribute("opacity","0");});const t=document.getElementById("cmTip");if(t)t.style.opacity="0";}
 function cerrarGraf(){const s=document.getElementById("scrim2"),m=document.getElementById("chartmodal");if(s)s.classList.remove("on");if(m)m.classList.remove("on");}
 
 function render(){
@@ -902,17 +926,26 @@ function render(){
       `<div class="kpi rub ${filtro.rubro===r?'on':''}" onclick="setRubro('${r.replace(/'/g,"\\'")}')"><div class="n">${rubMap[r].n}</div><div class="money">${money(rubMap[r].m)}</div><div class="l">🏷️ ${esc(r)}</div></div>`).join("");
 
   const A={totalReal,totalVenc,totalGris,totalCobradoSinImp,totalBorrador,incobN:incob.n,incobM:incob.m};
+  const _estados=['gris','cubierto','afavor'];
+  const agingActive = filtro.tramo && !_estados.includes(filtro.tramo);
+  const estadoActive = _estados.includes(filtro.tramo) || filtro.boveda || filtro.migrada;
 
   app.innerHTML=`
     ${healthCard(A)}
 
     <div class="cardsec sec-mora">
-      <div class="sectitle"><span>⏱️ Deuda por antigüedad de mora</span>${filtro.tramo?`<a class="secclr" onclick="setTramo(filtro.tramo)">✕ quitar filtro</a>`:''}</div>
+      <div class="sectitle"><span>⏱️ Deuda por antigüedad de mora</span>${agingActive?`<a class="secclr" onclick="setTramo(filtro.tramo)">✕ quitar filtro</a>`:''}</div>
       <div class="kpis">
-        <div class="kpi ${!filtro.tramo&&!filtro.boveda?'on':''}" onclick="setTramo('')"><div class="n">${activos.length}</div><div class="money">${money(totalReal)}</div><div class="l">Todos</div></div>
+        <div class="kpi ${!filtro.tramo&&!filtro.boveda&&!filtro.migrada?'on':''}" onclick="setTramo('')"><div class="n">${activos.length}</div><div class="money">${money(totalReal)}</div><div class="l">Todos</div></div>
         ${TRAMOS.map(t=>`<div class="kpi ${filtro.tramo===t.k?'on':''}" onclick="setTramo('${t.k}')">
           <div class="n">${porTramo[t.k].n}</div><div class="money">${money(porTramo[t.k].m)}</div>
           <div class="l"><span class="dot" style="background:var(--${t.t})"></span>${t.l}</div></div>`).join("")}
+      </div>
+    </div>
+
+    <div class="cardsec">
+      <div class="sectitle"><span>🗂️ Estados y gestión</span>${estadoActive?`<a class="secclr" onclick="limpiarEstado()">✕ quitar filtro</a>`:''}</div>
+      <div class="kpis">
         <div class="kpi ${filtro.tramo==='gris'?'on':''}" onclick="setTramo('gris')" style="${grisN?'':'opacity:.5'}">
           <div class="n">${grisN}</div><div class="money">${money(totalGris)}</div>
           <div class="l"><span class="dot" style="background:var(--treg)"></span>📄 Falta certificado/OP</div></div>
@@ -922,12 +955,15 @@ function render(){
         <div class="kpi ${filtro.tramo==='afavor'?'on':''}" onclick="setTramo('afavor')" style="${favN?'':'opacity:.5'}">
           <div class="n">${favN}</div><div class="money">${money(favM)}</div>
           <div class="l"><span class="dot" style="background:var(--t1)"></span>💚 Saldo a favor</div></div>
-        <div class="kpi ${filtro.boveda?'on':''}" onclick="toggleBoveda()" style="${bovN?'':'opacity:.5'}">
+        <div class="kpi gest ${filtro.boveda?'on':''}" onclick="toggleBoveda()" style="background:#EEF3F1;border-color:#CBDED8;${bovN?'':'opacity:.55'}">
           <div class="n">${bovN}</div><div class="money">${money(bovM)}</div>
           <div class="l"><span class="dot" style="background:var(--treg)"></span>🔒 Bóveda</div></div>
-        <div class="kpi ${filtro.migrada?'on':''}" onclick="toggleMigrada()" style="${migN||migArchN?'':'opacity:.5'}">
+        <div class="kpi gest ${filtro.migrada?'on':''}" onclick="toggleMigrada()" style="background:#F7F1E6;border-color:#E2D3B4;${migN||migArchN?'':'opacity:.55'}">
           <div class="n">${migN}</div><div class="money">${money(migM)}</div>
           <div class="l"><span class="dot" style="background:#8B6D3F"></span>📦 Deuda migrada${migArchN?` · ${migArchN} arch.`:''}</div></div>
+        <div class="kpi gest" onclick="openBloqueados()" style="background:#FCEBEA;border-color:#F0C2BF;${(BLOQUEOS.blocked.length||BLOQUEOS.temp.length)?'':'opacity:.55'}">
+          <div class="n" style="color:#A5312E">${BLOQUEOS.blocked.length}</div><div class="money">${BLOQUEOS.temp.length?BLOQUEOS.temp.length+' con permiso':'gestionar'}</div>
+          <div class="l"><span class="dot" style="background:#A5312E"></span>🚫 Bloqueados</div></div>
       </div>
     </div>
 
@@ -1009,6 +1045,7 @@ function setTramo(k){filtro.boveda=false;filtro.tramo=filtro.tramo===k?"":k;rend
 function setRubro(v){filtro.rubro=filtro.rubro===v?"":v;render();}
 function toggleBoveda(){filtro.boveda=!filtro.boveda;filtro.migrada=false;filtro.tramo="";render();}
 function toggleMigrada(){filtro.migrada=!filtro.migrada;filtro.boveda=false;filtro.tramo="";render();}
+function limpiarEstado(){ filtro.boveda=false; filtro.migrada=false; if(['gris','cubierto','afavor'].includes(filtro.tramo)) filtro.tramo=""; render(); }
 async function archivarMig(id){
   const c=CLI.find(x=>x.id===id); if(!c) return;
   if(!confirm(`¿Archivar la deuda migrada de ${c.nombre} (${money(c.migVenc)})?\n\nSale de "lo adeudado" y del vencido. Queda registrado y se puede desarchivar.`)) return;
@@ -1025,6 +1062,118 @@ async function desarchivarMig(id){
     toast("♻️ Deuda migrada vuelve a lo adeudado"); await cargar(true);
     const dr=document.getElementById("drawer"); if(dr&&dr.classList.contains("on")) abrir(id);
   }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
+}
+
+/* ===== Gestión de cuentas BLOQUEADAS por deuda (sale_warn de Odoo, manejado por Cobranzas) ===== */
+const _BLKFIELDS=["id","name","sale_warn_msg","total_due","total_overdue","user_id","city","phone","mobile"];
+async function cargarBloqueos(){
+  const hoy=hoyStr.slice(0,10);
+  let blocked=await rpc("res.partner","search_read",[[["sale_warn","=","block"]],_BLKFIELDS],{context:{lang:"es_AR"},limit:0});
+  // historial [BLOQUEO] → estado temporal + re-bloqueo de vencidos
+  const msgs=await rpc("mail.message","search_read",[[["model","=","res.partner"],["body","like","[BLOQUEO]"]]],{fields:["res_id","body","date"],limit:0});
+  msgs.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  const ult={};
+  for(const m of msgs){ if(ult[m.res_id]) continue;
+    const body=(m.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," ");
+    const hasta=(body.match(/hasta=(\d{4}-\d{2}-\d{2})/)||[])[1]||null;
+    const tipo=/temporal/i.test(body)?"temporal":(/baja/i.test(body)?"baja":(/bloque/i.test(body)?"bloqueo":"otro"));
+    const nota=(body.split("|").slice(1).join("|")||"").trim();
+    ult[m.res_id]={tipo,hasta,nota};
+  }
+  const blockedIds=new Set(blocked.map(p=>p.id));
+  // temporales: último marcador "temporal", NO bloqueadas hoy. Si venció → re-bloquear solo.
+  const reblock=[], temp=[];
+  for(const rid in ult){ const u=ult[rid], id=+rid;
+    if(u.tipo==="temporal" && !blockedIds.has(id)){
+      if(u.hasta && u.hasta<hoy) reblock.push({id,hasta:u.hasta}); else temp.push({id,hasta:u.hasta,nota:u.nota});
+    }
+  }
+  for(const rb of reblock){ try{
+      await rpc("res.partner","write",[[rb.id],{sale_warn:"block"}]);
+      await rpc("res.partner","message_post",[[rb.id]],{body:`🔒 ${BLK_TAG} bloqueado | re-bloqueo automático: venció el permiso temporal (${rb.hasta})`,message_type:"comment"});
+    }catch(e){ console.warn("no pude re-bloquear",rb.id,e); } }
+  if(reblock.length){ try{ blocked=await rpc("res.partner","search_read",[[["sale_warn","=","block"]],_BLKFIELDS],{context:{lang:"es_AR"},limit:0}); }catch(e){} }
+  // info de las que siguen con permiso temporal
+  const stillTemp=temp.filter(t=>!reblock.find(r=>r.id===t.id));
+  let tempInfo=[];
+  if(stillTemp.length){ try{
+    const ti=await rpc("res.partner","read",[stillTemp.map(t=>t.id),["id","name","total_due","total_overdue","user_id"]],{context:{lang:"es_AR"}});
+    const byId={}; ti.forEach(p=>byId[p.id]=p);
+    tempInfo=stillTemp.map(t=>Object.assign({id:t.id,name:"?"},byId[t.id]||{},{hasta:t.hasta,nota:t.nota}));
+  }catch(e){} }
+  blocked=blocked.map(p=>Object.assign({},p,{nota:(ult[p.id]&&ult[p.id].nota)||""}));
+  BLOQUEOS={blocked,temp:tempInfo};
+  const bset=new Set(blocked.map(p=>p.id)); const tset=new Set(tempInfo.map(p=>p.id));
+  CLI.forEach(c=>{ c.bloqueado=bset.has(c.id); c.permisoTemp=tset.has(c.id); });
+}
+function _blkNota(id){ const el=document.getElementById("blknota_"+id); return el?el.value.trim():""; }
+async function _blkWrite(id,vals,marker){ await rpc("res.partner","write",[[id],vals]); await rpc("res.partner","message_post",[[id]],{body:marker,message_type:"comment"}); }
+async function recargarBloq(){ try{ await cargarBloqueos(); }catch(e){} const m=document.getElementById("blkmodal"); if(m&&m.classList.contains("on")) m.innerHTML=blkModalHTML(); render(); }
+async function levantarTemp(id,dias){ const nota=_blkNota(id); const d=new Date(); d.setDate(d.getDate()+dias);
+  const hasta=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  try{ await _blkWrite(id,{sale_warn:"no-message"},`🔓 ${BLK_TAG} temporal hasta=${hasta}${nota?` | ${nota}`:""}`);
+    toast(`🔓 Levantado hasta ${hasta.split("-").reverse().join("/")} · se re-bloquea solo al vencer`); await recargarBloq();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function levantarTempFecha(id){ const el=document.getElementById("blkfecha_"+id); const hasta=el?el.value:"";
+  if(!hasta){ toast("Elegí una fecha"); return; } const nota=_blkNota(id);
+  try{ await _blkWrite(id,{sale_warn:"no-message"},`🔓 ${BLK_TAG} temporal hasta=${hasta}${nota?` | ${nota}`:""}`);
+    toast(`🔓 Levantado hasta ${hasta.split("-").reverse().join("/")}`); await recargarBloq();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function levantarDef(id){ const nota=_blkNota(id);
+  if(!confirm("¿Levantar el bloqueo DEFINITIVAMENTE? La cuenta queda habilitada para vender.")) return;
+  try{ await _blkWrite(id,{sale_warn:"no-message"},`✅ ${BLK_TAG} baja definitiva${nota?` | ${nota}`:""}`);
+    toast("✅ Bloqueo levantado (definitivo)"); await recargarBloq();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function reBloquear(id){ const nota=_blkNota(id)||"Bloqueo por deuda";
+  try{ await _blkWrite(id,{sale_warn:"block",sale_warn_msg:"CUENTA BLOQUEADA POR DEUDA"},`🔒 ${BLK_TAG} bloqueado | ${nota}`);
+    toast("🔒 Cuenta bloqueada"); await recargarBloq();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function editarAlerta(id){ const cur=(BLOQUEOS.blocked.find(p=>p.id===id)||{}).sale_warn_msg||"";
+  const msg=prompt("Texto de la alerta que ve la comercial al intentar vender:",cur||"CUENTA BLOQUEADA POR DEUDA"); if(msg===null) return;
+  try{ await rpc("res.partner","write",[[id],{sale_warn_msg:msg}]); toast("✏️ Alerta actualizada"); await recargarBloq();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+async function bloquearCuenta(id){ const msg=prompt("Motivo / texto de la alerta al intentar vender:","CUENTA BLOQUEADA POR DEUDA"); if(msg===null) return;
+  try{ await _blkWrite(id,{sale_warn:"block",sale_warn_msg:msg},`🔒 ${BLK_TAG} bloqueado | ${msg}`);
+    toast("🔒 Cuenta bloqueada"); await cargarBloqueos(); render(); const dr=document.getElementById("drawer"); if(dr&&dr.classList.contains("on")) abrir(id);
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
+function openBloqueados(){
+  let sc=document.getElementById("scrim2"); if(!sc){ sc=document.createElement("div"); sc.className="scrim2"; sc.id="scrim2"; document.body.appendChild(sc); } sc.onclick=cerrarBloq;
+  let m=document.getElementById("blkmodal"); if(!m){ m=document.createElement("div"); m.className="chartmodal"; m.id="blkmodal"; document.body.appendChild(m); }
+  m.innerHTML=blkModalHTML(); sc.classList.add("on"); m.classList.add("on");
+}
+function cerrarBloq(){ const s=document.getElementById("scrim2"),m=document.getElementById("blkmodal"); if(s)s.classList.remove("on"); if(m)m.classList.remove("on"); }
+function blkModalHTML(){
+  const B=BLOQUEOS.blocked||[], T=BLOQUEOS.temp||[];
+  const rowB=p=>`<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px">
+      <div><b>${esc(p.name||"?")}</b> <span style="color:var(--gris2);font-size:12px">· ${p.user_id?esc(p.user_id[1]):"s/comercial"}</span>
+        <div style="font-size:12px;color:var(--gris);margin-top:2px">Debe ${money(p.total_due||0)} · atrasado ${money(p.total_overdue||0)}</div>
+        <div style="font-size:11.5px;color:#A5312E;margin-top:3px">🚫 ${esc(p.sale_warn_msg||"Bloqueado")}</div></div>
+      <input type="text" id="blknota_${p.id}" placeholder="Nota / motivo (opcional, queda registrado)" style="width:100%;margin-top:9px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px">
+      <div style="margin-top:8px;display:flex;gap:7px;flex-wrap:wrap;align-items:center">
+        <span style="font-size:12px;color:var(--gris)">Levantar:</span>
+        <button class="mini-btn" onclick="levantarTemp(${p.id},15)">15 días</button>
+        <button class="mini-btn" onclick="levantarTemp(${p.id},30)">30 días</button>
+        <input type="date" id="blkfecha_${p.id}" style="padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12px">
+        <button class="mini-btn" onclick="levantarTempFecha(${p.id})">hasta fecha</button>
+        <button class="mini-btn" style="background:var(--teal);color:#fff;border-color:var(--teal)" onclick="levantarDef(${p.id})">✓ Definitivo</button>
+        <button class="mini-btn" onclick="editarAlerta(${p.id})">✏️ Alerta</button>
+      </div></div>`;
+  const rowT=p=>`<div style="border:1px solid #EAD6A6;background:#FBF6E9;border-radius:12px;padding:12px 14px;margin-bottom:10px">
+      <div><b>${esc(p.name||"?")}</b> <span style="color:var(--gris2);font-size:12px">· ${p.user_id?esc(p.user_id[1]):""}</span>
+        <div style="font-size:12px;color:var(--gris);margin-top:2px">Debe ${money(p.total_due||0)} · atrasado ${money(p.total_overdue||0)}</div>
+        <div style="font-size:11.5px;color:#7A5B12;margin-top:3px">🕒 Permiso hasta <b>${p.hasta?p.hasta.split("-").reverse().join("/"):"?"}</b>${p.nota?` · ${esc(p.nota)}`:""} — al vencer se re-bloquea solo</div></div>
+      <input type="text" id="blknota_${p.id}" placeholder="Nota (opcional)" style="width:100%;margin-top:9px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:12.5px">
+      <div style="margin-top:8px;display:flex;gap:7px;flex-wrap:wrap">
+        <button class="mini-btn" onclick="levantarTemp(${p.id},30)">Extender 30 días</button>
+        <button class="mini-btn" style="background:var(--teal);color:#fff;border-color:var(--teal)" onclick="levantarDef(${p.id})">✓ Definitivo</button>
+        <button class="mini-btn" style="background:#FBE4E3;border-color:#F3B5B2;color:#8A2E2B" onclick="reBloquear(${p.id})">🔒 Volver a bloquear</button>
+      </div></div>`;
+  return `<div class="cm-head"><h3>🚫 Cuentas bloqueadas por deuda</h3><span class="x" onclick="cerrarBloq()">✕</span></div>
+    <div style="padding:16px 22px;overflow:auto">
+      <div style="font-size:12.5px;color:var(--gris);margin-bottom:12px">Estas cuentas están <b>bloqueadas en Odoo</b>: las comerciales no pueden cargarles pedido. Cobranzas decide cuándo levantar el bloqueo (por un plazo o definitivo) y deja una nota. Los permisos temporales <b>se re-bloquean solos</b> al vencer.</div>
+      ${B.length?`<div style="font-weight:800;font-size:13px;margin:4px 0 8px">Bloqueadas (${B.length})</div>${B.map(rowB).join("")}`:'<div style="color:var(--gris);font-size:13px;margin-bottom:12px">No hay cuentas bloqueadas.</div>'}
+      ${T.length?`<div style="font-weight:800;font-size:13px;margin:14px 0 8px">🕒 Con permiso temporal (${T.length})</div>${T.map(rowT).join("")}`:''}
+    </div>`;
 }
 async function marcarContacto(id){
   const c=CLI.find(x=>x.id===id); if(!c) return;
@@ -1118,6 +1267,17 @@ function abrir(id){
           <p class="muted" style="margin:-4px 0 8px">Sacar de la gestión activa: incobrable, o con acuerdo ya cerrado (el acuerdo lo anotás arriba 👆).</p>
           <select id="bovtipo" style="width:100%;margin-bottom:8px"><option value="acuerdo">Con acuerdo de pago</option><option value="incobrable">Incobrable</option></select>
           <button class="editbtn" style="margin-top:0" onclick="moverBoveda(${c.id})">🔒 Mover a bóveda</button>
+        `}
+      </div>
+
+      <div class="dsec">
+        <h4>🚫 Bloqueo de cuenta ${c.bloqueado?`· <span style="color:#A5312E">Bloqueada</span>`:(c.permisoTemp?`· <span style="color:#7A5B12">Permiso temporal</span>`:'')}</h4>
+        ${c.bloqueado?`
+          <p class="muted" style="margin:-4px 0 8px">Las comerciales no le pueden cargar pedido. Se gestiona (levantar por un plazo o definitivo) en la sección 🚫 Bloqueados.</p>
+          <button class="editbtn" style="width:100%;margin:0" onclick="openBloqueados()">🚫 Gestionar en Bloqueados</button>
+        `:`
+          <p class="muted" style="margin:-4px 0 8px">Bloquear = las comerciales no le pueden cargar pedido hasta que Cobranzas lo levante.</p>
+          <button class="editbtn" style="margin-top:0;background:#FBE4E3;border-color:#F3B5B2;color:#8A2E2B" onclick="bloquearCuenta(${c.id})">🔒 Bloquear cuenta por deuda</button>
         `}
       </div>
 
@@ -1334,7 +1494,7 @@ async function tick(){
       // marcadores nuevos llevan fecha de hoy, así que una ventana de 3 días detecta igual el
       // cambio y el escaneo se achica muchísimo. La red de 55s cubre el borde al envejecer.
       const _pd=new Date(Date.now()-3*86400000).toISOString().slice(0,10)+" 00:00:00";
-      const r=await rpc("mail.message","search_read",[[["model","=","res.partner"],["date",">=",_pd],"|","|",["body","like","[COBRO-"],["body","like","[BOVEDA]"],["body","like","[MIG-ARCHIVADA]"]],["id"]],{limit:1,order:"id desc"});
+      const r=await rpc("mail.message","search_read",[[["model","=","res.partner"],["date",">=",_pd],"|","|","|",["body","like","[COBRO-"],["body","like","[BOVEDA]"],["body","like","[MIG-ARCHIVADA]"],["body","like","[BLOQUEO]"]],["id"]],{limit:1,order:"id desc"});
       sig = r.length ? r[0].id : 0;
     }catch(e){ return; }                     // si el probe falla, no pasa nada (reintenta)
     if(_sig===null){ _sig=sig; return; }     // baseline en el 1er chequeo
@@ -1348,7 +1508,24 @@ async function tick(){
 // cubren la latencia. Ver cache de uid en la edge function odoo-rpc.
 function autoRefrescar(){ setInterval(tick, 20000); }
 document.addEventListener("visibilitychange",()=>{ if(!document.hidden && !drawerAbierto()) refrescoFull(); });
-EYG.guard(["finanzas","lider","admin","direccion","cobranzas"]).then(()=>{ cargar().then(()=>{ _ultimoFull=Date.now(); autoRefrescar(); }); });
+/* ═══ Botón flotante: el asistente ══════════════════════════════════════════
+   Cobranzas no tiene clientes asignados, así que NO ve conversaciones de nadie
+   —el servidor se lo niega, no esta página—. El módulo le sirve para
+   consultarle al asistente, que ya sabe leer cuentas corrientes con el mismo
+   cálculo que este panel. Abre en otra pestaña para no perder el trabajo. */
+function botonAsistente(perfil){
+  if(!perfil || !perfil._cfg || perfil._cfg.wsp_comerciales!==true) return;
+  const a=document.createElement("a");
+  a.href="../comunicaciones/whatsapp.html"; a.target="_blank"; a.rel="noopener";
+  a.title="Consultarle al asistente (se abre en otra pestaña)";
+  a.style.cssText="position:fixed;left:18px;bottom:18px;z-index:60;display:inline-flex;align-items:center;gap:9px;"+
+    "background:linear-gradient(135deg,#048782,#02605c);color:#fff;text-decoration:none;font-weight:800;"+
+    "font-size:14px;padding:12px 18px;border-radius:999px;box-shadow:0 8px 26px rgba(4,135,130,.34)";
+  a.innerHTML='<span style="font-size:17px;line-height:1">💬</span><span>Asistente</span>';
+  document.body.appendChild(a);
+}
+
+EYG.guard(["finanzas","lider","admin","direccion","cobranzas"]).then(perfil=>{ botonAsistente(perfil); cargar().then(()=>{ _ultimoFull=Date.now(); autoRefrescar(); }); });
 </script>
 </body>
 </html>
