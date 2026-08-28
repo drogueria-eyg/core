@@ -428,12 +428,14 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
   let vivosOdoo=new Set();
   /* canal → a qué cliente se resolvió. Sale de wsp_canal_dueno, que ya lo tiene
      calculado: es lo que permite decir CLIENTE o NO CLIENTE en la lista. */
-  let dueno={};
+  let dueno={}, duenoAl=0;
   async function cargarDuenos(){
     try{
       const {data}=await EYG.supa().from("wsp_canal_dueno").select("canal,cliente,dueno,motivo");
       const m={}; for(const r of data||[]) m[r.canal]=r;
-      dueno=m;
+      dueno=m; duenoAl=Date.now();
+      /* que la lista y la ficha se redibujen con el dato nuevo */
+      firmaConvs=""; firmaFicha="";
     }catch(e){}
   }
   /* Los teléfonos del equipo, para distinguir en la bandeja quién es de casa */
@@ -805,7 +807,13 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
         {fields:["name","whatsapp_number","whatsapp_partner_id","whatsapp_channel_valid_until","write_date"],order:"write_date desc",limit:60});
       let nuevas=r||[];
       for(const v of nuevas) vivosOdoo.add(v.id);
-      if(!Object.keys(dueno).length) await cargarDuenos();
+      /* Se refresca si está vacío, si hay algún chat que todavía no resolvimos
+         —recién cargado, o un cliente al que le acaban de agregar un teléfono—,
+         o cada 2 minutos. Antes se cargaba UNA sola vez por sesión: a Farmacia
+         Vera le agregaron el segundo número, el servidor ya la reconocía y en
+         pantalla seguía diciendo "no cliente" hasta recargar la página. */
+      const faltaAlguno = nuevas.some(v=>!dueno[v.id]);
+      if(!Object.keys(dueno).length || faltaAlguno || Date.now()-duenoAl > 120000) await cargarDuenos();
       /* El recorte de verdad ya lo hizo el servidor; acá solo se aplica su
          respuesta. Si no la pudo dar, no se muestra nada. */
       if(SOLO_MIRA){
@@ -1175,7 +1183,21 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
       const cands=(todos||[]).filter(p=>[p.phone,p.mobile].some(x=>{
         const t=String(x||"").replace(/\D/g,""); return t.length>=8 && t.slice(-8)===ocho;
       }));
-      const reales=(cands||[]).filter(p=>(p.customer_rank||0)>0);
+      let reales=(cands||[]).filter(p=>(p.customer_rank||0)>0);
+      /* Los teléfonos que se agregan desde el panel comercial quedan como
+         CONTACTOS HIJOS del cliente, y un hijo tiene rango 0. Sin esto, quien
+         escribe desde el segundo número figura como "NO ES CLIENTE" aunque el
+         servidor ya lo haya resuelto bien. Pasó con Farmacia Vera. */
+      if(!reales.length){
+        const padres=[...new Set((cands||[]).map(p=>p.parent_id&&p.parent_id[0]).filter(Boolean))];
+        if(padres.length){
+          try{
+            const arriba=await EYG.rpc("res.partner","read",[padres,
+              ["name","customer_rank","parent_id","property_product_pricelist","user_id","city","total_due","total_overdue","phone","mobile"]],{});
+            reales=(arriba||[]).filter(p=>(p.customer_rank||0)>0);
+          }catch(e){}
+        }
+      }
       ficha=reales.sort((a,b)=>(b.customer_rank||0)-(a.customer_rank||0))[0]||(cands||[])[0]||null;
       if(ficha){
         const ped=await EYG.rpc("sale.order","search_read",[[["partner_id","=",ficha.id]]],
