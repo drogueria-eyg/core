@@ -554,8 +554,15 @@ window.EYG = (function(){
       (prods||[]).forEach(p=>{ taxOf[p.id]=p.taxes_id||[]; (p.taxes_id||[]).forEach(t=>allTax.add(t)); });
       const rateByTax={};
       if(allTax.size){
-        const taxes=await rpc("account.tax","read",[[...allTax],["amount","amount_type","price_include"]]);
-        (taxes||[]).forEach(t=>{ rateByTax[t.id]=(t.price_include||t.amount_type!=="percent")?0:((t.amount||0)/100); });
+        const taxes=await rpc("account.tax","read",[[...allTax],["name","amount","amount_type","price_include"]]);
+        // "IVA incluido en el precio" = el precio YA trae el IVA → NO se le agrega nada (se muestra tal cual).
+        // Excepción real de EyG: productos con IVA exento pero camuflado dentro del precio (tax "…IMP INC",
+        // ej. Alcohol Purocol / Algabo / Barbijo). OJO: la casilla price_include figura en false en la API,
+        // así que además lo detectamos por el NOMBRE del impuesto (IMP INC / INCLUIDO). Ver excepciones.
+        (taxes||[]).forEach(t=>{
+          const incluido = t.price_include || /imp\.?\s*inc|inclu/i.test(t.name||"");
+          rateByTax[t.id] = (incluido || t.amount_type!=="percent") ? 0 : ((t.amount||0)/100);
+        });
       }
       arr.forEach(o=>{
         const pv=((o&&o.items)||[])[0]&&o.items[0].id;
