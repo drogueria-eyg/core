@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=37"></script>
+<script src="../assets/core.js?v=42"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -348,6 +348,8 @@
   .lb-tag{font-size:11.5px;font-weight:800;color:var(--teal-deep);background:var(--agua);border-radius:8px;padding:6px 9px;white-space:nowrap}
   .fbtn.del2{background:#FBE4E3;color:#8A2E2B;border-color:#f0c4c2}
   .lb-notel{font-size:11.5px;color:var(--gris2)}
+  .lb-b.ic{padding:6px 8px;color:var(--gris)} .lb-b.ic:hover{border-color:var(--teal);color:var(--teal-deep)}
+  .lb-hint{font-size:11.5px;color:var(--gris2);line-height:1.4;margin:-2px 0 9px}
   .lb-empty{font-size:12.5px;color:var(--gris);padding:6px 0}
   .pform{display:flex;flex-direction:column;gap:8px}
   .pform input{border:1px solid var(--line);border-radius:9px;padding:10px 11px;font-family:inherit;font-size:14px;outline:none}
@@ -2004,33 +2006,54 @@ function pintarLibreta(){
       : `<span class="lb-notel">sin teléfono</span>`;
     return `<div class="lb-row"><div class="lb-i"><div class="lb-n">${esc(p.name||"—")}</div>
       <div class="lb-f">${[p.function,tel?fmtTel(tel):""].filter(Boolean).map(esc).join(" · ")||"&nbsp;"}</div></div>
-      <div class="lb-a">${acc}</div></div>`;
+      <div class="lb-a">${acc}<button class="lb-b ic" title="Editar" onclick="editarPersona(${p.id})">✏️</button><button class="lb-b ic" title="Eliminar" onclick="eliminarPersona(${p.id})">🗑️</button></div></div>`;
   }).join("");
-  box.innerHTML=`<div class="libhead"><h4>👥 Contactos</h4><button class="fbtn" onclick="agregarPersona()">＋ Agregar</button></div>
-    ${(L.people&&L.people.length)?`<div class="lb-list">${rows}</div>`:'<div class="lb-empty">Sin personas de contacto cargadas.</div>'}`;
+  box.innerHTML=`<div class="libhead"><h4>👥 Contactos y teléfonos</h4><button class="fbtn" onclick="agregarPersona()">＋ Agregar</button></div>
+    <div class="lb-hint">Sumá acá los teléfonos del cliente (celular, fijo, otra persona) <b>sin duplicar el cliente</b>. Cada uno queda cargado como contacto del mismo cliente en Odoo.</div>
+    ${(L.people&&L.people.length)?`<div class="lb-list">${rows}</div>`:'<div class="lb-empty">Sin contactos ni teléfonos cargados.</div>'}`;
 }
-function agregarPersona(){
+function agregarPersona(pid){
   const box=document.getElementById("libreta"); if(!box) return;
-  box.innerHTML=`<div class="libhead"><h4>👥 Nuevo contacto</h4></div>
+  const L=ST._libreta||{}; const ed=pid?(L.people||[]).find(p=>p.id===pid):null;
+  box.innerHTML=`<div class="libhead"><h4>👥 ${ed?"Editar contacto":"Nuevo contacto / teléfono"}</h4></div>
     <div class="pform">
-      <input id="np_name" placeholder="Nombre y apellido">
-      <input id="np_func" placeholder="Cargo (compras, pagos, dueño…)">
-      <input id="np_phone" placeholder="Teléfono / celular">
+      <input id="np_name" placeholder="Nombre o etiqueta — ej: Celular de pagos" value="${ed?esc(ed.name||""):""}">
+      <input id="np_func" placeholder="Cargo (compras, pagos, dueño…) — opcional" value="${ed?esc(ed.function||""):""}">
+      <input id="np_phone" placeholder="Teléfono / celular" value="${ed?esc(ed.mobile||ed.phone||""):""}">
       <div class="pform-b"><button class="fbtn" onclick="pintarLibreta()">Cancelar</button>
-        <button class="fbtn go" onclick="guardarPersona()">Guardar</button></div>
+        <button class="fbtn go" onclick="guardarPersona(${ed?ed.id:0})">Guardar</button></div>
     </div>`;
   const i=document.getElementById("np_name"); if(i) i.focus();
 }
-async function guardarPersona(){
+function editarPersona(pid){ agregarPersona(pid); }
+async function guardarPersona(pid){
   const L=ST._libreta||{}; const v=id=>{const el=document.getElementById(id);return el?el.value.trim():"";};
-  const name=v("np_name"); if(!name){ toast("⚠️ Falta el nombre"); return; }
-  const func=v("np_func"), phone=v("np_phone");
+  const name=v("np_name"), func=v("np_func"), phone=v("np_phone");
+  if(!name && !phone){ toast("⚠️ Poné al menos un nombre/etiqueta o un teléfono"); return; }
   try{
-    const vals={parent_id:L.parent, type:"contact", is_company:false, name};
-    if(func) vals.function=func; if(phone) vals.phone=phone;
-    await rpc("res.partner","create",[vals],{context:{lang:"es_AR"}});
-    toast("👤 Contacto agregado"); await cargarContactos(L.parent);
+    if(pid){
+      // El teléfono se consolida en `phone` (y se limpia `mobile`) para que quede en un solo lugar;
+      // el bot de WhatsApp busca en phone Y mobile, así que igual lo va a encontrar.
+      await rpc("res.partner","write",[[pid],{name:name||"Contacto", function:func||false, phone:phone||false, mobile:false}],{context:{lang:"es_AR"}});
+      toast("✓ Contacto actualizado");
+    }else{
+      const vals={parent_id:L.parent, type:"contact", is_company:false, name:name||"Contacto"};
+      if(func) vals.function=func; if(phone) vals.phone=phone;
+      await rpc("res.partner","create",[vals],{context:{lang:"es_AR"}});
+      toast("👤 Contacto agregado");
+    }
+    await cargarContactos(L.parent);
   }catch(e){ toast("⚠ No pude guardar: "+(e.message||e)); }
+}
+async function eliminarPersona(pid){
+  const L=ST._libreta||{};
+  if(!confirm("¿Eliminar este contacto/teléfono del cliente?")) return;
+  try{
+    // Si el contacto está referenciado en Odoo (algún documento), unlink falla → se archiva (reversible).
+    try{ await rpc("res.partner","unlink",[[pid]]); }
+    catch(e){ await rpc("res.partner","write",[[pid],{active:false}],{context:{lang:"es_AR"}}); }
+    toast("🗑️ Contacto eliminado"); await cargarContactos(L.parent);
+  }catch(e){ toast("⚠ No pude eliminar: "+(e.message||e)); }
 }
 async function cargarIntel(id){
   try{
