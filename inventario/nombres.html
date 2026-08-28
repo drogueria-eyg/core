@@ -98,11 +98,6 @@
   .sugtag{font-size:9px;text-transform:uppercase;letter-spacing:.5px;font-weight:800;color:#fff;background:var(--teal);border-radius:5px;padding:1px 5px;vertical-align:middle}
   .sugbox .usar{background:var(--teal);color:#fff;border:none;border-radius:5px;padding:2px 9px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-left:2px}
   .sugbox .usar:hover{background:var(--teal-deep)}
-  /* "dejar así" = descartar la sugerencia (se guarda en la base, no vuelve a aparecer) */
-  .sugbox .dejar{background:#fff;color:var(--gris);border:1px solid var(--line);border-radius:5px;padding:2px 9px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-left:4px}
-  .sugbox .dejar:hover{border-color:var(--teal-med);color:var(--teal-deep)}
-  .sugdesc{font-size:12px;color:var(--gris2);background:#f7f8f8;border:1px dashed var(--line);border-radius:8px;padding:5px 8px;line-height:1.45}
-  .sugdesc .undesc{background:none;border:none;color:var(--teal);font-weight:700;font-size:11.5px;cursor:pointer;font-family:inherit;text-decoration:underline;padding:0 2px}
   .f-in{width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--line);border-radius:7px;font-size:12.5px;font-family:inherit;color:var(--ink)}
   .f-in:focus{border-color:var(--teal-med);outline:none;box-shadow:0 0 0 2px rgba(4,135,130,.12)}
   .f-in::placeholder{color:#cbd5d3}
@@ -154,7 +149,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=37"></script>
+<script src="../assets/core.js?v=41"></script>
 <script>
 /* ================= EyG Core · Depósito · Maestro de productos ================= */
 // Categorías raíz que administra el módulo. `excluir` = subcategorías vacías/ajenas al desplegable de asignación.
@@ -448,29 +443,7 @@ function desglosar(core, parens, add){
 }
 
 /* =========================== estado + carga =========================== */
-let TODOS = [], SUBCATS = [], abiertos = new Set(), filtro = "", HISTORIAL = [], filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false, sinEmbalaje:false, soloDescartadas:false};
-let PERFIL = null;      // quién está logueado (queda registrado en cada descarte)
-
-/* ---------- SUGERENCIAS DESCARTADAS ("dejar así") ----------
-   Se descarta ESTA sugerencia para ESTE nombre, no el producto para siempre:
-   la clave incluye nombre + sugerido, así que si mañana el nombre cambia (o el
-   analizador propone otra cosa), la sugerencia vuelve a aparecer sola.
-   Vive en Supabase (maestro_descartes), no en el navegador: vale para todos y
-   no se pierde al cambiar de máquina. El futuro panel de ingreso de productos
-   sólo tiene que borrar las filas de ese product_id para revivirla. */
-let DESCARTES = new Map();   // "id|nombre|sugerido" -> id de la fila (para poder deshacer)
-const descKey = p => p.id+"|"+p.nombre+"|"+p.sugerido;
-function estaDescartada(p){ return !!p.cambia && DESCARTES.has(descKey(p)); }
-// pendiente = tiene sugerencia, no se aplicó y no se descartó
-function pendiente(p){ return p.cambia && !p.aplicado && !estaDescartada(p); }
-async function cargarDescartes(){
-  DESCARTES = new Map();
-  try{
-    // limit explícito: PostgREST corta en 1000 si no se le pide más
-    const {data} = await EYG.supa().from("maestro_descartes").select("id,product_id,nombre,sugerido").limit(5000);
-    (data||[]).forEach(d=>DESCARTES.set(d.product_id+"|"+d.nombre+"|"+d.sugerido, d.id));
-  }catch(e){ /* si falla, simplemente no hay descartes: las sugerencias se ven todas */ }
-}
+let TODOS = [], SUBCATS = [], abiertos = new Set(), filtro = "", HISTORIAL = [], filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false, sinEmbalaje:false};
 
 async function cargar(preservar){
   const cont = document.getElementById("cont");
@@ -526,15 +499,13 @@ async function cargar(preservar){
   // conserva las secciones abiertas al sincronizar; en la 1ª carga abre la primera
   abiertos = new Set([...abiertos].filter(s=>SUBCATS.includes(s)));
   if(!preservar && !abiertos.size && SUBCATS.length) abiertos.add(SUBCATS[0]);
-  await cargarDescartes();
   render();
 }
 
 function filtrarSub(sc){
   let arr = TODOS.filter(p=>p.sub===sc);
   if(filtro){ const q=filtro.toLowerCase(); arr = arr.filter(p=>(p.nombre+" "+p.sku).toLowerCase().includes(q)); }
-  if(filtros.conCambios) arr = arr.filter(pendiente);
-  if(filtros.soloDescartadas) arr = arr.filter(estaDescartada);
+  if(filtros.conCambios) arr = arr.filter(p=>p.cambia && !p.aplicado);
   if(filtros.sinBulto)   arr = arr.filter(p=>!p.desg.bultoNum);
   if(filtros.sinConc)    arr = arr.filter(p=>!p.desg.conc);
   if(filtros.sinStock)   arr = arr.filter(p=>(p.stock||0)<=0);
@@ -548,15 +519,13 @@ function render(){
   const cont = document.getElementById("cont");
   // KPIs y filtros GLOBALES (sobre todo el catálogo cargado)
   const total = TODOS.length;
-  const conCambio = TODOS.filter(pendiente).length;
-  const descart   = TODOS.filter(estaDescartada).length;
+  const conCambio = TODOS.filter(p=>p.cambia && !p.aplicado).length;
   const sinConc = TODOS.filter(p=>!p.desg.conc).length;
   const sinBulto = TODOS.filter(p=>!p.desg.bultoNum).length;
   const sinEmb = TODOS.filter(p=>p.embalaje==null).length;
   const sinStock = TODOS.filter(p=>(p.stock||0)<=0).length;
 
-  const AYUDA = {conCambios:"Productos a los que el sistema les propone un nombre ordenado y todavía no se resolvió. Tocá para ver solo estos.", sinConc:"Productos sin concentración en el nombre. Tocá para verlos.", sinBulto:"Productos sin bulto/caja cargado. Tocá para verlos.", sinEmbalaje:"Productos sin embalaje (caja real) cargado. Tocá para verlos.", sinStock:"Productos sin stock. Tocá para verlos.", soloDescartadas:"Sugerencias que marcaste “dejar así”. No vuelven a aparecer, pero podés revisarlas y deshacerlas. Tocá para verlas."};
-  const kpi = (key,n,label,cls)=>`<div class="kpi ${cls||""} ${key?"clk":""} ${key&&filtros[key]?"on":""}" ${key?`onclick="toggleFiltro('${key}')" title="${EYG.esc(AYUDA[key]||"")}"`:""}><div class="n">${n}</div><div class="l">${label}</div></div>`;
+  const kpi = (key,n,label,cls)=>`<div class="kpi ${cls||""} ${key?"clk":""} ${key&&filtros[key]?"on":""}" ${key?`onclick="toggleFiltro('${key}')"`:""}><div class="n">${n}</div><div class="l">${label}</div></div>`;
   const kpis = `<div class="kpis">
     ${kpi(null,total,"Productos","")}
     ${kpi("conCambios",conCambio,"Con corrección","warn")}
@@ -564,17 +533,15 @@ function render(){
     ${kpi("sinBulto",sinBulto,"Sin bulto/caja","warn")}
     ${kpi("sinEmbalaje",sinEmb,"Sin embalaje","warn")}
     ${kpi("sinStock",sinStock,"Sin stock","")}
-    ${descart?kpi("soloDescartadas",descart,"Descartadas",""):""}
   </div>`;
 
   const catsel = `<div class="catsel"><span class="lbl">Categoría</span>${CATEGS.map((c,i)=>`<div class="catpill ${c.id===ROOT.id?"active":""}" onclick="setCateg(${i})">${EYG.esc(c.label)}</div>`).join("")}</div>`;
 
   const filtrando = hayFiltroActivo();
   const enVista = SUBCATS.reduce((a,sc)=>a+filtrarSub(sc).length,0);
-  const algunFiltro = Object.values(filtros).some(Boolean);
+  const algunFiltro = filtros.conCambios||filtros.sinBulto||filtros.sinConc||filtros.sinStock||filtros.conStock||filtros.sinEmbalaje;
   const toolbar = `<div class="toolbar">
     <button class="btn-sync" onclick="sincronizar()">🔄 Actualizar</button>
-    <button class="btn-toggle ${filtros.conCambios?"on":""}" onclick="toggleFiltro('conCambios')" title="Deja en pantalla solo los productos con un nombre sugerido sin resolver.">✨ Solo con sugerencias${conCambio?` (${conCambio})`:""}</button>
     <button class="btn-toggle ${filtros.conStock?"on":""}" onclick="toggleFiltro('conStock')">📦 Solo con stock</button>
     <input type="search" id="buscar" placeholder="Buscar por nombre o SKU (en todas las subcategorías)…" value="${EYG.esc(filtro)}" oninput="onBuscar(this.value)">
     <button class="btn-expand" onclick="toggleTodas()">${abiertos.size>=SUBCATS.length?"Contraer todo":"Expandir todo"}</button>
@@ -590,7 +557,7 @@ function render(){
     const arr = filtrarSub(sc);
     if(filtrando && arr.length===0) return "";           // oculta subcategorías sin coincidencias
     const abierta = abiertos.has(sc) || (!!filtro && arr.length>0);
-    const pend = arr.filter(pendiente).length;
+    const pend = arr.filter(p=>p.cambia && !p.aplicado).length;
     const cuerpo = abierta
       ? `<div class="secbody">${arr.length?arr.map(p=>fila(p)).join(""):'<div class="empty">Sin coincidencias con el filtro.</div>'}</div>`
       : "";
@@ -606,7 +573,7 @@ function render(){
   const accordion = `<div class="accordion">${secciones||'<div class="empty">Sin resultados. Probá quitar filtros.</div>'}</div>`;
 
   cont.innerHTML = `${catsel}<div class="intro">
-      <b>Maestro de productos — Depósito.</b> El dato ordenado de cada producto: <b>nombre</b> (detecta mayúsculas, acentos, espacios, unidades pegadas, abreviaturas, códigos sueltos y propone el correcto), <b>bulto/caja</b>, <b>embalaje (caja real)</b> y <b>subcategoría</b>. Cada subcategoría es una <b>sección desplegable</b>: tocá el título para abrirla o cerrarla. <b>Tocá una tarjeta</b> de arriba para filtrar en todas a la vez (con corrección, sin concentración, sin bulto, sin embalaje, sin stock); el buscador también recorre todas las subcategorías. Donde falte el <b>bulto/caja</b>, cargalo desde la fila. En <b>Embalaje (caja real)</b>: cuántas unidades trae la caja cerrada — es el mínimo de compra, se guarda en Odoo. A los productos <b>sin subcategoría</b> asignásela con el desplegable. Cuando el sistema propone un nombre, tenés dos caminos: <b>usar</b> (lo aplica) o <b>dejar así</b> (si el nombre ya está bien, la sugerencia no vuelve a aparecer y queda fuera de “Aplicar los sugeridos”; siempre podés deshacerlo desde la tarjeta <b>Descartadas</b>). Para atacar solo las sugerencias, tocá <b>✨ Solo con sugerencias</b>. El resto lo sincroniza el sistema solo.
+      <b>Maestro de productos — Depósito.</b> El dato ordenado de cada producto: <b>nombre</b> (detecta mayúsculas, acentos, espacios, unidades pegadas, abreviaturas, códigos sueltos y propone el correcto), <b>bulto/caja</b>, <b>embalaje (caja real)</b> y <b>subcategoría</b>. Cada subcategoría es una <b>sección desplegable</b>: tocá el título para abrirla o cerrarla. <b>Tocá una tarjeta</b> de arriba para filtrar en todas a la vez (con corrección, sin concentración, sin bulto, sin embalaje, sin stock); el buscador también recorre todas las subcategorías. Donde falte el <b>bulto/caja</b>, cargalo desde la fila. En <b>Embalaje (caja real)</b>: cuántas unidades trae la caja cerrada — es el mínimo de compra, se guarda en Odoo. A los productos <b>sin subcategoría</b> asignásela con el desplegable. Revisá y aplicá con un clic; el resto lo sincroniza el sistema solo.
       <details><summary>Ver la regla de nombres que se aplica</summary>
         <div class="std">
           Formato objetivo: <code>MONODROGA CONCENTRACIÓN forma x contenido - LABORATORIO (Caja x N tipo)</code><br>
@@ -626,10 +593,9 @@ function fila(p){
   const stk = `<div class="stk ${(p.stock||0)<=0?'zero':''}">${(p.stock||0)<=0?'sin stock':(p.stock+' u')}</div>`;
   // Nombre editable + sugerencia debajo (desaparece cuando ya coincide)
   const dif = p.sugerido && p.sugerido!==p.nombre;
-  const sug = !dif ? ""
-    : estaDescartada(p)
-      ? `<div class="sugdesc">✓ Sugerencia descartada — el nombre queda como está. <button class="undesc" title="Volver a mostrar la sugerencia" onclick="revivirSug(${p.id})">deshacer</button></div>`
-      : `<div class="sugbox"><span class="sugtag">sugerido</span> ${EYG.esc(p.sugerido)} <button class="usar" title="Usar la versión ordenada" onclick="usarSug(${p.id})">usar</button> <button class="dejar" title="El nombre está bien así: no volver a sugerir esto" onclick="descartarSug(${p.id})">dejar así</button></div>`;
+  const sug = dif
+    ? `<div class="sugbox"><span class="sugtag">sugerido</span> ${EYG.esc(p.sugerido)} <button class="usar" title="Usar la versión ordenada" onclick="usarSug(${p.id})">usar</button></div>`
+    : "";
   const subSel = (p.sub===SIN_SUB) ? selectorSub(p) : "";
   const nota = p.desg && p.desg.ubicacion ? `<div class="nota">Ubicación: ${EYG.esc(p.desg.ubicacion)}</div>` : "";
   const inNom = `<textarea class="f-nom" id="nom-${p.id}" rows="2" onchange="guardarNombre(${p.id})">${EYG.esc(p.nombre)}</textarea>`;
@@ -687,7 +653,7 @@ function embCell(p){
 window.setCateg = i => {
   const c = CATEGS[i]; if(!c || c.id===ROOT.id) return;
   ROOT = c; filtro=""; abiertos=new Set(); HISTORIAL=[];
-  filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false, sinEmbalaje:false, soloDescartadas:false};
+  filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false, sinEmbalaje:false};
   cargar();
 };
 window.toggleSec = i => { const sc=SUBCATS[i]; if(sc==null) return; if(abiertos.has(sc)) abiertos.delete(sc); else abiertos.add(sc); render(); };
@@ -719,15 +685,10 @@ window.asignarSub = async id => {
 window.onBuscar = EYG.buscador(v => { filtro=v; render(); });
 window.toggleFiltro = k => {
   filtros[k]=!filtros[k];
-  if(filtros[k]){
-    if(k==="conStock") filtros.sinStock=false;
-    if(k==="sinStock") filtros.conStock=false;
-    if(k==="conCambios") filtros.soloDescartadas=false;      // son opuestos
-    if(k==="soloDescartadas") filtros.conCambios=false;
-  }
+  if(filtros[k]){ if(k==="conStock") filtros.sinStock=false; if(k==="sinStock") filtros.conStock=false; }
   render();
 };
-window.limpiarFiltros = () => { filtros={conCambios:false,sinBulto:false,sinConc:false,sinStock:false,conStock:false,sinEmbalaje:false,soloDescartadas:false}; render(); };
+window.limpiarFiltros = () => { filtros={conCambios:false,sinBulto:false,sinConc:false,sinStock:false,conStock:false,sinEmbalaje:false}; render(); };
 async function escribir(id, nombre){
   return EYG.rpc("product.template","write",[[id],{name:nombre}], LANG);
 }
@@ -797,33 +758,6 @@ window.usarSug = async id => {
     toast("Aplicado ✓"); render();
   }catch(err){ toast("Error: "+EYG.esc(err.message)); }
 };
-/* ---------- DESCARTAR la sugerencia ("dejar así") ----------
-   No toca Odoo: sólo anota que ESTA sugerencia para ESTE nombre ya se revisó y
-   se decidió dejarlo. Sale del contador, del filtro y del botón "Aplicar los N
-   sugeridos" (que si no, le pisaría el nombre que se decidió conservar). */
-window.descartarSug = async id => {
-  const p = TODOS.find(x=>x.id===id); if(!p || !p.cambia) return;
-  const fila = {product_id:p.id, nombre:p.nombre, sugerido:p.sugerido, sku:p.sku||null, email:(PERFIL&&PERFIL.email)||null};
-  try{
-    // upsert: si ya estaba descartada (otra pestaña, otra persona) no falla, la reusa
-    const {data,error} = await EYG.supa().from("maestro_descartes")
-      .upsert([fila],{onConflict:"product_id,nombre,sugerido"}).select("id").single();
-    if(error) throw error;
-    DESCARTES.set(descKey(p), data.id);
-    toast("Sugerencia descartada ✓ — el nombre queda como está"); render();
-  }catch(e){ toast("No se pudo descartar: "+(e.message||e)); }
-};
-window.revivirSug = async id => {
-  const p = TODOS.find(x=>x.id===id); if(!p) return;
-  const k = descKey(p), rid = DESCARTES.get(k); if(!rid) return;
-  try{
-    const {error} = await EYG.supa().from("maestro_descartes").delete().eq("id",rid);
-    if(error) throw error;
-    DESCARTES.delete(k);
-    toast("Sugerencia restaurada ✓"); render();
-  }catch(e){ toast("No se pudo deshacer: "+(e.message||e)); }
-};
-
 /* crea o actualiza el product.packaging (Embalaje) del producto — se sincroniza con Odoo */
 window.guardarEmbalaje = async id => {
   const p = TODOS.find(x=>x.id===id); if(!p) return;
@@ -864,7 +798,7 @@ window.aplicar = async id => {
 };
 window.aplicarTodos = async i => {
   const sc = SUBCATS[i]; if(sc==null) return;
-  const arr = filtrarSub(sc).filter(pendiente);
+  const arr = filtrarSub(sc).filter(p=>p.cambia && !p.aplicado);
   if(!arr.length) return;
   if(!confirm(`Vas a aplicar ${arr.length} nombres corregidos en "${sc}". ¿Continuar?`)) return;
   let ok=0, err=0; const cambios=[];
@@ -894,7 +828,6 @@ function toast(msg){ let t=document.getElementById("toast"); if(!t){ t=document.
 
 /* =========================== arranque =========================== */
 EYG.requireAuth(["inventario","maestro"], perfil=>{
-  PERFIL = perfil;
   document.body.innerHTML = EYG.layout(perfil, "nombres", '<div id="cont"></div>', "Maestro de productos");
   cargar();
 });

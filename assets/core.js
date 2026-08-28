@@ -539,6 +539,36 @@ window.EYG = (function(){
     if(!its.length) return false;
     return its.some(i=>(map[i.id]||0)<=0);
   }
+  /* IVA en las ofertas: el precio de la tarifa (LISTA 3) es NETO (price_include=false), pero
+     la WEB muestra CON IVA (tax_included). Para que la tarjeta del comercial/lider y el mensaje
+     de WhatsApp coincidan con el portal que ve el cliente, convertimos precio/precioAntes a
+     precio FINAL con el IVA real de cada producto. 0%/exento no cambia; 21% → ×1,21. Muta el
+     array in-place y devuelve el mismo. Ante error de red no toca los precios (fail-safe). */
+  async function aplicarIvaOfertas(offers){
+    try{
+      const arr=offers||[]; if(!arr.length) return arr;
+      const vids=[...new Set(arr.flatMap(o=>((o&&o.items)||[]).map(i=>i&&i.id)).filter(Boolean))];
+      if(!vids.length) return arr;
+      const prods=await rpc("product.product","read",[vids,["taxes_id"]]);
+      const taxOf={}, allTax=new Set();
+      (prods||[]).forEach(p=>{ taxOf[p.id]=p.taxes_id||[]; (p.taxes_id||[]).forEach(t=>allTax.add(t)); });
+      const rateByTax={};
+      if(allTax.size){
+        const taxes=await rpc("account.tax","read",[[...allTax],["amount","amount_type","price_include"]]);
+        (taxes||[]).forEach(t=>{ rateByTax[t.id]=(t.price_include||t.amount_type!=="percent")?0:((t.amount||0)/100); });
+      }
+      arr.forEach(o=>{
+        const pv=((o&&o.items)||[])[0]&&o.items[0].id;
+        const rate=(taxOf[pv]||[]).reduce((s,t)=>s+(rateByTax[t]||0),0);
+        if(rate>0){
+          if(o.precio>0)      o.precio=Math.round(o.precio*(1+rate));
+          if(o.precioAntes>0) o.precioAntes=Math.round(o.precioAntes*(1+rate));
+          o._ivaPct=Math.round(rate*100);   // marca (por si algún panel quiere mostrar "c/IVA")
+        }
+      });
+      return arr;
+    }catch(e){ return offers||[]; }
+  }
 
   /* ---- Tarjeta "Combos y ofertas de la semana" (compartida: panel comercial + lider) ----
      Lee las ofertas activas del parametro eyg.ofertas (las carga el modulo Oportunidades). */
@@ -575,6 +605,7 @@ window.EYG = (function(){
     const sm = await ofStockMap(act.flatMap(o=>((o.items)||[]).map(i=>i&&i.id)));
     if(sm) act = act.filter(o=>!ofAgotada(o,sm));
     if(!act.length){ el.innerHTML=""; return; }
+    await aplicarIvaOfertas(act);   // precio final con IVA, igual que la web (el cliente ve ese precio)
     // Rendimiento GLOBAL por oferta (todos los comerciales), igual criterio que el panel del comercial.
     const d120 = new Date(Date.now()-120*864e5).toISOString().slice(0,10);
     const stat={};
@@ -1355,7 +1386,7 @@ window.EYG = (function(){
     return { baseline, meta, meses, nUsados:nums.length };
   }
 
-  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
+  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, aplicarIvaOfertas, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
