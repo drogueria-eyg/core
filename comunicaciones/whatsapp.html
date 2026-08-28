@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=42"></script>
+<script src="../assets/core.js?v=40"></script>
 <style>
   /* Tres columnas: la bandeja limpia a la izquierda, el chat al medio y todo
      el asistente a la derecha (orbe, ficha del contacto, lo que va pasando y
@@ -189,6 +189,11 @@
               opacity:.75;border:1px solid currentColor;border-radius:20px;padding:1px 7px;margin-bottom:5px}
   /* Lo que dijo en el audio va en cursiva: se lee igual, pero se distingue de lo
      que escribió de puño y letra. Nadie tiene que dudar de dónde salió el texto. */
+  /* Copia guardada: se lee distinto de la bandeja para que nadie confunda el
+     archivo con la conversación viva. */
+  .conv.guardada{opacity:.86}
+  .conv.guardada:hover{opacity:1}
+  .pin.borrado{border-color:rgba(214,92,84,.55);color:#d65c54}
   .m .dicho{font-style:italic;opacity:.94}
   .m .pendiente{font-style:italic;opacity:.5;font-size:11px}
 
@@ -384,6 +389,10 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   let cargando=false, filtro="", vistoId=0, primeraCarga=true;
   let firmaConvs="", firmaMsgs="", firmaFicha="";
   let verArchivadas=false;
+  /* "bandeja" | "archivadas" (en Odoo) | "guardadas" (la copia propia en Supabase) */
+  let modo="bandeja";
+  /* qué canales siguen existiendo en Odoo, para marcar los borrados en GUARDADAS */
+  let vivosOdoo=new Set();
   /* Los teléfonos del equipo, para distinguir en la bandeja quién es de casa */
   let EQUIPO={};
   const ROTULO_NIVEL={direccion:"DIRECCIÓN",lider:"LÍDER",comercial:"COMERCIAL",finanzas:"FINANZAS",deposito:"DEPÓSITO"};
@@ -680,6 +689,32 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
 
   /* ══ bandeja ══ */
   async function cargarConvs(){
+    /* Memoria propia: sale de Supabase, no de Odoo. Acá están también las
+       conversaciones que se borraron, que es el punto de tenerla. */
+    if(modo==="guardadas"){
+      try{
+        const {data}=await EYG.supa().rpc("wsp_chats_guardados");
+        const filas=data||[];
+        /* El cliente sigue existiendo en Odoo aunque el chat ya no: se le pide
+           el nombre para no mostrar un teléfono pelado. */
+        const pids=[...new Set(filas.map(g=>g.partner).filter(Boolean))];
+        let nombres={};
+        if(pids.length){
+          try{
+            const ps=await EYG.rpc("res.partner","read",[pids,["name"]],{});
+            for(const p of ps||[]) nombres[p.id]=p.name;
+          }catch(e){}
+        }
+        convs=filas.map(g=>({
+          id:g.canal, guardado:true, borrado:!vivosOdoo.has(g.canal),
+          whatsapp_number:g.telefono||"", whatsapp_partner_id:g.partner?[g.partner,nombres[g.partner]||""]:null,
+          name:nombres[g.partner]||g.telefono||("Canal "+g.canal),
+          mensajes:g.mensajes, aprendido:g.aprendido,
+          ultimo:g.ultimo, write_date:g.ultimo,
+        }));
+      }catch(e){ convs=[]; }
+      pintarConvs(); pintarBot(); primeraCarga=false; return;
+    }
     try{
       /* Odoo esconde lo archivado salvo que el dominio nombre "active" */
       const dominio=verArchivadas
@@ -688,6 +723,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       const r=await EYG.rpc("discuss.channel","search_read",[dominio],
         {fields:["name","whatsapp_number","whatsapp_partner_id","whatsapp_channel_valid_until","write_date"],order:"write_date desc",limit:60});
       const nuevas=r||[];
+      for(const v of nuevas) vivosOdoo.add(v.id);
       /* Arriba el que escribió último, como en WhatsApp. `write_date` del canal
          no alcanza: se toca por cualquier cambio del registro y no siempre al
          llegar un mensaje. La fecha buena es la del último mensaje, y se pide
@@ -726,7 +762,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     if(firma===firmaConvs) return;
     firmaConvs=firma;
     const c=$("convs");
-    if(!lista.length){ c.innerHTML=`<div class="vacio">${f?"NADA COINCIDE":(verArchivadas?"NO HAY NADA ARCHIVADO":"SIN CONVERSACIONES<br>—<br>APARECEN SOLAS CUANDO<br>UN CLIENTE ESCRIBE")}</div>`; return; }
+    if(!lista.length){ c.innerHTML=`<div class="vacio">${f?"NADA COINCIDE":(modo==="guardadas"?"TODAVÍA NO HAY NADA GUARDADO":(verArchivadas?"NO HAY NADA ARCHIVADO":"SIN CONVERSACIONES<br>—<br>APARECEN SOLAS CUANDO<br>UN CLIENTE ESCRIBE"))}</div>`; return; }
     c.innerHTML=lista.map(v=>{
       const eq=cfg.pausadas.includes(v.id), asig=cfg.asignadas[v.id];
       const nom=nom1(v.whatsapp_partner_id)||v.name||v.whatsapp_number||"Sin nombre";
@@ -734,6 +770,15 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       const marca=casa?`<span class="pin casa" title="${esc(casa.nombre)}${casa.cargo?" · "+esc(casa.cargo):""}">${ROTULO_NIVEL[casa.nivel]||"EQUIPO"}</span>`
                       :(asig?`<span class="pin asig">${esc(String(asig.nombre||"").split(" ")[0].toUpperCase())}</span>`
                       :(eq?'<span class="pin eq">EQUIPO</span>':(cfg.activo?'<span class="pin bot">BOT</span>':"")));
+      /* En GUARDADAS no hay nada que archivar ni borrar: es la copia propia.
+         Se muestra cuánto se guardó y si el chat ya no existe en Odoo. */
+      if(v.guardado){
+        const sello=v.borrado?'<span class="pin borrado" title="Ya no está en Odoo: esto es lo único que queda">BORRADO</span>':"";
+        return `<div class="conv guardada ${sel&&sel.id===v.id?"act":""}" data-id="${v.id}" data-nom="${esc(nom)}">
+          <div class="n"><b>${esc(nom)}</b>${sello}</div>
+          <div class="t"><span>${v.mensajes} mensajes · ${v.aprendido} aprendido${v.aprendido===1?"":"s"}</span><span>${esc(dia(v.ultimo))}</span></div>
+        </div>`;
+      }
       const vivo=enLinea(v)?'<i class="vivo" title="Conversación en curso ahora mismo"></i>':"";
       return `<div class="conv ${sel&&sel.id===v.id?"act":""}${vivo?" viva":""}" data-id="${v.id}" data-nom="${esc(nom)}">
         <div class="n">${vivo}<b>${esc(nom)}</b>${marca}</div>
@@ -754,10 +799,17 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   }
   $("verLog").onclick=()=>{ const l=$("log"); l.classList.toggle("abierto"); $("verLog").textContent=l.classList.contains("abierto")?"OCULTAR":"DETALLE"; };
   $("buscar").addEventListener("input",e=>{ filtro=e.target.value; firmaConvs=""; pintarConvs(); });
+  /* Tres vistas con un solo botón: la bandeja, lo archivado en Odoo, y la
+     MEMORIA PROPIA — lo que quedó guardado en Supabase, exista o no en Odoo.
+     Ahí siguen estando las conversaciones borradas, para poder leerlas. */
   $("btnArch").onclick=async()=>{
-    verArchivadas=!verArchivadas;
-    $("btnArch").classList.toggle("act",verArchivadas);
-    $("btnArch").textContent=verArchivadas?"VOLVER":"ARCHIVADAS";
+    modo = modo==="bandeja" ? "archivadas" : (modo==="archivadas" ? "guardadas" : "bandeja");
+    verArchivadas = modo==="archivadas";
+    const b=$("btnArch");
+    b.classList.toggle("act", modo!=="bandeja");
+    b.textContent = modo==="bandeja" ? "ARCHIVADAS" : (modo==="archivadas" ? "GUARDADAS" : "VOLVER");
+    b.title = modo==="archivadas" ? "Ver lo que quedó guardado en la memoria del asistente, incluso lo borrado"
+            : (modo==="guardadas" ? "Volver a la bandeja" : "Ver las conversaciones archivadas en Odoo");
     sel=null; msgs=[]; firmaConvs=""; firmaMsgs="";
     pintarChat(); await cargarConvs();
   };
@@ -767,6 +819,20 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     const mismo=sel&&sel.id===id;
     sel=convs.find(v=>v.id===id)||sel;
     if(!sel) return;
+    /* Guardada: el texto sale de la copia propia, no de Odoo. Se le da la misma
+       forma que a un mensaje de Odoo para que lo pinte el mismo código. */
+    if(sel.guardado){
+      try{
+        const {data}=await EYG.supa().from("wsp_mensajes")
+          .select("id,quien,texto,cuando").eq("canal",id).order("cuando",{ascending:true}).limit(500);
+        msgs=(data||[]).map(m=>({
+          id:m.id, body:m.texto, date:String(m.cuando||"").replace("T"," ").slice(0,19),
+          author_id:null, attachment_ids:[], message_type:"comment", _quien:m.quien,
+        }));
+      }catch(e){ msgs=[]; }
+      firmaMsgs=""; pintarChat(mismo); if(!mismo) cargarFicha(); refrescarOrbe();
+      return;
+    }
     if(!mismo){
       firmaMsgs=""; firmaFicha=""; vistoId=0;
       $("pie").dataset.modo="";            /* cuadro de respuesta limpio al cambiar de chat */
@@ -910,8 +976,10 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
         }
         if(!txt) return "";
         if(esNota(m)) return `<div class="m nota">${esc(txt)}<span class="hora">${esc(hora(m.date))}</span></div>`;
-        const delCliente=Array.isArray(m.author_id)&&pid&&m.author_id[0]===pid&&!esDelBot(m);
-        const delBot=!delCliente&&esDelBot(m);
+        /* Los guardados ya traen quién habló: no hay author_id que mirar */
+        const delCliente=m._quien ? m._quien==="cliente"
+                                  : (Array.isArray(m.author_id)&&pid&&m.author_id[0]===pid&&!esDelBot(m));
+        const delBot=m._quien ? m._quien==="asistente" : (!delCliente&&esDelBot(m));
         /* el asistente marca con 🎙️ lo que salió como nota de voz */
         let voz="";
         if(txt.startsWith("🎙️")){ txt=txt.replace(/^🎙️\s*/,""); voz='<span class="voznota">🎙️ NOTA DE VOZ</span><br>'; }
@@ -927,12 +995,16 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     /* ventana de 24 h de WhatsApp: pasada esa hora solo se puede con plantilla */
     const hasta=sel.whatsapp_channel_valid_until?new Date(String(sel.whatsapp_channel_valid_until).replace(" ","T")+"Z"):null;
     const abierta=hasta && hasta.getTime()>Date.now();
-    const quiero=(abierta||!hasta)?"caja":"aviso";
+    /* Una guardada es de solo lectura: es la copia, no la conversación viva.
+       Sin esto se podría intentar escribirle a un chat que ya no existe. */
+    const quiero=sel.guardado?"copia":((abierta||!hasta)?"caja":"aviso");
     if($("pie").dataset.modo!==quiero){
       $("pie").dataset.modo=quiero;
       $("pie").innerHTML = quiero==="caja"
         ? `<div class="responder"><textarea id="txt" rows="1" placeholder="Escribí tu respuesta…"></textarea><button class="enviar" id="btnEnv" title="Enviar">➤</button></div>`
-        : `<div class="aviso">⏳ Pasaron más de 24 horas desde el último mensaje del cliente. WhatsApp no permite escribirle libremente: hay que esperar a que escriba o mandarle una plantilla aprobada desde Odoo.</div>`;
+        : (quiero==="copia"
+        ? `<div class="aviso">🗄 Esto es la copia guardada por el asistente${sel.borrado?", y el chat ya no existe en Odoo":""}. Se lee, no se escribe: para responderle, buscá la conversación en la bandeja.</div>`
+        : `<div class="aviso">⏳ Pasaron más de 24 horas desde el último mensaje del cliente. WhatsApp no permite escribirle libremente: hay que esperar a que escriba o mandarle una plantilla aprobada desde Odoo.</div>`);
       const t=$("txt");
       if(t){
         t.addEventListener("input",()=>{ t.style.height="auto"; t.style.height=Math.min(t.scrollHeight,110)+"px"; });
