@@ -197,7 +197,13 @@ window.EYG = (function(){
     const quita = !esSuper(p._h) && !!mk && (p.modulos_quita||[]).includes(mk);
     // Módulo EN PRUEBAS: sólo huellas listadas, super, o concesión explícita
     const pr = opts && opts.pruebas;
-    if(pr && pr.length && !pr.includes(p._h) && !esSuper(p._h) && !extra){
+    /* Un interruptor de core_config puede liberar un módulo en pruebas para
+       ciertos roles (opts.abre = {clave, roles}). Se usa en WhatsApp: sin él,
+       el candado de pruebas frenaría a las comerciales aunque el interruptor
+       esté encendido. */
+    const abre = opts && opts.abre;
+    const liberado = !!(abre && p._cfg && p._cfg[abre.clave]===true && (abre.roles||[]).includes(p.rol));
+    if(pr && pr.length && !pr.includes(p._h) && !esSuper(p._h) && !extra && !liberado){
       gateMsg("🚧","En preparación","Este módulo todavía se está construyendo. Va a estar disponible para todo el equipo cuando esté listo.",true);
       return new Promise(()=>{});
     }
@@ -448,6 +454,13 @@ window.EYG = (function(){
        rol; una quita (modulos_quita) lo saca aunque el rol lo traiga. */
     if((p.modulos_quita||[]).includes(m.key)) return false;
     if((p.modulos_extra||[]).includes(m.key)) return true;
+    /* WhatsApp para comerciales y líderes: lo gobierna el interruptor
+       core_config.wsp_comerciales, y adentro es de solo lectura y recortado a
+       sus clientes por el servidor. Pasa por encima del candado "en pruebas"
+       a propósito: el interruptor es el que manda. */
+    const wspOk = m.key==="whatsapp" && p._cfg && p._cfg.wsp_comerciales===true
+                  && (p.rol==="comercial" || p.rol==="lider");
+    if(wspOk) return true;
     if(p.rol==="comercial") return m.key==="panel";   // comercial: sólo su panel (salvo concesión explícita, ya resuelta arriba)
     if(m.pruebas && m.pruebas.length && !m.pruebas.includes(p._h)) return false;
     if(p.rol==="admin"||p.rol==="direccion") return true;

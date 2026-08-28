@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=42"></script>
+<script src="../assets/core.js?v=37"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -32,6 +32,24 @@
   .hero{display:flex;align-items:center;gap:18px;margin-bottom:22px;flex-wrap:wrap}
   .hero h1{font-size:26px;font-weight:800;letter-spacing:-.5px}
   .hero .msg{color:var(--gris);font-size:14px;margin-top:2px}
+  /* Botón flotante de los chats. Abajo a la izquierda: a la derecha, en el
+     teléfono, cae justo donde está el pulgar y taparía el contenido. */
+  .fabchats{position:fixed;left:18px;bottom:18px;z-index:60;display:inline-flex;align-items:center;gap:9px;
+            background:linear-gradient(135deg,var(--teal),var(--teal-deep));color:#fff;text-decoration:none;
+            font-weight:800;font-size:14px;padding:12px 18px;border-radius:999px;
+            box-shadow:0 8px 26px rgba(4,135,130,.34);transition:.14s}
+  .fabchats:hover{transform:translateY(-2px);box-shadow:0 12px 30px rgba(4,135,130,.42)}
+  .fabchats .ic{font-size:17px;line-height:1}
+  .fabchats .n{min-width:21px;height:21px;padding:0 6px;border-radius:999px;background:rgba(255,255,255,.22);
+               display:inline-flex;align-items:center;justify-content:center;font-size:12px}
+  .fabchats .n:empty{display:none}
+  /* Charla en curso: el mismo latido que en la bandeja, para que signifique lo mismo */
+  .fabchats .vv{display:none;width:8px;height:8px;border-radius:50%;background:#8ef5c9}
+  .fabchats.viva .vv{display:inline-block;animation:fablatir 2.4s ease-out infinite}
+  @keyframes fablatir{0%{box-shadow:0 0 0 0 rgba(142,245,201,.7)}70%{box-shadow:0 0 0 7px rgba(142,245,201,0)}100%{box-shadow:0 0 0 0 rgba(142,245,201,0)}}
+  @media (prefers-reduced-motion:reduce){ .fabchats .vv{animation:none} }
+  @media(max-width:640px){ .fabchats{left:12px;bottom:12px;padding:11px 15px;font-size:13px} .fabchats .tx{display:none} }
+
   .cta-venta{display:inline-flex;align-items:center;gap:8px;margin-top:12px;background:linear-gradient(135deg,var(--teal),var(--teal-deep));color:#fff;text-decoration:none;font-weight:800;font-size:16px;padding:13px 22px;border-radius:13px;box-shadow:var(--shadow);transition:.12s}
   .cta-venta:hover{filter:brightness(1.07);transform:translateY(-1px)}
   .cta-venta:active{transform:scale(.98)}
@@ -1768,9 +1786,6 @@ async function cargarOfertas(ids){
       const sm=await EYG.ofStockMap(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i&&i.id)));
       if(sm) OFERTAS=OFERTAS.filter(o=>!EYG.ofAgotada(o,sm));
     }catch(e){}
-    // Precio final CON IVA, igual que la web (el cliente ve ese precio). Sin esto, los productos
-    // con 21% (equipos, antisépticos, descartables) mostraban el neto de la tarifa. Ver web tax_included.
-    try{ if(EYG.aplicarIvaOfertas) await EYG.aplicarIvaOfertas(OFERTAS); }catch(e){}
   }catch(e){ OFERTAS=[]; return; }
   await Promise.all(OFERTAS.map(async o=>{
     const pids=(o.items||[]).map(i=>i.id).filter(Boolean);
@@ -2392,8 +2407,39 @@ function ldTeamRender(){
     </div>`;
 }
 
+/* ═══ Botón flotante: los chats del asistente ═══════════════════════════════
+   El comercial vive encerrado en este panel, así que sin este botón no tendría
+   por dónde entrar. Abre en OTRA PESTAÑA: el panel es su sesión de venta y no
+   se pisa. Muestra cuántas conversaciones tiene y late si hay una en curso.
+   Aparece solo si el interruptor core_config.wsp_comerciales está encendido;
+   quién ve qué lo decide el servidor (wsp-visibles), no este botón.          */
+async function botonChats(perfil){
+  if(!perfil || !perfil._cfg || perfil._cfg.wsp_comerciales!==true) return;
+  if(perfil.rol!=="comercial" && perfil.rol!=="lider") return;
+  const b=document.createElement("a");
+  b.className="fabchats";
+  b.href="../comunicaciones/whatsapp.html";
+  b.target="_blank"; b.rel="noopener";
+  b.title="Las conversaciones del asistente con tus clientes (se abre en otra pestaña)";
+  b.innerHTML='<span class="ic">💬</span><span class="tx">Chats</span><span class="n"></span><i class="vv"></i>';
+  document.body.appendChild(b);
+  async function refrescar(){
+    try{
+      const {data,error}=await EYG.supa().functions.invoke("wsp-visibles",{body:{accion:"lista"}});
+      if(error||!data||!data.ok){ b.style.display="none"; return; }
+      const n=(data.canales||[]).length;
+      b.style.display=n?"":"none";           // sin chats propios, no molesta
+      b.querySelector(".n").textContent=n||"";
+      b.classList.toggle("viva", !!data.en_vivo);
+    }catch(e){ b.style.display="none"; }
+  }
+  refrescar();
+  setInterval(refrescar,60000);
+}
+
 EYG.guard(["comercial","lider","admin","direccion"]).then(async perfil=>{
   window.__perfil = perfil;
+  botonChats(perfil);
   const q = new URLSearchParams(location.search).get("c");
   if(perfil.rol==="comercial"){
     COMERCIAL = perfil.comercial_ref || perfil.nombre || perfil.email;  // forzado a su propia cuenta de Odoo
