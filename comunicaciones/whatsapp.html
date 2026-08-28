@@ -82,6 +82,24 @@
   .pin.asig{background:rgba(159,140,255,.14);color:var(--hud-lila)}
   /* Gente de casa: sin relleno, solo un contorno tenue. No compite con el resto. */
   .pin.casa{background:transparent;border:1px solid var(--hud-line2);color:var(--hud-txt2);letter-spacing:1px;padding:1px 6px}
+  /* Un color por área. Sombreados suaves a propósito: el nombre tiene que
+     seguir siendo lo que más pesa en la fila, el chip solo acompaña. */
+  .pin.pcargo,.chip[class*="eq-"]{letter-spacing:1px}
+  .p-ger,.eq-ger{background:rgba(155,124,214,.15);color:#b49ae0}   /* Gerencia   */
+  .p-dir,.eq-dir{background:rgba(90,148,224,.15);color:#7fb0ea}    /* Dirección  */
+  .p-tec,.eq-tec{background:rgba(88,196,178,.15);color:#63cbb6}    /* Dir. Técnica */
+  .p-ven,.eq-ven{background:rgba(10,168,159,.15);color:#3ec8bd}    /* Ventas     */
+  .p-cob,.eq-cob{background:rgba(236,139,94,.15);color:#eda06f}    /* Cobranzas  */
+  .p-fin,.eq-fin{background:rgba(214,168,84,.15);color:#dcb765}    /* Finanzas   */
+  .p-dep,.eq-dep{background:rgba(140,150,165,.15);color:#a3adbd}   /* Depósito   */
+  .p-eqp,.eq-eqp{background:rgba(140,150,165,.13);color:#9aa4b3}
+  /* La división, más tenue todavía: es el segundo dato, no el primero */
+  .p-far,.eq-far{background:rgba(10,168,159,.09);color:#5fb9b1}
+  .p-ins,.eq-ins{background:rgba(90,148,224,.09);color:#8fb6e6}
+  .p-lid,.eq-lid{background:rgba(214,168,84,.13);color:#dcb765}
+  /* Cliente / no cliente: lo que importa saber del que escribe */
+  .p-cli{background:rgba(37,211,102,.13);color:var(--wsp)}
+  .p-nocli{background:rgba(140,150,165,.12);color:#9aa4b3}
   .vacio{padding:24px 6px;text-align:center;color:var(--hud-dim);font-family:var(--mono);font-size:10px;letter-spacing:1px;line-height:2}
 
   /* ── centro: el chat ── */
@@ -408,6 +426,16 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
   }
   /* qué canales siguen existiendo en Odoo, para marcar los borrados en GUARDADAS */
   let vivosOdoo=new Set();
+  /* canal → a qué cliente se resolvió. Sale de wsp_canal_dueno, que ya lo tiene
+     calculado: es lo que permite decir CLIENTE o NO CLIENTE en la lista. */
+  let dueno={};
+  async function cargarDuenos(){
+    try{
+      const {data}=await EYG.supa().from("wsp_canal_dueno").select("canal,cliente,dueno,motivo");
+      const m={}; for(const r of data||[]) m[r.canal]=r;
+      dueno=m;
+    }catch(e){}
+  }
   /* Los teléfonos del equipo, para distinguir en la bandeja quién es de casa */
   let EQUIPO={};
   const ROTULO_NIVEL={direccion:"DIRECCIÓN",lider:"LÍDER",comercial:"COMERCIAL",finanzas:"COBRANZAS",deposito:"DEPÓSITO",tecnica:"DIR. TÉCNICA"};
@@ -418,6 +446,18 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     const cg=String((c&&c.cargo)||"").split("·")[0].trim();
     if(cg) return (cg.length>16?cg.slice(0,15)+"…":cg).toUpperCase();
     return ROTULO_NIVEL[c&&c.nivel]||"EQUIPO";
+  };
+  /* Un color por área, para reconocerlas de un vistazo sin leer. Suaves: el
+     nombre tiene que seguir siendo lo que más pesa en la fila. */
+  const TONO={ "gerencia":"ger", "dirección":"dir", "dirección técnica":"tec",
+               "ventas":"ven", "cobranzas":"cob", "finanzas":"fin", "depósito":"dep" };
+  const tonoDe=c=>TONO[String((c&&c.cargo)||"").toLowerCase().trim()]||"eqp";
+  const tonoDiv=d=>({ "farmacias":"far", "instituciones":"ins", "líder":"lid" })[String(d||"").toLowerCase()]||"";
+  /* Los dos chips juntos: el área y, en Ventas, a qué atiende. */
+  const chipsEquipo=c=>{
+    const a=`<span class="chip eq-${tonoDe(c)}">${esc(CHIP(c))}</span>`;
+    const d=c&&c.division?`<span class="chip eq-${tonoDiv(c.division)}">${esc(String(c.division).toUpperCase())}</span>`:"";
+    return a+d;
   };
   const delEquipo=num=>EQUIPO[String(num||"").replace(/\D/g,"").slice(-10)]||null;
   async function cargarEquipo(){
@@ -762,6 +802,7 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
         {fields:["name","whatsapp_number","whatsapp_partner_id","whatsapp_channel_valid_until","write_date"],order:"write_date desc",limit:60});
       let nuevas=r||[];
       for(const v of nuevas) vivosOdoo.add(v.id);
+      if(!Object.keys(dueno).length) await cargarDuenos();
       /* El recorte de verdad ya lo hizo el servidor; acá solo se aplica su
          respuesta. Si no la pudo dar, no se muestra nada. */
       if(SOLO_MIRA){
@@ -803,7 +844,7 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     });
     $("nConv").textContent=lista.length?lista.length:"";
     /* sin parpadeo: si nada cambió, no se toca el DOM */
-    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.ultimo||v.write_date}|${enLinea(v)?1:0}|${cfg.pausadas.includes(v.id)?1:0}|${cfg.asignadas[v.id]||""}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0);
+    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.ultimo||v.write_date}|${enLinea(v)?1:0}|${(dueno[v.id]||{}).cliente?1:0}|${cfg.pausadas.includes(v.id)?1:0}|${cfg.asignadas[v.id]||""}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0);
     if(firma===firmaConvs) return;
     firmaConvs=firma;
     const c=$("convs");
@@ -816,10 +857,18 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
       /* Si es del equipo, manda el nombre del padrón. El que trae WhatsApp es el
          que cada uno se puso en su propio teléfono ("Droguería Eyg", "Claudia
          DROGUERÍA E Y G") y no sirve para saber quién es. */
-      const nom=(casa&&casa.nombre)||v._cliente||nom1(v.whatsapp_partner_id)||v.name||v.whatsapp_number||"Sin nombre";
-      const marca=casa?`<span class="pin casa" title="${esc(casa.nombre)}${casa.cargo?" · "+esc(casa.cargo):""}">${CHIP(casa)}</span>`
-                      :(asig?`<span class="pin asig">${esc(String(asig.nombre||"").split(" ")[0].toUpperCase())}</span>`
-                      :(eq?'<span class="pin eq">EQUIPO</span>':(cfg.activo?'<span class="pin bot">BOT</span>':"")));
+      const nom=(casa&&casa.nombre)||v._cliente||((dueno[v.id]||{}).cliente)||nom1(v.whatsapp_partner_id)||v.name||v.whatsapp_number||"Sin nombre";
+      /* Al de la casa, su área (y su división si es de Ventas). Al resto, lo que
+         de verdad importa saber: si es cliente o todavía no. "BOT" no decía nada
+         del contacto, decía del bot. */
+      const dn=(dueno||{})[v.id];
+      const marca=casa
+        ? `<span class="pin pcargo p-${tonoDe(casa)}" title="${esc(casa.nombre)}${casa.cargo?" · "+esc(casa.cargo):""}">${CHIP(casa)}</span>`+
+          (casa.division?`<span class="pin pcargo p-${tonoDiv(casa.division)}">${esc(String(casa.division).toUpperCase())}</span>`:"")
+        : (asig?`<span class="pin asig">${esc(String(asig.nombre||"").split(" ")[0].toUpperCase())}</span>`
+        : (eq?'<span class="pin eq">EQUIPO</span>'
+        : (dn&&dn.cliente?'<span class="pin p-cli">CLIENTE</span>'
+        : (dn?'<span class="pin p-nocli">NO CLIENTE</span>':""))));
       /* En GUARDADAS no hay nada que archivar ni borrar: es la copia propia.
          Se muestra cuánto se guardó y si el chat ya no existe en Odoo. */
       if(v.guardado){
@@ -1088,8 +1137,28 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
   }
 
   /* ══ ficha del contacto ══ */
+  /* Cuántos clientes activos tiene cada uno en el asistente. Sale de la tabla
+     ya resuelta, no de Odoo. */
+  let carteraDe=null;
+  async function cargarCartera(){
+    if(carteraDe) return carteraDe;
+    carteraDe={};
+    try{
+      const {data}=await EYG.supa().from("wsp_canal_dueno").select("dueno,cliente").not("dueno","is",null);
+      for(const r of data||[]){ (carteraDe[r.dueno]=carteraDe[r.dueno]||[]).push(r.cliente); }
+    }catch(e){}
+    return carteraDe;
+  }
+
   async function cargarFicha(){
     if(!sel){ ficha=null; pintarFicha(); return; }
+    /* A un miembro de EyG no se lo trata como cliente. Sus compras personales
+       en Odoo son suyas: mostrarle "lista de precios", "saldo" y "últimos
+       pedidos" es confundir a la persona con un cliente. Y el chip "FARMACIA"
+       que aparecía salía de la lista de SU ficha personal — por eso Ruth, que
+       atiende Instituciones, figuraba como farmacia. */
+    const casaF=delEquipo(sel.whatsapp_number);
+    if(casaF){ await cargarCartera(); ficha={ esEquipo:true, casa:casaF }; pintarFicha(); return; }
     /* En Odoo los teléfonos están escritos a mano ("+54 341 372-8663"), así que
        buscar los últimos 8 dígitos seguidos no encuentra nada: el guion los
        parte. Se busca por los últimos 4 —el único pedazo que queda junto en
@@ -1121,10 +1190,27 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
   }
   function pintarFicha(){
     const f=ficha;
-    const firma=f?`${f.id}|${f.total_due}|${f.total_overdue}|${(f.pedidos||[]).map(p=>p.name).join()}`:"vacio";
+    const firma=f?(f.esEquipo?("eq|"+f.casa.telefono):`${f.id}|${f.total_due}|${f.total_overdue}|${(f.pedidos||[]).map(p=>p.name).join()}`):"vacio";
     if(firma===firmaFicha) return;
     firmaFicha=firma;
     if(!sel){ $("ficha").innerHTML='<div class="vacio">SIN CONVERSACIÓN ABIERTA</div>'; return; }
+    /* FICHA DE UN MIEMBRO DE EyG: su área, a qué atiende, su mail de la empresa
+       y cuántos clientes tiene activos en el asistente. Nada de listas, saldos
+       ni pedidos: eso es información de cliente y él no lo es. */
+    if(f && f.esEquipo){
+      const c=f.casa;
+      const mios=(carteraDe&&carteraDe[c.user_id])||[];
+      $("ficha").innerHTML=`
+        <div class="nom">${esc(c.nombre||"")}</div>
+        <div class="sub">Droguería EyG${c.telefono?" · "+esc(c.telefono):""}</div>
+        <div class="chips">${chipsEquipo(c)}</div>
+        <div class="datos">
+          ${c.mail?`<div class="dato"><span class="k">MAIL</span><span class="v">${esc(c.mail)}</span></div>`:""}
+          <div class="dato"><span class="k">EN EL ASISTENTE</span><span class="v">${mios.length?(mios.length+" cliente"+(mios.length===1?"":"s")+" con conversación abierta"):"sin conversaciones de clientes suyos"}</span></div>
+          ${mios.length?`<div class="dato"><span class="k">QUIÉNES</span><span class="v" style="font-weight:400;line-height:1.5">${esc(mios.slice(0,6).join(" · "))}${mios.length>6?" …":""}</span></div>`:""}
+        </div>`;
+      return;
+    }
     if(!f){
       $("ficha").innerHTML=`<div class="nom">${esc(nom1(sel.whatsapp_partner_id)||sel.whatsapp_number||"Desconocido")}</div>
         <div class="sub">${esc(sel.whatsapp_number||"")}</div>
