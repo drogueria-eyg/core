@@ -127,6 +127,16 @@ window.EYG = (function(){
     const email = (s.user.email||"").toLowerCase();
     const {data} = await supa().from("core_users").select("email,nombre,rol,comercial_ref,activo,debe_cambiar_pwd,modulos_extra,modulos_quita").eq("email",email).maybeSingle();
     if(data) data._h = await huella(data.email || email);
+    /* Interruptores del Core (core_config). Se leen acá, una vez, para que el
+       encierro del comercial —que es sincrónico— pueda consultarlos. Encender
+       algo es cambiar una fila en la base: no hay que tocar código ni publicar. */
+    if(data){
+      data._cfg = {};
+      try{
+        const {data:cfg} = await supa().from("core_config").select("clave,valor");
+        for(const c of cfg||[]) data._cfg[c.clave]=c.valor;
+      }catch(e){ /* sin config, todo queda apagado, que es lo seguro */ }
+    }
     return data;
   }
   async function login(email,pwd){ return await supa().auth.signInWithPassword({email:(email||"").trim().toLowerCase(),password:pwd}); }
@@ -147,6 +157,10 @@ window.EYG = (function(){
     if(typeof location==="undefined") return false;
     const file = (location.pathname.split("/").pop()||"").toLowerCase();
     if(COMERCIAL_OK.includes(file)) return false;   // ya está donde puede estar
+    /* WhatsApp: se abre para comerciales solo si el interruptor está encendido.
+       Adentro es de solo lectura y recortado a sus clientes por el servidor
+       (wsp-visibles), no por esta página. */
+    if(file==="whatsapp.html" && p._cfg && p._cfg.wsp_comerciales===true) return false;
     const mk = railActiveKey();                     // ¿esta página es un módulo concedido?
     if(mk && (p.modulos_extra||[]).includes(mk)) return false;
     location.replace(abs("comercial/panel.html"));  // el resto → a su panel
@@ -539,43 +553,6 @@ window.EYG = (function(){
     if(!its.length) return false;
     return its.some(i=>(map[i.id]||0)<=0);
   }
-  /* IVA en las ofertas: el precio de la tarifa (LISTA 3) es NETO (price_include=false), pero
-     la WEB muestra CON IVA (tax_included). Para que la tarjeta del comercial/lider y el mensaje
-     de WhatsApp coincidan con el portal que ve el cliente, convertimos precio/precioAntes a
-     precio FINAL con el IVA real de cada producto. 0%/exento no cambia; 21% → ×1,21. Muta el
-     array in-place y devuelve el mismo. Ante error de red no toca los precios (fail-safe). */
-  async function aplicarIvaOfertas(offers){
-    try{
-      const arr=offers||[]; if(!arr.length) return arr;
-      const vids=[...new Set(arr.flatMap(o=>((o&&o.items)||[]).map(i=>i&&i.id)).filter(Boolean))];
-      if(!vids.length) return arr;
-      const prods=await rpc("product.product","read",[vids,["taxes_id"]]);
-      const taxOf={}, allTax=new Set();
-      (prods||[]).forEach(p=>{ taxOf[p.id]=p.taxes_id||[]; (p.taxes_id||[]).forEach(t=>allTax.add(t)); });
-      const rateByTax={};
-      if(allTax.size){
-        const taxes=await rpc("account.tax","read",[[...allTax],["name","amount","amount_type","price_include"]]);
-        // "IVA incluido en el precio" = el precio YA trae el IVA → NO se le agrega nada (se muestra tal cual).
-        // Excepción real de EyG: productos con IVA exento pero camuflado dentro del precio (tax "…IMP INC",
-        // ej. Alcohol Purocol / Algabo / Barbijo). OJO: la casilla price_include figura en false en la API,
-        // así que además lo detectamos por el NOMBRE del impuesto (IMP INC / INCLUIDO). Ver excepciones.
-        (taxes||[]).forEach(t=>{
-          const incluido = t.price_include || /imp\.?\s*inc|inclu/i.test(t.name||"");
-          rateByTax[t.id] = (incluido || t.amount_type!=="percent") ? 0 : ((t.amount||0)/100);
-        });
-      }
-      arr.forEach(o=>{
-        const pv=((o&&o.items)||[])[0]&&o.items[0].id;
-        const rate=(taxOf[pv]||[]).reduce((s,t)=>s+(rateByTax[t]||0),0);
-        if(rate>0){
-          if(o.precio>0)      o.precio=Math.round(o.precio*(1+rate));
-          if(o.precioAntes>0) o.precioAntes=Math.round(o.precioAntes*(1+rate));
-          o._ivaPct=Math.round(rate*100);   // marca (por si algún panel quiere mostrar "c/IVA")
-        }
-      });
-      return arr;
-    }catch(e){ return offers||[]; }
-  }
 
   /* ---- Tarjeta "Combos y ofertas de la semana" (compartida: panel comercial + lider) ----
      Lee las ofertas activas del parametro eyg.ofertas (las carga el modulo Oportunidades). */
@@ -612,7 +589,6 @@ window.EYG = (function(){
     const sm = await ofStockMap(act.flatMap(o=>((o.items)||[]).map(i=>i&&i.id)));
     if(sm) act = act.filter(o=>!ofAgotada(o,sm));
     if(!act.length){ el.innerHTML=""; return; }
-    await aplicarIvaOfertas(act);   // precio final con IVA, igual que la web (el cliente ve ese precio)
     // Rendimiento GLOBAL por oferta (todos los comerciales), igual criterio que el panel del comercial.
     const d120 = new Date(Date.now()-120*864e5).toISOString().slice(0,10);
     const stat={};
@@ -1393,7 +1369,7 @@ window.EYG = (function(){
     return { baseline, meta, meses, nUsados:nums.length };
   }
 
-  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, aplicarIvaOfertas, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
+  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,

@@ -391,6 +391,18 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   let verArchivadas=false;
   /* "bandeja" | "archivadas" (en Odoo) | "guardadas" (la copia propia en Supabase) */
   let modo="bandeja";
+  /* MODO MIRAR: comerciales y líderes entran a leer lo suyo y nada más. Quién ve
+     qué NO se decide acá —esta página se puede editar desde la consola— sino en
+     `wsp-visibles`, que exige sesión y saca el email del token. Acá solo se
+     esconde lo que esa persona no puede usar. */
+  const SOLO_MIRA = perfil.rol==="comercial" || perfil.rol==="lider";
+  let canalesMios=null;   // ids permitidos, los devuelve el servidor
+  if(SOLO_MIRA){
+    document.body.classList.add("solomira");
+    /* Se sacan del DOM, no se ocultan: apagar el bot o cambiarle la
+       configuración no es algo que un comercial deba poder hacer ni por error. */
+    ["btnSw","btnCfg","btnArch"].forEach(k=>{ const b=$(k); if(b) b.remove(); });
+  }
   /* qué canales siguen existiendo en Odoo, para marcar los borrados en GUARDADAS */
   let vivosOdoo=new Set();
   /* Los teléfonos del equipo, para distinguir en la bandeja quién es de casa */
@@ -688,6 +700,21 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   }
 
   /* ══ bandeja ══ */
+  /* Los canales que ESTA persona puede ver, según el servidor. Si el pedido
+     falla, no se muestra nada: ante la duda, nada. */
+  async function misCanales(){
+    if(!SOLO_MIRA) return null;
+    if(canalesMios) return canalesMios;
+    try{
+      const {data,error}=await EYG.supa().functions.invoke("wsp-visibles",{body:{accion:"lista"}});
+      if(error||!data||!data.ok){ canalesMios={ids:new Set(),info:{},fallo:true}; return canalesMios; }
+      const ids=new Set(), info={};
+      for(const c of data.canales||[]){ ids.add(c.canal); info[c.canal]=c; }
+      canalesMios={ids,info,fallo:false};
+    }catch(e){ canalesMios={ids:new Set(),info:{},fallo:true}; }
+    return canalesMios;
+  }
+
   async function cargarConvs(){
     /* Memoria propia: sale de Supabase, no de Odoo. Acá están también las
        conversaciones que se borraron, que es el punto de tenerla. */
@@ -722,8 +749,15 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
         : [["channel_type","=","whatsapp"]];
       const r=await EYG.rpc("discuss.channel","search_read",[dominio],
         {fields:["name","whatsapp_number","whatsapp_partner_id","whatsapp_channel_valid_until","write_date"],order:"write_date desc",limit:60});
-      const nuevas=r||[];
+      let nuevas=r||[];
       for(const v of nuevas) vivosOdoo.add(v.id);
+      /* El recorte de verdad ya lo hizo el servidor; acá solo se aplica su
+         respuesta. Si no la pudo dar, no se muestra nada. */
+      if(SOLO_MIRA){
+        const m=await misCanales();
+        nuevas=nuevas.filter(v=>m.ids.has(v.id));
+        for(const v of nuevas){ const i=m.info[v.id]; if(i&&i.cliente) v._cliente=i.cliente; }
+      }
       /* Arriba el que escribió último, como en WhatsApp. `write_date` del canal
          no alcanza: se toca por cualquier cambio del registro y no siempre al
          llegar un mensaje. La fecha buena es la del último mensaje, y se pide
@@ -765,7 +799,9 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     if(!lista.length){ c.innerHTML=`<div class="vacio">${f?"NADA COINCIDE":(modo==="guardadas"?"TODAVÍA NO HAY NADA GUARDADO":(verArchivadas?"NO HAY NADA ARCHIVADO":"SIN CONVERSACIONES<br>—<br>APARECEN SOLAS CUANDO<br>UN CLIENTE ESCRIBE"))}</div>`; return; }
     c.innerHTML=lista.map(v=>{
       const eq=cfg.pausadas.includes(v.id), asig=cfg.asignadas[v.id];
-      const nom=nom1(v.whatsapp_partner_id)||v.name||v.whatsapp_number||"Sin nombre";
+      /* Para el comercial vale el nombre del CLIENTE, no el que la persona tiene
+         puesto en su teléfono ("Emi", "marco tappari"): ese no le dice nada. */
+      const nom=v._cliente||nom1(v.whatsapp_partner_id)||v.name||v.whatsapp_number||"Sin nombre";
       const casa=delEquipo(v.whatsapp_number);
       const marca=casa?`<span class="pin casa" title="${esc(casa.nombre)}${casa.cargo?" · "+esc(casa.cargo):""}">${ROTULO_NIVEL[casa.nivel]||"EQUIPO"}</span>`
                       :(asig?`<span class="pin asig">${esc(String(asig.nombre||"").split(" ")[0].toUpperCase())}</span>`
@@ -783,10 +819,10 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       return `<div class="conv ${sel&&sel.id===v.id?"act":""}${vivo?" viva":""}" data-id="${v.id}" data-nom="${esc(nom)}">
         <div class="n">${vivo}<b>${esc(nom)}</b>${marca}</div>
         <div class="t"><span>${esc(v.whatsapp_number||"")}</span><span>${esc(dia(v.ultimo||v.write_date))}</span></div>
-        <div class="cvacc">
+        ${SOLO_MIRA?"":`<div class="cvacc">
           <button class="cvb" data-a="${verArchivadas?"desarchivar":"archivar"}" title="${verArchivadas?"Devolver a la bandeja":"Archivar: sale de la bandeja y se puede recuperar"}">${verArchivadas?"↩":"📁"}</button>
           <button class="cvb no" data-a="borrar" title="Eliminar para siempre">✕</button>
-        </div>
+        </div>`}
       </div>`;
     }).join("");
     c.querySelectorAll(".conv").forEach(el=>el.onclick=()=>abrir(Number(el.dataset.id)));
@@ -802,7 +838,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   /* Tres vistas con un solo botón: la bandeja, lo archivado en Odoo, y la
      MEMORIA PROPIA — lo que quedó guardado en Supabase, exista o no en Odoo.
      Ahí siguen estando las conversaciones borradas, para poder leerlas. */
-  $("btnArch").onclick=async()=>{
+  if($("btnArch")) $("btnArch").onclick=async()=>{
     modo = modo==="bandeja" ? "archivadas" : (modo==="archivadas" ? "guardadas" : "bandeja");
     verArchivadas = modo==="archivadas";
     const b=$("btnArch");
@@ -997,14 +1033,18 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     const abierta=hasta && hasta.getTime()>Date.now();
     /* Una guardada es de solo lectura: es la copia, no la conversación viva.
        Sin esto se podría intentar escribirle a un chat que ya no existe. */
-    const quiero=sel.guardado?"copia":((abierta||!hasta)?"caja":"aviso");
+    /* En modo mirar NO se arma el cuadro de escribir: no está oculto, no existe.
+       Lo que no está en la página no se puede volver a mostrar desde la consola. */
+    const quiero=SOLO_MIRA?"mirar":(sel.guardado?"copia":((abierta||!hasta)?"caja":"aviso"));
     if($("pie").dataset.modo!==quiero){
       $("pie").dataset.modo=quiero;
-      $("pie").innerHTML = quiero==="caja"
+      $("pie").innerHTML = quiero==="mirar"
+        ? `<div class="aviso">👁 Estás viendo la conversación del asistente con tu cliente. Desde acá no se responde: si necesitás escribirle, hacelo desde tu WhatsApp.</div>`
+        : (quiero==="caja"
         ? `<div class="responder"><textarea id="txt" rows="1" placeholder="Escribí tu respuesta…"></textarea><button class="enviar" id="btnEnv" title="Enviar">➤</button></div>`
         : (quiero==="copia"
         ? `<div class="aviso">🗄 Esto es la copia guardada por el asistente${sel.borrado?", y el chat ya no existe en Odoo":""}. Se lee, no se escribe: para responderle, buscá la conversación en la bandeja.</div>`
-        : `<div class="aviso">⏳ Pasaron más de 24 horas desde el último mensaje del cliente. WhatsApp no permite escribirle libremente: hay que esperar a que escriba o mandarle una plantilla aprobada desde Odoo.</div>`);
+        : `<div class="aviso">⏳ Pasaron más de 24 horas desde el último mensaje del cliente. WhatsApp no permite escribirle libremente: hay que esperar a que escriba o mandarle una plantilla aprobada desde Odoo.</div>`));
       const t=$("txt");
       if(t){
         t.addEventListener("input",()=>{ t.style.height="auto"; t.style.height=Math.min(t.scrollHeight,110)+"px"; });
@@ -1183,6 +1223,9 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   }
 
   async function accionChat(id,nombre,a){
+    /* Ni archivar ni borrar en modo mirar. El botón no se dibuja, pero el freno
+       va también acá: la vista puede fallar, la regla no. */
+    if(SOLO_MIRA) return;
     /* Antes de sacar la conversación de Odoo se fuerza el guardado: el copiado
        automático corre cada 10 minutos, así que si no se hace acá, lo último
        que se habló se pierde para siempre. Y se VERIFICA que haya quedado: el
@@ -1377,7 +1420,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
   }
 
   /* ══ acciones ══ */
-  $("btnCfg").onclick=()=>{
+  if($("btnCfg")) $("btnCfg").onclick=()=>{
     const d=document.createElement("div");
     d.className="scrim";
     d.innerHTML=`<div class="modal">
@@ -1417,7 +1460,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     };
   };
 
-  $("btnSw").onclick=async()=>{
+  if($("btnSw")) $("btnSw").onclick=async()=>{
     if(!cfg.activo && !cfg.numeros.length){
       if(!confirm("El asistente va a responderle AUTOMÁTICAMENTE a todos los clientes que escriban.\n\nSi querés probarlo primero, cancelá y cargá tu número en Configurar.\n\n¿Encender igual?")) return;
     }
