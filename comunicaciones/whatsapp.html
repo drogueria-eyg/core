@@ -30,7 +30,9 @@
   ::-webkit-scrollbar-thumb{background:var(--hud-line2);border-radius:4px}
   ::-webkit-scrollbar-track{background:transparent}
 
-  .hud{display:grid;grid-template-columns:290px 1fr 360px;height:100vh}
+  /* La columna de contactos va más ancha: al chat le sobraba espacio y acá los
+     nombres de farmacia son largos y se cortaban. */
+  .hud{display:grid;grid-template-columns:360px 1fr 360px;height:100vh}
   .col{display:flex;flex-direction:column;overflow:hidden;background:linear-gradient(180deg,var(--hud-panel),#050C0E)}
   .col.izq{border-right:1px solid var(--hud-line)}
   .col.der{border-left:1px solid var(--hud-line)}
@@ -66,6 +68,12 @@
   .conv:hover{background:rgba(10,168,159,.06)}
   .conv.act{background:rgba(10,168,159,.11);border-left-color:var(--hud-teal)}
   .conv .n{font-size:12.5px;font-weight:700;color:var(--hud-txt);line-height:1.3;display:flex;align-items:center;gap:6px}
+  /* Charla en curso: un punto que late, nada más. Tiene que verse de reojo sin
+     robarle atención al nombre, que es lo que se lee. */
+  .conv .vivo{flex:none;width:6px;height:6px;border-radius:50%;background:var(--hud-teal);
+              box-shadow:0 0 0 0 rgba(10,168,159,.55);animation:latir 2.4s ease-out infinite}
+  @keyframes latir{0%{box-shadow:0 0 0 0 rgba(10,168,159,.5)}70%{box-shadow:0 0 0 6px rgba(10,168,159,0)}100%{box-shadow:0 0 0 0 rgba(10,168,159,0)}}
+  @media (prefers-reduced-motion:reduce){ .conv .vivo{animation:none} }
   .conv .n b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
   .conv .t{font-family:var(--mono);font-size:9.5px;color:var(--hud-dim);margin-top:3px;display:flex;justify-content:space-between;gap:8px}
   .pin{font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.7px;border-radius:20px;padding:2px 6px;flex:none}
@@ -659,6 +667,17 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     refrescarOrbe();
   }
 
+  /* "En línea": hubo un mensaje hace menos de 4 minutos, o sea que la charla
+     está pasando AHORA. No es presencia real —WhatsApp no la da— pero es lo que
+     importa acá: saber en qué conversación meterse si hace falta. */
+  const VIVO_MIN=4;
+  function enLinea(v){
+    const t=v && (v.ultimo||v.write_date);
+    if(!t) return false;
+    const cuando=new Date(String(t).replace(" ","T")+"Z").getTime();
+    return isFinite(cuando) && (Date.now()-cuando) < VIVO_MIN*60000;
+  }
+
   /* ══ bandeja ══ */
   async function cargarConvs(){
     try{
@@ -669,13 +688,24 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       const r=await EYG.rpc("discuss.channel","search_read",[dominio],
         {fields:["name","whatsapp_number","whatsapp_partner_id","whatsapp_channel_valid_until","write_date"],order:"write_date desc",limit:60});
       const nuevas=r||[];
+      /* Arriba el que escribió último, como en WhatsApp. `write_date` del canal
+         no alcanza: se toca por cualquier cambio del registro y no siempre al
+         llegar un mensaje. La fecha buena es la del último mensaje, y se pide
+         para los 60 canales de una sola vez con read_group. */
+      try{
+        const g=await EYG.rpc("mail.message","read_group",
+          [[["model","=","discuss.channel"],["res_id","in",nuevas.map(v=>v.id)]],["date:max"],["res_id"]],{lazy:true});
+        const ult={}; for(const x of (g||[])) if(x.res_id) ult[x.res_id]=x.date;
+        for(const v of nuevas) v.ultimo=ult[v.id]||v.write_date;
+        nuevas.sort((a,b)=>String(b.ultimo||"").localeCompare(String(a.ultimo||"")));
+      }catch(e){ for(const v of nuevas) v.ultimo=v.write_date; }
       /* avisar en el registro cuando entra actividad nueva */
       if(!primeraCarga && !verArchivadas){
         for(const v of nuevas){
           const antes=convs.find(x=>x.id===v.id);
           if(!antes) anotar("cli","conversación nueva · "+(nom1(v.whatsapp_partner_id)||v.whatsapp_number||"sin nombre"));
-          else if(antes.write_date!==v.write_date && (!sel||sel.id!==v.id))
-            anotar("cli","mensaje nuevo · "+(nom1(v.whatsapp_partner_id)||v.whatsapp_number||"otro chat"), v.write_date);
+          else if((antes.ultimo||antes.write_date)!==(v.ultimo||v.write_date) && (!sel||sel.id!==v.id))
+            anotar("cli","mensaje nuevo · "+(nom1(v.whatsapp_partner_id)||v.whatsapp_number||"otro chat"), v.ultimo||v.write_date);
         }
       }
       convs=nuevas;
@@ -692,7 +722,7 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
     });
     $("nConv").textContent=lista.length?lista.length:"";
     /* sin parpadeo: si nada cambió, no se toca el DOM */
-    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.write_date}|${cfg.pausadas.includes(v.id)?1:0}|${cfg.asignadas[v.id]||""}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0);
+    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.ultimo||v.write_date}|${enLinea(v)?1:0}|${cfg.pausadas.includes(v.id)?1:0}|${cfg.asignadas[v.id]||""}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0);
     if(firma===firmaConvs) return;
     firmaConvs=firma;
     const c=$("convs");
@@ -704,9 +734,10 @@ EYG.guard(["direccion","comercial","lider","admin"],{pruebas:["a3dfd1b309dd41ad2
       const marca=casa?`<span class="pin casa" title="${esc(casa.nombre)}${casa.cargo?" · "+esc(casa.cargo):""}">${ROTULO_NIVEL[casa.nivel]||"EQUIPO"}</span>`
                       :(asig?`<span class="pin asig">${esc(String(asig.nombre||"").split(" ")[0].toUpperCase())}</span>`
                       :(eq?'<span class="pin eq">EQUIPO</span>':(cfg.activo?'<span class="pin bot">BOT</span>':"")));
-      return `<div class="conv ${sel&&sel.id===v.id?"act":""}" data-id="${v.id}" data-nom="${esc(nom)}">
-        <div class="n"><b>${esc(nom)}</b>${marca}</div>
-        <div class="t"><span>${esc(v.whatsapp_number||"")}</span><span>${esc(dia(v.write_date))}</span></div>
+      const vivo=enLinea(v)?'<i class="vivo" title="Conversación en curso ahora mismo"></i>':"";
+      return `<div class="conv ${sel&&sel.id===v.id?"act":""}${vivo?" viva":""}" data-id="${v.id}" data-nom="${esc(nom)}">
+        <div class="n">${vivo}<b>${esc(nom)}</b>${marca}</div>
+        <div class="t"><span>${esc(v.whatsapp_number||"")}</span><span>${esc(dia(v.ultimo||v.write_date))}</span></div>
         <div class="cvacc">
           <button class="cvb" data-a="${verArchivadas?"desarchivar":"archivar"}" title="${verArchivadas?"Devolver a la bandeja":"Archivar: sale de la bandeja y se puede recuperar"}">${verArchivadas?"↩":"📁"}</button>
           <button class="cvb no" data-a="borrar" title="Eliminar para siempre">✕</button>
