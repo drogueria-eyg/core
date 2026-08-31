@@ -116,13 +116,26 @@ const MESES=["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","
 const mesCorto=ym=>{const p=String(ym).split("-");return (MESES[+p[1]-1]||"?")+" "+p[0].slice(2);};
 const ymDe=f=>String(f||"").slice(0,7);
 const fechaCorta=f=>{if(!f)return "—";const p=String(f).slice(0,10).split("-");return p[2]+"/"+p[1]+"/"+p[0].slice(2);};
-/* read_group devuelve el mes como texto localizado ("agosto 2026"); la fecha real
-   viene dentro del __domain del grupo, que es de donde la sacamos. */
-const ymDeGrupo=g=>{const d=(g.__domain||[]).flat().find(v=>typeof v==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(v));return d?d.slice(0,7):"";};
+/* read_group devuelve el mes como texto localizado ("agosto 2026", porque el conector
+   va en es_AR), así que no sirve para ordenar. La fecha real del grupo viene en
+   __range (Odoo 16+): {"date:month":{from,to}}.
+   OJO: NO sacarla del __domain — ahí la primera fecha es la del filtro general de la
+   consulta, igual para todos los grupos, y todos los meses terminan con la misma
+   etiqueta (bug de la primera versión: "entró y salió" mostraba oct-25 en cada fila).
+   El fallback toma la ÚLTIMA fecha del domain, que sí es la del grupo. */
+const ymDeGrupo=function(g,clave){
+  const r=g.__range&&g.__range[clave||"date:month"];
+  if(r&&r.from) return String(r.from).slice(0,7);
+  const fechas=(g.__domain||[]).flat().filter(v=>typeof v==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(v));
+  return fechas.length?fechas[fechas.length-2].slice(0,7):"";
+};
 
 /* ---------- carga ---------- */
 async function cargar(){
-  const desde12=(()=>{const t=new Date(HOY+"T00:00:00");t.setMonth(t.getMonth()-11);return t.toISOString().slice(0,7)+"-01";})();
+  /* Primer día del mes de hace 11 meses. Se fija el día 1 ANTES de restar meses:
+     si no, un 31 de agosto pasa a "31 de septiembre", que no existe, y JS lo corre
+     al 1 de octubre — perdíamos un mes entero del período. */
+  const desde12=(function(){const t=new Date(HOY.slice(0,8)+"01T00:00:00");t.setMonth(t.getMonth()-11);return t.toISOString().slice(0,7)+"-01";})();
 
   const jrs=await R("account.journal","search_read",[[["type","in",["bank","cash"]]],["id","name","type","default_account_id"]],{limit:120});
   D.jrs=jrs;
