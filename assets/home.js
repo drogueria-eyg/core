@@ -131,7 +131,13 @@ window.EYGHome = (function(){
   /* ---------- ámbito por rol ---------- */
   function scope(p){
     const rol=p.rol;
-    const jefe = rol==="admin"||rol==="direccion";
+    /* `finanzas` mira la droguería consolidada igual que la dirección: es un rol
+       de conducción (tesorería, bancos, control de cuentas corrientes), no de
+       ejecución. En la práctica sólo cambia la última tarjeta: ve "Equipo
+       comercial" en vez de "Clientes del mes". Cobranza, stock y margen ya los
+       tenía por las líneas de abajo. Cobranzas y maestro NO entran acá: siguen
+       con su inicio recortado. */
+    const jefe = rol==="admin"||rol==="direccion"||rol==="finanzas";
     const V={
       ventas:   rol!=="maestro",
       propio:   rol==="comercial",
