@@ -424,7 +424,7 @@ window.EYG = (function(){
        borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de datos/contactos.html. */
     /* EN PRUEBAS: sólo super-admins (Diego/German). Desde acá German/Diego envían prospectos
        del padrón a la carpeta "A conquistar" de cada comercial. Marcela (líder) NO accede. */
-    {key:"contactos", dept:"comercial", cat:"Comercial", ico:"👥", titulo:"Clientes (CRM)", desc:"Gestioná los contactos del equipo, cruzá con el padrón oficial y enviá prospectos a la carpeta 'A conquistar' de cada comercial.", roles:["comercial","lider","admin","direccion"], ready:true,
+    {key:"contactos", dept:"comercial", cat:"Comercial", ico:"👥", titulo:"Contactos", desc:"La base única de contactos de EyG: la ficha completa de cada cliente (con sus direcciones de entrega y todos sus teléfonos), el control de duplicados y los Potenciales del padrón oficial, con mapa para armar recorridos.", roles:["comercial","lider","admin","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"datos/contactos.html"},
     /* EN PRUEBAS: oculto para todo el equipo hasta terminarlo. `pruebas` son

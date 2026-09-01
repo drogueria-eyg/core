@@ -3,10 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Contactos · CRM · EyG Core</title>
+<title>Contactos · EyG Core</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="../assets/core.css">
 <style>
   :root{
@@ -161,19 +162,83 @@
   .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:600;z-index:100;box-shadow:0 8px 30px rgba(6,65,62,.28);opacity:0;pointer-events:none;transition:opacity .2s;max-width:90vw;text-align:center}
   .toast.on{opacity:1}
 
+  /* ===== Ficha unificada: direcciones de entrega + teléfonos/personas (mismo look que el panel del comercial) ===== */
+  .libhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;gap:8px}
+  .fbtn{border:1px solid var(--line);background:var(--surface);color:var(--gris);border-radius:8px;padding:5px 10px;font-size:11.5px;font-weight:700;cursor:pointer;line-height:1.3;white-space:nowrap;font-family:inherit}
+  .fbtn:hover{border-color:var(--teal);color:var(--teal);background:var(--agua)}
+  .fbtn.go{background:var(--teal);color:#fff;border-color:var(--teal)}
+  .fbtn.del2{background:#FBE4E3;color:#8A2E2B;border-color:#f0c4c2}
+  .lb-list{display:flex;flex-direction:column;gap:8px}
+  .lb-row{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:11px;padding:9px 11px}
+  .lb-i{flex:1;min-width:0}
+  .lb-n{font-weight:700;font-size:13.5px;line-height:1.2}
+  .lb-f{font-size:12px;color:var(--gris);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .lb-a{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+  .lb-b{font-size:12px;font-weight:700;border:1px solid var(--line);border-radius:8px;padding:6px 9px;text-decoration:none;color:var(--teal-deep);white-space:nowrap;cursor:pointer;background:var(--surface);font-family:inherit}
+  .lb-b:hover{border-color:var(--teal)}
+  .lb-b.wa{background:#25D366;border-color:#25D366;color:#fff}
+  .lb-b.del{color:var(--bad)} .lb-b.ic{padding:6px 8px;color:var(--gris)} .lb-b.ic:hover{border-color:var(--teal);color:var(--teal-deep)}
+  .lb-tag{font-size:11.5px;font-weight:800;color:var(--teal-deep);background:var(--agua);border-radius:8px;padding:6px 9px;white-space:nowrap}
+  .lb-notel{font-size:11.5px;color:var(--gris2)}
+  .lb-hint{font-size:11.5px;color:var(--gris2);line-height:1.4;margin:-2px 0 9px}
+  .lb-empty{font-size:12.5px;color:var(--gris);padding:6px 0}
+  .pform{display:flex;flex-direction:column;gap:8px}
+  .pform input{border:1px solid var(--line);border-radius:9px;padding:10px 11px;font-family:inherit;font-size:14px;outline:none;width:100%}
+  .pform input:focus{border-color:var(--teal)}
+  .pform-b{display:flex;gap:8px;justify-content:flex-end}
+
+  /* ===== Mapa de potenciales (armar rutas) ===== */
+  .mapwrap{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+  #mapa{height:min(68vh,640px);width:100%}
+  .leaflet-container{font-family:'Archivo',sans-serif;background:#E8EFEE}
+  .leaflet-popup-content-wrapper{border-radius:11px}
+  .leaflet-popup-content{margin:12px 14px;font-family:'Archivo',sans-serif;min-width:210px}
+  .mp-n{font-weight:800;font-size:14px;line-height:1.25;margin-bottom:3px}
+  .mp-d{font-size:12px;color:var(--gris);line-height:1.35;margin-bottom:7px}
+  .mp-b{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+  .mp-tel{display:flex;gap:5px;align-items:center;margin-top:7px}
+  .mp-tel input{flex:1;min-width:0;font-family:inherit;font-size:12px;border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+  .maplegend{display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:10px 14px;border-top:1px solid var(--line);background:#FAFCFC;font-size:12px;color:var(--gris)}
+  .maplegend .lg{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+  .maplegend .dot{width:11px;height:11px;border-radius:50%;display:inline-block;border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.15)}
+  .vswitch{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--surface)}
+  .vswitch button{font-family:inherit;font-size:13px;font-weight:700;border:0;background:none;padding:9px 14px;cursor:pointer;color:var(--gris)}
+  .vswitch button.on{background:var(--teal);color:#fff}
+  .rutabox{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:12px 14px;margin-bottom:12px}
+  .rutabox .rt{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
+  .rutalist{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+  .rutachip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;background:var(--agua);color:var(--teal-deep);border-radius:20px;padding:4px 10px}
+  .rutachip .x{cursor:pointer;font-weight:800;opacity:.6}.rutachip .x:hover{opacity:1}
+
+  /* ===== Duplicados ===== */
+  .dupgrp{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:13px 15px;margin-bottom:12px}
+  .dupgrp.fuerte{border-color:#EFC0BE}
+  .duphead{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  .dupmotivo{font-size:12px;font-weight:700;color:var(--bad);background:var(--badbg);border-radius:20px;padding:3px 10px}
+  .dupmotivo.tibio{color:var(--warn);background:var(--warnbg)}
+  .duprow{display:grid;grid-template-columns:2fr 1.1fr 1fr auto;gap:10px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:9px 11px;margin-bottom:7px}
+  .duprow.mejor{border-color:var(--teal);background:#F4FBFA}
+  .duprow .dn{font-weight:700;font-size:13.5px;line-height:1.2}
+  .duprow .dm{font-size:11.5px;color:var(--gris2);margin-top:2px}
+  @media(max-width:760px){.duprow{grid-template-columns:1fr}}
+
   @media(max-width:900px){.thead{grid-template-columns:2fr 1.1fr 1fr}.row{grid-template-columns:2fr 1.1fr 1fr}.hide-sm{display:none}}
 </style>
 </head>
 <body>
-  <div class="topbar"><span class="mono">E<span class="y">y</span>G</span><span class="tag">Core</span><span class="title">Contactos · CRM</span><a class="back" href="../index.html">← Inicio</a></div>
+  <div class="topbar"><span class="mono">E<span class="y">y</span>G</span><span class="tag">Core</span><span class="title">Contactos</span><a class="back" href="../index.html">← Inicio</a></div>
   <div class="wrap"><div id="app"><div class="loading"><div class="spinner"></div>Cargando contactos y ventas desde Odoo…</div></div></div>
   <div class="scrim" id="scrim" onclick="cerrar()"></div>
   <div class="drawer" id="drawer"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=46"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="../assets/core.js?v=47"></script>
 <script>
-/* ===== EyG Core · Contactos (CRM): gestionar existentes + prospectar el padrón oficial ===== */
+/* ===== EyG Core · Contactos: la base única de contactos de EyG =====
+   Una sola casa para TODOS los contactos: los que ya son nuestros (con la ficha completa,
+   sus direcciones de entrega y todos sus teléfonos) y los "Potenciales" (el padrón oficial
+   de farmacias e instituciones que todavía no nos compran), con mapa para armar recorridos. */
 const money=EYG.money, esc=EYG.esc;
 const rpc=(m,me,a,k)=>EYG.rpc(m,me,a||[],k||{});
 const soloDig=s=>(s||"").replace(/\D/g,"");
@@ -222,7 +287,8 @@ function _coincide(a,b){
 /* ================= Estado ================= */
 const RUBRO_FIELD="x_studio_selection_field_6ui_1j42g6fu9";
 const RUBROS7=["FARMACIAS","INSTITUCIONES","DISTRIBUIDORAS","VETERINARIAS","EMPRESAS DE SALUD","DROGUERIAS","PERSONAL"];
-const PFIELDS=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","customer_rank","supplier_rank","x_studio_selection_field_6ui_1j42g6fu9"];
+const PFIELDS=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","customer_rank","supplier_rank","parent_id","function","comment","website","x_studio_selection_field_6ui_1j42g6fu9"];
+const PPAL_TAG="[ENTREGA-PPAL]";   // misma marca que usan el panel del comercial y Cargar Venta para la dirección de entrega principal
 const ROLES={"German Banquero":{label:"Gerente",cls:"gerente"},"Diego Velazquez":{label:"Dirección",cls:"gerente"},"Marcela Carranza":{label:"Líder Comercial",cls:"lider"}};
 const rolRank=n=>(n==="German Banquero"||n==="Diego Velazquez")?0:n==="Marcela Carranza"?1:n==="Sin asignar"?9:2;
 // Equipo comercial: siempre se muestran como tarjeta, aunque tengan 0 contactos (ej. las nuevas Lucía y Marianela).
@@ -241,7 +307,11 @@ let MARCAS={}; const MARCAS_KEY="eyg.contactos.marcas_conquistar";
 const cqKey=(nombre,loc)=>((nombre||"")+"|"+(loc||"")).toLowerCase().replace(/\s+/g," ").trim();
 async function cargarAsignados(){ try{ const c=await EYG.conquistarLeer(); ASIGNADOS=new Set((c||[]).map(x=>cqKey(x.nombre,x.loc))); }catch(e){} }
 const NUEVO_TAG="[CONTACTO-NUEVO]"; // marca de contacto creado desde el Core (guarda el creador real)
-let filtro={tab:"nuestros", com:"", seg:"", issue:"", rubro:"", boveda:false, proveedores:false, q:"", ocultarRuido:true, pTipo:"", pProv:"", pLoc:"", pQ:"", pEstado:"activo"};
+let filtro={tab:"nuestros", com:"", seg:"", issue:"", rubro:"", boveda:false, proveedores:false, q:"", ocultarRuido:true, verHijos:false,
+            pTipo:"", pProv:"", pLoc:"", pQ:"", pEstado:"activo", pVista:"lista", pAprox:false, pMios:true, dupQ:""};
+// Pares/grupos que el equipo revisó y marcó "no son el mismo" → dejan de aparecer en Duplicados.
+let NODUP={}; const NODUP_KEY="eyg.contactos.no_duplicados";
+let RUTA=[];   // recorrido que se va armando en el mapa (para abrirlo en Google Maps)
 const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador en el chatter del contacto (fuente de verdad, reversible)
 
 /* Rubro (campo Studio) → chip de color para identificar de un vistazo. */
@@ -336,15 +406,20 @@ async function cargar(silent){
         comprado:v.tot||0, mesv:v.mes||0, semv:v.sem||0, faltantes,
         wa:waNumber(p.mobile,p.phone), tellink:telLink(p.mobile,p.phone),
         dupVat:DUPVAT[p.id]||"", dupName:DUPNAME[p.id]||"", enPadron:false, nombreOficial:"", part:p, boveda:BOVEDA[p.id]||null,
+        // Nivel 3 del modelo de contactos: las personas cargadas DENTRO de una empresa (celular de
+        // pagos, el dueño, compras…) no son un contacto aparte — viven en la ficha del padre.
+        padreId:p.parent_id?p.parent_id[0]:false, padre:p.parent_id?p.parent_id[1]:"", cargo:p.function||"",
         noUsar:/\(no usar\)/i.test(p.name||""), combo:/combo|super combo|^oferta|^promo|^tanda|^bloque|prueba|test\b/i.test(p.name||"") };
       c.seg=segmentar(c);
       return c;
     });
     if(UNI) cruzar();
     recalcComs();
+    _dupCache=null;   // cambió la base de contactos → recalcular duplicados
     if(silent){ const y=window.scrollY; render(); window.scrollTo(0,y); } else render();
     if(!UNI) cargarUniverso();   // el padrón (~900 KB) se trae 1 vez y actualiza los cruces al llegar
     Promise.all([cargarAsignados(),cargarMarcas()]).then(()=>{ if(filtro.tab==="conquistar") renderConquistar(); });   // ocultar asignados + aplicar marcas (descartado/pendiente)
+    if(!Object.keys(NODUP).length) cargarNoDup();   // pares ya revisados que NO son duplicado
     if(!silent || Date.now()-_riesgoAt>180000) cargarRiesgos();   // alerta de crédito (más liviana: cada ~3 min)
     if(!silent) cargarNuevos();   // historial de contactos nuevos (se refresca al abrir la pestaña)
     if(!silent) cargarPortalEstado();   // estado del acceso al portal por contacto (para el ícono de la fila)
@@ -414,14 +489,14 @@ function renderNuevos(){
       <div class="num">${n.ventaTot>0?money(n.ventaTot):(n.nped>0?'<span class="badge ok">✓</span>':'<span class="muted">—</span>')}</div>
     </div>`).join("");
   tb.innerHTML=`
-    <div class="info">📊 Historial de los contactos <b>creados desde acá</b> (pestaña "Por conquistar"). Se actualiza solo: quién lo creó, a quién está asignado hoy, si ya lo contactaron (cruza con el trabajo del comercial) y si tuvo ventas.</div>
+    <div class="info">📊 Historial de los contactos <b>creados desde acá</b> (pestaña "Potenciales"). Se actualiza solo: quién lo creó, a quién está asignado hoy, si ya lo contactaron (cruza con el trabajo del comercial) y si tuvo ventas.</div>
     <div class="kpis">
       ${kpi(NUEVOS.length,"Nuevos (total)")}${kpi(nHoy,"Hoy")}${kpi(nSem,"Últimos 7 días")}${kpi(nMes,"Este mes")}${kpi(nCont,"Ya contactados")}${kpi(nVend,"Con ventas")}
     </div>
     ${NUEVOS.length?`<div class="tablecard">
       <div class="thead" style="${GC}"><div>Contacto</div><div class="hide-sm">Creado por</div><div>Cuándo</div><div>Comercial actual</div><div>Contactado</div><div>Venta</div></div>
       ${rows}${NUEVOS.length>500?'<div class="empty" style="padding:16px">Mostrando los primeros 500.</div>':''}
-    </div>`:'<div class="tablecard"><div class="empty">Todavía no se crearon contactos nuevos desde el módulo. Andá a "Por conquistar" y creá el primero.</div></div>'}`;
+    </div>`:'<div class="tablecard"><div class="empty">Todavía no se crearon contactos nuevos desde el módulo. Andá a "Potenciales" y creá el primero.</div></div>'}`;
 }
 
 function comercialesDe(rows){
@@ -525,7 +600,12 @@ function coberturaProv(provName){
 /* ================= Filtros de "Nuestros contactos" ================= */
 /* base = universo de trabajo: sin ruido, sin archivados en bóveda y sin proveedores puros. */
 const esProvPuro = c => c.proveedor && !c.esCliente;   // proveedor y NO cliente → fuera de la lista de clientes
-function base(){ return DATA.filter(c=> !c.boveda && !esProvPuro(c) && !(filtro.ocultarRuido && (c.combo||c.noUsar))); }
+/* Los contactos-persona que están DENTRO de una empresa (parent_id) no son una ficha aparte:
+   se ven y se editan en la ficha del cliente. Por defecto no ensucian la lista; el tilde
+   "Mostrar también las personas…" los trae de vuelta. */
+function esHijo(c){ return !!c.padreId; }
+function hijosCount(){ return DATA.filter(c=> esHijo(c) && !c.boveda && !esProvPuro(c) && !(filtro.ocultarRuido && (c.combo||c.noUsar))).length; }
+function base(){ return DATA.filter(c=> !c.boveda && !esProvPuro(c) && (filtro.verHijos || !esHijo(c)) && !(filtro.ocultarRuido && (c.combo||c.noUsar))); }
 function enBoveda(){ return DATA.filter(c=> c.boveda && !(filtro.ocultarRuido && (c.combo||c.noUsar))); }
 function enProveedores(){ return DATA.filter(c=> esProvPuro(c) && !c.boveda && !(filtro.ocultarRuido && (c.combo||c.noUsar))); }
 function visibles(){
@@ -559,12 +639,16 @@ function render(){
   const nConq = cobConq?cobConq.falta.toLocaleString("es-AR"):"…";
   app.innerHTML=`
     <div class="tabs">
-      <button class="tab ${filtro.tab==="nuestros"?"on":""}" onclick="setTab('nuestros')">👥 Nuestros contactos <span class="cnt">${base().length}</span></button>
-      <button class="tab ${filtro.tab==="conquistar"?"on":""}" onclick="setTab('conquistar')">🎯 Por conquistar <span class="cnt" id="cntConq">${nConq}</span></button>
-      <button class="tab ${filtro.tab==="nuevos"?"on":""}" onclick="setTab('nuevos')">📊 Nuevos <span class="cnt" id="cntNuevos">${NUEVOS.length}</span></button>
+      <button class="tab ${filtro.tab==="nuestros"?"on":""}" onclick="setTab('nuestros')" title="Todos los contactos que ya tenemos cargados en Odoo">👥 Nuestros contactos <span class="cnt">${base().length}</span></button>
+      <button class="tab ${filtro.tab==="conquistar"?"on":""}" onclick="setTab('conquistar')" title="Farmacias e instituciones habilitadas que todavía NO son contacto nuestro">🎯 Potenciales <span class="cnt" id="cntConq">${nConq}</span></button>
+      <button class="tab ${filtro.tab==="duplicados"?"on":""}" onclick="setTab('duplicados')" title="Contactos que parecen ser el mismo cargado dos veces">🔀 Duplicados <span class="cnt" id="cntDup">${gruposDup().length||"—"}</span></button>
+      <button class="tab ${filtro.tab==="nuevos"?"on":""}" onclick="setTab('nuevos')" title="Contactos creados desde el Core: cuándo, quién y si ya compraron">📊 Nuevos <span class="cnt" id="cntNuevos">${NUEVOS.length}</span></button>
     </div>
     <div id="tabbody"></div>`;
-  if(filtro.tab==="nuestros") renderNuestros(); else if(filtro.tab==="conquistar") renderConquistar(); else renderNuevos();
+  if(filtro.tab==="nuestros") renderNuestros();
+  else if(filtro.tab==="conquistar") renderConquistar();
+  else if(filtro.tab==="duplicados") renderDuplicados();
+  else renderNuevos();
 }
 
 function renderNuestros(){
@@ -619,7 +703,10 @@ function renderNuestros(){
       <button class="mini-btn" onclick="exportarCSV()">Exportar CSV</button>
       <span class="muted" style="margin-left:auto;font-size:11.5px;white-space:nowrap">🔄 se actualiza solo</span>
     </div>
-    <div class="toggles"><label><input type="checkbox" ${filtro.ocultarRuido?'checked':''} onchange="filtro.ocultarRuido=this.checked;recalcComs();render()"> Ocultar combos y "(no usar)"</label></div>
+    <div class="toggles">
+      <label title="Registros de Odoo que no son clientes reales (combos, pruebas, fichas marcadas 'no usar')"><input type="checkbox" ${filtro.ocultarRuido?'checked':''} onchange="filtro.ocultarRuido=this.checked;recalcComs();render()"> Ocultar combos y "(no usar)"</label>
+      <label title="Las personas y teléfonos que están cargados DENTRO de una empresa. Se ven y se editan en la ficha de esa empresa; acá aparecen sueltos."><input type="checkbox" ${filtro.verHijos?'checked':''} onchange="filtro.verHijos=this.checked;recalcComs();render()"> Mostrar las personas cargadas dentro de cada empresa${hijosCount()?` (${hijosCount()})`:''}</label>
+    </div>
     <div id="listwrap"></div>`;
   renderLista();
 }
@@ -662,7 +749,7 @@ function renderLista(){
       <div style="display:flex;gap:9px;align-items:flex-start">${chk}<div style="min-width:0;flex:1">
         <div class="nmrow"><span class="cname">${esc(c.nombre)}</span>${portalIcon(c)}${(c.dupVat||c.dupName)?'<span class="badge warn" style="font-size:10px">⚠ dup</span>':''}</div>
         <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">${EYG.badgeRiesgo(c.riesgo&&c.riesgo.nivel)}${rubroBadge(c.rubro)}${!c.empresa?'<span class="rub" style="background:#EEE9F6;color:#6B4FA0">👤 persona</span>':''}${c.enPadron?'<span class="pad">✓ padrón</span>':''}${c.proveedor?'<span class="rub" style="background:#EFE3D0;color:#8A6D1A">🏭 prov.</span>':''}</div>
-        <div class="cmeta">${esc(c.ciudad||"—")}</div>
+        <div class="cmeta">${esc(c.ciudad||"—")}${c.padre?` · ↳ dentro de ${esc(c.padre)}`:""}</div>
         ${c.faltantes.length?`<div class="flags">${c.faltantes.map(f=>`<span class="flag">falta ${f}</span>`).join("")}</div>`:''}</div></div>
       <div class="hide-sm"><span class="muted trunc" title="${esc(c.comercial)}">${esc(c.comercial)}</span></div>
       <div>${c.fiscal?`<span class="badge ok">${esc(c.fiscal)}</span>`:`<span class="badge bad">sin cond. fiscal</span>`}</div>
@@ -684,20 +771,25 @@ function renderConquistar(){
   const cob=coberturaProv(filtro.pProv);
   const list=porConquistar();
   const locs=[...new Set(list.map(x=>x.loc))].sort();
+  const mapa = filtro.pVista==="mapa";
   tb.innerHTML=`
-    <div class="info">📋 Fuente oficial: Registro Federal de Farmacias (REFAR) y de Establecimientos de Salud (REFES) del Ministerio de Salud. Acá están los que <b>todavía no</b> son contacto nuestro (detalle uno por uno en ${esc(provs.join(", "))}). El padrón trae <b>nombre y dirección</b>, no teléfono: usá 🔎 Google / 📍 Maps de cada fila para conseguir el contacto.</div>
+    <div class="info">📋 Fuente oficial: Registro Federal de Farmacias (REFAR) y de Establecimientos de Salud (REFES) del Ministerio de Salud. Acá están las farmacias e instituciones habilitadas que <b>todavía no</b> son contacto nuestro (detalle uno por uno en ${esc(provs.join(", "))}). El padrón trae <b>nombre y dirección</b>, no teléfono: usá 🔎 Google / 📍 Maps de cada ficha para conseguir el contacto.</div>
     <div class="kpis">
-      <div class="kpi"><div class="n">${cob?cob.tot.toLocaleString("es-AR"):"—"}</div><div class="l">Habilitados en ${esc(filtro.pProv)}</div></div>
-      <div class="kpi"><div class="n">${cob?cob.mios.toLocaleString("es-AR"):"—"}</div><div class="l">Ya son contacto</div></div>
-      <div class="kpi"><div class="n">${cob?cob.pct+"%":"—"}</div><div class="l">Cobertura</div></div>
-      <div class="kpi"><div class="n" style="color:var(--coral)">${cob?cob.falta.toLocaleString("es-AR"):"—"}</div><div class="l">Por conquistar</div></div>
+      <div class="kpi" title="Farmacias e instituciones habilitadas por el Ministerio en esta provincia"><div class="n">${cob?cob.tot.toLocaleString("es-AR"):"—"}</div><div class="l">Habilitados en ${esc(filtro.pProv)}</div></div>
+      <div class="kpi" title="Los que ya están cargados como contacto nuestro en Odoo"><div class="n">${cob?cob.mios.toLocaleString("es-AR"):"—"}</div><div class="l">Ya son contacto</div></div>
+      <div class="kpi" title="Qué parte del mercado de la provincia ya tenemos como contacto"><div class="n">${cob?cob.pct+"%":"—"}</div><div class="l">Cobertura</div></div>
+      <div class="kpi" title="Los que todavía no son contacto nuestro: el mercado a desarrollar"><div class="n" style="color:var(--coral)">${cob?cob.falta.toLocaleString("es-AR"):"—"}</div><div class="l">Potenciales</div></div>
     </div>
     <div class="rubchips" style="margin-bottom:12px">
-      <button class="rchip ${filtro.pEstado==="activo"?"on":""}" onclick="setPEstado('activo')">🎯 Por conquistar</button>
-      <button class="rchip ${filtro.pEstado==="pendiente"?"on":""}" onclick="setPEstado('pendiente')">⏳ Pendientes WhatsApp <span class="rc">${marcasEnProv('pendiente')}</span></button>
-      <button class="rchip ${filtro.pEstado==="descartado"?"on":""}" onclick="setPEstado('descartado')">🚫 Descartados <span class="rc">${marcasEnProv('descartado')}</span></button>
+      <button class="rchip ${filtro.pEstado==="activo"?"on":""}" onclick="setPEstado('activo')" title="Los que quedan por trabajar">🎯 Potenciales</button>
+      <button class="rchip ${filtro.pEstado==="pendiente"?"on":""}" onclick="setPEstado('pendiente')" title="Los busqué por los números públicos y no logré WhatsApp: hay que conseguir el contacto por otro medio">⏳ Pendientes WhatsApp <span class="rc">${marcasEnProv('pendiente')}</span></button>
+      <button class="rchip ${filtro.pEstado==="descartado"?"on":""}" onclick="setPEstado('descartado')" title="Ya son clientes o no aplican. Se pueden restaurar.">🚫 Descartados <span class="rc">${marcasEnProv('descartado')}</span></button>
     </div>
     <div class="toolbar">
+      <div class="vswitch">
+        <button class="${mapa?"":"on"}" onclick="setPVista('lista')" title="Verlos como lista para trabajarlos uno por uno">📋 Lista</button>
+        <button class="${mapa?"on":""}" onclick="setPVista('mapa')" title="Verlos en el mapa para armar recorridos por zona">🗺️ Mapa</button>
+      </div>
       <select onchange="PSEL.clear();filtro.pProv=this.value;filtro.pLoc='';render()">${provs.map(p=>`<option ${filtro.pProv===p?"selected":""}>${esc(p)}</option>`).join("")}</select>
       <select onchange="PSEL.clear();filtro.pTipo=this.value;render()">
         <option value="" ${filtro.pTipo===""?"selected":""}>Farmacias e instituciones</option>
@@ -711,14 +803,17 @@ function renderConquistar(){
       <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
         <input id="pq" placeholder="Buscar nombre o localidad…" value="${esc(filtro.pQ)}" oninput="onSearchP(this.value)"></div>
     </div>
-    <div id="plistwrap"></div>`;
-  renderProspectos();
+    ${mapa?'<div id="pmapwrap"></div>':'<div id="plistwrap"></div>'}`;
+  if(mapa) renderMapa(); else renderProspectos();
 }
+function setPVista(v){ filtro.pVista=v; render(); }
+// repinta la vista que esté activa (lista o mapa) sin cambiar de una a la otra
+function repintarPotenciales(){ if(filtro.tab!=="conquistar") return; if(filtro.pVista==="mapa") renderMapa(); else renderProspectos(); }
 function renderProspectos(){
   const w=document.getElementById("plistwrap"); if(!w) return;
   let list=porConquistar().sort((a,b)=> a.loc.localeCompare(b.loc)||a.nombre.localeCompare(b.nombre));
-  const et=filtro.pEstado==="pendiente"?"pendientes de WhatsApp":filtro.pEstado==="descartado"?"descartados":"por conquistar";
-  if(!list.length){w.innerHTML=pBulkBarHTML()+'<div class="tablecard"><div class="empty">'+(filtro.pEstado==="pendiente"?"No hay prospectos marcados como pendientes.":filtro.pEstado==="descartado"?"No hay descartados.":"No quedan establecimientos por conquistar con ese filtro. 🎉")+'</div></div>';return;}
+  const et=filtro.pEstado==="pendiente"?"pendientes de WhatsApp":filtro.pEstado==="descartado"?"descartados":"potenciales";
+  if(!list.length){w.innerHTML=pBulkBarHTML()+'<div class="tablecard"><div class="empty">'+(filtro.pEstado==="pendiente"?"No hay potenciales marcados como pendientes.":filtro.pEstado==="descartado"?"No hay descartados.":"No quedan potenciales con ese filtro. 🎉")+'</div></div>';return;}
   const head=`<div class="count-line">Mostrando <b>${Math.min(list.length,600)}</b> de ${list.length} ${et}</div>`;
   const rows=list.slice(0,600).map(p=>{
     const g=`https://www.google.com/search?q=${encodeURIComponent(p.nombre+" "+p.loc+" "+p.prov+" teléfono")}`;
@@ -737,7 +832,7 @@ function renderProspectos(){
         </div></div>
       <div style="display:flex;flex-direction:column;gap:6px">
         <button class="mini-btn" style="background:var(--teal);color:#fff;border-color:var(--teal)" onclick="crearProspecto(${p.idx})">+ Crear contacto</button>
-        <select class="mini-sel" onchange="enviarAConquistar(${p.idx}, this.value); this.selectedIndex=0" title="Enviar a la carpeta 'A conquistar' de un comercial">
+        <select class="mini-sel" onchange="enviarAConquistar(${p.idx}, this.value); this.selectedIndex=0" title="Enviar a la carpeta de potenciales de un comercial">
           <option value="">📨 Enviar a comercial…</option>
           ${COMROSTER.map(o=>`<option value="${esc(o.name)}">${esc(o.name)}</option>`).join("")}
         </select>
@@ -772,13 +867,13 @@ async function enviarAConquistarLote(comName){
   if(!comName || !PSEL.size) return;
   const items=[...PSEL].map(idx=>{ const e=UNI.est[idx]; if(!e) return null; const L=UNI.locs[e[1]]||[]; return {nombre:titulo(e[0]),tipo:e[2],loc:L[0]||"",prov:L[1]||"",dom:e[3]?titulo(e[3]):""}; }).filter(Boolean);
   if(!items.length) return;
-  if(!confirm(`¿Enviar ${items.length} establecimiento(s) a la carpeta "A conquistar" de ${comName}?`)) return;
+  if(!confirm(`¿Enviar ${items.length} establecimiento(s) a la carpeta de potenciales de ${comName}?`)) return;
   try{
     const por=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
     await EYG.conquistarAsignar(items, comName, por);
     items.forEach(it=>ASIGNADOS.add(cqKey(it.nombre,it.loc)));
     PSEL.clear(); toast(`📨 ${items.length} enviado(s) a la carpeta de ${comName}`);
-    renderProspectos();
+    repintarPotenciales();
   }catch(e){ toast("⚠ No se pudo enviar: "+(e.message||e)); }
 }
 
@@ -789,9 +884,165 @@ function enviarAConquistar(idx, comName){
   const it={ nombre:titulo(e[0]), tipo:e[2], loc:L[0]||"", prov:L[1]||"", dom:e[3]?titulo(e[3]):"" };
   const por=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
   EYG.conquistarAsignar([it], comName, por)
-    .then(n=>{ ASIGNADOS.add(cqKey(it.nombre, it.loc)); if(filtro.tab==="conquistar") renderProspectos();   // sale de la lista al toque
+    .then(n=>{ ASIGNADOS.add(cqKey(it.nombre, it.loc)); repintarPotenciales();   // sale de la lista al toque
       toast(n?("📨 Enviado a la carpeta de "+comName):("Ya estaba en la carpeta de "+comName)); })
     .catch(()=>toast("⚠ No se pudo enviar"));
+}
+
+/* ================= MAPA de potenciales (armar recorridos de visita) =================
+   El padrón trae la ubicación exacta de ~2 de cada 3 establecimientos. Los que no la traen
+   se pueden mostrar aparte, apoyados en el centro de su localidad (ubicación APROXIMADA:
+   sirven para saber que están, no para guiarse hasta la puerta).
+   Los que YA son contacto nuestro se dibujan en teal usando la ubicación del padrón: así se
+   ve, en la misma pantalla, a quién ya atendemos y quién falta en cada zona. */
+let MAP=null, MAPCAPA=null, _mapPend=null;
+const GEO_OK = e => !!(e[4] && e[5]);
+// desplazamiento chico y siempre igual para el mismo establecimiento, para que los
+// "aproximados" de una localidad no queden todos apilados en el mismo punto.
+function jitter(idx){ const a=(idx*2654435761)%1000/1000, b=(idx*40503)%1000/1000; return [(a-0.5)*0.018,(b-0.5)*0.022]; }
+function puntoDe(idx){
+  const e=UNI.est[idx]; if(!e) return null;
+  if(GEO_OK(e)) return {lat:e[4], lon:e[5], aprox:false};
+  const L=UNI.locs[e[1]]; if(!L||!L[2]) return null;
+  const j=jitter(idx); return {lat:L[2]+j[0], lon:L[3]+j[1], aprox:true};
+}
+/* Los que ya son contacto nuestro, dentro de los mismos filtros de provincia/tipo/localidad. */
+function miosEnMapa(){
+  if(!UNI) return [];
+  const byId={}; DATA.forEach(c=>byId[c.id]=c);
+  const provOk = filtro.pProv?NORM(filtro.pProv):null;
+  const out=[];
+  UNI.est.forEach((e,idx)=>{
+    if(!e[6]) return; const L=UNI.locs[e[1]]; if(!L) return;
+    if(provOk && NORM(L[1])!==provOk) return;
+    if(filtro.pTipo==="farm" && e[2]!==0) return;
+    if(filtro.pTipo==="inst" && e[2]!==1) return;
+    if(filtro.pLoc && NORM(L[0])!==NORM(filtro.pLoc)) return;
+    const c=byId[e[6]]; if(!c||c.boveda) return;
+    if(filtro.pQ){ const q=filtro.pQ.toLowerCase(); if(!(c.nombre.toLowerCase().includes(q)||(L[0]||"").toLowerCase().includes(q))) return; }
+    const pt=puntoDe(idx); if(!pt) return;
+    if(pt.aprox && !filtro.pAprox) return;
+    out.push({idx, pt, c, loc:L[0], tipo:e[2]});
+  });
+  return out;
+}
+function renderMapa(){
+  const w=document.getElementById("pmapwrap"); if(!w) return;
+  if(!window.L){ w.innerHTML='<div class="errbox"><b>No pude cargar el mapa.</b><br>Revisá la conexión y volvé a entrar. Mientras tanto podés trabajar con la vista 📋 Lista.</div>'; return; }
+  const pot=porConquistar().map(p=>({p, pt:puntoDe(p.idx)})).filter(x=>x.pt && (filtro.pAprox||!x.pt.aprox));
+  const mios=filtro.pMios?miosEnMapa():[];
+  const sinGeo=porConquistar().filter(p=>{const e=UNI.est[p.idx];return e&&!GEO_OK(e);}).length;
+  // El div del mapa se arma UNA vez: así sumar paradas al recorrido no te devuelve al encuadre inicial.
+  if(!document.getElementById("mapa")){
+    w.innerHTML=`<div id="rutawrap"></div><div id="maptoggles" class="toggles" style="margin-bottom:10px"></div>
+      <div class="mapwrap"><div id="mapa"></div><div class="maplegend" id="maplegend"></div></div>`;
+  }
+  document.getElementById("rutawrap").innerHTML=rutaBoxHTML();
+  document.getElementById("maptoggles").innerHTML=`
+    <label title="Los que ya nos compran o ya están cargados, dibujados con la ubicación del padrón"><input type="checkbox" ${filtro.pMios?'checked':''} onchange="filtro.pMios=this.checked;renderMapa()"> Mostrar también nuestros contactos</label>
+    <label title="El padrón no trae la ubicación exacta de todos. Estos se apoyan en el centro de su localidad: sirven para saber que existen, no para guiarte hasta la puerta."><input type="checkbox" ${filtro.pAprox?'checked':''} onchange="filtro.pAprox=this.checked;renderMapa()"> Incluir los de ubicación aproximada${sinGeo?` (${sinGeo})`:''}</label>
+    <span class="muted" style="font-size:12px">Tocá un punto para ver los datos, llamar o sumarlo al recorrido.</span>`;
+  document.getElementById("maplegend").innerHTML=`
+    <span class="lg"><span class="dot" style="background:#EC8B5E"></span> Potencial · farmacia</span>
+    <span class="lg"><span class="dot" style="background:#1E5FA8"></span> Potencial · institución</span>
+    <span class="lg"><span class="dot" style="background:#B7791F"></span> Pendiente de WhatsApp</span>
+    ${filtro.pMios?'<span class="lg"><span class="dot" style="background:#048782"></span> Ya es contacto nuestro</span>':''}
+    <span class="lg" style="margin-left:auto">${pot.length.toLocaleString("es-AR")} potenciales${mios.length?` · ${mios.length.toLocaleString("es-AR")} nuestros`:''} en el mapa</span>`;
+  dibujarMapa(pot, mios);
+}
+function dibujarMapa(pot, mios){
+  const div=document.getElementById("mapa"); if(!div||!window.L) return;
+  if(!MAP || !document.body.contains(MAP.getContainer())){
+    if(MAP){ try{ MAP.remove(); }catch(e){} MAP=null; }
+    MAP=L.map(div,{zoomControl:true,preferCanvas:true}).setView([-32.95,-60.66],10);
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+      {attribution:'© OpenStreetMap · © CARTO', subdomains:"abcd", maxZoom:20, maxNativeZoom:19}).addTo(MAP);
+    MAPCAPA=L.layerGroup().addTo(MAP);
+    _mapPend=null;   // mapa nuevo → encuadrar en lo que se está mostrando
+  }
+  MAPCAPA.clearLayers();
+  const pts=[];
+  mios.forEach(m=>{
+    pts.push([m.pt.lat,m.pt.lon]);
+    L.circleMarker([m.pt.lat,m.pt.lon],{radius:5,color:"#fff",weight:1.4,fillColor:"#048782",fillOpacity:m.pt.aprox?.45:.9})
+      .bindPopup(()=>popupMio(m), {maxWidth:280}).addTo(MAPCAPA);
+  });
+  pot.forEach(x=>{
+    const pend = x.p.marca && x.p.marca.estado==="pendiente";
+    const col = pend?"#B7791F":(x.p.tipo===0?"#EC8B5E":"#1E5FA8");
+    const enRuta = RUTA.some(r=>r.idx===x.p.idx);
+    pts.push([x.pt.lat,x.pt.lon]);
+    L.circleMarker([x.pt.lat,x.pt.lon],{radius:enRuta?8:6,color:enRuta?"#04635F":"#fff",weight:enRuta?3:1.4,fillColor:col,fillOpacity:x.pt.aprox?.45:.92})
+      .bindPopup(()=>popupPotencial(x.p, x.pt), {maxWidth:300}).addTo(MAPCAPA);
+  });
+  if(pts.length && _mapPend!==keyMapa()){ _mapPend=keyMapa(); try{ MAP.fitBounds(L.latLngBounds(pts).pad(.08),{maxZoom:14}); }catch(e){} }
+  setTimeout(()=>{ try{ MAP.invalidateSize(); }catch(e){} }, 60);
+}
+// el encuadre se reajusta solo cuando cambia el recorte (provincia/localidad/tipo/estado), no en cada repintado
+const keyMapa = () => [filtro.pProv,filtro.pLoc,filtro.pTipo,filtro.pEstado,filtro.pQ].join("|");
+
+function popupPotencial(p, pt){
+  const g=`https://www.google.com/search?q=${encodeURIComponent(p.nombre+" "+p.loc+" "+p.prov+" teléfono")}`;
+  const mp=`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.nombre+" "+(p.dom||"")+" "+p.loc+" "+p.prov)}`;
+  const fg=`https://app.farmageo.com.ar/#/buscarfarmacia?f=${encodeURIComponent((p.nombre||"").replace(/^farmacias?\s+/i,"").trim())}`;
+  const enRuta=RUTA.some(r=>r.idx===p.idx);
+  return `<div class="mp-n">${esc(p.nombre)}</div>
+    <div class="mp-d">${p.tipo===0?'💊 Farmacia':'🏥 Institución'} · ${esc(p.loc)}<br>📍 <b>${esc(p.dom||"sin dirección en el padrón")}</b>${pt&&pt.aprox?'<br><span style="color:#B7791F">⚠ ubicación aproximada (centro de la localidad)</span>':''}</div>
+    <div class="mp-tel"><input placeholder="pegá el tel. que encontraste" value="${esc(PTEL[p.idx]||'')}" oninput="PTEL[${p.idx}]=this.value">
+      <button class="micro wa" title="Abrir WhatsApp — si el número no lo tiene, WhatsApp te avisa" onclick="waProspecto(${p.idx})">💬</button>
+      <button class="micro" title="Llamar" onclick="llamarProspecto(${p.idx})">📞</button></div>
+    <div class="mp-b"><a class="lb-b" href="${g}" target="_blank" rel="noopener">🔎 Google</a><a class="lb-b" href="${mp}" target="_blank" rel="noopener">📍 Maps</a>${p.tipo===0?`<a class="lb-b" href="${fg}" target="_blank" rel="noopener" title="Abre esa farmacia en el mapa de Farmageo: esperá 1-2 seg y tocá el pin verde para ver si está activa y si tiene WhatsApp">🟢 Farmageo</a>`:""}</div>
+    <div class="mp-b"><button class="lb-b" style="${enRuta?'background:var(--agua);border-color:var(--teal)':''}" onclick="toggleRuta(${p.idx})">${enRuta?'✓ en el recorrido':'＋ sumar al recorrido'}</button>
+      <button class="lb-b" style="background:var(--teal);border-color:var(--teal);color:#fff" onclick="crearProspecto(${p.idx})">+ Crear contacto</button></div>
+    <div class="mp-b"><select class="mini-sel" style="font-size:11.5px" onchange="enviarAConquistar(${p.idx}, this.value); this.selectedIndex=0"><option value="">📨 Enviar a comercial…</option>${COMROSTER.map(o=>`<option value="${esc(o.name)}">${esc(o.name)}</option>`).join("")}</select></div>`;
+}
+function popupMio(m){
+  const c=m.c;
+  const wa=c.wa?`<a class="lb-b wa" href="https://api.whatsapp.com/send?phone=${c.wa}" target="_blank" rel="noopener">WhatsApp</a>`:"";
+  const tel=c.tellink?`<a class="lb-b" href="tel:${esc(c.tellink)}">📞 Llamar</a>`:`<span class="lb-notel">sin teléfono</span>`;
+  return `<div class="mp-n">${esc(c.nombre)}</div>
+    <div class="mp-d">✓ Ya es contacto nuestro · ${esc(c.comercial)}<br>${esc(c.ciudad||m.loc||"")}${c.part&&c.part.street?"<br>📍 "+esc(c.part.street):""}
+      <br>${c.compro?`Última compra: ${c.dias===0?'hoy':c.dias+' días atrás'} · ${money(c.comprado)} en total`:'Todavía no compró'}</div>
+    <div class="mp-b">${wa}${tel}<button class="lb-b" onclick="abrir(${c.id})">Abrir ficha</button></div>`;
+}
+
+/* --- Recorrido: se van sumando paradas y se abre en Google Maps con las indicaciones --- */
+function toggleRuta(idx){
+  const i=RUTA.findIndex(r=>r.idx===idx);
+  if(i>=0) RUTA.splice(i,1);
+  else{
+    const e=UNI.est[idx]; if(!e) return; const L=UNI.locs[e[1]]||[]; const pt=puntoDe(idx); if(!pt) return;
+    if(RUTA.length>=12){ toast("El recorrido ya tiene 12 paradas — Google Maps no admite muchas más"); return; }
+    RUTA.push({idx, nombre:titulo(e[0]), dom:e[3]||"", loc:L[0]||"", prov:L[1]||"", lat:pt.lat, lon:pt.lon, aprox:pt.aprox});
+  }
+  if(MAP) MAP.closePopup();
+  renderMapa();
+}
+function vaciarRuta(){ RUTA=[]; renderMapa(); }
+function rutaBoxHTML(){
+  if(!RUTA.length) return `<div class="rutabox"><div class="rt">🚗 <b>Armar un recorrido</b> <span class="muted">— tocá los puntos del mapa y sumalos acá; después lo abrís en Google Maps con las indicaciones en orden.</span></div></div>`;
+  const chips=RUTA.map((r,i)=>`<span class="rutachip">${i+1}. ${esc(r.nombre)}${r.aprox?' ⚠':''} <span class="x" title="Sacar del recorrido" onclick="toggleRuta(${r.idx})">✕</span></span>`).join("");
+  const hayAprox=RUTA.some(r=>r.aprox);
+  return `<div class="rutabox">
+    <div class="rt">🚗 <b>Recorrido: ${RUTA.length} parada${RUTA.length>1?'s':''}</b>
+      <button class="fbtn go" onclick="abrirRuta()" title="Abre Google Maps con las paradas en este orden">🗺️ Abrir en Google Maps</button>
+      <button class="fbtn" onclick="copiarRuta()" title="Copia la lista de paradas con su dirección">📋 Copiar la lista</button>
+      <button class="fbtn del2" onclick="vaciarRuta()">Vaciar</button>
+      ${hayAprox?'<span class="muted" style="font-size:11.5px">⚠ hay paradas con ubicación aproximada: verificá la dirección antes de salir</span>':''}</div>
+    <div class="rutalist">${chips}</div></div>`;
+}
+function abrirRuta(){
+  if(!RUTA.length) return;
+  const dir=r=>[r.dom,r.loc,r.prov].filter(Boolean).join(", ");
+  if(RUTA.length===1){ window.open("https://www.google.com/maps/search/?api=1&query="+encodeURIComponent(RUTA[0].nombre+" "+dir(RUTA[0])),"_blank"); return; }
+  const puntos=RUTA.map(r=> r.aprox?dir(r):(r.lat+","+r.lon));   // con ubicación exacta va por coordenadas; si es aproximada, por dirección escrita
+  const origin=encodeURIComponent(puntos[0]), destination=encodeURIComponent(puntos[puntos.length-1]);
+  const way=puntos.slice(1,-1).map(encodeURIComponent).join("|");
+  window.open(`https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${way?`&waypoints=${way}`:""}&travelmode=driving`,"_blank");
+}
+function copiarRuta(){
+  const txt=RUTA.map((r,i)=>`${i+1}. ${r.nombre} — ${[r.dom,r.loc].filter(Boolean).join(", ")}`).join("\n");
+  try{ navigator.clipboard.writeText(txt); toast("📋 Recorrido copiado"); }catch(e){ toast("No pude copiar"); }
 }
 
 /* ===== Marcas sobre prospectos: descartar (ya es cliente/no aplica) y pendiente (busqué WhatsApp sin éxito) ===== */
@@ -803,9 +1054,126 @@ async function descartarLote(){ if(!PSEL.size) return; const items=[...PSEL].map
 async function pendienteLote(){ if(!PSEL.size) return; const items=[...PSEL].map(itemDe).filter(Boolean); try{ await marcarProspectos(items,"pendiente"); PSEL.clear(); toast(`⏳ ${items.length} marcado(s): buscar WhatsApp`); renderConquistar(); }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
 async function restaurarLote(){ if(!PSEL.size) return; const items=[...PSEL].map(itemDe).filter(Boolean); try{ await marcarProspectos(items,null); PSEL.clear(); toast(`↩ ${items.length} restaurado(s)`); renderConquistar(); }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); } }
 
+/* ================= DUPLICADOS: el mismo cliente cargado dos veces =================
+   Cuatro señales, de más a menos segura: mismo CUIT · misma dirección en la misma localidad ·
+   mismo nombre · nombre muy parecido en la misma localidad. Lo que se marca como
+   "no son el mismo" queda guardado para todos y no vuelve a aparecer. */
+let _dupCache=null;
+async function cargarNoDup(){ try{ NODUP=JSON.parse(await rpc("ir.config_parameter","get_param",[NODUP_KEY])||"{}")||{}; }catch(e){ NODUP={}; } _dupCache=null; if(filtro.tab==="duplicados") renderDuplicados(); }
+async function marcarNoDup(key, nombres){
+  let fresh; try{ fresh=JSON.parse(await rpc("ir.config_parameter","get_param",[NODUP_KEY])||"{}")||{}; }catch(e){ fresh={}; }
+  fresh[key]={por:(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—", fecha:new Date().toISOString(), nombres:nombres||""};
+  await rpc("ir.config_parameter","set_param",[NODUP_KEY, JSON.stringify(fresh)]);
+  NODUP=fresh; _dupCache=null;
+}
+async function noSonDuplicados(key, nombres){
+  try{ await marcarNoDup(key, nombres); toast("✓ Marcados como distintos"); renderDuplicados(); }
+  catch(e){ toast("⚠ No se pudo guardar: "+(e.message||e)); }
+}
+async function volverARevisar(key){
+  try{
+    let fresh; try{ fresh=JSON.parse(await rpc("ir.config_parameter","get_param",[NODUP_KEY])||"{}")||{}; }catch(e){ fresh={}; }
+    delete fresh[key]; await rpc("ir.config_parameter","set_param",[NODUP_KEY, JSON.stringify(fresh)]);
+    NODUP=fresh; _dupCache=null; toast("↩ Vuelve a la lista para revisar"); renderDuplicados();
+  }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
+}
+const dupKey = ids => [...ids].sort((a,b)=>a-b).join("-");
+function gruposDup(){
+  if(_dupCache) return _dupCache;
+  if(!DATA.length) return [];
+  // se revisan los contactos vivos: sin bóveda, sin proveedores puros, sin combos/pruebas
+  // y sin las personas cargadas dentro de una empresa (esas no son un contacto aparte).
+  const B=DATA.filter(c=> !c.boveda && !esProvPuro(c) && !esHijo(c) && !(c.combo||c.noUsar));
+  const byKey={}, out=[];
+  const add=(k,c)=>{ (byKey[k]=byKey[k]||[]).push(c); };
+  B.forEach(c=>{
+    const v=soloDig(c.cuit); if(v.length>=8) add("cuit|"+v, c);
+    const n=norm2(c.nombre); if(n.length>=4) add("nom|"+n, c);
+    const d=claveDir(c.part&&c.part.street), lk=locKey(c.ciudad);
+    if(d && d.calle.length && lk) add("dir|"+lk+"|"+d.num+"|"+d.calle[0], c);
+  });
+  const MOT={cuit:{t:"Mismo CUIT",f:true}, dir:{t:"Misma dirección y localidad",f:true}, nom:{t:"Mismo nombre",f:true}};
+  const yaVisto=new Set();
+  Object.keys(byKey).forEach(k=>{
+    const arr=byKey[k]; if(arr.length<2) return;
+    const tipo=k.split("|")[0], gk=dupKey(arr.map(c=>c.id));
+    if(yaVisto.has(gk)) return; yaVisto.add(gk);
+    out.push({key:gk, motivo:MOT[tipo].t, fuerte:true, items:arr, oculto:!!NODUP[gk]});
+  });
+  // Nombre PARECIDO dentro de la misma localidad (el caso "Farmacia Porta" / "Farmacia A. Porta").
+  // Para no comparar todos contra todos, se indexa por palabra distintiva y solo se comparan
+  // los que comparten alguna.
+  const porLoc={};
+  B.forEach(c=>{ const lk=locKey(c.ciudad); if(!lk) return; (porLoc[lk]=porLoc[lk]||[]).push(c); });
+  const pares=new Set();
+  Object.keys(porLoc).forEach(lk=>{
+    const arr=porLoc[lk]; if(arr.length<2) return;
+    const idx={};
+    arr.forEach(c=>{ c._dk=clave(c.nombre); _tk(c._dk).forEach(t=>{ if(GENERICO.has(t)) return; (idx[t]=idx[t]||[]).push(c); }); });
+    Object.keys(idx).forEach(t=>{
+      const lst=idx[t]; if(lst.length<2 || lst.length>30) return;   // una palabra que comparten 30 fichas no distingue nada
+      for(let i=0;i<lst.length;i++) for(let j=i+1;j<lst.length;j++){
+        const a=lst[i], b=lst[j]; const gk=dupKey([a.id,b.id]);
+        if(pares.has(gk)||yaVisto.has(gk)) continue; pares.add(gk);
+        if(_coincide(a._dk,b._dk)){ yaVisto.add(gk); out.push({key:gk, motivo:"Nombre muy parecido en "+titulo(lk), fuerte:false, items:[a,b], oculto:!!NODUP[gk]}); }
+      }
+    });
+  });
+  // primero los más seguros, y dentro de esos los que tienen compras (son los que hay que resolver sí o sí)
+  out.sort((a,b)=> (b.fuerte-a.fuerte) || (Math.max(...b.items.map(x=>x.comprado))-Math.max(...a.items.map(x=>x.comprado))));
+  _dupCache=out.filter(g=>!g.oculto);
+  _dupCacheTodos=out;
+  return _dupCache;
+}
+let _dupCacheTodos=[];
+function renderDuplicados(){
+  const tb=document.getElementById("tabbody"); if(!tb) return;
+  const todos=gruposDup();
+  const revisados=_dupCacheTodos.filter(g=>g.oculto);
+  const q=(filtro.dupQ||"").toLowerCase();
+  const list=q?todos.filter(g=>g.items.some(c=>c.nombre.toLowerCase().includes(q)||(c.ciudad||"").toLowerCase().includes(q))):todos;
+  const fuertes=todos.filter(g=>g.fuerte).length;
+  tb.innerHTML=`
+    <div class="info">🔀 Acá aparecen los contactos que <b>parecen ser el mismo cargado dos veces</b>. Revisá cada grupo: abrí las fichas, quedate con la que tiene las compras y sacá la otra (🔒 Bóveda o 🗑️ Dar de baja desde su ficha). Si son distintos de verdad, tocá <b>"No son el mismo"</b> y no vuelve a aparecer.</div>
+    <div class="kpis">
+      <div class="kpi" title="Grupos que todavía hay que revisar"><div class="n">${todos.length}</div><div class="l">Para revisar</div></div>
+      <div class="kpi" title="Mismo CUIT, misma dirección o mismo nombre exacto: casi seguro que son el mismo"><div class="n" style="color:var(--bad)">${fuertes}</div><div class="l">Casi seguros</div></div>
+      <div class="kpi" title="Nombre muy parecido en la misma localidad: hay que mirarlos"><div class="n" style="color:var(--warn)">${todos.length-fuertes}</div><div class="l">A confirmar</div></div>
+      <div class="kpi" title="Grupos que el equipo ya miró y marcó como distintos"><div class="n">${revisados.length}</div><div class="l">Ya revisados</div></div>
+    </div>
+    <div class="toolbar">
+      <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="dq" placeholder="Buscar nombre o ciudad…" value="${esc(filtro.dupQ)}" oninput="onSearchD(this.value)"></div>
+      <span class="muted" style="margin-left:auto;font-size:12px">Mostrando ${Math.min(list.length,120)} de ${list.length} grupos</span>
+    </div>
+    <div id="dupwrap">${list.length?list.slice(0,120).map(dupGrupoHTML).join(""):'<div class="tablecard"><div class="empty">No hay duplicados para revisar con ese filtro. 🎉</div></div>'}</div>
+    ${revisados.length?`<h3 class="sec" style="margin-top:22px">Ya revisados — marcados como distintos</h3>
+      <div class="tablecard" style="padding:6px 0">${revisados.slice(0,60).map(g=>`<div class="row" style="grid-template-columns:1fr auto;cursor:default">
+        <div><div class="cname">${g.items.map(c=>esc(c.nombre)).join("  ·  ")}</div><div class="cmeta">${esc(g.motivo)}${NODUP[g.key]&&NODUP[g.key].por?" · lo revisó "+esc(NODUP[g.key].por):""}</div></div>
+        <div><button class="fbtn" onclick="volverARevisar('${g.key}')" title="Vuelve a la lista de arriba">↩ Volver a revisar</button></div></div>`).join("")}</div>`:''}`;
+}
+function dupGrupoHTML(g){
+  const mejor=g.items.reduce((a,b)=> (b.comprado>a.comprado?b:a), g.items[0]);
+  const nombres=g.items.map(c=>c.nombre).join(" / ").slice(0,120);
+  return `<div class="dupgrp ${g.fuerte?'fuerte':''}">
+    <div class="duphead">
+      <span class="dupmotivo ${g.fuerte?'':'tibio'}">${g.fuerte?'⚠':'👀'} ${esc(g.motivo)}</span>
+      <button class="fbtn" onclick="noSonDuplicados('${g.key}', ${JSON.stringify(nombres).replace(/"/g,'&quot;')})" title="Son contactos distintos: dejá de mostrar este grupo">✓ No son el mismo</button>
+    </div>
+    ${g.items.map(c=>`<div class="duprow ${c.id===mejor.id&&mejor.comprado>0?'mejor':''}">
+      <div><div class="dn">${esc(c.nombre)}${c.id===mejor.id&&mejor.comprado>0?' <span class="badge ok" style="font-size:10px">la que tiene las compras</span>':''}</div>
+        <div class="dm">${esc(c.ciudad||"sin ciudad")}${c.part&&c.part.street?" · "+esc(c.part.street):""} · ficha ${c.id}</div></div>
+      <div class="hide-sm"><span class="muted trunc">${esc(c.comercial)}</span><div class="dm">${c.cuit?esc(c.cuit):'<span style="color:var(--bad)">sin CUIT</span>'}</div></div>
+      <div><div class="num">${c.comprado?money(c.comprado):'<span class="muted">sin compras</span>'}</div><div class="dm">${c.dias==null?"nunca compró":"última compra hace "+c.dias+" días"}</div></div>
+      <div class="lb-a"><button class="lb-b" onclick="abrir(${c.id})">Abrir ficha</button><a class="lb-b" href="${ODOO}${c.id}" target="_blank" rel="noopener">Odoo ↗</a></div>
+    </div>`).join("")}
+  </div>`;
+}
+
 /* ================= Interacción filtros ================= */
 let sT; function onSearch(v){filtro.q=v;clearTimeout(sT);sT=setTimeout(renderLista,180);}
-let sP; function onSearchP(v){filtro.pQ=v;clearTimeout(sP);sP=setTimeout(renderProspectos,200);}
+let sP; function onSearchP(v){filtro.pQ=v;clearTimeout(sP);sP=setTimeout(repintarPotenciales,200);}
+let sD; function onSearchD(v){filtro.dupQ=v;clearTimeout(sD);sD=setTimeout(renderDuplicados,200);}
 function setTab(t){filtro.tab=t;SEL.clear();render(); if(t==='nuevos') cargarNuevos();}
 function setCom(i){const name=i<0?"":(COMS[i]?COMS[i].comercial:"");filtro.com=filtro.com===name?"":name;filtro.boveda=false;filtro.proveedores=false;SEL.clear();render();}
 function setSeg(s){filtro.seg=filtro.seg===s?"":s;filtro.boveda=false;filtro.proveedores=false;SEL.clear();render();}
@@ -864,7 +1232,10 @@ function abrir(id){
         <div class="kv"><span class="k">Email</span><span class="v ${c.emailOk?'':'falta'}">${esc(c.email||"— falta")}</span></div>
         <div class="kv"><span class="k">Ciudad</span><span class="v">${esc(c.ciudad||"—")}${c.prov?" · "+esc(c.prov):""}</span></div>
         ${c.enPadron&&c.nombreOficial?`<div class="kv"><span class="k">Nombre oficial (padrón)</span><span class="v">${esc(c.nombreOficial)}</span></div>`:""}
+        ${c.padre?`<div class="kv"><span class="k">Está dentro de</span><span class="v"><a style="color:var(--teal);cursor:pointer" onclick="abrir(${c.padreId})">${esc(c.padre)} ↗</a></span></div>`:""}
       </div>
+      <div class="dsec" id="entregasBox"><div class="libhead"><h4>📦 Direcciones de entrega</h4></div><div class="lb-empty">Cargando…</div></div>
+      <div class="dsec" id="libretaBox"><div class="libhead"><h4>👥 Teléfonos y personas</h4></div><div class="lb-empty">Cargando…</div></div>
       <div class="dsec"><h4>🌐 Acceso al portal (web)</h4><div id="portalbox"><span class="muted">Verificando…</span></div></div>
       <div class="dsec"><h4>Compras</h4>
         <div class="kv"><span class="k">Total comprado</span><span class="v">${money(c.comprado)}</span></div>
@@ -901,6 +1272,149 @@ function abrir(id){
     </div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
   cargarPortal(id);
+  cargarEntregasFicha(id);
+  cargarLibretaFicha(id);
+}
+
+/* ===== La ficha completa, igual que en el panel del comercial =====
+   Un contacto es UNO solo: acá se le suman sus direcciones de entrega (nivel 2) y todos
+   sus teléfonos y personas (nivel 3), sin crear un contacto nuevo por cada teléfono.
+   Todo se guarda en Odoo al instante, así el equipo ve siempre lo mismo. */
+let _ENT={parent:0,dels:[],ppal:null}, _LIB={parent:0,people:[]};
+async function cargarEntregasFicha(id){
+  let dels=[];
+  try{ dels=await rpc("res.partner","search_read",[[["parent_id","=",id],["type","=","delivery"]]],
+    {fields:["id","name","street","city","phone"],order:"name",context:{lang:"es_AR"}}); }catch(e){}
+  let ppal=null;
+  // con una sola dirección no hay nada que elegir (Cargar Venta la usa igual) → evitamos
+  // la consulta al chatter, que en Odoo es de las caras.
+  if(dels.length===1) ppal=dels[0].id;
+  else if(dels.length>1){
+    try{
+      const msgs=await rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",dels.map(d=>d.id)],["body","like",PPAL_TAG]]],{fields:["res_id","body","date"],limit:0});
+      const st={}, seen=new Set(); msgs.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+      for(const m of msgs){ if(seen.has(m.res_id)) continue; seen.add(m.res_id);
+        const out=/salir/i.test((m.body||"").replace(/<[^>]+>/g," ")); st[m.res_id]={in:!out,date:m.date||""}; }
+      let best=""; for(const rid in st){ if(st[rid].in && st[rid].date>best){ best=st[rid].date; ppal=+rid; } }
+    }catch(e){}
+  }
+  _ENT={parent:id, dels, ppal};
+  pintarEntregas();
+}
+function pintarEntregas(){
+  const box=document.getElementById("entregasBox"); if(!box) return;
+  const rows=(_ENT.dels||[]).map(d=>{
+    const dir=[d.street,d.city].filter(Boolean).join(", ");
+    const isP=_ENT.ppal===d.id;
+    return `<div class="lb-row"><div class="lb-i"><div class="lb-n">${isP?'⭐ ':''}${esc(d.name||"Sucursal")}</div>
+      <div class="lb-f">${esc(dir)||"&nbsp;"}</div></div>
+      <div class="lb-a">${isP?'<span class="lb-tag">Principal</span>':`<button class="lb-b" onclick="setPrincipalF(${d.id})" title="La que Cargar Venta va a usar por defecto">Hacer principal</button>`}
+        <button class="lb-b ic" title="Editar" onclick="formEntregaF(${d.id})">✏️</button>
+        <button class="lb-b ic del" title="Eliminar" onclick="pedirBorrarEntrega(${d.id})">🗑️</button></div></div>`;
+  }).join("");
+  box.innerHTML=`<div class="libhead"><h4>📦 Direcciones de entrega</h4><button class="fbtn" onclick="formEntregaF(0)">＋ Agregar</button></div>
+    <div class="lb-hint">Adónde le llevamos la mercadería. <b>La dirección fiscal casi nunca es la de entrega</b>: si tiene sucursal o depósito, cargalo acá y aparece solo al cargarle una venta.</div>
+    ${(_ENT.dels&&_ENT.dels.length)?`<div class="lb-list">${rows}</div>`:'<div class="lb-empty">Sin direcciones de entrega cargadas.</div>'}`;
+}
+function formEntregaF(did){
+  const box=document.getElementById("entregasBox"); if(!box) return;
+  const d=did?(_ENT.dels||[]).find(x=>x.id===did):null;
+  box.innerHTML=`<div class="libhead"><h4>📦 ${d?'Editar dirección':'Nueva dirección de entrega'}</h4></div>
+    <div class="pform">
+      <input id="ne_name" placeholder="Nombre / referencia — ej: Sucursal Centro" value="${d?esc(d.name||''):''}">
+      <input id="ne_street" placeholder="Calle y número" value="${d?esc(d.street||''):''}">
+      <input id="ne_city" placeholder="Localidad" value="${d?esc(d.city||''):''}">
+      <div class="pform-b"><button class="fbtn" onclick="pintarEntregas()">Cancelar</button>
+        <button class="fbtn go" onclick="guardarEntregaF(${d?d.id:0})">Guardar</button></div>
+    </div>`;
+  const i=document.getElementById("ne_name"); if(i) i.focus();
+}
+async function guardarEntregaF(did){
+  const v=x=>{const el=document.getElementById(x);return el?el.value.trim():"";};
+  const name=v("ne_name"), street=v("ne_street"), city=v("ne_city");
+  if(!name && !street){ toast("Poné un nombre o la dirección"); return; }
+  try{
+    const vals={name:name||city||"Entrega", street:street?oracion(street):false, city:city?oracion(city):false};
+    if(did) await rpc("res.partner","write",[[did],vals],{context:{lang:"es_AR"}});
+    else await rpc("res.partner","create",[Object.assign({parent_id:_ENT.parent,type:"delivery"},vals)],{context:{lang:"es_AR"}});
+    toast(did?"📦 Dirección actualizada":"📦 Dirección agregada"); await cargarEntregasFicha(_ENT.parent);
+  }catch(e){ toast("⚠ No pude guardar: "+(e.message||e)); }
+}
+function pedirBorrarEntrega(did){
+  const box=document.getElementById("entregasBox"); if(!box) return;
+  const d=(_ENT.dels||[]).find(x=>x.id===did);
+  box.innerHTML=`<div class="libhead"><h4>Eliminar dirección</h4></div>
+    <div class="lb-empty">¿Eliminar <b>${esc(d?d.name:'')}</b>? Deja de estar disponible para entregas.</div>
+    <div class="pform-b" style="margin-top:8px"><button class="fbtn" onclick="pintarEntregas()">Cancelar</button>
+      <button class="fbtn del2" onclick="borrarEntregaF(${did})">Sí, eliminar</button></div>`;
+}
+async function borrarEntregaF(did){
+  try{
+    try{ await rpc("res.partner","unlink",[[did]]); }                     // borrado real si no está usada en ningún documento
+    catch(_){ await rpc("res.partner","write",[[did],{active:false}]); }  // si ya tiene pedidos, se archiva
+    toast("Dirección eliminada"); await cargarEntregasFicha(_ENT.parent);
+  }catch(e){ toast("⚠ No pude eliminar: "+(e.message||e)); }
+}
+async function setPrincipalF(did){
+  try{ await rpc("res.partner","message_post",[[did]],{body:`⭐ ${PPAL_TAG}`,message_type:"comment"});
+    _ENT.ppal=did; toast("⭐ Dirección principal"); pintarEntregas();
+  }catch(e){ toast("⚠ No pude marcarla: "+(e.message||e)); }
+}
+
+async function cargarLibretaFicha(id){
+  let people=[];
+  try{ people=await rpc("res.partner","search_read",[[["parent_id","=",id],["type","=","contact"]]],
+    {fields:["id","name","function","phone","mobile","email"],context:{lang:"es_AR"}}); }catch(e){}
+  _LIB={parent:id, people};
+  pintarLibretaF();
+}
+function pintarLibretaF(){
+  const box=document.getElementById("libretaBox"); if(!box) return;
+  const rows=(_LIB.people||[]).map(p=>{
+    const tel=p.mobile||p.phone||"", wa=waNumber(p.mobile,p.phone);
+    const acc=tel?`${wa?`<a class="lb-b wa" href="https://api.whatsapp.com/send?phone=${wa}" target="_blank" rel="noopener">WhatsApp</a>`:""}<a class="lb-b" href="tel:${esc(soloDig(tel))}">📞</a>`
+      :`<span class="lb-notel">sin teléfono</span>`;
+    return `<div class="lb-row"><div class="lb-i"><div class="lb-n">${esc(p.name||"—")}</div>
+      <div class="lb-f">${[p.function,tel?fmtTel(tel):"",p.email].filter(Boolean).map(esc).join(" · ")||"&nbsp;"}</div></div>
+      <div class="lb-a">${acc}<button class="lb-b ic" title="Editar" onclick="formPersonaF(${p.id})">✏️</button><button class="lb-b ic del" title="Eliminar" onclick="borrarPersonaF(${p.id})">🗑️</button></div></div>`;
+  }).join("");
+  box.innerHTML=`<div class="libhead"><h4>👥 Teléfonos y personas</h4><button class="fbtn" onclick="formPersonaF(0)">＋ Agregar</button></div>
+    <div class="lb-hint">Sumá acá <b>otro teléfono</b> (el celular de compras, el fijo del local) o a las personas con las que hablamos, <b>sin duplicar el contacto</b>. Cada uno queda dentro de este mismo cliente en Odoo, y el bot de WhatsApp también los reconoce.</div>
+    ${(_LIB.people&&_LIB.people.length)?`<div class="lb-list">${rows}</div>`:'<div class="lb-empty">Sin teléfonos ni personas cargadas.</div>'}`;
+}
+function formPersonaF(pid){
+  const box=document.getElementById("libretaBox"); if(!box) return;
+  const ed=pid?(_LIB.people||[]).find(p=>p.id===pid):null;
+  box.innerHTML=`<div class="libhead"><h4>👥 ${ed?"Editar":"Nuevo teléfono / persona"}</h4></div>
+    <div class="pform">
+      <input id="np_name" placeholder="Nombre o etiqueta — ej: Celular de pagos" value="${ed?esc(ed.name||""):""}">
+      <input id="np_func" placeholder="Cargo (compras, pagos, dueño…) — opcional" value="${ed?esc(ed.function||""):""}">
+      <input id="np_phone" placeholder="Teléfono / celular" value="${ed?esc(ed.mobile||ed.phone||""):""}">
+      <input id="np_mail" placeholder="Email — opcional" value="${ed?esc(ed.email||""):""}">
+      <div class="pform-b"><button class="fbtn" onclick="pintarLibretaF()">Cancelar</button>
+        <button class="fbtn go" onclick="guardarPersonaF(${ed?ed.id:0})">Guardar</button></div>
+    </div>`;
+  const i=document.getElementById("np_name"); if(i) i.focus();
+}
+async function guardarPersonaF(pid){
+  const v=x=>{const el=document.getElementById(x);return el?el.value.trim():"";};
+  const name=v("np_name"), func=v("np_func"), phone=v("np_phone"), mail=v("np_mail");
+  if(!name && !phone){ toast("⚠ Poné al menos un nombre/etiqueta o un teléfono"); return; }
+  try{
+    // El teléfono se guarda siempre en `phone` (y se limpia `mobile`) para que esté en un solo lugar.
+    const vals={name:name||"Contacto", function:func||false, phone:phone?fmtTel(phone):false, mobile:false, email:mail||false};
+    if(pid) await rpc("res.partner","write",[[pid],vals],{context:{lang:"es_AR"}});
+    else await rpc("res.partner","create",[Object.assign({parent_id:_LIB.parent,type:"contact",is_company:false},vals)],{context:{lang:"es_AR"}});
+    toast(pid?"✓ Actualizado":"👤 Agregado"); await cargarLibretaFicha(_LIB.parent);
+  }catch(e){ toast("⚠ No pude guardar: "+(e.message||e)); }
+}
+async function borrarPersonaF(pid){
+  if(!confirm("¿Eliminar este teléfono/persona del contacto?")) return;
+  try{
+    try{ await rpc("res.partner","unlink",[[pid]]); }
+    catch(e){ await rpc("res.partner","write",[[pid],{active:false}],{context:{lang:"es_AR"}}); }
+    toast("🗑️ Eliminado"); await cargarLibretaFicha(_LIB.parent);
+  }catch(e){ toast("⚠ No pude eliminar: "+(e.message||e)); }
 }
 function setWa(el,txt){ const t=document.getElementById("msg"); if(t){ t.value=txt; const b=document.getElementById("wabtn"); const d=document.getElementById("drawer"); const wa=(d.querySelector("#wabtn").href.match(/phone=(\d+)/)||[])[1]; if(b&&wa) b.href=`https://api.whatsapp.com/send?phone=${wa}&text=${encodeURIComponent(txt)}`; } }
 document.addEventListener("input",e=>{if(e.target&&e.target.id==="msg"){const b=document.getElementById("wabtn");if(b){const wa=(b.href.match(/phone=(\d+)/)||[])[1];if(wa)b.href=`https://api.whatsapp.com/send?phone=${wa}&text=${encodeURIComponent(e.target.value)}`;}}});
@@ -1190,6 +1704,9 @@ function editarContacto(id){
         <div class="fld"><label>Número</label><input id="f_vat" value="${esc(p.vat||'')}" oninput="prevDoc()" placeholder="20-12345678-9"><div class="prev" id="prev_doc"></div></div>
       </div>
       <div class="fld"><label>Condición fiscal (AFIP)</label><select id="f_fiscal">${optSel(CAT.fiscal,p.l10n_ar_afip_responsibility_type_id,'— condición —')}</select></div>
+      <div class="fld"><label>Sitio web</label><input id="f_web" value="${esc(p.website||'')}" placeholder="www.ejemplo.com.ar"></div>
+      <div class="fld"><label>Notas internas</label><input id="f_nota" value="${esc((p.comment||'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim())}" placeholder="Ej: atiende de 9 a 13 · entra por el portón de atrás">
+        <div class="hint">Lo ve todo el equipo en Odoo. Los teléfonos extra y las sucursales van en la ficha, no acá.</div></div>
     </div>
     <div class="dfoot"><button class="btn-save" id="btnSave" onclick="guardarContacto(${id})">Guardar y sincronizar con Odoo</button></div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
@@ -1208,7 +1725,8 @@ async function guardarContacto(id){
     zip: val("f_zip")||false, city: val("f_city")?oracion(val("f_city")):false,
     state_id: num("f_state"), l10n_latam_identification_type_id: idtype,
     vat: val("f_vat")?fmtDoc(val("f_vat"),idtype):false,
-    l10n_ar_afip_responsibility_type_id: num("f_fiscal")
+    l10n_ar_afip_responsibility_type_id: num("f_fiscal"),
+    website: val("f_web")||false, comment: val("f_nota")||false
   };
   vals[RUBRO_FIELD]=val("f_rubro")||false;
   if(!vals.name){ btn.disabled=false; btn.textContent="Guardar y sincronizar con Odoo"; toast("⚠ Falta el nombre"); return; }
@@ -1225,9 +1743,10 @@ async function guardarContacto(id){
       c.comercial=fresh.user_id?fresh.user_id[1]:"Sin asignar"; c.comercialId=fresh.user_id?fresh.user_id[0]:false;
       const d=soloDig(fresh.mobile||fresh.phone); c.telEstado=!d?"falta":(d.length>=8&&d.length<=13?"ok":"dudoso");
       const faltan=[]; if(c.telEstado==="falta")faltan.push("teléfono"); else if(c.telEstado==="dudoso")faltan.push("tel. formato"); if(!c.emailOk)faltan.push("email"); if(!c.cuit)faltan.push("CUIT"); if(!c.fiscal)faltan.push("cond. fiscal"); c.faltantes=faltan;
+      c.padreId=fresh.parent_id?fresh.parent_id[0]:false; c.padre=fresh.parent_id?fresh.parent_id[1]:"";
       if(c.comercialId && !COMLIST.some(o=>o.id===c.comercialId)) COMLIST.push({id:c.comercialId,name:c.comercial});
     }
-    if(UNI) cruzar(); recalcComs();
+    if(UNI) cruzar(); recalcComs(); _dupCache=null;
     toast("✅ Datos guardados y sincronizados con Odoo");
     render(); abrir(id);
   }catch(e){ btn.disabled=false; btn.textContent="Guardar y sincronizar con Odoo"; toast("⚠ No se pudo guardar: "+(e.message||e)); }
@@ -1357,9 +1876,11 @@ function exportarCSV(){
 /* ================= Auto-refresco (la info se va actualizando en Odoo) =================
    Recarga silenciosa cada ~45s: no molesta si la pestaña está oculta, si hay un panel
    abierto o si estás escribiendo/eligiendo en un campo. Preserva el scroll y los filtros. */
+// mientras estás con el mapa abierto no se recarga: te movería el encuadre y perderías el recorrido
+const enMapa = () => filtro.tab==="conquistar" && filtro.pVista==="mapa";
 function iniciarAutoRefresco(){
-  setInterval(()=>{ if(document.hidden||drawerAbierto()||editando()||_cargando) return; if(Date.now()-_lastLoad<45000) return; cargar(true); }, 30000);
-  document.addEventListener("visibilitychange",()=>{ if(!document.hidden && !drawerAbierto() && !editando() && Date.now()-_lastLoad>60000) cargar(true); });
+  setInterval(()=>{ if(document.hidden||drawerAbierto()||editando()||_cargando||enMapa()) return; if(Date.now()-_lastLoad<45000) return; cargar(true); }, 30000);
+  document.addEventListener("visibilitychange",()=>{ if(!document.hidden && !drawerAbierto() && !editando() && !enMapa() && Date.now()-_lastLoad>60000) cargar(true); });
 }
 
 EYG.guard(["comercial","lider","admin","direccion"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(p=>{ PERFIL=p; cargar(); iniciarAutoRefresco(); });
