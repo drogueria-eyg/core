@@ -965,16 +965,35 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
      deja en `wsp_audios`; esto trae lo que falte —los audios que entraron con el
      bot apagado, o viejos— y los cachea igual. La transcripción es SOLO para
      leer acá adentro: nunca se le escribe al cliente. */
-  let transcritos={}, transcribiendo=false, pedidosYa=new Set();
+  let transcritos={}, tiposAdj={}, transcribiendo=false, pedidosYa=new Set();
+
+  /* QUÉ MANDÓ, no solo qué dijo. Acá se rotulaba TODO adjunto como "nota de
+     voz" porque era el único dato disponible: wsp-transcribir devolvía nada más
+     que los textos. Natividad mandó una IMAGEN y en la bandeja figuraba como
+     audio. Ahora la función devuelve también `tipos` y cada cosa se muestra
+     como lo que es. */
+  const ROTULO={audio:"🎙️ NOTA DE VOZ", imagen:"🖼️ IMAGEN", pdf:"📄 PDF",
+                video:"🎬 VIDEO", archivo:"📎 ARCHIVO"};
+  const claseAdj=ids=>{
+    const cs=(ids||[]).map(a=>(tiposAdj[a]||{}).clase).filter(Boolean);
+    if(!cs.length) return "";
+    /* Si vienen varios y alguno no es audio, manda el que no es audio: lo que
+       no hay que perder es que llegó un archivo. */
+    return cs.find(c=>c!=="audio") || cs[0];
+  };
+
   async function traerTranscripciones(){
+    /* Se piden los que no tienen TIPO todavía, no los que no tienen texto: una
+       imagen nunca va a tener texto y antes se volvía a pedir para siempre. */
     const ids=[...new Set(msgs.flatMap(m=>m.attachment_ids||[]))]
-      .filter(a=>!transcritos[a] && !pedidosYa.has(a));
+      .filter(a=>!tiposAdj[a] && !pedidosYa.has(a));
     if(!ids.length) return;
     ids.forEach(a=>pedidosYa.add(a));
     transcribiendo=true; firmaMsgs=""; pintarChat(true);
     try{
       const {data}=await EYG.supa().functions.invoke("wsp-transcribir",{body:{adjuntos:ids}});
       Object.assign(transcritos, (data&&data.textos)||{});
+      Object.assign(tiposAdj,   (data&&data.tipos) ||{});
     }catch(e){ /* si falla queda "sin transcribir", no rompe el chat */ }
     transcribiendo=false; firmaMsgs=""; pintarChat(true);
   }
@@ -1009,7 +1028,12 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
           if(/presupuesto|pedido|📝/.test(m.body)) anotar("ped", nro?`presupuesto ${nro} actualizado`:"pedido actualizado", m.date);
           else anotar("eq","derivado al equipo", m.date);
         } else if(delCliente){
-          if((m.attachment_ids||[]).length) anotar("voz",`nota de voz de ${quien}`, m.date);
+          if((m.attachment_ids||[]).length){
+            const cl=claseAdj(m.attachment_ids);
+            const qu={audio:"nota de voz", imagen:"una imagen", pdf:"un PDF",
+                      video:"un video", archivo:"un archivo"}[cl] || "un adjunto";
+            anotar(cl==="audio"?"voz":"cli", `${qu} de ${quien}`, m.date);
+          }
           else anotar("cli",`mensaje de ${quien} · ${limpiar(m.body).split(/\s+/).length} palabras`, m.date);
         } else if(esDelBot(m)){
           const largo=limpiar(m.body).length;
@@ -1078,11 +1102,22 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
           const dicho=adj.map(a=>transcritos[a]).filter(Boolean).join(" ");
           const soyCli=Array.isArray(m.author_id)&&pid&&m.author_id[0]===pid&&!esDelBot(m);
           const qn=!soyCli?`<span class="qui">${esDelBot(m)?"ASISTENTE":esc(nom1(m.author_id)||"EQUIPO")}</span>`:"";
-          const cuerpo=dicho
-            ? `<span class="dicho">${esc(dicho)}</span>`
-            : `<span class="pendiente">${transcribiendo?"pasando a texto…":"nota de voz (sin transcribir)"}</span>`;
+          const cl=claseAdj(adj);
+          /* Sin tipo todavía (la consulta está en camino) no se afirma nada:
+             decir "nota de voz" y que sea una foto es peor que decir "adjunto". */
+          const rotulo=cl ? ROTULO[cl] : (transcribiendo?"📎 ADJUNTO":"📎 ADJUNTO");
+          let cuerpo;
+          if(cl && cl!=="audio"){
+            /* Una imagen o un PDF no se transcriben: lo útil es el nombre. */
+            const nom=adj.map(a=>(tiposAdj[a]||{}).nombre).filter(Boolean).join(", ");
+            cuerpo=`<span class="dicho">${esc(nom||"(sin nombre)")}</span>`;
+          }else{
+            cuerpo=dicho
+              ? `<span class="dicho">${esc(dicho)}</span>`
+              : `<span class="pendiente">${transcribiendo?"pasando a texto…":(cl?"nota de voz (sin transcribir)":"leyendo el adjunto…")}</span>`;
+          }
           return `<div class="m ${soyCli?"in":"out"}${esDelBot(m)?" bot":""}">${qn}`+
-                 `<span class="voznota">🎙️ NOTA DE VOZ</span><br>${cuerpo}`+
+                 `<span class="voznota">${rotulo}</span><br>${cuerpo}`+
                  `<span class="hora">${esc(hora(m.date))}</span></div>`;
         }
         if(!txt) return "";
