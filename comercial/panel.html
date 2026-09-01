@@ -613,6 +613,13 @@ function comisionDesglose(v){const c=corteObjetivo(),r=ratesConSalud(),t=[];t.pu
 const NIV=[{n:"Bronce",e:"🥉",m:1.00},{n:"Plata",e:"🥈",m:1.05},{n:"Oro",e:"🥇",m:1.10},{n:"Platino",e:"💎",m:1.15},{n:"Diamante",e:"👑",m:1.20}];
 const params=new URLSearchParams(location.search);
 let COMERCIAL="";  // se define en el arranque según la cuenta logueada (o ?c= para líder/admin)
+/* Los LÍDERES que venden (Marcela, German, Diego) todavía NO tienen definido su esquema de
+   comisión: el motor de este panel es el de los COMERCIALES (facturado neto → tramos → nivel
+   → salud) y aplicárselo a un líder daría un número inventado. Mientras no se defina, la
+   tarjeta de comisión muestra "a definir" en vez de una cifra. Se resuelve por el ROL del
+   dueño del panel en core_users, no por nombre, así al nombrar un líder nuevo funciona solo.
+   Cuando se defina el esquema: implementarlo y sacar este flag. */
+let SIN_COMISION=false;
 let MODO_LIDER=false;  // ?modo=lider (solo no-comercial): panel de cartera SIN gamificación + gráfico de evolución
 const REQ=[{k:"name",l:"Nombre"},{k:"tel",l:"Teléfono"},{k:"email",l:"Email"},{k:"street",l:"Dirección"},{k:"zip",l:"CP"},{k:"city",l:"Localidad"},{k:"state",l:"Provincia"},{k:"idtype",l:"Tipo doc"},{k:"vat",l:"Nº doc"},{k:"fiscal",l:"Cond. fiscal"}];
 // Rubro (vive en category_id / etiquetas de Odoo). Mapa tag->valor canónico
@@ -1204,7 +1211,14 @@ function render(){
           <div style="margin-top:9px"><a onclick="verOdoo('action=667&view_type=list&search_default_sales=1')" style="color:var(--teal);font-weight:700;cursor:pointer;font-size:12.5px">Ver mis pedidos en Odoo →</a></div>
         </div></div></div>
       </div>
-      <div class="kpi hl neon">
+      ${SIN_COMISION?`<div class="kpi">
+        <div class="khead" onclick="tk(this.parentNode)"><span class="kic">💰</span><div class="kmeta"><div class="kl">Comisión</div><div class="kv" style="color:var(--gris)">A definir</div><div class="ks">todavía no hay esquema para líderes</div></div><span class="kchev">▾</span></div>
+        <div class="acc"><div class="accw"><div class="accin">
+          <div style="font-size:12.5px;color:var(--gris);line-height:1.6">Tu esquema de comisión como <b>líder</b> todavía <b>no está definido</b>.<br><br>
+          Acá abajo no ponemos un número porque el cálculo que usa este panel es el de los <b>comerciales</b> (facturado neto → tramos → nivel → salud): aplicártelo a vos daría una cifra que no corresponde a nada.<br><br>
+          Igual podés ver todo lo demás: tu facturado, tu cobranza y tu cartera. En cuanto Dirección defina el esquema, aparece acá.</div>
+        </div></div></div>
+      </div>`:`<div class="kpi hl neon">
         <div class="khead" onclick="tk(this.parentNode)"><span class="kic">💰</span><div class="kmeta"><div class="kl">Comisión estimada</div><div class="kv glowtx">${money(cTot)}</div><div class="ks">${externo?'Externo · 3/4% fijo':'tocá para ver el desglose'}</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
           <div class="drow"><span>🧾 Facturado neto del mes</span><b>${money(ST.ventaMes)}</b></div>
@@ -1213,7 +1227,7 @@ function render(){
           ${externo?'':`<div class="drow"><span>Ajustes: nivel ${nv.emoji}×${nv.mult.toFixed(2)} · salud ${sd&&sd.penaltyPt>0.005?'−'+sd.penaltyPt.toFixed(2)+'pt':'ok'}</span><b style="font-size:10.5px;opacity:.8">detalle en Rendimiento ↓</b></div>`}
           <div class="drow tot"><span>Tu comisión</span><b>${money(cTot)}</b></div>
         </div></div></div>
-      </div>
+      </div>`}
     </div>`}
     ${ppSectionHTML()}
     <div class="secrow"><h2 class="sec">💵 Estado de cobranza <span style="font-size:11px;color:var(--gris2);font-weight:600;letter-spacing:0;text-transform:none">· para tu seguimiento</span></h2></div>
@@ -2741,6 +2755,13 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(async perfil=>{
       const nb=document.getElementById("navBack"); if(nb){ nb.href="comerciales.html"; nb.title="Volver al Panel comerciales"; }
     }
   }
+  // ¿El dueño de este panel es un líder? Entonces su comisión está a definir (ver SIN_COMISION).
+  EYG.rosterCore().then(r=>{
+    const nrm=s=>(s||"").toString().trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+    const u=(r||[]).find(x=>nrm(x.comercial_ref)===nrm(COMERCIAL)||nrm(x.nombre)===nrm(COMERCIAL));
+    const esLider=u && ["lider","direccion","admin"].includes(u.rol);
+    if(esLider){ SIN_COMISION=true; render(); }
+  }).catch(()=>{});
   cargar().then(()=>{
     // Presencia: solo si es SU propia cuenta (no cuando un líder/admin espía el panel con ?c=).
     if(perfil.rol==="comercial" && ST.userId && EYG.startPresencia) EYG.startPresencia(ST.userId);
