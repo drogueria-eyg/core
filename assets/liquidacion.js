@@ -41,6 +41,19 @@ const pctFicha=c=>{ const has={name:!!c.name,tel:!!(c.phone||c.mobile),email:!!c
   vat:!!c.vat,fiscal:!!(c.l10n_ar_afip_responsibility_type_id&&c.l10n_ar_afip_responsibility_type_id[0])};
   return Math.round(REQ.filter(k=>has[k]).length/REQ.length*100); };
 
+/* ===== EXCLUSIONES PUNTUALES (eyg.comisiones_excluidos) =====
+   Facturas o notas de crédito que Dirección decidió NO computar para la comisión, con su motivo.
+   No se toca nada en la contabilidad: se saca solo del cálculo, y queda el registro de por qué.
+   Caso que lo motivó (1/9/2026): una NC que revertía una venta de mayo ya liquidada. */
+const EXCL_KEY="eyg.comisiones_excluidos";
+let _excl=null;
+async function excluidos(force){
+  if(_excl && !force) return _excl;
+  try{ _excl=JSON.parse(await rpc("ir.config_parameter","get_param",[EXCL_KEY])||"[]")||[]; }catch(e){ _excl=[]; }
+  return _excl;
+}
+const exclIds=lista=>(lista||[]).map(x=>x&&x.move).filter(Boolean);
+
 /* ===== persistencia del cierre ===== */
 async function cierresLeer(){ try{ return JSON.parse(await rpc("ir.config_parameter","get_param",[CIERRES_KEY])||"[]")||[]; }catch(e){ return []; } }
 async function cierreLeer(mes){ try{ const s=await rpc("ir.config_parameter","get_param",[cierreKey(mes)]); return s?JSON.parse(s):null; }catch(e){ return null; } }
@@ -58,8 +71,9 @@ async function cierreReabrir(mes){
 /* ===== facturado neto del mes, atribuido a quien generó el pedido =====
    Rama A: el pedido es suyo. Rama B: el pedido quedó bajo la genérica → dueño del cliente.
    Se devuelven separadas para poder AUDITAR el arrastre por traspaso de clientes. */
-async function facturado(uid,r){
-  const base=mt=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",r.ini],["date","<=",r.fin]];
+async function facturado(uid,r,exIds){
+  const ex=(exIds&&exIds.length)?[["move_id","not in",exIds]]:[];
+  const base=mt=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",r.ini],["date","<=",r.fin],...ex];
   const A=mt=>[...base(mt),["sale_line_ids.order_id.user_id","=",uid]];
   const B=mt=>[...base(mt),["sale_line_ids.order_id.user_id","=",GEN],["sale_line_ids.order_id.partner_id.user_id","=",uid]];
   const g=(dom)=>rpc("account.move.line","read_group",[dom,["price_subtotal:sum","price_total:sum"],[]],{lazy:false}).catch(()=>[]);
@@ -180,11 +194,13 @@ async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
       .filter(o=>(o.desde||"2000-01-01").slice(0,10)<=r.fin && (o.hasta||"2999-12-31").slice(0,10)>=r.ini);
   }catch(e){}
 
+  const exList=await excluidos(true);            // comprobantes que Dirección sacó del cálculo
+  const exIds=exclIds(exList);
   const filas=[];
   for(const s of sellers){
     if(ex.has(s.uid)) continue;
     if(onPaso) onPaso(s.name);
-    const f=await facturado(s.uid,r);
+    const f=await facturado(s.uid,r,exIds);
     const neto=f.facturas-f.nc;
     const perfil=esExterno(s.name)?"externo":(((ticket||{})[s.uid]||0)>=(cfg.perfilTicket||300000)?"inst":"farm");
     const md=EYG.metaDesde(monthly[s.uid]||{}, mes, cfg);
@@ -212,7 +228,10 @@ async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
       comiBase, nivel, salud, comiFinal });
   }
   filas.sort((a,b)=>b.comiFinal-a.comiFinal);
-  return { mes, generado:new Date().toISOString().slice(0,10), config:cfg, excluidos:[...ex], comerciales:filas };
+  // se guardan también los comprobantes excluidos DE ESTE MES, con su motivo, para poder justificarlo
+  const delMes=exList.filter(x=>x&&(!x.decidido||true)&&String(x.nombre||"").length);
+  return { mes, generado:new Date().toISOString().slice(0,10), config:cfg, excluidos:[...ex],
+    excluidosComprobantes:delMes, comerciales:filas };
 }
 
 /* ===== VISTA: el desglose que se le entrega a cada comercial ===== */
@@ -292,6 +311,12 @@ function docHTML(data,cerrado){
         <tr class="t"><td>Total a liquidar</td><td class="n">${M(totNeto)}</td><td class="n"></td><td class="n"></td><td class="n">${M2(tot)}</td></tr>
       </table>
     </div>
+    ${(data.excluidosComprobantes||[]).length?`<div class="lqres" style="border-color:#F0DAA8;background:#FFFDF7">
+      <div style="font-size:13.5px;font-weight:800;margin-bottom:8px">⚖️ Comprobantes que Dirección sacó del cálculo</div>
+      <table class="lqrt"><tr><th>Comprobante</th><th>Cliente</th><th>Comercial</th><th class="n">Neto</th></tr>
+      ${data.excluidosComprobantes.map(x=>`<tr><td><b>${esc(x.nombre)}</b><br><span style="font-size:11px;color:var(--gris2)">${esc(x.motivo||"")}</span></td>
+        <td>${esc(x.cliente||"—")}</td><td>${esc(x.comercial||"—")}</td><td class="n">${M(x.neto)}</td></tr>`).join("")}</table>
+      </div>`:""}
     ${cs.map(hojaHTML).join("")}
     <div class="lqpie"><b>La cuenta, en una línea:</b> comisión = (facturado neto hasta la meta × tasa base + lo que la supera × tasa alta) × nivel, con la tasa recortada por la salud de la cuenta.
       <ul><li><b>Facturado neto</b>: facturas menos notas de crédito, sin IVA, de las ventas que salieron de sus pedidos. Si un cliente cambió de cartera, la venta queda de quien la hizo.</li>
@@ -305,5 +330,6 @@ function docHTML(data,cerrado){
 }
 
 window.EYGLIQ={ rango, cierresLeer, cierreLeer, cierreGuardar, cierreReabrir, cierreKey,
-  facturado, gamificacion, nivelDe, saludDe, calcularMes, hojaHTML, docHTML, PERFIL, NIV };
+  facturado, gamificacion, nivelDe, saludDe, calcularMes, hojaHTML, docHTML, PERFIL, NIV,
+  EXCL_KEY, excluidos, exclIds };
 })();

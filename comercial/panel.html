@@ -790,7 +790,11 @@ async function cargar(){
       try{
         // Atribución HÍBRIDA: se te cuenta la factura si generaste vos el pedido; y si el pedido quedó bajo
         // la cuenta genérica (452), se le cuenta al DUEÑO DEL CLIENTE (recupera lo mal cargado sin inventar).
-        const domF=(mt)=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",hace(210)],
+        // Comprobantes que Dirección sacó del cálculo a mano (eyg.comisiones_excluidos), con su motivo.
+        // No se toca la contabilidad: solo no se computan para la comisión.
+        try{ ST.exclMoves=(JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.comisiones_excluidos"])||"[]")||[]).map(x=>x&&x.move).filter(Boolean); }catch(e){ ST.exclMoves=[]; }
+        const exF=(ST.exclMoves&&ST.exclMoves.length)?[["move_id","not in",ST.exclMoves]]:[];
+        const domF=(mt)=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",hace(210)],...exF,
           "|",["sale_line_ids.order_id.user_id","=",ST.userId],
               "&",["sale_line_ids.order_id.user_id","=",452],["sale_line_ids.order_id.partner_id.user_id","=",ST.userId]];
         const [fi,fr]=await Promise.all([
@@ -947,7 +951,8 @@ async function verNCmes(){
       <div id="ncBody" style="padding:14px 18px;color:var(--gris)">Cargando…</div>
     </div></div>`;
   try{
-    const g=await rpc("account.move.line","read_group",[[["parent_state","=","posted"],["move_id.move_type","=","out_refund"],["date",">=",inicioMes],
+    const exNC=(ST.exclMoves&&ST.exclMoves.length)?[["move_id","not in",ST.exclMoves]]:[];   // las que Dirección sacó del cálculo no se listan
+    const g=await rpc("account.move.line","read_group",[[["parent_state","=","posted"],["move_id.move_type","=","out_refund"],["date",">=",inicioMes],...exNC,
       "|",["sale_line_ids.order_id.user_id","=",ST.userId],
           "&",["sale_line_ids.order_id.user_id","=",452],["sale_line_ids.order_id.partner_id.user_id","=",ST.userId]],["price_total:sum"],["move_id"]],{lazy:false});
     const netById={}; const ids=[];
