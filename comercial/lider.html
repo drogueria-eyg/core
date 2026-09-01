@@ -248,7 +248,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=45"></script>
+<script src="../assets/core.js?v=46"></script>
 <script src="../assets/metrics.js?v=5"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
@@ -378,19 +378,20 @@ async function refreshHoy(){
 function tick(){ if(typeof document!=="undefined" && document.hidden) return;   // pestaña oculta: no consultar
   refreshHoy().then(()=>{ renderKpis(); renderChart(); renderEquipo(); }).catch(()=>{}); cargarPresencia(); }
 
-/* Presencia del equipo (heartbeat eyg.presencia.<uid>). Se carga async, no bloquea el panel.
+/* Presencia del equipo (heartbeat en la tabla eyg_presencia de Supabase; antes vivía en
+   ir.config_parameter de Odoo y era el ~21% del trafico del Core). Se carga async, no bloquea el panel.
    La usa la vista principal (conectados X/X) y la pestaña Actividad. */
 let PRES=null;
 function presOnline(){ if(!PRES) return null; const now=Date.now(), hoy=argToday();
   return UIDS.filter(uid=>{ const p=PRES[uid]||{}; return p.online && p.dia===hoy && (now-new Date(p.online).getTime())<4*60000; }); }
 async function cargarPresencia(){
   try{
-    // 1 sola query (era 1 get_param por integrante, y se repetía cada tick). search_read
-    // de ir.config_parameter con key in [...] y mapeo por clave. Ver [[eyg-odoo-carga-performance]].
-    const keys=UIDS.map(uid=>"eyg.presencia."+uid);
-    const rows=await EYG.rpc("ir.config_parameter","search_read",[[["key","in",keys]]],{fields:["key","value"]});
-    const byKey={}; rows.forEach(r=>{ byKey[r.key]=r.value; });
-    const m={}; UIDS.forEach(uid=>{ try{ m[uid]=JSON.parse(byKey["eyg.presencia."+uid]||"{}")||{}; }catch(e){ m[uid]={}; } }); PRES=m;
+    // El latido dejó de vivir en Odoo (era el ~21% del tráfico del Core, solo
+    // para guardar quién está conectado). Ahora sale de Supabase: 1 query, y
+    // sin ocupar un worker de Odoo. El objeto guardado es el mismo de antes.
+    const {data}=await EYG.supa().from("eyg_presencia").select("uid,estado").in("uid",UIDS);
+    const porUid={}; (data||[]).forEach(r=>{ porUid[r.uid]=r.estado||{}; });
+    const m={}; UIDS.forEach(uid=>{ m[uid]=porUid[uid]||{}; }); PRES=m;
     renderKpis(); if(VISTA==="actividad" && ACT_LIDER) renderActividadLider();
   }catch(e){}
 }
@@ -699,7 +700,7 @@ function renderOfertasLider(){
 }
 
 /* ===== Pieza 2: Actividad y presencia del equipo =====
-   Presencia: lee eyg.presencia.<uid> (heartbeat del panel del comercial).
+   Presencia: lee la tabla eyg_presencia de Supabase (heartbeat del panel del comercial).
    Actividad de hoy: contactos [EyGWA], ofertas [EyGOFENV] y altas de contacto, con hora. */
 let ACT_LIDER=null;
 function horaAR(s){ if(s==null||s==="") return ""; const d=(typeof s==="number")?new Date(s):new Date(String(s).includes("T")?s:(String(s).replace(" ","T")+"Z")); return new Intl.DateTimeFormat("es-AR",{timeZone:"America/Argentina/Buenos_Aires",hour:"2-digit",minute:"2-digit",hour12:false}).format(d); }

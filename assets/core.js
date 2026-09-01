@@ -635,7 +635,11 @@ window.EYG = (function(){
         const env = tit ? envTexts.filter(b=>b.includes(tit)).length : 0;
         let ven=0;
         if(pids.length){ const desde=(o.creada||(d120+" 00:00:00")), hasta=(o.hasta||hoy);
-          try{ const g=await rpc("sale.order.line","read_group",[[["product_id","in",pids],["state","in",["sale","done"]],["order_id.date_order",">=",desde],["order_id.date_order","<=",hasta+" 23:59:59"]],["__count"],["order_partner_id"]],{lazy:false}); ven=g.length; }catch(e){} }
+          // Una consulta POR OFERTA, y el panel del comercial hace la misma.
+          // Es un read_group sobre sale.order.line, de las caras. El resultado
+          // es GLOBAL (no depende de quién mire), así que se comparte: la
+          // calcula el primero que entra y el resto la lee.
+          try{ const g=await cacheOdoo("oferta-ventas-"+o.id, 600, ()=>rpc("sale.order.line","read_group",[[["product_id","in",pids],["state","in",["sale","done"]],["order_id.date_order",">=",desde],["order_id.date_order","<=",hasta+" 23:59:59"]],["price_subtotal:sum"],["order_partner_id"]],{lazy:false})); ven=g.length; }catch(e){} }
         stat[o.id]={env,ven,conv:env>0?ven/env:0, score:(env>0?ven/env:0)*100+ven};
       }));
     }catch(e){}
@@ -1115,7 +1119,7 @@ window.EYG = (function(){
 
   /* ---- Presencia (heartbeat en el Core) ----
      Cada comercial registra SU PROPIA franja de conexión del día en el parámetro
-     ir.config_parameter `eyg.presencia.<uid>` (solo él escribe su clave → sin carreras).
+     tabla `eyg_presencia` de Supabase (solo él escribe su fila → sin carreras).
      El panel del líder lo lee para ver quién está en línea y cuánto se conecta.
      bandas = [[inicioISO, finISO], ...] del día; un hueco > 5 min abre una banda nueva. */
   let _presTimer=null, _lastPing=0, _lastAct=Date.now();
@@ -1125,13 +1129,18 @@ window.EYG = (function(){
     if(typeof document==="undefined") return true;
     return document.visibilityState==="visible" || (Date.now()-_lastAct < 5*60000);
   }
+  // EL LATIDO YA NO VA A ODOO. Vivía en ir.config_parameter: un get_param + un
+  // set_param por minuto y por panel abierto. Medido el 1/9/2026 fueron 3.119
+  // llamadas en 3 horas, el ~21% de todo el tráfico del Core a Odoo, para
+  // guardar quién está conectado. Odoo tiene pocos workers y cada uno ocupado
+  // acá es uno que le falta a las consultas de verdad — y al bot de WhatsApp,
+  // que comparte los mismos. El dato es nuestro: va a Supabase (eyg_presencia),
+  // donde no le cuesta a nadie. El objeto guardado es EL MISMO de antes.
   async function presenciaPing(uid, force){
     if(!uid) return;
     if(!force && !_presActivo()) return;   // fondo quieto: no cuenta ni escribe (menos carga)
     try{
-      const key="eyg.presencia."+uid;
-      const raw=await rpc("ir.config_parameter","get_param",[key]).catch(()=>null);
-      let st={}; try{ st=JSON.parse(raw||"{}")||{}; }catch(e){ st={}; }
+      let st = await _presLeer(uid);
       const now=new Date(), nowISO=now.toISOString(), hoy=argToday();
       if(st.dia!==hoy){ st.dia=hoy; st.bandas=[]; }
       const b=Array.isArray(st.bandas)?st.bandas:[]; const last=b[b.length-1];
@@ -1139,8 +1148,21 @@ window.EYG = (function(){
       if(last && (now-new Date(last[1]))<6*60000){ last[1]=nowISO; } else { b.push([nowISO,nowISO]); }
       st.bandas=b; st.online=nowISO;
       if(Date.now()-_lastAct < 90000) st.lastAct=nowISO;   // última interacción (mouse/clic/teclado)
-      await rpc("ir.config_parameter","set_param",[key, JSON.stringify(st)]);
+      await supa().from("eyg_presencia").upsert({uid:Number(uid), estado:st, cuando:nowISO});
     }catch(e){}
+  }
+  // Lee el latido propio. La PRIMERA vez que no encuentra nada en Supabase se
+  // fija en Odoo: así el día del cambio nadie pierde las franjas que ya llevaba
+  // acumuladas hoy. Después la fila existe y no se vuelve a preguntar.
+  async function _presLeer(uid){
+    try{
+      const {data}=await supa().from("eyg_presencia").select("estado").eq("uid",Number(uid)).maybeSingle();
+      if(data && data.estado) return data.estado;
+    }catch(e){}
+    try{
+      const raw=await rpc("ir.config_parameter","get_param",["eyg.presencia."+uid]).catch(()=>null);
+      return JSON.parse(raw||"{}")||{};
+    }catch(e){ return {}; }
   }
   function startPresencia(uid){
     if(!uid || _presTimer) return;

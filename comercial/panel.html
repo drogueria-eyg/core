@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=45"></script>
+<script src="../assets/core.js?v=46"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -1802,10 +1802,16 @@ async function cargarOfertas(ids){
       // GLOBAL: clientes de TODA la droguería que compraron la oferta en su vigencia (sin
       // restringir a la cartera del comercial). De acá se derivan: lo mío (intersección con
       // mi cartera) y lo de TODOS (para las estadísticas de rendimiento de la oferta).
-      const g=await rpc("sale.order.line","read_group",
+      // MISMA consulta que hace core.js para la tarjeta del líder, y una por
+      // oferta: con 9 ofertas eran 9 read_group caros cada vez que un comercial
+      // abría el panel. El resultado es GLOBAL (a propósito, ver el comentario
+      // de arriba), o sea idéntico para todos: se comparte por la clave
+      // "oferta-ventas-<id>". Lo mío se sigue derivando abajo, de este mismo
+      // resultado, cruzando con mi cartera.
+      const g=await EYG.cacheOdoo("oferta-ventas-"+o.id, 600, ()=>rpc("sale.order.line","read_group",
         [[["product_id","in",pids],["state","in",["sale","done"]],
           ["order_id.date_order",">=",desde],["order_id.date_order","<=",hasta+" 23:59:59"]],
-         ["price_subtotal:sum"],["order_partner_id"]],{lazy:false});
+         ["price_subtotal:sum"],["order_partner_id"]],{lazy:false}));
       const idset=new Set(ids);
       const rows=g.map(x=>({p:x.order_partner_id&&x.order_partner_id[0], m:x.price_subtotal||0})).filter(x=>x.p);
       const mios=rows.filter(x=>idset.has(x.p));
