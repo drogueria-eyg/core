@@ -1372,6 +1372,173 @@ window.EYG = (function(){
   /* Aplica campos a un item (ej. {descartado:{motivo,por,ts}} o {archivado:true}). RMW. */
   async function conquistarPatch(id, patch){ const arr=await conquistarLeer(); const it=arr.find(x=>x&&x.id===id); if(it){ Object.assign(it, patch||{}); await conquistarGuardar(arr); } return arr; }
 
+  /* ===== PADRÓN OFICIAL DE SALUD (universo) — herramientas COMPARTIDAS =====
+     El padrón (REFAR farmacias + REFES establecimientos, Ministerio de Salud) vive en
+     `direccion/universo-salud.json`: {locs:[[localidad,provincia,lat,lon,…]],
+     est:[[nombre, idxLocalidad, tipo(0 farmacia/1 institución), domicilio, lat, lon]]}.
+     Trae ubicación exacta en 4.422 de 10.877; el resto se apoya en el centro de su localidad.
+     Estas funciones estaban dentro del módulo Contactos; se subieron acá para que el mapa del
+     comercial cruce EXACTAMENTE igual (si el criterio cambia, cambia en un solo lugar). */
+  const PAD_SIGLAS=new Set(["SA","SRL","SAS","SH","SCS","SAMCO","OSPE","PAMI","IAPOS","IPS","ART","OSDE","CIC","CAPS","SIES","ACA","EPE","CEMAR","AMR","APROSS","IOMA","SAU","SACIF","SAIC","II","III","IV","VI","VII","VIII","IX"]);
+  const PAD_ENLACES=new Set(["DE","DEL","LA","LAS","LOS","EL","Y","E","EN","A","AL","POR","PARA","CON"]);
+  const PAD_TILDES={ANALISIS:"Análisis",CLINICO:"Clínico",CLINICA:"Clínica",CLINICOS:"Clínicos",CLINICAS:"Clínicas",MEDICO:"Médico",MEDICA:"Médica",MEDICOS:"Médicos",MEDICAS:"Médicas",ATENCION:"Atención",DIAGNOSTICO:"Diagnóstico",IMAGENES:"Imágenes",FARMACEUTICO:"Farmacéutico",FARMACEUTICA:"Farmacéutica",ASOCIACION:"Asociación",FUNDACION:"Fundación",FEDERACION:"Federación",PROTECCION:"Protección",ADMINISTRACION:"Administración",REHABILITACION:"Rehabilitación",INTERNACION:"Internación",NUTRICION:"Nutrición",CIRUGIA:"Cirugía",DIALISIS:"Diálisis",ONCOLOGIA:"Oncología",CARDIOLOGIA:"Cardiología",TRAUMATOLOGIA:"Traumatología",OFTALMOLOGIA:"Oftalmología",RADIOLOGIA:"Radiología",ODONTOLOGIA:"Odontología",PSICOLOGIA:"Psicología",GINECOLOGIA:"Ginecología",NEUROLOGIA:"Neurología",NEFROLOGIA:"Nefrología",UROLOGIA:"Urología",KINESIOLOGIA:"Kinesiología",PUBLICO:"Público",PUBLICA:"Pública",JOSE:"José",MARIA:"María",NICOLAS:"Nicolás",ANDRES:"Andrés",TOMAS:"Tomás",MARTIN:"Martín",RAMON:"Ramón",JULIAN:"Julián",ADRIAN:"Adrián",HECTOR:"Héctor",VICTOR:"Víctor",ANGEL:"Ángel",INES:"Inés",JESUS:"Jesús",BELEN:"Belén",GERMAN:"Germán",JOAQUIN:"Joaquín",SIMON:"Simón",CONCEPCION:"Concepción"};
+  const padNorm = s => (s||"").toString().trim().toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\s+/g," ");
+  function padTitulo(s){ let t=(s||"").toString().replace(/\s+/g," ").trim(); if(!t) return "";
+    return t.split(" ").map((w,i)=>{ const u=w.toUpperCase().replace(/[^A-ZÁÉÍÓÚÑ0-9]/g,"");
+      if(PAD_SIGLAS.has(u)) return w.toUpperCase(); if(PAD_TILDES[u]) return PAD_TILDES[u];
+      if(/^\d/.test(w)) return w; if(w.length<=1) return w.toUpperCase();
+      const low=w.toLowerCase(); if(i>0&&PAD_ENLACES.has(u)) return low;
+      return low.charAt(0).toUpperCase()+low.slice(1); }).join(" "); }
+  const PAD_LOC_ALIAS={"ROSARIO SUD":"ROSARIO","ROSARIO NORTE":"ROSARIO","ROSARIOS":"ROSARIO","RSOARIO":"ROSARIO","BARRIO FISHERTON":"ROSARIO","BARRIO PARQUE":"ROSARIO","ROSARIO SANTA FE":"ROSARIO","V GOBERNADOR GALVEZ":"VILLA GOBERNADOR GALVEZ","CABA":"CIUDAD AUTONOMA DE BUENOS AIRES","CIUDAD DE BUENOS AIRES":"CIUDAD AUTONOMA DE BUENOS AIRES","BARRIO NUEVA CORDOBA":"CORDOBA","EMPALME":"EMPALME VILLA CONSTITUCION","SAN JERONIMO":"SAN JERONIMO SUD","VILLA CONSTITUC":"VILLA CONSTITUCION"};
+  function padLocKey(city){ let loc=padNorm(city).replace(/\./g," ").split(",")[0].replace(/\s+/g," ").trim(); return PAD_LOC_ALIAS[loc]||loc; }
+  const PAD_RUIDO=/\b(FARMACIA|FARMACIAS|FCIA|SRL|S R L|SA|S A|SAS|S A S|SH|S H|DE|DEL|LA|EL|LOS|LAS|Y|E|HIJOS|HNOS|HERMANOS|SOCIEDAD|ANONIMA|LTDA|LIMITADA|CIA)\b/g;
+  const PAD_GENERICO=new Set(["PARQUE","CENTRO","NORTE","SUR","ESTE","OESTE","NUEVA","NUEVO","SAN","SANTA","CENTRAL","MODELO","ESPANOL","ESPANOLA","ITALIANO","ITALIANA","MUNICIPAL","PROVINCIAL","REGIONAL","GENERAL","MEDICA","MEDICO","SALUD","VIDA","CRUZ","PLAZA","MITRE","BELGRANO","SARMIENTO","MORENO","URQUIZA","ALBERDI","RIVADAVIA"]);
+  const padClave = s => padNorm(s).replace(/[^A-Z0-9 ]/g," ").replace(PAD_RUIDO," ").replace(/\s+/g," ").trim();
+  const padTk = s => s.split(" ").filter(x=>x.length>2);
+  /* Mismo núcleo de nombre. Una sola palabra exige ≥4 letras y que no sea genérica: dentro de
+     la MISMA localidad, un apellido corto igual (Amat, Vega, Azar…) sí es el mismo lugar. */
+  function padCoincide(a,b){
+    if(!a||!b) return false;
+    const ta=padTk(a), tb=padTk(b); if(!ta.length||!tb.length) return false;
+    if(a===b){ if(ta.length===1) return ta[0].length>=4 && !PAD_GENERICO.has(ta[0]); return true; }
+    if(ta.length>=2 && tb.length>=2){ const A=new Set(ta),B=new Set(tb); let i=0; for(const x of A) if(B.has(x)) i++; if(i/(A.size+B.size-i)>=0.67) return true; }
+    const corto=a.length<=b.length?a:b, largo=a.length<=b.length?b:a;
+    if(corto.length>=8 && padTk(corto).length>=2 && largo.includes(corto)) return true;
+    return false;
+  }
+  /* Dirección normalizada (número de puerta + palabras de la calle): reconoce el MISMO lugar
+     aunque el padrón lo nombre distinto ("Farmacia Porta" vs "Farmacia Alejandra Porta"). */
+  function padClaveDir(s){ if(!s) return null; const num=((""+s).match(/\d{2,}/)||[])[0]; if(!num) return null;
+    const calle=padNorm(s).replace(/[^A-Z0-9 ]/g," ").split(" ").filter(w=>w.length>=4 && !/^\d+$/.test(w) && !["CALLE","AVDA","AVENIDA","BULEVAR","BOULEVARD"].includes(w));
+    return {num, calle}; }
+  function padCoincideDir(a,b){ if(!a||!b) return false; if(a.num!==b.num) return false; if(!a.calle.length||!b.calle.length) return false; return a.calle.some(t=>b.calle.includes(t)); }
+
+  let _UNI=null, _uniProm=null;
+  /* Trae el padrón una sola vez por sesión (≈1 MB) y lo deja cacheado en memoria. */
+  function padCargar(){
+    if(_UNI) return Promise.resolve(_UNI);
+    if(!_uniProm) _uniProm=fetch(BASE+"direccion/universo-salud.json").then(r=>{ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+      .then(j=>{ _UNI=j; return j; }).catch(e=>{ _uniProm=null; throw e; });
+    return _uniProm;
+  }
+  /* Cruza el padrón contra una lista de contactos nuestros. `get` dice de dónde sacar cada dato
+     (para no atar esto a la forma de un módulo). Escribe el id del contacto en est[6] (0 = nadie)
+     y devuelve {porEst:{idxEst:idContacto}, porContacto:{idContacto:idxEst}}. */
+  function padCruzar(uni, contactos, get){
+    if(!uni) return {porEst:{}, porContacto:{}};
+    const g=Object.assign({nombre:c=>c.nombre, ciudad:c=>c.ciudad, prov:c=>c.prov, calle:c=>c.calle, id:c=>c.id}, get||{});
+    const pos=new Map(); uni.locs.forEach((l,i)=>pos.set(padNorm(l[1])+"|"+padNorm(l[0]), i));
+    const mios=new Map();
+    (contactos||[]).forEach(c=>{ const loc=padLocKey(g.ciudad(c)); if(!loc) return;
+      const i=pos.get(padNorm(g.prov(c))+"|"+loc); if(i===undefined) return;
+      if(!mios.has(i)) mios.set(i,[]);
+      mios.get(i).push({c, k:padClave(g.nombre(c)), dir:padClaveDir(g.calle(c))}); });
+    const porEst={}, porContacto={};
+    uni.est.forEach(e=>{ e[6]=0; });
+    for(let idx=0; idx<uni.est.length; idx++){
+      const e=uni.est[idx], cands=mios.get(e[1]); if(!cands) continue;
+      const ke=padClave(e[0]), edir=padClaveDir(e[3]); if(!ke && !edir) continue;
+      for(const cd of cands){
+        if((ke&&padCoincide(cd.k,ke)) || padCoincideDir(cd.dir,edir)){
+          const id=g.id(cd.c); e[6]=id; porEst[idx]=id; if(porContacto[id]===undefined) porContacto[id]=idx; break;
+        }
+      }
+    }
+    return {porEst, porContacto};
+  }
+  /* Punto en el mapa de un establecimiento: exacto si el padrón lo trae; si no, el centro de su
+     localidad con un corrimiento chico y SIEMPRE IGUAL (para que no queden todos apilados). */
+  function padPunto(uni, idx){
+    const e=uni&&uni.est[idx]; if(!e) return null;
+    if(e[4]&&e[5]) return {lat:e[4], lon:e[5], aprox:false};
+    const L=uni.locs[e[1]]; if(!L||!L[2]) return null;
+    const a=(idx*2654435761)%1000/1000, b=(idx*40503)%1000/1000;
+    return {lat:L[2]+(a-0.5)*0.018, lon:L[3]+(b-0.5)*0.022, aprox:true};
+  }
+
+  /* ===== RESERVAS Y ZONAS DE POTENCIALES =====
+     Los comerciales se autogestionan: ven en el mapa todo el padrón y van "tomando" potenciales.
+     Al tomar uno queda RESERVADO para esa persona por RESERVA_DIAS; para el resto se ve en gris
+     ("lo tiene Fulano") — en gris y no invisible a propósito: así nadie llama dos veces al mismo
+     lugar y se ve que hay movimiento. Si en ese plazo no lo contactó ni lo convirtió en cliente,
+     la reserva VENCE sola y vuelve al mapa de todos (no hace falta ningún proceso: el vencimiento
+     se calcula al leer). Registrar un contacto renueva el plazo. El tope de reservas abiertas
+     evita que alguien acapare el mapa el primer día.
+     ZONAS: localidad SIN dueño = libre para todos (así queda Rosario, donde están todos).
+     Localidad CON dueño = solo la trabaja ese comercial (el interior, donde el viaje cuesta).
+     Los líderes pueden todo y son los que asignan las zonas. */
+  const RESERVA_DIAS=15, RESERVA_AVISO=5, TOPE_RESERVAS=20;
+  const ZONAS_KEY="eyg.contactos.zonas";
+  const _diasEntre=(a,b)=>Math.round((new Date(String(b).slice(0,10)+"T00:00:00")-new Date(String(a).slice(0,10)+"T00:00:00"))/86400000);
+  const _sumarDias=(ymd,n)=>{ const d=new Date(String(ymd).slice(0,10)+"T00:00:00"); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
+  /* Estado de un ítem, derivado (nunca guardado): descartado · convertido (ya es cliente) ·
+     asignado (se lo dio el líder: no vence) · reservado · vencido (volvió al pool). */
+  function conqEstado(it, hoy){
+    if(!it) return "libre";
+    if(it.descartado) return "descartado";
+    if(it.partnerId) return "convertido";
+    if(it.modo!=="reserva") return "asignado";
+    const v=it.vence||_sumarDias((it.ts||"").slice(0,10)||hoy, RESERVA_DIAS);
+    return _diasEntre(hoy, v)>=0 ? "reservado" : "vencido";
+  }
+  const conqOcupado = (it,hoy)=>["convertido","asignado","reservado"].includes(conqEstado(it,hoy));
+  /* "Fuera de juego" = no se le vuelve a ofrecer a nadie: lo tiene alguien, ya es cliente, o un
+     comercial lo DESCARTÓ (cerró / no aplica). El descartado sigue tapado hasta que un líder lo
+     elimine de la carpeta — si no, volvería a aparecerle a todo el equipo cada vez. */
+  const conqFuera = (it,hoy)=> conqOcupado(it,hoy) || conqEstado(it,hoy)==="descartado";
+  function conqDiasRestantes(it, hoy){
+    if(!it||it.modo!=="reserva") return null;
+    return _diasEntre(hoy, it.vence||_sumarDias((it.ts||"").slice(0,10)||hoy, RESERVA_DIAS));
+  }
+  /* Índice por establecimiento (nombre|localidad) → el ítem que hoy lo saca de circulación. */
+  function conqIndice(arr, hoy){
+    const ix={};
+    (arr||[]).forEach(it=>{ if(!it||!it.nombre) return; if(!conqFuera(it,hoy)) return;
+      const k=_cqKey(it); const prev=ix[k];
+      if(!prev || (it.ts||"")>(prev.ts||"")) ix[k]=it; });
+    return ix;
+  }
+  const conqReservasDe = (arr, comRef, hoy) => (arr||[]).filter(it=>it && it.com===comRef && conqEstado(it,hoy)==="reservado");
+  async function zonasLeer(){ try{ return JSON.parse(await rpc("ir.config_parameter","get_param",[ZONAS_KEY])||"{}")||{}; }catch(e){ return {}; } }
+  async function zonasGuardar(map){ return rpc("ir.config_parameter","set_param",[ZONAS_KEY, JSON.stringify(map||{})]); }
+  const zonaDe = (zonas, loc) => (zonas||{})[padLocKey(loc)] || "";
+  /* ¿Puede este comercial trabajar esta localidad? Sin dueño = sí (libre). Con dueño = solo él.
+     Los líderes (esLider=true) pueden siempre. */
+  function zonaPermite(zonas, loc, comRef, esLider){ if(esLider) return true; const d=zonaDe(zonas,loc); return !d || d===comRef; }
+
+  /* Tomar un potencial. Hace leer-modificar-escribir y DESPUÉS relee para confirmar que quedó a
+     nombre de quien lo pidió: si dos personas tocan el mismo botón al mismo tiempo, el segundo se
+     entera en vez de creer que lo tiene. Devuelve {ok, motivo, de, item}. */
+  async function conquistarTomar(item, comRef, por, opts){
+    const o=opts||{}, hoy=argToday();
+    if(!item||!item.nombre) return {ok:false, motivo:"datos"};
+    const arr=await conquistarLeer();
+    const ix=conqIndice(arr, hoy), k=_cqKey(item), ya=ix[k];
+    if(ya && ya.com!==comRef) return {ok:false, motivo:"ocupado", de:ya.com, item:ya};
+    if(ya && ya.com===comRef){   // ya es tuyo: se renueva el plazo
+      ya.vence=_sumarDias(hoy, o.dias||RESERVA_DIAS); await conquistarGuardar(arr);
+      return {ok:true, motivo:"renovado", item:ya};
+    }
+    if(!o.sinTope && conqReservasDe(arr, comRef, hoy).length>=(o.tope||TOPE_RESERVAS))
+      return {ok:false, motivo:"tope", tope:(o.tope||TOPE_RESERVAS)};
+    const nuevo={ id:"cq_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,7), com:comRef,
+      nombre:item.nombre, tipo:item.tipo||0, loc:item.loc||"", prov:item.prov||"", dom:item.dom||"",
+      por:por||comRef, ts:new Date().toISOString(), partnerId:null, modo:"reserva", vence:_sumarDias(hoy, o.dias||RESERVA_DIAS) };
+    arr.push(nuevo); await conquistarGuardar(arr);
+    const fresh=conqIndice(await conquistarLeer(), hoy)[k];
+    if(fresh && fresh.com!==comRef) return {ok:false, motivo:"ocupado", de:fresh.com, item:fresh};
+    return {ok:true, motivo:"tomado", item:nuevo};
+  }
+  /* Soltar una reserva (el propio comercial o un líder): el potencial vuelve al mapa de todos. */
+  async function conquistarLiberar(id){ return conquistarQuitar(id); }
+  /* Registrar que lo contactó: renueva el plazo (es la señal de que lo está trabajando). */
+  async function conquistarContacto(id, via){
+    const hoy=argToday(), arr=await conquistarLeer(), it=arr.find(x=>x&&x.id===id);
+    if(!it) return null;
+    it.contacto=new Date().toISOString(); it.via=via||""; if(it.modo==="reserva") it.vence=_sumarDias(hoy, RESERVA_DIAS);
+    await conquistarGuardar(arr); return it;
+  }
+
   /* ===== LEGAJOS DE CLIENTES (documentación de alta) =====
      Administración (Vanesa/Bárbara) carga la documentación de alta de cada cliente. Los
      archivos van como ADJUNTO del contacto en Odoo (ir.attachment sobre res.partner), así
@@ -1481,6 +1648,9 @@ window.EYG = (function(){
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
     creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
     conquistarLeer, conquistarGuardar, conquistarAsignar, conquistarDeComercial, conquistarSetPartner, conquistarQuitar, conquistarPatch, notificarRoles,
+    padNorm, padTitulo, padLocKey, padClave, padCoincide, padClaveDir, padCoincideDir, padCargar, padCruzar, padPunto, padTk, PAD_GENERICO,
+    RESERVA_DIAS, RESERVA_AVISO, TOPE_RESERVAS, conqEstado, conqOcupado, conqFuera, conqDiasRestantes, conqIndice, conqReservasDe,
+    zonasLeer, zonasGuardar, zonaDe, zonaPermite, conquistarTomar, conquistarLiberar, conquistarContacto,
     orgCargar, orgDescendientes, orgAncestros, notificarLideresDe,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
