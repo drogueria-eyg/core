@@ -145,15 +145,18 @@ function nivelDe(g,perfil){
   const idx=pts<40?0:pts<60?1:pts<80?2:pts<95?3:4;
   return {pts,idx,mult:NIV[idx].m,nombre:NIV[idx].n,emoji:NIV[idx].e,items};
 }
-function saludDe(g,neto,baseline){
+/* prop = qué parte del mes transcurrió (1 = mes cerrado). El piso de facturación va PRORRATEADO,
+   igual que en el panel: al día 5 no se le puede exigir el mes entero. */
+function saludDe(g,neto,baseline,prop){
   const M=n=>"$"+Math.round(n||0).toLocaleString("es-AR");
   const venc=g.porCobrar>0?g.vencido/g.porCobrar:0;
-  const factRatio=baseline>0?(neto||0)/baseline:1;      // mes cerrado → el piso es el baseline completo
+  const esperado=(baseline||0)*(prop==null?1:prop);
+  const factRatio=esperado>0?(neto||0)/esperado:1;
   const pV=cl((venc-0.10)/0.40,0,1)*45, pF=cl((1-factRatio)/0.30,0,1)*30, pO=cl((0.40-g.fichas)/0.40,0,1)*25;
   const salud=Math.max(0,100-pV-pF-pO);
   return { salud, penaltyPt:(100-salud)/100, venc, fichas:g.fichas, factRatio,
     items:[{ic:"🩸",lab:"Vencido de cartera",resta:pV,max:45,det:M(g.vencido)+" vencido = "+Math.round(venc*100)+"% de lo por cobrar"},
-           {ic:"📉",lab:"Facturado vs su piso",resta:pF,max:30,det:Math.round(factRatio*100)+"% del ritmo esperado"},
+           {ic:"📉",lab:"Facturado vs su piso",resta:pF,max:30,det:Math.round(factRatio*100)+"% del ritmo esperado"+((prop!=null&&prop<1)?" (piso prorrateado: "+M(esperado)+" al día de hoy)":"")},
            {ic:"🗂️",lab:"Fichas completas",resta:pO,max:25,det:Math.round(g.fichas*100)+"% de la cartera"}]};
 }
 
@@ -194,7 +197,10 @@ async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
     if(!externo){
       const g=await gamificacion(s.uid,r,ofertasMes);
       nivel=nivelDe(g,perfil);
-      salud=saludDe(g,neto,md.baseline);
+      // si el mes todavía corre, el piso de facturación va prorrateado por el día en que estamos
+      const hoy=(EYG&&EYG.argToday)?EYG.argToday():new Date().toISOString().slice(0,10);
+      const prop=(hoy<r.fin)?(Number(hoy.slice(8,10))/r.dias):1;
+      salud=saludDe(g,neto,md.baseline,prop);
       tasaAplicada={ base:Math.max(0,rt.base-salud.penaltyPt/100), high:Math.max(0,rt.high-salud.penaltyPt/100) };
       comiFinal=(t1*tasaAplicada.base+t2*tasaAplicada.high)*nivel.mult;
       nivel.crudo=g;
