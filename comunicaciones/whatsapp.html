@@ -494,7 +494,7 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
      son decorativas: cada una aparece en un momento y significa algo. La de la
      onda de audio ya estaba, y es la que probó que el camino era ese. */
   const cv=$("orb"), cx=cv.getContext("2d");
-  const NPART=1000, PARTS=[];
+  const NPART=1300, PARTS=[];   /* mas particulas: el orbe crecio y a igual cantidad se veia ralo */
   for(let i=0;i<NPART;i++){
     const th=Math.acos(2*Math.random()-1), ph=Math.random()*Math.PI*2;
     const capa=i<NPART*0.70?1:0;
@@ -577,8 +577,8 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
        Cada figura ancha descuenta lo suyo —la caja llega a las esquinas, el
        polvo se desparrama, el anillo tiene grosor— calculado para que las cinco
        terminen en esos mismos 92 px. */
-    const ancho=FORMA.anillo*0.20+FORMA.caja*0.23+FORMA.polvo*0.55+FORMA.onda*0.10;
-    const R=Math.min(W,H)*(0.62-ancho*0.5);
+    const ancho=FORMA.anillo*0.22+FORMA.caja*0.25+FORMA.polvo*0.62+FORMA.onda*0.10;
+    const R=Math.min(W,H)*(0.60-ancho*0.5);
 
     const puls=1+Math.sin(t/mezcla.pul)*mezcla.amp;
     const cos=Math.cos(ang), sin=Math.sin(ang), cy2=Math.cos(angY), sy2=Math.sin(angY);
@@ -586,12 +586,19 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     const cr=mezcla.c[0], cg=mezcla.c[1], cb=mezcla.c[2];
     const br=mezcla.b[0], bg=mezcla.b[1], bb=mezcla.b[2];
 
-    /* cada tanto se reacomoda: un impulso que la estira por un eje y vuelve */
+    /* Cada tanto se reacomoda: un impulso que la estira por un eje y vuelve.
+       EL EJE ES 3D, NO DEL PLANO DE LA PANTALLA. Antes el estirón tocaba solo
+       x e y —las dos coordenadas de la pantalla— y dejaba z intacta: eso alarga
+       la esfera en el plano del monitor, sin profundidad, y se ve como un óvalo
+       chato. Con una componente en z, el bulto se va también para adelante o
+       para atrás, la perspectiva lo acompaña y se lee como un cuerpo. */
     if(t>gesto.hasta){
       gesto.hasta=t+4000+Math.random()*6000; gesto.inicio=t;
-      gesto.dur=1100+Math.random()*1100; gesto.eje=Math.random()*6.28; gesto.fuerza=.09+Math.random()*.13;
+      gesto.dur=1100+Math.random()*1100; gesto.fuerza=.09+Math.random()*.13;
+      const th=Math.acos(2*Math.random()-1), ph=Math.random()*6.28;
+      gesto.ex=Math.sin(th)*Math.cos(ph); gesto.ey=Math.cos(th); gesto.ez=Math.sin(th)*Math.sin(ph);
     }
-    let estira=0, eX=Math.cos(gesto.eje), eY=Math.sin(gesto.eje);
+    let estira=0;
     if(t-gesto.inicio<gesto.dur){ const u=(t-gesto.inicio)/gesto.dur; estira=Math.sin(u*Math.PI)*gesto.fuerza; }
 
     for(const p of PARTS){
@@ -614,7 +621,16 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
       const y2=y*cy2-z*sy2; z=y*sy2+z*cy2; y=y2;
       const x2=x*cz-y*sz; y=x*sz+y*cz; x=x2;
       x*=respira; y*=respira; z*=respira;
-      if(estira){ const pr=x*eX+y*eY; x+=eX*pr*estira; y+=eY*pr*estira; }
+      if(estira){
+        /* SE ESTIRA Y SE COMPRIME, como un cuerpo elastico. Sin la compresion,
+           el estiron agrandaba la silueta de 92 a 123 px y el orbe se cortaba
+           contra los bordes de la caja — venia pasando desde siempre, en los
+           gestos, y nunca lo habia tenido en cuenta. Dividiendo por (1+estira)
+           el largo se mantiene y lo que cambia es la FORMA, que es de lo que se
+           trataba. */
+        const pr=x*gesto.ex+y*gesto.ey+z*gesto.ez, c=1/(1+estira);
+        x=(x+gesto.ex*pr*estira)*c; y=(y+gesto.ey*pr*estira)*c; z=(z+gesto.ez*pr*estira)*c;
+      }
 
       const e=1/(1.78-z*0.62);
       let px=cxp+x*R*e*puls, py=cyp+y*R*e*puls;
@@ -638,11 +654,18 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
 
       /* El borde brilla POR DENSIDAD, no por tamaño. Marcarlo agrandando y
          aclarando cada partícula deja manchas: se probó y se descartó. Los
-         puntos van chicos y parejos, y del canto sale apenas un tinte. */
-      const plano=Math.sqrt(x*x+y*y)/(p.r||1);
-      const canto=Math.pow(Math.max(0,Math.min(1.2,plano)),8);
+         puntos van parejos, y del canto sale apenas un tinte.
+         "De canto" se mide contra el LARGO REAL de la partícula, no contra su
+         radio original: si no, al estirarse o deformarse la cuenta se pasa de 1
+         y el tinte del borde queda donde no va. */
+      const largo=Math.sqrt(x*x+y*y+z*z)||1;
+      const plano=Math.sqrt(x*x+y*y)/largo;
+      const canto=Math.pow(Math.max(0,Math.min(1,plano)),8);
       const mezB=(p.capa?canto:canto*0.3)*0.55;
-      const rad=(0.42+p.s*0.72)*e;
+      /* Tamaño del punto: quedaron muy chicos en 0,42+0,72 (1,0 px de radio
+         adelante). El orbe además creció, así que a igual tamaño se veía ralo.
+         Con esto quedan en 1,55 px, el mismo rango que los de la onda. */
+      const rad=(0.70+p.s*1.10)*e;
       let a=(Math.max(0,(z+1)/2)*0.62+0.10)*(p.capa?1:0.38)*(1+canto*0.30);
       if(a>0.92) a=0.92;
 
