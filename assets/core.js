@@ -1456,6 +1456,113 @@ window.EYG = (function(){
     return {lat:L[2]+(a-0.5)*0.018, lon:L[3]+(b-0.5)*0.022, aprox:true};
   }
 
+  /* ===== BASE DEL MAPA (los "tiles", el dibujo de las calles) =====
+     OJO: CARTO (basemaps.cartocdn.com) dejó de ser gratis — desde 2026 devuelve los tiles con un
+     cartel "API KEY REQUIRED" estampado encima. Se cambió por dos bases libres y sin clave:
+       · "calles"  = OpenStreetMap. Trae TODOS los nombres de calle → es la que sirve para salir
+                     a la calle y armar recorridos.
+       · "oscuro"  = lienzo gris oscuro de Esri (+ una capa aparte con los nombres), para las
+                     pantallas oscuras como el Tablero de dirección.
+     Si alguna vez hay que cambiar de proveedor, se cambia SOLO acá. */
+  function mapaBase(map, modo){
+    if(modo==="oscuro"){
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        {attribution:'Esri · © OpenStreetMap', maxZoom:20, maxNativeZoom:16}).addTo(map);
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+        {maxZoom:20, maxNativeZoom:16, opacity:.9}).addTo(map);
+      return map;
+    }
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      {attribution:'© OpenStreetMap', maxZoom:19, maxNativeZoom:19}).addTo(map);
+    return map;
+  }
+
+  /* ===== PUNTOS EN EL MAPA (miles, sin que se trabe) =====
+     Dibujar 3.000 puntitos uno por uno traba cualquier navegador. Dos trucos:
+     (1) DE LEJOS no se dibuja punto por punto: una burbuja por localidad con la cantidad adentro
+         (además de rápido se lee mejor — "Casilda 34" dice más que 34 puntos pisados).
+         Al tocarla, el mapa se acerca a esa localidad y ahí sí aparecen uno por uno.
+     (2) DE CERCA se dibujan SOLO los que entran en pantalla, y se redibuja al soltar el mapa.
+     `items` = [{lat, lon, loc, color, borde, peso, radio, opacidad, popup, ancho}]. */
+  function mapaStyles(){
+    if(document.getElementById("eyg-mapa-css")) return;
+    const s=document.createElement("style"); s.id="eyg-mapa-css";
+    s.textContent=`.eyg-mapnum{background:none!important;border:0!important;box-shadow:none!important;color:#fff;font-family:Archivo,sans-serif;font-weight:800;font-size:11px;text-shadow:0 1px 2px rgba(0,0,0,.45)}
+      .eyg-mapnum::before{display:none!important}
+      .leaflet-container{cursor:grab} .leaflet-dragging .leaflet-container{cursor:grabbing}`;
+    document.head.appendChild(s);
+  }
+  function mapaPuntos(map, capa, items, opts){
+    mapaStyles();
+    const o=Object.assign({tope:600, celda:52, onPintado:null}, opts||{});
+    map._eygPuntos={capa, items:items||[], o};
+    if(!map._eygLigado){
+      map._eygLigado=true; let t=null;
+      // `resize` es clave: si el mapa se dibujó cuando el contenedor todavía no tenía alto,
+      // no entraba ningún punto en pantalla. Al aparecer, se vuelve a dibujar.
+      map.on("moveend zoomend resize", ()=>{ clearTimeout(t); t=setTimeout(()=>{
+        const p=map._eygPuntos; if(p) _mapaRedibujar(map, p.capa, p.items, p.o); }, 110); });
+    }
+    return _mapaRedibujar(map, capa, items||[], o);
+  }
+  function _mapaRedibujar(map, capa, items, o){
+    capa.clearLayers();
+    // el contenedor todavía no tiene tamaño (la vista recién se está abriendo): se dibuja
+    // cuando llegue el `resize`, si no quedaría un mapa vacío para siempre.
+    const sz=map.getSize(); if(!sz.x || !sz.y) return {modo:"esperando", dibujados:0, total:items.length};
+    const b=map.getBounds().pad(.3), z=map.getZoom();
+    const vis=[]; for(const it of items){ if(b.contains([it.lat,it.lon])) vis.push(it); }
+    // Lo que entra en pantalla es poco → uno por uno, como corresponde para poder tocarlos.
+    if(vis.length<=o.tope){
+      vis.forEach(it=>{
+        const m=L.circleMarker([it.lat,it.lon],{radius:it.radio||6, color:it.borde||"#fff",
+          weight:it.peso||1.4, fillColor:it.color, fillOpacity:it.opacidad==null?.9:it.opacidad});
+        if(it.popup) m.bindPopup(it.popup,{maxWidth:it.ancho||300});
+        m.addTo(capa);
+      });
+      const info={modo:"detalle", dibujados:vis.length, fuera:items.length-vis.length, total:items.length};
+      if(o.onPintado) o.onPintado(info);
+      return info;
+    }
+    /* Hay demasiados encima: se juntan por celdas de la PANTALLA (no por localidad, porque
+       Rosario sola son ~1.800 y quedaría una burbuja inútil). Cada burbuja lleva la cantidad y
+       el nombre de la localidad que más aporta. Al acercarte, las celdas se parten solas hasta
+       que vuelven a verse uno por uno: no hay que tocar ningún interruptor. */
+    const cel=o.celda||52, g=new Map();
+    vis.forEach(it=>{
+      const p=map.latLngToContainerPoint([it.lat,it.lon]);
+      const k=Math.floor(p.x/cel)+"_"+Math.floor(p.y/cel);
+      let a=g.get(k); if(!a){ a={n:0,lat:0,lon:0,col:{},loc:{},items:[]}; g.set(k,a); }
+      a.n++; a.lat+=it.lat; a.lon+=it.lon; if(a.items.length<3) a.items.push(it);
+      a.col[it.color]=(a.col[it.color]||0)+1;
+      if(it.loc) a.loc[it.loc]=(a.loc[it.loc]||0)+1;
+    });
+    let sueltos=0;
+    g.forEach(a=>{
+      // una celda con uno o dos adentro no se agrupa: se dibujan tal cual y se pueden tocar
+      if(a.n<=2){
+        a.items.forEach(it=>{ sueltos++;
+          const m=L.circleMarker([it.lat,it.lon],{radius:it.radio||6, color:it.borde||"#fff",
+            weight:it.peso||1.4, fillColor:it.color, fillOpacity:it.opacidad==null?.9:it.opacidad});
+          if(it.popup) m.bindPopup(it.popup,{maxWidth:it.ancho||300});
+          m.addTo(capa); });
+        return;
+      }
+      const lat=a.lat/a.n, lon=a.lon/a.n;
+      const col=Object.keys(a.col).sort((x,y)=>a.col[y]-a.col[x])[0];
+      const loc=Object.keys(a.loc).sort((x,y)=>a.loc[y]-a.loc[x])[0]||"";
+      const r=Math.max(11, Math.min(24, 8+Math.sqrt(a.n)*1.9));
+      L.circleMarker([lat,lon],{radius:r,color:"#fff",weight:1.6,fillColor:col,fillOpacity:.85})
+        .bindTooltip(String(a.n),{permanent:true,direction:"center",className:"eyg-mapnum"})
+        .bindPopup(`<b>${esc(loc||"Esta zona")}</b><br>${a.n} juntos acá<br><span style="font-size:11.5px;color:#5F716E">Acercate para verlos uno por uno</span>`)
+        .on("click",()=>map.flyTo([lat,lon], Math.min(18, z+3), {duration:.6}))
+        .addTo(capa);
+    });
+    const info={modo:"grupos", grupos:g.size, sueltos, dibujados:g.size, enVista:vis.length, total:items.length};
+    if(o.onPintado) o.onPintado(info);
+    return info;
+  }
+
   /* ===== RESERVAS Y ZONAS DE POTENCIALES =====
      Los comerciales se autogestionan: ven en el mapa todo el padrón y van "tomando" potenciales.
      Al tomar uno queda RESERVADO para esa persona por RESERVA_DIAS; para el resto se ve en gris
@@ -1649,6 +1756,7 @@ window.EYG = (function(){
     creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
     conquistarLeer, conquistarGuardar, conquistarAsignar, conquistarDeComercial, conquistarSetPartner, conquistarQuitar, conquistarPatch, notificarRoles,
     padNorm, padTitulo, padLocKey, padClave, padCoincide, padClaveDir, padCoincideDir, padCargar, padCruzar, padPunto, padTk, PAD_GENERICO,
+    mapaBase, mapaPuntos, mapaStyles,
     RESERVA_DIAS, RESERVA_AVISO, TOPE_RESERVAS, conqEstado, conqOcupado, conqFuera, conqDiasRestantes, conqIndice, conqReservasDe,
     zonasLeer, zonasGuardar, zonaDe, zonaPermite, conquistarTomar, conquistarLiberar, conquistarContacto,
     orgCargar, orgDescendientes, orgAncestros, notificarLideresDe,

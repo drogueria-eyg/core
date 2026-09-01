@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=48"></script>
+<script src="../assets/core.js?v=49"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -1557,7 +1557,8 @@ function pintarMapaCuerpo(){
     <span class="lg"><span class="dot" style="background:#1E5FA8"></span> Potencial · institución</span>
     <span class="lg"><span class="dot" style="background:#1E7D46"></span> Tomados por vos (${mios})</span>
     <span class="lg"><span class="dot" style="background:#B9C4C2"></span> De otro comercial (${otros})</span>
-    <span class="lg" style="margin-left:auto">${libres.toLocaleString("es-AR")} libres para tomar</span>`;
+    <span class="lg">${libres.toLocaleString("es-AR")} libres para tomar</span>
+    <span class="lg" id="mapavista" style="margin-left:auto;font-weight:500;color:var(--gris2)"></span>`;
   dibujarMiMapa(D);
 }
 function setMapaFil(k,v){ ST.mapaFil[k]=v; if(k==="prov") ST.mapaFil.loc=""; _mapaFit=""; pintarMapaCuerpo(); }
@@ -1566,22 +1567,29 @@ function dibujarMiMapa(D){
   if(!MAPA || !document.body.contains(MAPA.getContainer())){
     if(MAPA){ try{ MAPA.remove(); }catch(e){} MAPA=null; }
     MAPA=L.map(div,{zoomControl:true,preferCanvas:true}).setView([-32.95,-60.66],11);
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-      {attribution:'© OpenStreetMap · © CARTO', subdomains:"abcd", maxZoom:20, maxNativeZoom:19}).addTo(MAPA);
+    EYG.mapaBase(MAPA,"calles");     // OpenStreetMap: trae los nombres de calle, que es lo que sirve para salir a la calle
     MAPACAPA=L.layerGroup().addTo(MAPA); _mapaFit="";
   }
-  MAPACAPA.clearLayers();
-  const pts=[];
-  D.mios.forEach(m=>{ pts.push([m.pt.lat,m.pt.lon]);
-    L.circleMarker([m.pt.lat,m.pt.lon],{radius:6,color:"#fff",weight:1.5,fillColor:"#048782",fillOpacity:m.pt.aprox?.45:.92})
-      .bindPopup(()=>popupCliente(m),{maxWidth:290}).addTo(MAPACAPA); });
-  D.pot.forEach(p=>{ pts.push([p.pt.lat,p.pt.lon]);
-    const col = p.mio ? "#1E7D46" : p.it ? "#B9C4C2" : (p.tipo===0?"#EC8B5E":"#1E5FA8");
-    L.circleMarker([p.pt.lat,p.pt.lon],{radius:p.mio?8:5.5,color:p.mio?"#0E5C33":"#fff",weight:p.mio?2.5:1.4,
-      fillColor:col, fillOpacity:p.it&&!p.mio?.55:(p.pt.aprox?.45:.9)})
-      .bindPopup(()=>popupPotencial(p),{maxWidth:300}).addTo(MAPACAPA); });
+  // Una sola lista de puntos → la dibuja el motor compartido (de lejos agrupa por localidad,
+  // de cerca dibuja solo lo que entra en pantalla). Con esto el mapa no se traba.
+  const items=[];
+  D.mios.forEach(m=>items.push({lat:m.pt.lat, lon:m.pt.lon, loc:m.loc, color:"#048782", radio:6,
+    opacidad:m.pt.aprox?.45:.92, popup:()=>popupCliente(m), ancho:290}));
+  D.pot.forEach(p=>items.push({lat:p.pt.lat, lon:p.pt.lon, loc:p.loc,
+    color: p.mio?"#1E7D46":p.it?"#B9C4C2":(p.tipo===0?"#EC8B5E":"#1E5FA8"),
+    radio: p.mio?8:5.5, borde: p.mio?"#0E5C33":"#fff", peso: p.mio?2.5:1.4,
+    opacidad: (p.it&&!p.mio)?.55:(p.pt.aprox?.45:.9), popup:()=>popupPotencial(p), ancho:300}));
   const key=[ST.mapaFil.prov,ST.mapaFil.loc,ST.mapaFil.tipo].join("|");
-  if(pts.length && _mapaFit!==key){ _mapaFit=key; try{ MAPA.fitBounds(L.latLngBounds(pts).pad(.08),{maxZoom:14}); }catch(e){} }
+  if(items.length && _mapaFit!==key){
+    _mapaFit=key;
+    try{ MAPA.fitBounds(L.latLngBounds(items.map(i=>[i.lat,i.lon])).pad(.08),{maxZoom:14}); }catch(e){}
+  }
+  EYG.mapaPuntos(MAPA, MAPACAPA, items, {onPintado:info=>{
+    const el=document.getElementById("mapavista"); if(!el) return;
+    el.textContent = info.modo==="grupos"
+      ? `${info.enVista} en pantalla, agrupados — acercate para verlos uno por uno`
+      : (info.fuera ? `Viendo ${info.dibujados} en pantalla` : `Viendo los ${info.dibujados} de esta zona`);
+  }});
   setTimeout(()=>{ try{ MAPA.invalidateSize(); }catch(e){} },60);
 }
 function popupCliente(m){

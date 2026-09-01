@@ -233,7 +233,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=48"></script>
+<script src="../assets/core.js?v=49"></script>
 <script>
 /* ===== EyG Core · Contactos: la base única de contactos de EyG =====
    Una sola casa para TODOS los contactos: los que ya son nuestros (con la ficha completa,
@@ -1010,7 +1010,8 @@ function renderMapa(){
     <span class="lg"><span class="dot" style="background:#B7791F"></span> Pendiente de WhatsApp</span>
     ${tomados.length?'<span class="lg"><span class="dot" style="background:#B9C4C2"></span> Lo tiene un comercial</span>':''}
     ${filtro.pMios?'<span class="lg"><span class="dot" style="background:#048782"></span> Ya es contacto nuestro</span>':''}
-    <span class="lg" style="margin-left:auto">${pot.length.toLocaleString("es-AR")} potenciales${tomados.length?` · ${tomados.length} tomados`:''}${mios.length?` · ${mios.length.toLocaleString("es-AR")} nuestros`:''} en el mapa</span>`;
+    <span class="lg">${pot.length.toLocaleString("es-AR")} potenciales${tomados.length?` · ${tomados.length} tomados`:''}${mios.length?` · ${mios.length.toLocaleString("es-AR")} nuestros`:''}</span>
+    <span class="lg" id="mapavista" style="margin-left:auto;font-weight:500;color:var(--gris2)"></span>`;
   dibujarMapa(pot, mios, tomados);
 }
 /* Los potenciales que hoy tiene tomados algún comercial. No están en `porConquistar()` (esa es la
@@ -1053,32 +1054,35 @@ function dibujarMapa(pot, mios, tomados){
   if(!MAP || !document.body.contains(MAP.getContainer())){
     if(MAP){ try{ MAP.remove(); }catch(e){} MAP=null; }
     MAP=L.map(div,{zoomControl:true,preferCanvas:true}).setView([-32.95,-60.66],10);
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-      {attribution:'© OpenStreetMap · © CARTO', subdomains:"abcd", maxZoom:20, maxNativeZoom:19}).addTo(MAP);
+    EYG.mapaBase(MAP,"calles");
     MAPCAPA=L.layerGroup().addTo(MAP);
     _mapPend=null;   // mapa nuevo → encuadrar en lo que se está mostrando
   }
-  MAPCAPA.clearLayers();
-  const pts=[];
-  mios.forEach(m=>{
-    pts.push([m.pt.lat,m.pt.lon]);
-    L.circleMarker([m.pt.lat,m.pt.lon],{radius:5,color:"#fff",weight:1.4,fillColor:"#048782",fillOpacity:m.pt.aprox?.45:.9})
-      .bindPopup(()=>popupMio(m), {maxWidth:280}).addTo(MAPCAPA);
-  });
-  (tomados||[]).forEach(t=>{
-    pts.push([t.pt.lat,t.pt.lon]);
-    L.circleMarker([t.pt.lat,t.pt.lon],{radius:5.5,color:"#fff",weight:1.4,fillColor:"#B9C4C2",fillOpacity:.6})
-      .bindPopup(()=>popupTomado(t), {maxWidth:290}).addTo(MAPCAPA);
-  });
+  // Se arma UNA lista de puntos y la dibuja el motor compartido: de lejos agrupa por localidad,
+  // de cerca dibuja solo lo que entra en pantalla. Así no se traba con miles de puntos.
+  const items=[];
+  mios.forEach(m=>items.push({lat:m.pt.lat, lon:m.pt.lon, loc:m.loc, color:"#048782", radio:5,
+    opacidad:m.pt.aprox?.45:.9, popup:()=>popupMio(m), ancho:280}));
+  (tomados||[]).forEach(t=>items.push({lat:t.pt.lat, lon:t.pt.lon, loc:t.loc, color:"#B9C4C2", radio:5.5,
+    opacidad:.6, popup:()=>popupTomado(t), ancho:290}));
   pot.forEach(x=>{
     const pend = x.p.marca && x.p.marca.estado==="pendiente";
-    const col = pend?"#B7791F":(x.p.tipo===0?"#EC8B5E":"#1E5FA8");
     const enRuta = RUTA.some(r=>r.idx===x.p.idx);
-    pts.push([x.pt.lat,x.pt.lon]);
-    L.circleMarker([x.pt.lat,x.pt.lon],{radius:enRuta?8:6,color:enRuta?"#04635F":"#fff",weight:enRuta?3:1.4,fillColor:col,fillOpacity:x.pt.aprox?.45:.92})
-      .bindPopup(()=>popupPotencial(x.p, x.pt), {maxWidth:300}).addTo(MAPCAPA);
+    items.push({lat:x.pt.lat, lon:x.pt.lon, loc:x.p.loc,
+      color: pend?"#B7791F":(x.p.tipo===0?"#EC8B5E":"#1E5FA8"),
+      radio: enRuta?8:6, borde: enRuta?"#04635F":"#fff", peso: enRuta?3:1.4,
+      opacidad: x.pt.aprox?.45:.92, popup:()=>popupPotencial(x.p, x.pt), ancho:300});
   });
-  if(pts.length && _mapPend!==keyMapa()){ _mapPend=keyMapa(); try{ MAP.fitBounds(L.latLngBounds(pts).pad(.08),{maxZoom:14}); }catch(e){} }
+  if(items.length && _mapPend!==keyMapa()){
+    _mapPend=keyMapa();
+    try{ MAP.fitBounds(L.latLngBounds(items.map(i=>[i.lat,i.lon])).pad(.08),{maxZoom:14}); }catch(e){}
+  }
+  EYG.mapaPuntos(MAP, MAPCAPA, items, {onPintado:info=>{
+    const el=document.getElementById("mapavista"); if(!el) return;
+    el.textContent = info.modo==="grupos"
+      ? `${info.enVista} en pantalla, agrupados — acercate o tocá una burbuja para verlos uno por uno`
+      : (info.fuera ? `Viendo ${info.dibujados} en pantalla · movete o alejate para ver el resto` : `Viendo los ${info.dibujados} de esta zona`);
+  }});
   setTimeout(()=>{ try{ MAP.invalidateSize(); }catch(e){} }, 60);
 }
 // el encuadre se reajusta solo cuando cambia el recorte (provincia/localidad/tipo/estado), no en cada repintado
