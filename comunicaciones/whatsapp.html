@@ -178,6 +178,8 @@
   .orbtxt{text-align:center;font-family:var(--mono);font-size:11px;letter-spacing:3.4px;color:var(--hud-dim);
           margin-top:-20px;transition:color .35s;font-weight:700}
   .orbtxt.on{color:var(--hud-aqua)} .orbtxt.think{color:var(--hud-gold)} .orbtxt.talk{color:var(--wsp)}
+  /* los dos estados nuevos: "con el equipo" y "sin contestar" */
+  .orbtxt.coral{color:var(--hud-coral)} .orbtxt.bad{color:#E5645C}
   .orbsub{text-align:center;font-family:var(--mono);font-size:9px;letter-spacing:1.8px;color:var(--hud-dim);
           padding:7px 16px 16px}
   .orbsub b{color:var(--hud-txt2);font-weight:700}
@@ -482,32 +484,61 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
   const id1=v=>Array.isArray(v)?v[0]:v;
 
   /* ══════ el orbe: el motor del asistente ══════
-     Dos capas de partículas que giran en ejes distintos, un anillo exterior y
-     una deformación que crece cuando piensa o habla. */
+     Mil partículas: 7 de cada 10 sobre la cáscara y 3 adentro. Esa proporción
+     es la que hace que se lea como una esfera y no como una pelusa — el borde
+     se densifica solo porque ahí las partículas se ven de perfil y se
+     superponen. NO hay que agrandarlas ni aclararlas para marcar el borde: eso
+     se probó y quedan manchas.
+
+     Cada estado tiene su color, su forma y su manera de respirar. Las formas no
+     son decorativas: cada una aparece en un momento y significa algo. La de la
+     onda de audio ya estaba, y es la que probó que el camino era ese. */
   const cv=$("orb"), cx=cv.getContext("2d");
-  const PARTS=[];
-  for(let i=0;i<900;i++){
+  const NPART=1000, PARTS=[];
+  for(let i=0;i<NPART;i++){
     const th=Math.acos(2*Math.random()-1), ph=Math.random()*Math.PI*2;
-    const nucleo=i<520;
-    const r=nucleo?(0.32+Math.random()*0.34):(0.72+Math.random()*0.32);
-    PARTS.push({x:r*Math.sin(th)*Math.cos(ph), y:r*Math.cos(th), z:r*Math.sin(th)*Math.sin(ph),
-                s:Math.random(), f:Math.random()*6.3, capa:nucleo?0:1,
-                /* el lugar que ocupa cuando la esfera se estira en onda sonora */
-                u:(i/900)*2-1+(Math.random()-0.5)*0.02});
+    const capa=i<NPART*0.70?1:0;
+    const r=capa?(0.90+Math.random()*0.13):(0.20+Math.random()*0.62);
+    const p={x:r*Math.sin(th)*Math.cos(ph), y:r*Math.cos(th), z:r*Math.sin(th)*Math.sin(ph),
+             s:Math.random(), capa, r, u:(i/NPART)*2-1+(Math.random()-.5)*.02, sem:Math.random()*6.28};
+    /* Cada partícula sabe de antemano qué lugar le toca en cada figura. Se
+       calcula una sola vez; después solo se interpola, así la metamorfosis no
+       pierde ninguna: son las mismas, ordenadas de otro modo. */
+    const aa=(i/NPART)*Math.PI*2, tt=Math.random()*Math.PI*2, gr=0.17+Math.random()*0.07;
+    p.aX=(1.02+gr*Math.cos(tt))*Math.cos(aa); p.aY=gr*Math.sin(tt)*0.55;
+    p.aZ=(1.02+gr*Math.cos(tt))*Math.sin(aa);
+    const cara=i%6, a1=Math.random()*2-1, a2=Math.random()*2-1, Lc=0.78;
+    const car=[[Lc,a1*Lc,a2*Lc],[-Lc,a1*Lc,a2*Lc],[a1*Lc,Lc,a2*Lc],[a1*Lc,-Lc,a2*Lc],[a1*Lc,a2*Lc,Lc],[a1*Lc,a2*Lc,-Lc]][cara];
+    p.cX=car[0]; p.cY=car[1]; p.cZ=car[2];
+    const rp=0.55+Math.random()*0.95, t3=Math.acos(2*Math.random()-1), f3=Math.random()*6.28;
+    p.pX=rp*Math.sin(t3)*Math.cos(f3); p.pY=rp*Math.cos(t3)*0.8; p.pZ=rp*Math.sin(t3)*Math.sin(f3);
+    PARTS.push(p);
   }
+  /* El período del latido va en ms y NUNCA baja de 900. Con 200, que era lo de
+     antes, el ojo lo lee como vibración y no como respiración. "resp" es cuánto
+     se compacta; "ola", qué tan rápido viaja la onda de la superficie. */
   const TONOS={
-    off:      {c:[96,124,122], halo:"rgba(96,124,122,.05)",  vel:.0028, tilt:.0011, pul:1300, amp:.010, def:.02, anillo:0, onda:0, txt:"EN REPOSO",    cls:""},
-    escucha:  {c:[95,200,191], halo:"rgba(10,168,159,.10)",  vel:.0055, tilt:.0022, pul:1000, amp:.022, def:.05, anillo:0, onda:0, txt:"A LA ESCUCHA", cls:"on"},
-    pensando: {c:[240,177,90], halo:"rgba(240,177,90,.14)",  vel:.030,  tilt:.013,  pul:210,  amp:.085, def:.20, anillo:0, onda:0, txt:"PENSANDO",     cls:"think"},
-    hablando: {c:[37,211,102], halo:"rgba(37,211,102,.15)",  vel:.017,  tilt:.007,  pul:330,  amp:.060, def:.24, anillo:0, onda:0, txt:"RESPONDIENDO", cls:"talk"},
-    /* La esfera se estira en onda sonora, sin perder ninguna partícula:
-       son las mismas, ordenadas de otra manera. Solo cuando manda un audio. */
-    voz:      {c:[37,211,102], halo:"rgba(37,211,102,.13)",  vel:.006,  tilt:.002,  pul:520,  amp:.030, def:.10, anillo:0, onda:1, txt:"NOTA DE VOZ",  cls:"talk"},
+    off:      {c:[86,116,114], borde:[120,160,158], halo:"rgba(96,124,122,.05)", vel:.0038,tilt:.0015,pul:2400,amp:.010,def:.05,ola:.55,forma:"esfera",resp:.055,txt:"EN REPOSO",       cls:""},
+    escucha:  {c:[64,176,168], borde:[130,240,228], halo:"rgba(10,168,159,.12)", vel:.0075,tilt:.0030,pul:2000,amp:.012,def:.09,ola:.75,forma:"esfera",resp:.075,txt:"A LA ESCUCHA",    cls:"on"},
+    buscando: {c:[76,150,222], borde:[150,220,255], halo:"rgba(76,150,222,.14)", vel:.030, tilt:.0030,pul:1400,amp:.012,def:.10,ola:1.5,forma:"anillo",resp:.050,txt:"BUSCANDO",        cls:"on"},
+    pensando: {c:[224,160,72], borde:[255,214,150], halo:"rgba(240,177,90,.15)", vel:.020, tilt:.0085,pul:1050,amp:.014,def:.14,ola:1.8,forma:"esfera",resp:.160,txt:"PENSANDO",        cls:"think"},
+    hablando: {c:[37,196,100], borde:[150,255,190], halo:"rgba(37,211,102,.16)", vel:.014, tilt:.0058,pul:1150,amp:.014,def:.15,ola:1.6,forma:"esfera",resp:.090,txt:"RESPONDIENDO",    cls:"talk"},
+    voz:      {c:[37,196,100], borde:[150,255,190], halo:"rgba(37,211,102,.14)", vel:.006, tilt:.0020,pul:1400,amp:.010,def:.06,ola:1.2,forma:"onda",  resp:.040,txt:"NOTA DE VOZ",     cls:"talk"},
+    pedido:   {c:[226,168,70], borde:[255,232,170], halo:"rgba(240,177,90,.18)", vel:.009, tilt:.0034,pul:1600,amp:.010,def:.05,ola:.95,forma:"caja",  resp:.045,txt:"PEDIDO ARMADO",   cls:"think"},
+    equipo:   {c:[214,124,86], borde:[240,170,138], halo:"rgba(236,139,94,.16)", vel:.009, tilt:.0038,pul:1800,amp:.012,def:.08,ola:.85,forma:"esfera",resp:.060,txt:"CON EL EQUIPO",   cls:"coral"},
+    problema: {c:[196,78,72],  borde:[255,150,140], halo:"rgba(229,100,92,.17)", vel:.013, tilt:.0090,pul:900, amp:.020,def:.14,ola:2.2,forma:"polvo", resp:.110,txt:"SIN CONTESTAR",   cls:"bad"},
   };
-  let estado="off", tono=TONOS.off, mezcla={c:[96,124,122],vel:.003,tilt:.001,pul:1300,amp:.01,def:.02,anillo:0,onda:0};
-  let ang=0, angY=0, giroAnillo=0;
-  /* el "gesto": cada tanto la esfera se estira por un eje y vuelve */
-  const gesto={hasta:2500, inicio:0, dur:0, eje:0, fuerza:0};
+  let estado="off", tono=TONOS.off;
+  const mezcla={c:[86,116,114],b:[120,160,158],vel:.0038,tilt:.0015,pul:2400,amp:.010,def:.05,ola:.55,resp:.055};
+  const FORMA={esfera:1,anillo:0,caja:0,polvo:0,onda:0};
+  let ang=0, angY=0, angZ=0, fase=0, respFase=0;
+  const gesto={hasta:1800, inicio:0, dur:0, eje:0, fuerza:0};
+  const M={x:0,y:0,dentro:0,tx:0,ty:0};
+  cv.addEventListener("pointermove",ev=>{
+    const b=cv.getBoundingClientRect();
+    M.tx=(ev.clientX-b.left)/b.width*2-1; M.ty=(ev.clientY-b.top)/b.height*2-1; M.dentro=1;
+  });
+  cv.addEventListener("pointerleave",()=>{ M.dentro=0; });
   function setEstado(e){
     if(e===estado) return;
     estado=e; tono=TONOS[e]||TONOS.off;
@@ -520,82 +551,108 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     if(cv.width!==W*2||cv.height!==H*2){ cv.width=W*2; cv.height=H*2; }
     cx.setTransform(2,0,0,2,0,0); cx.clearRect(0,0,W,H);
 
-    /* el cambio de estado se desliza, no salta */
     const k=0.06;
-    for(let i=0;i<3;i++) mezcla.c[i]=hacia(mezcla.c[i],tono.c[i],k);
-    mezcla.vel=hacia(mezcla.vel,tono.vel,k);   mezcla.tilt=hacia(mezcla.tilt,tono.tilt,k);
-    mezcla.pul=hacia(mezcla.pul,tono.pul,k);   mezcla.amp=hacia(mezcla.amp,tono.amp,k);
-    mezcla.def=hacia(mezcla.def,tono.def,k);   mezcla.anillo=hacia(mezcla.anillo,tono.anillo,k);
+    for(let i=0;i<3;i++){ mezcla.c[i]=hacia(mezcla.c[i],tono.c[i],k); mezcla.b[i]=hacia(mezcla.b[i],tono.borde[i],k); }
+    for(const q of ["vel","tilt","pul","amp","def","ola","resp"]) mezcla[q]=hacia(mezcla[q],tono[q],k);
     /* la metamorfosis va más lenta que el resto: se tiene que ver el cambio */
-    mezcla.onda=hacia(mezcla.onda,tono.onda||0,0.035);
+    for(const f in FORMA) FORMA[f]=hacia(FORMA[f], tono.forma===f?1:0, 0.032);
 
-    const R=Math.min(W,H)*0.38, cxp=W/2, cyp=H/2, t=Date.now();
-    ang+=mezcla.vel; angY+=mezcla.tilt; giroAnillo+=0.004+mezcla.anillo*0.02;
+    const t=Date.now(), cxp=W/2, cyp=H/2;
+    ang+=mezcla.vel; angY+=mezcla.tilt; angZ+=mezcla.tilt*0.42;
+    fase+=mezcla.ola*0.0016; respFase+=0.0042;
+
+    M.x=hacia(M.x,M.tx*M.dentro,0.07); M.y=hacia(M.y,M.ty*M.dentro,0.07);
+    const cerca=hacia(0,M.dentro,0.07);
+
+    /* Respira ASIMÉTRICO: encoge bastante y se infla poco. Concentrarse es
+       cerrarse, no hincharse — y además así el punto más lejano queda acotado. */
+    const sr=Math.sin(respFase);
+    const respira=1+mezcla.resp*(sr>0 ? sr*0.35 : sr);
+
+    /* TAMAÑO. El 0,62 sale de una cuenta, no del ojo: la partícula que más se
+       aleja del centro NO es la de adelante (esa está en el medio) sino la del
+       borde, donde la perspectiva vale 0,56 y no 0,86. Con el número correcto
+       la esfera llega a 92 px de los 98 que hay hasta el borde: 184 px de
+       diámetro en los 196 de alto. Antes llegaba a 125.
+       Cada figura ancha descuenta lo suyo —la caja llega a las esquinas, el
+       polvo se desparrama, el anillo tiene grosor— calculado para que las cinco
+       terminen en esos mismos 92 px. */
+    const ancho=FORMA.anillo*0.20+FORMA.caja*0.23+FORMA.polvo*0.55+FORMA.onda*0.10;
+    const R=Math.min(W,H)*(0.62-ancho*0.5);
+
     const puls=1+Math.sin(t/mezcla.pul)*mezcla.amp;
     const cos=Math.cos(ang), sin=Math.sin(ang), cy2=Math.cos(angY), sy2=Math.sin(angY);
-    const [cr,cg,cb]=mezcla.c;
+    const cz=Math.cos(angZ*0.6), sz=Math.sin(angZ*0.6);
+    const cr=mezcla.c[0], cg=mezcla.c[1], cb=mezcla.c[2];
+    const br=mezcla.b[0], bg=mezcla.b[1], bb=mezcla.b[2];
 
-    /* anillo exterior: la señal de que el motor está girando */
-    if(mezcla.anillo>0.02){
-      cx.save(); cx.translate(cxp,cyp); cx.rotate(giroAnillo);
-      for(let i=0;i<3;i++){
-        const rr=R*(1.10+i*0.085), a=mezcla.anillo*(0.5-i*0.13);
-        cx.beginPath();
-        cx.strokeStyle=`rgba(${cr|0},${cg|0},${cb|0},${a})`;
-        cx.lineWidth=1.1;
-        cx.arc(0,0,rr,i*2.1,i*2.1+1.5+mezcla.anillo);
-        cx.stroke();
-      }
-      cx.restore();
-    }
-
-    const on=mezcla.onda, suave=on*on*(3-2*on);   /* arranca y termina despacio */
-
-    /* Cada tanto la esfera "se acomoda": un impulso suave que la estira por un
-       eje al azar y vuelve. Es lo que la hace parecer viva cuando no pasa nada,
-       en vez de una bola girando siempre igual. */
+    /* cada tanto se reacomoda: un impulso que la estira por un eje y vuelve */
     if(t>gesto.hasta){
-      gesto.hasta=t+7000+Math.random()*11000;   /* entre 7 y 18 segundos */
-      gesto.inicio=t; gesto.dur=1400+Math.random()*1200;
-      gesto.eje=Math.random()*Math.PI*2; gesto.fuerza=0.10+Math.random()*0.14;
+      gesto.hasta=t+4000+Math.random()*6000; gesto.inicio=t;
+      gesto.dur=1100+Math.random()*1100; gesto.eje=Math.random()*6.28; gesto.fuerza=.09+Math.random()*.13;
     }
-    let estira=0, ejeX=Math.cos(gesto.eje), ejeY=Math.sin(gesto.eje);
-    if(t-gesto.inicio<gesto.dur){
-      const u=(t-gesto.inicio)/gesto.dur;          /* 0 → 1 */
-      estira=Math.sin(u*Math.PI)*gesto.fuerza;     /* entra y sale suave */
-    }
+    let estira=0, eX=Math.cos(gesto.eje), eY=Math.sin(gesto.eje);
+    if(t-gesto.inicio<gesto.dur){ const u=(t-gesto.inicio)/gesto.dur; estira=Math.sin(u*Math.PI)*gesto.fuerza; }
 
     for(const p of PARTS){
-      /* la deformación es lo que hace que "cambie de forma" al hablar */
-      const d=1+mezcla.def*Math.sin(p.f+t/240+p.y*2.6);
-      let x=p.x*cos-p.z*sin, z=p.x*sin+p.z*cos, y=p.y;
-      const y2=y*cy2-z*sy2; z=y*sy2+z*cy2; y=y2;
-      x*=d; y*=d; z*=d;
-      if(estira){ const pr=x*ejeX+y*ejeY; x+=ejeX*pr*estira; y+=ejeY*pr*estira; }
-      const e=1/(1.75-z*0.7);
-      let px=cxp+x*R*e*puls, py=cyp+y*R*e*puls, rad=(p.s*(p.capa?1.7:2.6)+0.8)*e;
-      let a=(Math.max(0,(z+1)/2)*0.8+0.06)*(p.capa?0.55:1);
+      /* La onda de la superficie depende SOLO de dónde está la partícula, no de
+         un número al azar como antes: por eso las vecinas se mueven juntas y se
+         ve líquido en vez de granizo. Tres frecuencias para que no se note el
+         patrón, normalizadas para que nunca pase de ±1. */
+      const w=( Math.sin(p.y*2.05+fase*1.00)*0.60
+              + Math.sin(p.x*1.63-fase*0.74)*0.52
+              + Math.sin(p.z*1.87+fase*0.61)*0.44 )/1.56;
+      const d=1+mezcla.def*w;
+      let bx=p.x*d, by=p.y*d, bz=p.z*d;
 
-      if(suave>0.002){
-        /* Las mismas partículas, puestas en fila: cada una toma su lugar a lo
-           ancho y sube o baja con la onda. Tres armónicos para que respire
-           como un audio de verdad y no como un seno perfecto. */
+      if(FORMA.anillo>.002){ const g=FORMA.anillo; bx+=(p.aX-bx)*g; by+=(p.aY-by)*g; bz+=(p.aZ-bz)*g; }
+      if(FORMA.caja  >.002){ const g=FORMA.caja;   bx+=(p.cX-bx)*g; by+=(p.cY-by)*g; bz+=(p.cZ-bz)*g; }
+      if(FORMA.polvo >.002){ const g=FORMA.polvo, dr=1+Math.sin(p.sem+t/900)*0.10;
+        bx+=(p.pX*dr-bx)*g; by+=(p.pY*dr-by)*g; bz+=(p.pZ*dr-bz)*g; }
+
+      let x=bx*cos-bz*sin, z=bx*sin+bz*cos, y=by;
+      const y2=y*cy2-z*sy2; z=y*sy2+z*cy2; y=y2;
+      const x2=x*cz-y*sz; y=x*sz+y*cz; x=x2;
+      x*=respira; y*=respira; z*=respira;
+      if(estira){ const pr=x*eX+y*eY; x+=eX*pr*estira; y+=eY*pr*estira; }
+
+      const e=1/(1.78-z*0.62);
+      let px=cxp+x*R*e*puls, py=cyp+y*R*e*puls;
+
+      if(FORMA.onda>.002){
+        /* La onda es la única que se estira a lo ANCHO, así que su límite es el
+           ancho del panel y no el radio: atada al radio se saldría por los
+           costados al agrandar el orbe. */
         const env=Math.pow(Math.max(0,Math.cos(p.u*Math.PI/2)),0.75);
-        const w=Math.sin(p.u*7.5+t/165)*0.55
-               +Math.sin(p.u*13.9-t/225)*0.26
-               +Math.sin(p.u*3.1 +t/330)*0.32;
-        const alto=w*env*(p.capa?0.5:1)*(0.4+p.s*0.6);
-        const ox=cxp+p.u*R*1.62, oy=cyp+alto*R*0.62;
-        px=px+(ox-px)*suave; py=py+(oy-py)*suave;
-        rad=rad+((0.5+p.s*1.1)-rad)*suave;
-        a=a+((0.30+env*0.55)-a)*suave;
+        const ww=Math.sin(p.u*7.5+t/165)*0.55+Math.sin(p.u*13.9-t/225)*0.26+Math.sin(p.u*3.1+t/330)*0.32;
+        const anchoOnda=Math.min(R*1.62, W*0.46);
+        const ox=cxp+p.u*anchoOnda, oy=cyp+ww*env*(p.capa?0.5:1)*(0.4+p.s*0.6)*R*0.62;
+        px+=(ox-px)*FORMA.onda; py+=(oy-py)*FORMA.onda;
       }
+
+      if(cerca>.01){
+        const mx=cxp+M.x*W*0.5, my=cyp+M.y*H*0.5;
+        const dx=px-mx, dy=py-my, dd=Math.sqrt(dx*dx+dy*dy)+.001, rr=R*0.85;
+        if(dd<rr){ const emp=(1-dd/rr)*(1-dd/rr)*R*0.30*cerca; px+=dx/dd*emp; py+=dy/dd*emp; }
+      }
+
+      /* El borde brilla POR DENSIDAD, no por tamaño. Marcarlo agrandando y
+         aclarando cada partícula deja manchas: se probó y se descartó. Los
+         puntos van chicos y parejos, y del canto sale apenas un tinte. */
+      const plano=Math.sqrt(x*x+y*y)/(p.r||1);
+      const canto=Math.pow(Math.max(0,Math.min(1.2,plano)),8);
+      const mezB=(p.capa?canto:canto*0.3)*0.55;
+      const rad=(0.42+p.s*0.72)*e;
+      let a=(Math.max(0,(z+1)/2)*0.62+0.10)*(p.capa?1:0.38)*(1+canto*0.30);
+      if(a>0.92) a=0.92;
+
+      const rr2=(cr+(br-cr)*mezB+z*16)|0, gg2=(cg+(bg-cg)*mezB+z*15)|0, bb2=(cb+(bb-cb)*mezB+z*16)|0;
       cx.beginPath();
-      cx.fillStyle=`rgba(${cr+z*22|0},${cg+z*20|0},${cb+z*22|0},${a})`;
-      cx.arc(px, py, rad, 0, 7);
-      cx.fill();
+      cx.fillStyle="rgba("+rr2+","+gg2+","+bb2+","+a+")";
+      cx.arc(px,py,rad,0,7); cx.fill();
     }
-    const g=cx.createRadialGradient(cxp,cyp,R*0.15,cxp,cyp,R*1.45);
+
+    const g=cx.createRadialGradient(cxp,cyp,R*0.10,cxp,cyp,R*1.5);
     g.addColorStop(0,tono.halo); g.addColorStop(1,"rgba(0,0,0,0)");
     cx.fillStyle=g; cx.fillRect(0,0,W,H);
     requestAnimationFrame(dibujar);
@@ -696,7 +753,7 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
   })();
 
   /* ══ estado del orbe ══ */
-  let hablandoHasta=0, vozHasta=0;
+  let hablandoHasta=0, vozHasta=0, pedidoHasta=0, equipoHasta=0, esperaDesde=0;
   function esperandoRespuesta(){
     if(!sel || cfg.pausadas.includes(sel.id) || !cfg.activo) return false;
     const pid=id1(sel.whatsapp_partner_id);
@@ -707,11 +764,31 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     }
     return false;
   }
+  /* QUÉ ESTADO MOSTRAR. Antes eran cuatro situaciones y todas del mismo palo
+     verde-agua, así que de un vistazo no se sabía qué estaba haciendo.
+
+     Los tiempos de espera no son inventados: salen de lo medido. La búsqueda
+     previa contra el catálogo tarda unos 3 a 4 segundos, y recién después
+     arranca a redactar — por eso los primeros 6 segundos son "buscando" y de
+     ahí en más "pensando". Y una respuesta normal tarda entre 8 y 40 segundos:
+     si pasan más de 90 sin contestar, ya no está pensando, algo se rompió. Eso
+     es lo mismo que detecta el vigilante, pero acá se ve al instante y de
+     lejos, sin esperar a que llegue un WhatsApp de alerta. */
   function refrescarOrbe(){
     const ahora=Date.now();
-    setEstado(ahora<vozHasta ? "voz"
-      : (ahora<hablandoHasta ? "hablando"
-      : (!cfg.activo ? "off" : (esperandoRespuesta() ? "pensando" : "escucha"))));
+    const esperando=esperandoRespuesta();
+    if(esperando){ if(!esperaDesde) esperaDesde=ahora; } else esperaDesde=0;
+    const espera=esperaDesde ? ahora-esperaDesde : 0;
+    setEstado(
+        ahora<vozHasta      ? "voz"
+      : ahora<hablandoHasta ? "hablando"
+      : ahora<pedidoHasta   ? "pedido"
+      : ahora<equipoHasta   ? "equipo"
+      : !cfg.activo         ? "off"
+      : espera>90000        ? "problema"
+      : espera>6000         ? "pensando"
+      : espera>0            ? "buscando"
+      : "escucha");
   }
   setInterval(refrescarOrbe,500);
 
@@ -1025,8 +1102,13 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
         const delCliente=Array.isArray(m.author_id)&&pid&&m.author_id[0]===pid&&!esDelBot(m);
         if(esNota(m)){
           const nro=(limpiar(m.body).match(/\b\d{6,}\b/)||[])[0];
-          if(/presupuesto|pedido|📝/.test(m.body)) anotar("ped", nro?`presupuesto ${nro} actualizado`:"pedido actualizado", m.date);
-          else anotar("eq","derivado al equipo", m.date);
+          if(/presupuesto|pedido|📝/.test(m.body)){
+            anotar("ped", nro?`presupuesto ${nro} actualizado`:"pedido actualizado", m.date);
+            pedidoHasta=Date.now()+7000;      /* el orbe se arma en caja */
+          } else {
+            anotar("eq","derivado al equipo", m.date);
+            equipoHasta=Date.now()+6000;      /* el orbe pasa a coral */
+          }
         } else if(delCliente){
           if((m.attachment_ids||[]).length){
             const cl=claseAdj(m.attachment_ids);
