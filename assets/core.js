@@ -402,6 +402,19 @@ window.EYG = (function(){
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/tesoreria.html"},
     {key:"stock",     dept:"compras", cat:"Compras", ico:"📦", titulo:"Stock, Compras y Reposición", desc:"Qué conviene comprar y cuándo, pedido por proveedor (borrador en Odoo), productos ganadores, sobrestock y vencimientos. Con tarjeta de salud del abastecimiento.", roles:["finanzas","inventario"], ready:true, path:()=>"inventario/stock.html"},
+    /* Vademécum: consulta de medicamentos. La monografía se guarda POR DROGA y
+       cada ficha de producto la hereda; las presentaciones autorizadas salen del
+       Vademécum Nacional (ANMAT). SOLO LECTURA sobre Odoo: busca en la copia
+       `catalogo` y muestra el stock del momento. No escribe nada en Odoo.
+       EN PRUEBAS: oculto para todo el equipo mientras se carga el vademécum
+       (hoy hay pocas drogas barridas y la mayoría de las fichas saldrían a
+       medias). Para liberarlo: borrar la línea `pruebas` de acá Y el
+       {pruebas:…} del EYG.guard() de inventario/vademecum.html. */
+    {key:"vademecum", dept:"deposito", cat:"Depósito", ico:"💊", titulo:"Vademécum",
+      desc:"Qué es cada medicamento, para qué sirve, cómo se administra y en qué presentaciones está autorizado — con la fuente y la fecha de cada dato. Y cuáles de esas presentaciones tenemos.",
+      roles:["inventario","maestro","comercial","lider","finanzas"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"inventario/vademecum.html"},
     {key:"nombres",   dept:"deposito", cat:"Depósito", ico:"🏷️", titulo:"Maestro de productos", desc:"Ordená el dato maestro de cada producto: nombre, unidades, embalaje y subcategoría. Detecta errores y completa lo que falta, con un clic.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/nombres.html"},
     {key:"deposito-control", dept:"deposito", cat:"Depósito", ico:"🩺", titulo:"Control de Depósito", desc:"Saneá el depósito: contá y ajustá el stock físico, corregí la valuación torcida, completá costos faltantes y limpiá archivados y basura. Deja el inventario fiel a la realidad.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/control.html"},
     {key:"oportunidades", dept:"compras", cat:"Compras", ico:"💡", titulo:"Oportunidades y Ofertas", desc:"Cuando un costo baja, el sistema detecta una oportunidad de oferta. Confirmala (precio, stock, vigencia) o armá combos, y van a la tarjeta de los comerciales.", roles:["inventario"], ready:true, path:()=>"inventario/oportunidades.html"},
