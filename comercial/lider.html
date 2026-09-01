@@ -276,6 +276,27 @@
   .ofq{font-size:11px;background:#F2F7F6;border-radius:7px;padding:3px 8px;color:var(--gris)}
   .ofq b{color:var(--teal-deep)}
   .ofnad{font-size:11px;color:var(--gris2);font-style:italic}
+  /* ---- variación contra el período anterior ---- */
+  .dlt{font-size:11px;font-weight:800;margin-left:6px;white-space:nowrap}
+  .dlt.up{color:#12A366} .dlt.down{color:var(--coral)}
+  .tblcom .td .dlt{font-size:10px;margin-left:5px}
+  /* ---- embudo ---- */
+  .emb{display:flex;flex-direction:column;gap:9px}
+  .embrow{display:grid;grid-template-columns:118px 1fr 42px;align-items:center;gap:9px}
+  .embl{font-size:12px;font-weight:700;color:var(--gris);display:flex;align-items:center;gap:5px}
+  .embl .embn{font-size:10px;font-weight:700;color:var(--gris2);background:#EDF2F1;border-radius:20px;padding:1px 6px}
+  .embbar{position:relative;height:24px;background:#EDF2F1;border-radius:7px;display:flex;align-items:center}
+  .embbar i{display:block;height:100%;border-radius:7px;min-width:4px;position:absolute;left:0;top:0}
+  .embv{position:relative;font-size:11.5px;font-weight:800;color:var(--ink);padding-left:9px;text-shadow:0 1px 2px rgba(255,255,255,.7)}
+  .embp{font-size:11.5px;font-weight:800;text-align:right}
+  .embp .ok{color:#12A366} .embp .md{color:var(--gold)} .embp .ba{color:var(--coral)}
+  /* ---- movimiento de clientes ---- */
+  .mvtiles{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:13px}
+  .mvt{background:#F7FBFA;border:1px solid var(--line);border-radius:11px;padding:10px 8px;text-align:center;cursor:help}
+  .mvn{font-size:24px;font-weight:900;letter-spacing:-.5px}
+  .mvl{font-size:10.5px;font-weight:700;color:var(--gris2);margin-top:1px;line-height:1.25}
+  .mvsub{font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--gris2);font-weight:800;margin:2px 0 8px}
+  .mvok{font-size:12.5px;color:var(--gris);background:#F2F7F6;border-radius:10px;padding:11px 13px}
   /* contactos */
   .cfilters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
   .cfilters .search{flex:1;min-width:200px;display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:9px 12px}
@@ -611,8 +632,9 @@ function pintarVista(){
 }
 async function cargarProductos(){
   try{
-    const y=argToday().slice(0,4);
-    const g=await EYG.rpc("sale.order.line","read_group",[[["order_id.user_id","in",UIDS],["order_id.state","in",["sale","done"]],["order_id.date_order",">=",y+"-01-01"]],["price_subtotal:sum","product_uom_qty:sum"],["product_id"]],{lazy:false});
+    // sigue el período elegido arriba (antes era el año fijo, y no acompañaba al filtro)
+    const R=RANGO||rangoPreset("mes");
+    const g=await EYG.rpc("sale.order.line","read_group",[[["order_id.user_id","in",UIDS],["order_id.state","in",["sale","done"]],["order_id.date_order",">=",utcIni(R.desde)],["order_id.date_order","<=",utcFin(R.hasta)]],["price_subtotal:sum","product_uom_qty:sum"],["product_id"]],{lazy:false});
     PRODS=g.filter(r=>r.product_id).map(r=>({name:r.product_id[1], monto:r.price_subtotal||0, qty:r.product_uom_qty||0})).sort((a,b)=>b.monto-a.monto).slice(0,12);
   }catch(e){ PRODS=[]; }
   renderProds();
@@ -654,8 +676,8 @@ async function eliminarDesc(id){ if(!confirm("¿Eliminar definitivamente este pr
 function renderProds(){
   const box=document.getElementById("prods"); if(!box)return;
   if(!UIDS.length){ box.innerHTML=""; return; }   // líder sin comerciales
-  if(!PRODS.length){ box.innerHTML=`<div class="prodsbox"><h2>🏆 Productos más vendidos</h2><div class="floading"><span class="spin-sm"></span> cargando el año…</div></div>`; return; }
-  box.innerHTML=`<div class="prodsbox"><h2>🏆 Productos más vendidos <span class="muted" style="font-weight:600;font-size:12px">· del año</span></h2>
+  if(!PRODS.length){ box.innerHTML=`<div class="prodsbox"><h2>🏆 Productos más vendidos</h2><div class="floading"><span class="spin-sm"></span> cargando…</div></div>`; return; }
+  box.innerHTML=`<div class="prodsbox"><h2>🏆 Productos más vendidos <span class="muted" style="font-weight:600;font-size:12px">· "+esc(RANGO?RANGO.lbl:"")+"</span></h2>
     <div class="prow h"><div class="rk">#</div><div>Producto</div><div class="pq">Unidades</div><div class="pv">Facturado</div></div>
     ${PRODS.map((p,i)=>`<div class="prow"><div class="rk">${i+1}</div><div class="pn">${esc(p.name)}</div><div class="pq">${Math.round(p.qty).toLocaleString("es-AR")}</div><div class="pv">${Mabbr(p.monto)}</div></div>`).join("")}
   </div>`;
@@ -721,7 +743,8 @@ function aplicarCustom(){
 }
 function aplicarRango(r){
   RANGO=r; ORD={col:"vendido", dir:-1}; VENTASEQ={};
-  renderPerBar(); cargarRango(); cargarVentasEq();
+  renderPerBar(); cargarRango(); cargarVentasEq(); cargarComisiones();
+  PRODS=[]; renderProds(); cargarProductos();   // los productos también siguen el período
 }
 
 /* ═══════════════ MÉTRICAS DEL EQUIPO PARA EL RANGO ═════════════════════════
@@ -759,6 +782,7 @@ async function cargarRango(silencioso){
       b.vendido+=o.amount_total||0; b.ped++; if(o.partner_id) b.cliSet.add(o.partner_id[0]);
       b.margenD+=o.margin||0; b.baseD+=o.amount_untaxed||0; }
     for(const g of nuevosG){ const u=g.user_id&&g.user_id[0]; if(u!=null&&byUid[u]) byUid[u].nuevos=g.__count||0; }
+    const cliByUid={}; UIDS.forEach(u=>{ cliByUid[u]=byUid[u].cliSet; });   // para comparar contra el período anterior
     UIDS.forEach(u=>{ const b=byUid[u]; b.cli=b.cliSet.size; delete b.cliSet;
       b.ticket=b.ped?b.vendido/b.ped:0; b.margen=(conMargen&&b.baseD>0)?(b.margenD/b.baseD*100):null; });
 
@@ -772,7 +796,11 @@ async function cargarRango(silencioso){
     // mapa de calor día de la semana × hora, de los mismos pedidos ya traídos
     const heat=[0,1,2,3,4,5,6].map(()=>new Array(24).fill(0));
     for(const o of ords){ const dd=new Date(o._d+"T12:00:00Z"); heat[(dd.getUTCDay()+6)%7][o._h]+=o.amount_total||0; }
-    EQ={byUid:byUid, tot:tot, conMargen:conMargen, serie:s.serie, granul:s.granul, heat:heat};
+    const cliAll=new Set(ords.map(o=>o.partner_id&&o.partner_id[0]).filter(Boolean));
+    EQ={byUid:byUid, tot:tot, conMargen:conMargen, serie:s.serie, serieTicket:s.serieTicket, granul:s.granul,
+        heat:heat, cliByUid:cliByUid, cliAll:cliAll, prev:null};
+    // el período anterior llega después: no vale la pena hacer esperar a todo lo demás
+    cargarPrevio(R).then(p=>{ if(EQ&&RANGO===R){ EQ.prev=p; renderKpis(); renderEquipo(); renderGraficos(); } }).catch(()=>{});
     EQ_ERR=null;
   }catch(e){ EQ_ERR=e.message||"no pude leer las ventas del período"; EQ=null; }
   renderRango();
@@ -793,28 +821,37 @@ async function cobradoDelRango(R){
 }
 /* Serie del gráfico: la granularidad la decide el largo del rango (hora / día / mes). */
 function serieDe(ords,R){
+  // devuelve la serie de MONTO y, en paralelo, la de TICKET PROMEDIO (monto/pedidos)
   const dias=diasRango(R), t=argToday();
+  const cnt={}, hcnt=new Array(24).fill(0);
+  ords.forEach(o=>{ cnt[o._d]=(cnt[o._d]||0)+1; hcnt[o._h]++; });
   if(dias===1){
     const m=new Array(24).fill(0); ords.forEach(o=>{ m[o._h]=(m[o._h]||0)+(o.amount_total||0); });
     const arr=[]; const curH=Math.floor(nowFrac());
-    for(let h=7;h<=21;h++) arr.push({label:h+"h", val:m[h]||0, cur:R.hasta===t&&h===curH});
-    return {serie:arr, granul:"hora"};
+    const tk=[];
+    for(let h=7;h<=21;h++){ arr.push({label:h+"h", val:m[h]||0, cur:R.hasta===t&&h===curH});
+      tk.push({label:h+"h", val:hcnt[h]?(m[h]||0)/hcnt[h]:0, cur:R.hasta===t&&h===curH}); }
+    return {serie:arr, serieTicket:tk, granul:"hora"};
   }
   if(dias<=62){
     const m={}; ords.forEach(o=>{ m[o._d]=(m[o._d]||0)+(o.amount_total||0); });
-    const arr=[];
+    const arr=[], tk=[];
     for(let f=R.desde; f<=R.hasta; f=sumaDias(f,1)){
       const dd=new Date(f+"T12:00:00Z"); const wd=(dd.getUTCDay()+6)%7;
-      arr.push({label:(dias<=14?DIASSEM[wd]+" ":"")+(+f.slice(8,10)), val:m[f]||0, cur:f===t});
+      const lb=(dias<=14?DIASSEM[wd]+" ":"")+(+f.slice(8,10));
+      arr.push({label:lb, val:m[f]||0, cur:f===t});
+      tk.push({label:lb, val:cnt[f]?(m[f]||0)/cnt[f]:0, cur:f===t});
     }
-    return {serie:arr, granul:"dia"};
+    return {serie:arr, serieTicket:tk, granul:"dia"};
   }
-  const m={}; ords.forEach(o=>{ const k=o._d.slice(0,7); m[k]=(m[k]||0)+(o.amount_total||0); });
-  const arr=[], moHoy=t.slice(0,7);
+  const m={}, mc={}; ords.forEach(o=>{ const k=o._d.slice(0,7); m[k]=(m[k]||0)+(o.amount_total||0); mc[k]=(mc[k]||0)+1; });
+  const arr=[], tk=[], moHoy=t.slice(0,7);
   for(let f=R.desde.slice(0,7)+"-01"; f<=R.hasta; f=sumaDias(ultDiaMes(f),1)){
-    const k=f.slice(0,7); arr.push({label:MESES[(+k.slice(5,7))-1], val:m[k]||0, cur:k===moHoy});
+    const k=f.slice(0,7), lb=MESES[(+k.slice(5,7))-1];
+    arr.push({label:lb, val:m[k]||0, cur:k===moHoy});
+    tk.push({label:lb, val:mc[k]?(m[k]||0)/mc[k]:0, cur:k===moHoy});
   }
-  return {serie:arr, granul:"mes"};
+  return {serie:arr, serieTicket:tk, granul:"mes"};
 }
 function renderRango(){ renderKpis(); renderChart(); renderEquipo(); renderGraficos(); }
 
@@ -822,6 +859,7 @@ function renderRango(){ renderKpis(); renderChart(); renderEquipo(); renderGrafi
 function renderKpis(){
   const box=document.getElementById("kpis"); if(!box||!RANGO)return;
   const t=EQ?EQ.tot:null, cargando='<span class="shim">…</span>';
+  const pv=EQ&&EQ.prev?EQ.prev.tot:null;   // período anterior, para los ▲▼
   const k=(lab,val,sub,tit)=>'<div class="kpi"'+(tit?' title="'+esc(tit)+'"':'')+'><div class="l">'+lab+'</div><div class="v">'+val+'</div><div class="s">'+(sub||'&nbsp;')+'</div></div>';
   const presencia=(function(){
     const on=presOnline(), vend=DATA.filter(d=>d.hoy>0).length;
@@ -831,9 +869,9 @@ function renderKpis(){
       +'<div class="s" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+vend+' de '+DATA.length+' vendieron hoy'+(names?' · 🟢 '+esc(names):'')+'</div></div>';
   })();
   box.innerHTML='<div class="kpis">'
-    + k("Vendido · "+esc(RANGO.lbl), t?Mabbr(t.vendido):cargando, t?(t.ped.toLocaleString("es-AR")+" pedidos confirmados"):"", "Suma de los pedidos confirmados del equipo en el período, con IVA.")
-    + k("Ticket promedio", t?Mabbr(t.ticket):cargando, "por pedido del equipo", "Vendido dividido la cantidad de pedidos. Es el promedio del EQUIPO; el de cada comercial está en la tabla de abajo.")
-    + k("Clientes que compraron", t?t.cli.toLocaleString("es-AR"):cargando, t?(t.nuevos+" dados de alta"):"", "Clientes distintos con al menos un pedido en el período. Abajo, cuántos se dieron de alta en esas fechas.")
+    + k("Vendido · "+esc(RANGO.lbl), (t?Mabbr(t.vendido):cargando)+(pv?chipDelta(delta(t.vendido,pv.vendido)):''), t?(t.ped.toLocaleString("es-AR")+" pedidos confirmados"+(pv?" · antes "+pv.ped:"")):"", "Suma de los pedidos confirmados del equipo en el período, con IVA. El ▲▼ compara contra el mismo largo de días anterior.")
+    + k("Ticket promedio", (t?Mabbr(t.ticket):cargando)+(pv?chipDelta(delta(t.ticket,pv.ticket)):''), pv?("antes "+Mabbr(pv.ticket)):"por pedido del equipo", "Vendido dividido la cantidad de pedidos. Es el promedio del EQUIPO; el de cada comercial está en la tabla de abajo.")
+    + k("Clientes que compraron", (t?t.cli.toLocaleString("es-AR"):cargando)+(pv?chipDelta(delta(t.cli,pv.cli)):''), t?(t.nuevos+" dados de alta"):"", "Clientes distintos con al menos un pedido en el período. Abajo, cuántos se dieron de alta en esas fechas.")
     + k("Cobrado", t?Mabbr(t.cob):cargando, (t&&t.vendido>0)?(Math.round(t.cob/t.vendido*100)+"% de lo vendido"):"pagos entrantes", "Pagos entrantes registrados en el período sobre la cartera del equipo. OJO: no es la cobranza DE estas ventas, es la del período.")
     + k("Margen", (t&&t.margen!=null)?(t.margen.toFixed(1).replace(".",",")+"%"):(t?"—":cargando), "sobre el neto sin IVA", "Margen de los pedidos del período, calculado sobre el neto sin IVA.")
     + presencia
@@ -1301,6 +1339,49 @@ function computeAGG(){
     AGG.worst[m.k]=m.higher?Math.min(...vals):Math.max(...vals);
   }
 }
+/* ═══════════════ PERÍODO ANTERIOR (para comparar) ══════════════════════════
+   Un número solo no dice nada: "$17,9 M" no es bueno ni malo hasta que se lo compara.
+   Traemos el MISMO largo de días inmediatamente anterior y de ahí salen los ▲▼ de los
+   KPIs y de la tabla, y el movimiento de clientes (quién se sumó y quién dejó de comprar).
+   Es UNA consulta agrupada por vendedor y cliente: de ahí sale todo junto.
+   Los límites son exactos: Argentina es UTC-3 todo el año (sin horario de verano), así
+   que el día ARGENTINO va de las 03:00 UTC a las 02:59 UTC del día siguiente. */
+function rangoPrevio(R){
+  const d=diasRango(R);
+  return {desde:sumaDias(R.desde,-d), hasta:sumaDias(R.desde,-1), dias:d};
+}
+function utcIni(f){ return f+" 03:00:00"; }
+function utcFin(f){ return sumaDias(f,1)+" 02:59:59"; }
+async function cargarPrevio(R){
+  const p=rangoPrevio(R);
+  const g=await EYG.rpc("sale.order","read_group",[[["user_id","in",UIDS],["state","in",["sale","done"]],
+      ["date_order",">=",utcIni(p.desde)],["date_order","<=",utcFin(p.hasta)]],
+      ["amount_total:sum"],["user_id","partner_id"]],{lazy:false});
+  const byUid={}, setU={}, cliAll=new Set();
+  UIDS.forEach(u=>{ byUid[u]={vendido:0,ped:0,cli:0,ticket:0}; setU[u]=new Set(); });
+  for(const r of g){
+    const u=r.user_id&&r.user_id[0], pid=r.partner_id&&r.partner_id[0];
+    if(u==null||!byUid[u]) continue;
+    byUid[u].vendido+=r.amount_total||0; byUid[u].ped+=r.__count||0;
+    if(pid){ setU[u].add(pid); cliAll.add(pid); }
+  }
+  const tot={vendido:0,ped:0};
+  UIDS.forEach(u=>{ const b=byUid[u]; b.cli=setU[u].size; b.ticket=b.ped?b.vendido/b.ped:0; tot.vendido+=b.vendido; tot.ped+=b.ped; });
+  tot.cli=cliAll.size; tot.ticket=tot.ped?tot.vendido/tot.ped:0;
+  return {rango:p, byUid:byUid, tot:tot, setU:setU, cliAll:cliAll};
+}
+/* Variación contra el período anterior. null si antes no había nada (no se puede
+   dividir por cero, y "infinito %" no le dice nada a nadie). */
+function delta(actual, previo){
+  if(previo==null||previo<=0) return null;
+  return Math.round((actual-previo)/previo*100);
+}
+function chipDelta(d, invertido){
+  if(d==null) return '';
+  const bueno = invertido ? d<=0 : d>=0;
+  return '<span class="dlt '+(bueno?'up':'down')+'" title="Contra el mismo período anterior">'+(d>=0?'▲':'▼')+' '+Math.abs(d)+'%</span>';
+}
+
 /* ═══════════════ GRÁFICOS DEL PERÍODO ══════════════════════════════════════
    Todos salen de la MISMA consulta de pedidos que ya trajo cargarRango: no cuestan
    ni una consulta más a Odoo. Son SVG y CSS a mano, sin librerías (la página no
@@ -1350,6 +1431,57 @@ function heatmap(mat){
     +'</div><div class="heatlbl">Más oscuro = más vendido. Sale de los mismos pedidos del período.</div></div>';
 }
 
+/* Embudo: presupuestos → pedidos → facturado → cobrado. OJO, y está aclarado en
+   pantalla: NO es un seguimiento de los mismos comprobantes (un presupuesto de este
+   mes puede facturarse el que viene). Son cuatro medidas del MISMO período puestas
+   una al lado de la otra: sirve para ver dónde se achica el caudal, no para auditar. */
+function embudo(){
+  const v=VENTASEQ[claveRango()];
+  if(!v) return '<div class="floading"><span class="spin-sm"></span> sumando el desglose…</div>';
+  const d=v.desglose;
+  const pasos=[
+    {lab:"Presupuestos", val:d.draM+d.pedM, n:d.draN+d.pedN, col:"#7ad5cc", ay:"Todo lo que se cargó: los que siguen en borrador más los que ya se confirmaron."},
+    {lab:"Pedidos confirmados", val:d.pedM, n:d.pedN, col:"#0AA89F", ay:"Los que el cliente confirmó."},
+    {lab:"Facturado", val:d.facMonto-d.ncMonto, n:d.facN, col:"#048782", ay:"Facturas menos notas de crédito, sobre la cartera del equipo."},
+    {lab:"Cobrado", val:(EQ&&EQ.tot?EQ.tot.cob:0), n:null, col:"#04635F", ay:"Pagos entrantes del período. No son necesariamente de estas facturas."},
+  ];
+  const max=Math.max.apply(null,pasos.map(p=>p.val).concat([1]));
+  return '<div class="emb">'+pasos.map((p,i)=>{
+    const prev=i?pasos[i-1].val:null;
+    const pct=(prev&&prev>0)?Math.round(p.val/prev*100):null;
+    return '<div class="embrow" title="'+esc(p.ay)+'">'
+      +'<div class="embl">'+esc(p.lab)+(p.n!=null?'<span class="embn">'+p.n+'</span>':'')+'</div>'
+      +'<div class="embbar"><i style="width:'+Math.max(2,Math.round(p.val/max*100))+'%;background:'+p.col+'"></i>'
+      +'<span class="embv">'+Mabbr(p.val)+'</span></div>'
+      +'<div class="embp">'+(pct==null?'':'<span class="'+(pct>=70?'ok':pct>=40?'md':'ba')+'">'+pct+'%</span>')+'</div></div>';
+  }).join("")+'</div>';
+}
+
+/* Movimiento de clientes: se sumaron / siguen / dejaron de comprar, contra el mismo
+   largo de días anterior. "Dejaron de comprar" NO quiere decir perdidos para siempre:
+   quiere decir que en estos días no compraron y en los anteriores sí. Es la lista para
+   levantar el teléfono. */
+function movimientoClientes(){
+  if(!EQ||!EQ.prev) return '<div class="floading"><span class="spin-sm"></span> comparando con el período anterior…</div>';
+  const ahora=EQ.cliAll, antes=EQ.prev.cliAll;
+  let siguen=0, sumados=0, perdidos=0;
+  ahora.forEach(id=>{ if(antes.has(id)) siguen++; else sumados++; });
+  antes.forEach(id=>{ if(!ahora.has(id)) perdidos++; });
+  const porCom=COM.map(c=>{
+    const a=EQ.cliByUid[c.uid]||new Set(), b=EQ.prev.setU[c.uid]||new Set();
+    let p=0; b.forEach(id=>{ if(!a.has(id)) p++; });
+    return {label:c.name.split(" ")[0], color:c.color, val:p, tit:c.name+": "+p+" clientes que le compraron en el período anterior y en éste no"};
+  }).filter(x=>x.val>0).sort((x,y)=>y.val-x.val);
+  const tile=(n,lab,col,ay)=>'<div class="mvt" title="'+esc(ay)+'"><div class="mvn" style="color:'+col+'">'+n+'</div><div class="mvl">'+lab+'</div></div>';
+  return '<div class="mvtiles">'
+    + tile(sumados,"Se sumaron","var(--teal)","Le compraron al equipo en este período y en el anterior no. Son altas nuevas o clientes recuperados.")
+    + tile(siguen,"Siguen","var(--ink)","Compraron en los dos períodos.")
+    + tile(perdidos,"Dejaron de comprar","var(--coral)","Compraron en el período anterior y en éste no. No están perdidos: hay que llamarlos.")
+    +'</div>'
+    + (porCom.length?'<div class="mvsub">Quién tiene que llamar</div>'+barrasH(porCom,{fmt:v=>Math.round(v)+" cli."})
+       :'<div class="mvok">👏 Nadie del equipo dejó de vender a un cliente que compraba antes.</div>');
+}
+
 function renderGraficos(){
   const box=document.getElementById("graficos"); if(!box)return;
   if(!UIDS.length){ box.innerHTML=""; return; }
@@ -1378,6 +1510,12 @@ function renderGraficos(){
         barrasH(cli,{fmt:v=>Math.round(v).toLocaleString("es-AR")}))
     + card("🗓️ Cuándo vende el equipo","Cada celda es un día de la semana y una hora. Sirve para ver si hay franjas muertas o si todo se concentra sobre el cierre.",
         heatmap(EQ.heat))
+    + card("🪣 Dónde se achica el caudal","Presupuestado, confirmado, facturado y cobrado del período, uno al lado del otro. El % es cuánto pasa de un escalón al siguiente.",
+        embudo())
+    + card("🔁 Movimiento de clientes","Contra el mismo largo de días anterior: quién se sumó, quién sigue y quién dejó de comprar. Lo último es la lista para llamar.",
+        movimientoClientes())
+    + card("🎟️ Ticket promedio en el tiempo","Si la línea baja mientras el total sube, el equipo está vendiendo más veces pero más chico.",
+        (EQ.serieTicket&&EQ.serieTicket.length?barChart(EQ.serieTicket):'<div class=\"mvok\">Sin pedidos en el período.</div>'))
     +'</div>';
 }
 
@@ -1521,6 +1659,11 @@ function renderEquipo(){
       }
       if(col.k==="venc" && !FICHAS[c.uid]) return '<div class="td r">'+(FICHAS_LOADING?'<span class="shim">…</span>':'<span class="na">—</span>')+'</div>';
       const top = (mejor[col.k]!=null && v!=null && v===mejor[col.k] && v>0 && COM.length>1) ? " top" : "";
+      // en Vendido, además, cómo le fue contra el mismo largo de días anterior
+      if(col.k==="vendido" && EQ && EQ.prev){
+        const d=delta(v,(EQ.prev.byUid[c.uid]||{}).vendido);
+        return '<div class="td r'+top+'">'+fmtCol(col.tipo,v)+chipDelta(d)+'</div>';
+      }
       return '<div class="td r'+top+'">'+fmtCol(col.tipo,v)+'</div>';
     }).join("");
     return '<div class="tr'+sel+'" onclick="selCom('+c.uid+')">'+tds+'</div>';
@@ -1787,7 +1930,7 @@ async function cargarVentasEq(){
   if(VENTASEQ[key]){ renderVentasEq(); return; }
   renderVentasEq();                                   // muestra "cargando…" del período pedido
   try{ VENTASEQ[key]=await desgloseEquipo(RANGO.desde, sumaDias(RANGO.hasta,1)); }catch(e){}
-  renderVentasEq();
+  renderVentasEq(); renderGraficos();   // el embudo se arma con este desglose
 }
 function renderVentasEq(){
   const box=document.getElementById("ventasEq"); if(!box) return;
