@@ -174,6 +174,21 @@
   .ldhead .sub{font-size:12.5px;color:#e7faf8;margin-top:1px}
   .ldhead .chg{margin-left:auto;background:rgba(255,255,255,.16);color:#fff;border:0;border-radius:9px;padding:8px 13px;font-family:inherit;font-size:12.5px;font-weight:700;cursor:pointer;text-decoration:none;white-space:nowrap}
   .ldhead .chg:hover{background:rgba(255,255,255,.28)}
+  /* "Mis ventas" — la mitad propia del líder que TAMBIÉN vende. Es la misma
+     familia visual que la mitad izquierda de la tarjeta partida de German y
+     Diego en el Panel comerciales (comerciales.html): un líder que vende ve
+     acá SU cartera y entra a su panel de venta; abajo sigue todo su equipo. */
+  .mvcard{display:block;background:linear-gradient(145deg,var(--teal),var(--teal-deep));border:1px solid var(--teal-deep);border-radius:16px;padding:15px 20px 16px;margin-bottom:16px;box-shadow:0 10px 30px rgba(6,65,62,.2);color:#fff;text-decoration:none;transition:transform .13s,box-shadow .13s}
+  .mvcard:hover{transform:translateY(-2px);box-shadow:0 16px 40px rgba(6,65,62,.3)}
+  .mvcard .mvtop{display:flex;align-items:center;gap:11px;flex-wrap:wrap}
+  .mvcard .mvic{font-size:22px}
+  .mvcard .mvhd{font-size:15.5px;font-weight:900;letter-spacing:-.2px}
+  .mvcard .mvsub{font-size:12px;color:#cdeeea;margin-top:1px}
+  .mvcard .mvgo{margin-left:auto;background:var(--gold);color:#3a2c07;font-weight:800;font-size:12.5px;border-radius:9px;padding:8px 14px;white-space:nowrap}
+  .mvcard .mvrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:10px;margin-top:13px;padding-top:12px;border-top:1px solid rgba(255,255,255,.18)}
+  .mvcard .mvk .l{font-size:10.5px;letter-spacing:.7px;text-transform:uppercase;color:#a9d8d3;font-weight:700}
+  .mvcard .mvk .v{font-size:18px;font-weight:900;letter-spacing:-.4px;margin-top:2px}
+  .mvcard .mvload{font-size:12.5px;color:#cdeeea;margin-top:11px}
   .tabs{display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap}
   .tab{background:var(--surface);border:1px solid var(--line);border-radius:11px;padding:10px 16px;font-family:inherit;font-size:14px;font-weight:700;color:var(--gris);cursor:pointer;box-shadow:var(--shadow);display:inline-flex;align-items:center;gap:7px}
   .tab.on{background:var(--teal);color:#fff;border-color:var(--teal)}
@@ -358,6 +373,7 @@ async function init(){
     DATA=COM.map(c=>({...c, ano:aA[c.uid]||0, mes:aM[c.uid]||0, sem:aS[c.uid]||0, hoy:0, horas:new Array(24).fill(0)}));
     await refreshHoy();
     render();
+    cargarMisVentas();   // banda "Mis ventas" del líder que vende (async, no bloquea el equipo)
     chartTimer=setInterval(tick, 180000);   // 180s (era 60s): menos carga recurrente sobre Odoo
     if(UIDS.length){        // sin comerciales (ej. Germán): panel preparado en 0, sin cargas por-comercial
       cargarVentasEq();     // ventas del equipo con consultas propias (rápido, no espera a las fichas)
@@ -396,6 +412,74 @@ async function cargarPresencia(){
   }catch(e){}
 }
 
+/* ===== "Mis ventas": la mitad propia del líder que además vende ==============
+   Un líder que vende (German, Diego y ahora Marcela) necesita las dos cosas en
+   la misma pantalla: SU cartera y la de su equipo. Esta banda es la mitad
+   "🛒 Mis ventas" de la tarjeta partida del Panel comerciales, con los MISMOS
+   números y el mismo criterio (cruce al vendedor del pedido; el 452 es el
+   vendedor genérico, ahí manda el dueño del cliente). Se carga en segundo
+   plano: si Odoo tarda, el panel del equipo ya está en pantalla. */
+let MIO=null;
+async function cargarMisVentas(){
+  try{
+    const u=LIDER.uid, hoy=argToday(), inicioMes=hoy.slice(0,8)+"01";
+    const facDom=mt=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",inicioMes],
+      "|",["sale_line_ids.order_id.user_id","=",u],
+          "&",["sale_line_ids.order_id.user_id","=",452],["sale_line_ids.order_id.partner_id.user_id","=",u]];
+    const deudaDom=[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],
+      "|",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",u],
+          "&",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",452],["move_id.invoice_line_ids.sale_line_ids.order_id.partner_id.user_id","=",u]];
+    const parts=await EYG.rpc("res.partner","search_read",[[["user_id","=",u],["customer_rank",">",0]]],{fields:["id"],limit:0});
+    const ids=parts.map(p=>p.id);
+    const [fi,fr,deu,cobG,hoyG]=await Promise.all([
+      EYG.rpc("account.move.line","read_group",[facDom("out_invoice"),["price_total:sum"],[]],{lazy:false}).catch(()=>[]),
+      EYG.rpc("account.move.line","read_group",[facDom("out_refund"),["price_total:sum"],[]],{lazy:false}).catch(()=>[]),
+      EYG.rpc("account.move.line","search_read",[deudaDom],{fields:["amount_residual","date_maturity"],limit:0}).catch(()=>[]),
+      ids.length?EYG.rpc("account.payment","read_group",[[["partner_id","in",ids],["payment_type","=","inbound"],["state","=","posted"],["date",">=",inicioMes]],["amount:sum"],[]],{lazy:false}).catch(()=>[]):[],
+      EYG.rpc("sale.order","read_group",[[["user_id","=",u],["state","in",["sale","done"]],["date_order",">=",hoy+" 00:00:00"]],["amount_total:sum"],[]],{lazy:false}).catch(()=>[]),
+    ]);
+    let deuda=0, venc=0;
+    for(const l of (deu||[])){ const r=l.amount_residual||0; if(r>0){ deuda+=r; if(l.date_maturity && l.date_maturity<hoy) venc+=r; } }
+    MIO={ fact:((fi[0]&&fi[0].price_total)||0)-((fr[0]&&fr[0].price_total)||0),
+          cob:(cobG[0]&&cobG[0].amount)||0, cartera:ids.length, deuda, venc,
+          vencPct:deuda>0?Math.round(venc/deuda*100):0, hoy:(hoyG[0]&&hoyG[0].amount_total)||0 };
+  }catch(e){ MIO={err:e.message||"no pude leer tus ventas"}; }
+  renderMisVentas();
+}
+function renderMisVentas(){
+  const box=document.getElementById("misventas"); if(!box || !LIDER) return;
+  const nrm=s=>(s||"").toString().trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  /* ¿Es SU propio panel? Comparamos sin acentos ni mayúsculas, y aceptamos que el perfil
+     traiga sólo el nombre de pila ("Diego" vs "Diego Velazquez"): si no, a German y a Diego,
+     que entran acá desde el Panel comerciales, les diría "sus ventas" en vez de "mis ventas". */
+  const yo=nrm(PERFIL && (PERFIL.comercial_ref||PERFIL.nombre)), el=nrm(LIDER.name);
+  const propio = !!yo && (yo===el || el.startsWith(yo+" ") || yo.startsWith(el+" "));
+  const nom1 = esc((LIDER.name||"").split(" ")[0]);
+  const url = "panel.html?c="+encodeURIComponent(LIDER.name);
+  const tit = propio ? "Mis ventas" : "Ventas propias de "+nom1;
+  const sub = propio ? "Tu cartera, aparte de la de tu equipo. Desde acá cargás tus pedidos."
+                     : "La cartera propia de "+nom1+", aparte de la de su equipo.";
+  const cta = propio ? "Abrir mi panel de venta →" : "Abrir su panel de venta →";
+  const top = `<div class="mvtop"><span class="mvic">🛒</span>
+      <div><div class="mvhd">${tit}</div><div class="mvsub">${sub}</div></div>
+      <span class="mvgo">${cta}</span></div>`;
+  let cuerpo;
+  if(!MIO)          cuerpo = `<div class="mvload">cargando tus números…</div>`;
+  else if(MIO.err)  cuerpo = `<div class="mvload">No pude leer estas ventas ahora (${esc(MIO.err)}). Entrá igual al panel de venta.</div>`;
+  else{
+    const vcol = MIO.vencPct>=40 ? "#FFB49A" : MIO.vencPct>=25 ? "var(--gold)" : "#fff";
+    const k=(l,v,color)=>`<div class="mvk"><div class="l">${l}</div><div class="v"${color?` style="color:${color}"`:""}>${v}</div></div>`;
+    cuerpo = `<div class="mvrow">
+      ${k("Facturado del mes", Mabbr(MIO.fact))}
+      ${k("Cobrado", Mabbr(MIO.cob))}
+      ${k("Clientes", MIO.cartera.toLocaleString("es-AR"))}
+      ${k("Vencido", Mabbr(MIO.venc)+" · "+MIO.vencPct+"%", vcol)}
+      ${k("Hoy", Mabbr(MIO.hoy))}
+    </div>`;
+  }
+  box.innerHTML = `<a class="mvcard" href="${url}">${top}${cuerpo}</a>`;
+}
+
 let VISTA="rendimiento";
 function headerLider(){
   const puedeCambiar = PERFIL && (PERFIL.rol==="admin"||PERFIL.rol==="direccion");
@@ -406,6 +490,7 @@ function headerLider(){
 }
 function render(){
   document.getElementById("ld").innerHTML = `${headerLider()}
+    <div id="misventas"></div>
     <div class="tabs">
       <button class="tab ${VISTA==='rendimiento'?'on':''}" onclick="setVista('rendimiento')">📊 Rendimiento</button>
       <button class="tab ${VISTA==='mensajeria'?'on':''}" onclick="setVista('mensajeria')">💬 Mensajería</button>
@@ -415,7 +500,7 @@ function render(){
       <button class="tab ${VISTA==='contactos'?'on':''}" onclick="setVista('contactos')">🗂️ Contactos del equipo</button>
     </div>
     <div id="vista"></div>`;
-  pintarVista();
+  renderMisVentas(); pintarVista();
 }
 function setVista(v){ if(v===VISTA)return; VISTA=v; render();
   // al volver a Rendimiento tras mover/archivar contactos, refresca el análisis (la cartera cambió)
