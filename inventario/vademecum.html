@@ -44,6 +44,8 @@
   .res .dosis{font-size:12.5px;font-weight:600;color:var(--gris);font-variant-numeric:tabular-nums}
   .res .mas{font-size:12px;color:var(--gris2);margin:0 2px}
   .res .vacio-dato{font-size:12.5px;color:var(--gris2);font-style:italic}
+  /* Lo que la fuente cortó: se avisa, no se disfraza de droga. */
+  .res .incompleto{font-size:12px;font-weight:700;color:#9A6A00;background:#FFF3D6;border-radius:5px;padding:2px 7px}
   /* Renglón 3: el laboratorio titular. */
   .res .lab{font-size:12px;color:var(--gris);margin-top:4px;line-height:1.35}
   .res .lado{flex:none;text-align:right;display:flex;flex-direction:column;gap:3px;align-items:flex-end;padding-top:1px}
@@ -100,6 +102,8 @@
   ul.ifas li > span:first-child{font-weight:700}
   ul.ifas .guia{flex:1;border-bottom:1px dotted var(--line);transform:translateY(-4px);min-width:10px}
   ul.ifas .cant{white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:800;color:var(--teal-deep)}
+  ul.ifas li.falta > span:first-child{color:#9A6A00;font-weight:700}
+  ul.ifas li.falta .cant{color:var(--gris2)}
   tr.mia td{background:#E0EFEE}
   tr.mia td:first-child{box-shadow:inset 3px 0 0 var(--teal);border-radius:5px 0 0 5px}
   tr.mia td:last-child{border-radius:0 5px 5px 0}
@@ -180,13 +184,18 @@ async function buscar(q){
    porque en las combinaciones hay una por droga, y porque la marca del registro
    suele traerla ya ("TAFIROL 1G" + "1 G" quedaba duplicado).
    El nombre de cada droga es clickeable: vuelve a buscar por ella. */
+/* La fuente trunca la fórmula a ~100 caracteres y cierra con "...". Ese pedazo
+   NO se muestra como si fuera una droga: FALGOS quedaba con un quinto principio
+   activo llamado "Hidroxido de ma...", que es media palabra, no un componente.
+   Se avisa que falta y listo. */
 function lineaActivos(comps){
-  const c = (comps||[]).filter(x => x && x.nombre);
+  const c = (comps||[]).filter(Boolean);
   if(!c.length) return '<div class="activos vacio-dato">sin composición cargada</div>';
-  return '<div class="activos">' + c.map(x =>
-      `<button class="droga" onclick="porDroga(event,'${esc(x.nombre).replace(/'/g,"&#39;")}')">${esc(x.nombre)}</button>`
-      + (x.cantidad ? `<span class="dosis">${esc(x.cantidad)}</span>` : "")
-    ).join('<span class="mas">+</span>') + '</div>';
+  const partes = c.map(x => x.incompleto
+    ? '<span class="incompleto" title="La fuente cortó el texto acá. Falta completarlo desde el detalle del registro.">falta un componente</span>'
+    : `<button class="droga" onclick="porDroga(event,'${esc(x.nombre).replace(/'/g,"&#39;")}')">${esc(x.nombre)}</button>`
+      + (x.cantidad ? `<span class="dosis">${esc(x.cantidad)}</span>` : ""));
+  return '<div class="activos">' + partes.join('<span class="mas">+</span>') + '</div>';
 }
 
 /* La forma farmacéutica va pegada a la marca — es lo que distingue una entrada
@@ -337,9 +346,16 @@ function fichaRegistro(f){
   /* Cada droga con su concentración, una por renglón y con guía punteada: es
      lo que hace legible una combinación de tres o cuatro principios activos. */
   const comp = R.composicion||[];
+  const cortada = comp.some(x=>x && x.incompleto);
   const composicion = !comp.length ? "" :
-    `<ul class="ifas">${comp.map(x=>`<li><span>${esc(x.nombre)}</span>
-       <span class="guia"></span><span class="cant">${esc(x.cantidad||"—")}</span></li>`).join("")}</ul>`;
+    `<ul class="ifas">${comp.map(x=> x.incompleto
+       ? `<li class="falta"><span>Falta un componente</span>
+          <span class="guia"></span><span class="cant">—</span></li>`
+       : `<li><span>${esc(x.nombre)}</span>
+          <span class="guia"></span><span class="cant">${esc(x.cantidad||"—")}</span></li>`).join("")}</ul>`
+    + (cortada ? `<p class="pie-t">El Vademécum Nacional muestra esta fórmula recortada en su listado
+         (la corta a 100 caracteres). Falta completarla desde el detalle del registro y cruzarla con las
+         demás fuentes: lo que se ve arriba está verificado, lo que falta está señalado.</p>` : "");
 
   const filasPres = pres.length ? pres.map(p=>{
     const mia = p.nuestra;
