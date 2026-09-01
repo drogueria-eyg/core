@@ -245,8 +245,8 @@ window.UI = (function(){
       <div class="dwbody">
         <div class="pwdshow">Pasale estos datos a la persona:<br><br>
           <b>Email:</b> ${esc(email)}<br>
-          <b>Contraseña inicial:</b> <code>${esc(pwd)}</code><br><br>
-          Al entrar por primera vez, el sistema le va a pedir que cree su propia contraseña.</div>
+          <b>Contraseña:</b> <code>${esc(pwd)}</code><br><br>
+          Al entrar, el sistema le va a pedir que cree su propia contraseña.</div>
         <button class="btn-teal" style="width:100%;justify-content:center" onclick="UI.copiar('${esc(pwd)}')">📋 Copiar contraseña</button>
       </div>
     </div></div>`;
@@ -322,14 +322,56 @@ window.UI = (function(){
     }catch(e){ b.disabled=false; b.textContent="Guardar cambios"; dwmsg("No se pudo guardar: "+e.message); }
   }
 
-  /* ---------- Reset de contraseña por mail ---------- */
-  async function reset(email){
-    if(!confirm("¿Enviar un mail de restablecimiento de contraseña a "+email+"?\n\nLa persona va a recibir un enlace para crear una contraseña nueva.")) return;
+  /* ---------- Restablecer contraseña ----------------------------------------
+     Dos caminos, porque el del mail no siempre sirve: mucha gente del equipo no
+     entra a su casilla, o directamente no la tiene a mano. El camino principal
+     es BLANQUEAR: el admin genera una clave, se la dice a la persona, y la edge
+     function la deja con debe_cambiar_pwd=true, así al entrar el Core la obliga
+     a crear la suya (mismo circuito que un usuario nuevo). El mail queda como
+     alternativa para quien sí usa su casilla. */
+  function reset(email){
+    const u=USERS.find(x=>x.email===email); if(!u) return;
+    ST={mode:"reset", user:u};
+    const d=document.getElementById("drawer");
+    d.innerHTML = `<div class="scrim" onclick="UI.cerrarSiFondo(event)"><div class="drawer">
+      <div class="dwhead"><h3>Restablecer contraseña</h3><button class="x" onclick="UI.cerrar()">✕</button></div>
+      <div class="dwbody">
+        <div class="dwmsg" id="dwmsg"></div>
+        <div class="fld"><label>Persona</label>
+          <div style="background:#fff;border:1.5px solid var(--line);border-radius:10px;padding:11px 13px">
+            <div class="uname">${esc(u.nombre||u.email)}</div><div class="uemail">${esc(u.email)}</div></div></div>
+        <div class="fld"><label>Contraseña nueva</label>
+          <div class="genpwd"><input id="r-pwd" type="text" value="${esc(genpwd())}"><button class="genbtn" type="button" onclick="document.getElementById('r-pwd').value=UI.genpwd()">↻ Otra</button></div>
+          <div class="hint">Se la pasás vos, por donde te quede cómodo. La clave vieja deja de servir en el momento, y al entrar el sistema la obliga a crear la suya. No hace falta que tenga acceso al mail.</div></div>
+        <div class="hint" style="border-top:1px solid var(--line);padding-top:12px;margin-top:18px">
+          ¿Prefiere recibirla por correo? <a href="#" onclick="UI.resetPorMail('${esc(u.email)}');return false" style="color:var(--teal-deep);font-weight:700">Enviarle un enlace a ${esc(u.email)}</a> — solo sirve si entra a esa casilla.</div>
+      </div>
+      <div class="savebar"><button class="btn-plain" onclick="UI.cerrar()">Cancelar</button><button class="btn-teal" id="r-save" onclick="UI.guardarReset()">Restablecer contraseña</button></div>
+    </div></div>`;
+  }
+
+  async function guardarReset(){
+    const u=ST.user; if(!u) return;
+    const pwd=val("r-pwd");
+    if(pwd.length<8) return dwmsg("La contraseña tiene que tener al menos 8 caracteres.");
+    const b=document.getElementById("r-save"); b.disabled=true; b.textContent="Restableciendo…";
+    try{
+      await api("set_password",{email:u.email, password:pwd});
+      cerrar(); await recargar();
+      mostrarClave(u.email, pwd, "Contraseña restablecida");
+    }catch(e){
+      b.disabled=false; b.textContent="Restablecer contraseña";
+      dwmsg(e.message==="sin-cuenta-auth" ? "Esta persona tiene perfil en el Core pero no tiene cuenta para entrar. Hay que crearla de nuevo." : ("No se pudo restablecer: "+e.message));
+    }
+  }
+
+  /* Alternativa: el enlace por mail de Supabase (SMTP propio). */
+  async function resetPorMail(email){
     try{
       const {error}=await EYG.supa().auth.resetPasswordForEmail(email, {redirectTo: EYG.BASE+"recuperar.html"});
       if(error) throw error;
-      toast("Mail de restablecimiento enviado a "+email);
-    }catch(e){ toast("No se pudo enviar: "+e.message); }
+      cerrar(); toast("Mail de restablecimiento enviado a "+email);
+    }catch(e){ dwmsg("No se pudo enviar el mail: "+e.message); }
   }
 
   /* ---------- Activar / desactivar ---------- */
@@ -347,7 +389,7 @@ window.UI = (function(){
   function cerrar(){ const d=document.getElementById("drawer"); if(d) d.innerHTML=""; ST={mode:null}; }
   function cerrarSiFondo(ev){ if(ev.target.classList.contains("scrim")) cerrar(); }
 
-  return { init, shell, nuevo, guardarNuevo, editar, guardarEdit, reset, toggleActivo, togglePerm, rolCambio, cerrar, cerrarSiFondo, copiar, genpwd, mostrarClave };
+  return { init, shell, nuevo, guardarNuevo, editar, guardarEdit, reset, guardarReset, resetPorMail, toggleActivo, togglePerm, rolCambio, cerrar, cerrarSiFondo, copiar, genpwd, mostrarClave };
 })();
 
 EYG.requireAuth(["admin"], perfil=>{
