@@ -27,19 +27,18 @@
   .grupo:first-child{margin-top:0}
   .grupo h3{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--teal);font-weight:800;margin:0}
   .grupo .cuenta{font-size:11.5px;color:var(--gris2);font-weight:600}
-  .grupo .aclara{flex:1 0 100%;font-size:11.5px;color:var(--gris2);line-height:1.5;margin-top:-2px;max-width:78ch}
 
   .lista{display:flex;flex-direction:column;gap:8px}
   .res{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 15px;cursor:pointer;transition:border-color .12s,box-shadow .12s;display:flex;gap:14px;align-items:flex-start}
   .res:hover{border-color:var(--teal-med);box-shadow:var(--shadow)}
   .res .princ{flex:1;min-width:0}
   .res .marca{font-weight:800;font-size:15px;line-height:1.25;color:var(--ink)}
-  .res .marca.interna{font-weight:700;font-size:13.5px;line-height:1.35}
   .res .lab{font-size:12px;color:var(--gris);margin-top:3px;line-height:1.35}
+  /* La variante: qué forma farmacéutica es. Sin esto dos productos con la misma
+     marca y el mismo laboratorio se ven idénticos (los dos RELIVERAN de Gador). */
+  .res .formas{font-size:11.5px;color:var(--gris2);margin-top:2px;line-height:1.35}
   .res .badges{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
   .res .lado{flex:none;text-align:right;display:flex;flex-direction:column;gap:3px;align-items:flex-end;padding-top:1px}
-  .res .stk{font-size:11.5px;font-weight:800;white-space:nowrap;color:var(--teal)}
-  .res .stk.cero{color:var(--gris2);font-weight:600}
   .res .cuantas{font-size:11px;color:var(--gris2);white-space:nowrap}
 
   /* Píldora de principio activo. Es un botón: vuelve a buscar por esa droga. */
@@ -88,8 +87,10 @@
   table.pres td{padding:9px 10px 9px 0;border-bottom:1px solid var(--line);vertical-align:middle;white-space:nowrap;color:var(--gris)}
   table.pres th:first-child,table.pres td:first-child{padding-left:10px}
   table.pres tr:last-child td{border-bottom:0}
-  table.pres td.env{white-space:normal;color:var(--ink)}
+  table.pres td.env{white-space:normal;color:var(--ink);min-width:130px}
   table.pres td.env b{font-size:14px;font-weight:800}
+  table.pres td.env .sub{display:block;font-size:11px;font-weight:600;color:var(--gris);margin-top:2px}
+  table.pres td.formu{white-space:normal;min-width:190px;line-height:1.4}
   tr.mia td{background:#E0EFEE}
   tr.mia td:first-child{box-shadow:inset 3px 0 0 var(--teal);border-radius:5px 0 0 5px}
   tr.mia td:last-child{border-radius:0 5px 5px 0}
@@ -100,7 +101,6 @@
 
   .f-bloque p.prosa{font-size:14.5px;line-height:1.6;color:var(--ink);max-width:66ch;margin:0}
 
-  a.ref{font-size:9px;font-weight:800;vertical-align:super;line-height:0;text-decoration:none;color:var(--teal);background:#E0EFEE;padding:2px 4px;border-radius:3px;margin-left:3px}
   ol.refs{font-size:11.5px;line-height:1.55;margin:0;padding-left:18px;color:var(--gris)}
   ol.refs li{margin-bottom:9px}
   ol.refs .tt{font-weight:800;color:var(--ink)}
@@ -146,102 +146,92 @@ const ICO = {
 const esc = s => EYG.esc(String(s==null?"":s));
 const num = n => Number(n||0).toLocaleString("es-AR");
 
-let KPIS = null, REGISTROS = [], ARTICULOS = [], TERMINO = "";
+let KPIS = null, REGISTROS = [], TERMINO = "", PEDIDO = 0;
 
-/* ---------- búsqueda: producto comercial, laboratorio o droga ---------- */
+/* ---------- búsqueda: producto comercial, laboratorio o droga ----------
+   PEDIDO numera las consultas: si la respuesta que llega es de una consulta
+   vieja (el usuario ya siguió escribiendo), se descarta. Sin eso, una consulta
+   lenta pisa el resultado de la siguiente y la lista "salta". */
 async function buscar(q){
   const t = String(q||"").trim();
-  if(t.length < 2){ REGISTROS = []; ARTICULOS = []; return; }
-  const sb = EYG.supa();
-  const { data, error } = await sb.rpc("vademecum_buscar", { q:t, limite:40 });
-  if(error){ console.error(error); REGISTROS=[]; ARTICULOS=[]; return; }
+  if(t.length < 2){ REGISTROS = []; return; }
+  const mio = ++PEDIDO;
+  const { data, error } = await EYG.supa().rpc("vademecum_buscar", { q:t, limite:60 });
+  if(mio !== PEDIDO) return;                     // llegó tarde: ya hay otra en curso
+  if(error){ console.error(error); REGISTROS=[]; return; }
   REGISTROS = (data && data.registros) || [];
-  ARTICULOS = (data && data.articulos) || [];
 }
 
 /* ---------- render de la lista ---------- */
+/* Las pastillas son las drogas del producto. Vienen como nombres sueltos
+   (un producto puede tener varias) y cada una es un botón: filtra por esa droga. */
 function pastillas(comps, limite){
-  const c = comps || [];
+  const c = (comps||[]).filter(Boolean);
   if(!c.length) return "";
   const vis = c.slice(0, limite||4);
   const resto = c.length - vis.length;
   return '<div class="badges">'
-    + vis.map(x=>`<button class="badge" title="${esc(x.texto||x.nombre)}" onclick="porDroga(event,'${esc(x.nombre).replace(/'/g,"&#39;")}')">${esc(x.nombre)}</button>`).join("")
+    + vis.map(n=>`<button class="badge" onclick="porDroga(event,'${esc(n).replace(/'/g,"&#39;")}')">${esc(n)}</button>`).join("")
     + (resto>0?`<span class="badge pasivo">+${resto}</span>`:"")
     + '</div>';
 }
 
 function filaRegistro(r){
-  const stk = Number(r.stock)||0, disp = Number(r.disponibles)||0;
+  const formas = (r.formas||[]).join(" · ");
   return `<div class="res" onclick="verFicha('${esc(r.clave)}')">
     <div class="princ">
       <div class="marca">${esc(r.nombre)}</div>
       ${r.laboratorio?`<div class="lab">${esc(r.laboratorio)}</div>`:""}
+      ${formas?`<div class="formas">${esc(formas)}</div>`:""}
       ${pastillas(r.componentes)}
     </div>
     <div class="lado">
-      ${disp>0?`<span class="stk ${stk>0?"":"cero"}">${stk>0?"En stock":"Sin stock"}</span>`:""}
       <span class="cuantas">${num(r.presentaciones)} ${Number(r.presentaciones)===1?"presentación":"presentaciones"}</span>
     </div>
   </div>`;
 }
 
-function filaArticulo(a){
-  const stk = Number(a.stock)||0;
-  return `<div class="res" onclick="verFicha('${esc(a.clave)}')">
-    <div class="princ">
-      <div class="marca interna">${esc(a.nombre)}</div>
-      ${a.laboratorio?`<div class="lab">${esc(a.laboratorio)}</div>`:""}
-      ${pastillas(a.componentes)}
-    </div>
-    <div class="lado">
-      <span class="stk ${stk>0?"":"cero"}">${stk>0?num(stk)+" u.":"sin stock"}</span>
-      <span class="cuantas">${esc(a.codigo)}</span>
-    </div>
-  </div>`;
-}
-
-function pintarBusqueda(){
-  const cont = document.getElementById("cont");
-  let cuerpo;
-  if(TERMINO.length < 2){
-    cuerpo = `<div class="vacio">Escribí al menos dos letras. Podés buscar por producto, laboratorio o droga.</div>`;
-  }else if(!REGISTROS.length && !ARTICULOS.length){
-    cuerpo = `<div class="vacio">No se encontró <b>${esc(TERMINO)}</b>.</div>`;
-  }else{
-    cuerpo =
-      (REGISTROS.length?`
-        <div class="grupo"><h3>Productos</h3><span class="cuenta">${num(REGISTROS.length)}</span></div>
-        <div class="lista">${REGISTROS.map(filaRegistro).join("")}</div>`:"")
-    + (ARTICULOS.length?`
-        <div class="grupo">
-          <h3>Artículos nuestros</h3><span class="cuenta">${num(ARTICULOS.length)}</span>
-          <span class="aclara">Todavía no cargamos su registro, así que figuran con el nombre que
-            les damos en nuestro sistema y cada envase va por separado. Cuando se cargue el registro
-            se agrupan arriba, con su nombre oficial.</span>
-        </div>
-        <div class="lista">${ARTICULOS.map(filaArticulo).join("")}</div>`:"");
-  }
-
-  cont.innerHTML = `
+/* EL BUSCADOR SE TRABABA porque cada tecla redibujaba TODO el contenedor,
+   incluido el propio <input>: el navegador lo destruía y lo volvía a crear, y
+   con él se iban el foco y el cursor. Ahora la cáscara (intro, KPI, campo) se
+   pinta UNA vez y cada tecla sólo repinta la lista de resultados. */
+function pintarShell(){
+  document.getElementById("cont").innerHTML = `
     <div class="intro">
-      <b>Vademécum de EyG.</b> Buscá por <b>producto, laboratorio o droga</b> y mirá qué es,
-      para qué sirve, en qué presentaciones está autorizado y cuáles tenemos.
-      Cada dato muestra <b>de qué fuente salió y cuándo se consultó</b>.
+      <b>Vademécum de EyG.</b> Buscá por <b>producto, laboratorio o droga</b> —
+      alcanza con parte de la palabra y no importa el orden. Vas a ver qué es cada
+      medicamento, para qué sirve y en qué presentaciones está autorizado, con
+      <b>la fuente y la fecha de cada dato</b>.
       Sólo entran <b>medicamentos confirmados en un registro oficial</b>: descartables,
       perfumería, ortopedia y envíos quedan afuera.
     </div>
     ${KPIS?`<div class="kpis">
       <div class="kpi"><div class="n">${num(KPIS.registros)}</div><div class="l">Productos</div></div>
       <div class="kpi"><div class="n">${num(KPIS.presentaciones)}</div><div class="l">Presentaciones</div></div>
-      <div class="kpi"><div class="n">${num(KPIS.articulos)}</div><div class="l">Artículos nuestros</div></div>
       <div class="kpi"><div class="n">${num(KPIS.datos)}</div><div class="l">Datos con fuente y fecha</div></div>
     </div>`:""}
     <div class="buscador">
-      <input type="search" id="q" placeholder="Buscá: Tafirol, Gador, dexametasona…" value="${esc(TERMINO)}" autocomplete="off" oninput="buscarVade(this.value)">
+      <input type="search" id="q" placeholder="Buscá: tafirol 1 g, gador metoclo, dipirona…" value="${esc(TERMINO)}" autocomplete="off" oninput="buscarVade(this.value)">
     </div>
-    ${cuerpo}`;
+    <div id="res"></div>`;
+  pintarLista();
 }
+
+function pintarLista(){
+  const caja = document.getElementById("res");
+  if(!caja) return;
+  if(TERMINO.trim().length < 2){
+    caja.innerHTML = `<div class="vacio">Escribí al menos dos letras.</div>`;
+  }else if(!REGISTROS.length){
+    caja.innerHTML = `<div class="vacio">No se encontró <b>${esc(TERMINO)}</b>.</div>`;
+  }else{
+    caja.innerHTML = `
+      <div class="grupo"><h3>Productos</h3><span class="cuenta">${num(REGISTROS.length)}</span></div>
+      <div class="lista">${REGISTROS.map(filaRegistro).join("")}</div>`;
+  }
+}
+
+function pintarBusqueda(){ pintarShell(); }
 
 /* Clic en una pastilla de droga: vuelve a buscar por esa droga en vez de abrir
    la ficha del producto que la contiene. */
@@ -252,32 +242,33 @@ window.porDroga = function(ev, nombre){
   buscarVade(nombre);
 };
 
-/* ---------- ficha ---------- */
+/* ---------- ficha ----------
+   Sin numeritos de referencia colgando de cada dato: ensuciaban la lectura.
+   Las fuentes van completas al final del bloque, que es donde se consultan. */
 function filaDato(rot, d, extra){
   if(!d) return "";
-  const ref = d.fuente==="precios_medicamentos" ? 1 : d.fuente==="vademecum_es" ? 2 : 3;
-  return `<tr><th>${esc(rot)}</th><td>${esc(d.valor)}<a class="ref" href="#f${ref}">${ref}</a>${extra?`<span class="sub">${extra}</span>`:""}</td></tr>`;
+  return `<tr><th>${esc(rot)}</th><td>${esc(d.valor)}${extra?`<span class="sub">${extra}</span>`:""}</td></tr>`;
 }
 
 function filaDroga(D){
   if(!D || !D.nombre) return "";
   const interno = D.nombre_interno && D.nombre_interno !== D.nombre
     ? `<span class="sub">En nuestro sistema: ${esc(D.nombre_interno)}</span>` : "";
-  return `<tr><th>Droga</th><td>${esc(D.nombre)}${D.nombre_estandar?'<a class="ref" href="#f2">2</a>':""}${interno}</td></tr>`;
+  return `<tr><th>Droga</th><td>${esc(D.nombre)}${interno}</td></tr>`;
 }
 
 function bloquesClinicos(her){
   return (her.mecanismo_accion?`<div class="f-bloque">
       <div class="f-tit">${ICO.mec} Mecanismo de acción</div>
-      <p class="prosa">${esc(her.mecanismo_accion.valor)}<a class="ref" href="#f2">2</a></p>
+      <p class="prosa">${esc(her.mecanismo_accion.valor)}</p>
     </div>`:"")
   + (her.indicaciones?`<div class="f-bloque">
       <div class="f-tit">${ICO.ind} Indicaciones</div>
-      <p class="prosa">${esc(her.indicaciones.valor)}<a class="ref" href="#f2">2</a></p>
+      <p class="prosa">${esc(her.indicaciones.valor)}</p>
     </div>`:"")
   + (her.modo_administracion?`<div class="f-bloque">
       <div class="f-tit">${ICO.adm} Modo de administración</div>
-      <p class="prosa">${esc(her.modo_administracion.valor)}<a class="ref" href="#f2">2</a></p>
+      <p class="prosa">${esc(her.modo_administracion.valor)}</p>
     </div>`:"");
 }
 
@@ -285,14 +276,14 @@ function bloqueFuentes(){
   return `<div class="f-bloque">
     <div class="f-tit">${ICO.fte} Fuentes</div>
     <ol class="refs">
-      <li id="f1"><span class="tt">Precios de Medicamentos — Ministerio de Salud</span>
-        <span class="mm">argentina.gob.ar/precios-de-medicamentos</span>
-        <span class="cc">Acción terapéutica, vía, forma, condición de venta, control y origen.</span></li>
-      <li id="f2"><span class="tt">vademecum.es — monografía ATC, sección Argentina</span>
-        <span class="cc">Nombre estandarizado de la droga, código ATC, clasificación, mecanismo, indicaciones y modo de administración.</span></li>
-      <li id="f3"><span class="tt">Vademécum Nacional de Medicamentos — ANMAT / PAMI</span>
+      <li><span class="tt">Vademécum Nacional de Medicamentos — ANMAT / PAMI</span>
         <span class="mm">servicios.pami.org.ar</span>
-        <span class="cc">Nombre comercial, certificado, laboratorio titular, fórmula declarada y presentaciones autorizadas con su troquel y su GTIN.</span></li>
+        <span class="cc">Nombre comercial, certificado, laboratorio titular, forma farmacéutica, fórmula y presentaciones autorizadas con su troquel y su GTIN.</span></li>
+      <li><span class="tt">vademecum.es — monografía ATC, sección Argentina</span>
+        <span class="cc">Nombre estandarizado de la droga, código ATC, clasificación, mecanismo de acción, indicaciones y modo de administración.</span></li>
+      <li><span class="tt">Precios de Medicamentos — Ministerio de Salud</span>
+        <span class="mm">argentina.gob.ar/precios-de-medicamentos</span>
+        <span class="cc">Acción terapéutica, vía de administración, condición de venta, control y origen.</span></li>
     </ol>
     <p class="legal">Los datos clínicos corresponden a la droga y son comunes a todos los productos que la
     contienen. Figuran como <b>propuestos</b> hasta su revisión. No sustituyen al prospecto autorizado
@@ -303,23 +294,22 @@ function bloqueFuentes(){
 window.verFicha = async function(clave){
   const cont = document.getElementById("cont");
   cont.innerHTML = `<div class="cargando">Armando la ficha…</div>`;
-  const sb = EYG.supa();
-  const esRegistro = String(clave||"").startsWith("r:");
-  const id = String(clave||"").slice(2);
-  const { data, error } = esRegistro
-    ? await sb.rpc("vademecum_ficha_registro", { p_id: Number(id) })
-    : await sb.rpc("vademecum_ficha_producto", { p_codigo: id });
+  const id = Number(String(clave||"").slice(2));
+  const { data, error } = await EYG.supa().rpc("vademecum_ficha_registro", { p_id: id });
   if(error) console.error(error);
-  if(!data || (esRegistro ? !data.registro : !data.producto)){
+  if(!data || !data.registro){
     cont.innerHTML = `<button class="volver" onclick="volver()">‹ Volver</button>
       <div class="vacio">No pude armar la ficha.</div>`;
     return;
   }
-  cont.innerHTML = esRegistro ? fichaRegistro(data) : fichaArticulo(data);
+  cont.innerHTML = fichaRegistro(data);
   window.scrollTo(0,0);
 };
 
-/* Ficha del PRODUCTO COMERCIAL: el desglose y sus presentaciones, adentro. */
+/* Ficha del PRODUCTO COMERCIAL: el desglose y sus presentaciones, adentro.
+   La FORMA y la FÓRMULA van en cada fila de la tabla, no arriba: un mismo
+   certificado cubre variantes distintas de la misma marca — RELIVERAN de Gador
+   cubre comprimido, gotas al 0,2%, gotas al 0,5% e inyectable. */
 function fichaRegistro(f){
   const R = f.registro||{}, D = f.droga||{}, her = f.de_la_droga||{}, pres = f.presentaciones||[];
 
@@ -327,13 +317,16 @@ function fichaRegistro(f){
     const mia = p.nuestra;
     const stk = mia ? Number(mia.stock)||0 : 0;
     return `<tr class="${mia?"mia":""}">
-      <td class="env"><b>${esc(p.presentacion||"—")}</b></td>
+      <td class="env"><b>${esc(p.presentacion||"—")}</b>${p.forma?`<span class="sub">${esc(p.forma)}</span>`:""}</td>
+      <td class="formu">${p.formula?esc(p.formula):'<span class="nulo">—</span>'}</td>
       <td class="mono-c">${p.troquel?esc(p.troquel):'<span class="nulo">—</span>'}</td>
       <td class="mono-c">${p.gtin?esc(p.gtin):'<span class="nulo">—</span>'}</td>
       <td>${p.cobertura_pami?esc(p.cobertura_pami):'<span class="nulo">—</span>'}</td>
-      <td>${mia ? `<span class="hay">${stk>0?"En stock":"Sin stock"}</span>` : '<span class="nohay">No disponible</span>'}</td>
+      <td>${mia ? `<span class="hay">${stk>0?"Disponible":"Sin stock"}</span>` : '<span class="nohay">No disponible</span>'}</td>
     </tr>`;
-  }).join("") : `<tr><td colspan="5" class="nulo" style="padding:14px 0">Sin presentaciones cargadas.</td></tr>`;
+  }).join("") : `<tr><td colspan="6" class="nulo" style="padding:14px 0">Sin presentaciones cargadas.</td></tr>`;
+
+  const formas = (R.formas||[]).join(" · ");
 
   return `
     <button class="volver" onclick="volver()">‹ Volver a la búsqueda</button>
@@ -341,75 +334,34 @@ function fichaRegistro(f){
       <div class="f-hero">
         <div class="eyebrow">Vademécum · Droguería EyG</div>
         <h2>${esc(R.nombre||"—")}</h2>
-        <div class="mol">${(R.componentes||[]).map(c=>`<span title="${esc(c.texto)}">${esc(c.nombre)}</span>`).join("")}</div>
+        <div class="mol">${(R.componentes||[]).map(c=>`<span>${esc(c)}</span>`).join("")}</div>
         <div class="firma">
           ${R.laboratorio?`<span class="lab">${ICO.lab} ${esc(R.laboratorio)}</span>`:""}
-          ${R.certificado?`<span class="cert">Certificado ANMAT <b>${esc(R.certificado)}</b></span>`:""}
         </div>
       </div>
       <div class="f-cuerpo">
         <div class="f-bloque">
           <div class="f-tit">${ICO.tec} Ficha técnica</div>
           <table class="tec"><colgroup><col class="rot"><col></colgroup><tbody>
-            ${R.generico?`<tr><th>Fórmula declarada</th><td>${esc(R.generico)}<a class="ref" href="#f3">3</a></td></tr>`:""}
-            ${R.forma?`<tr><th>Forma farmacéutica</th><td>${esc(R.forma)}<a class="ref" href="#f3">3</a></td></tr>`:""}
             ${filaDroga(D)}
+            ${formas?`<tr><th>Forma farmacéutica</th><td>${esc(formas)}</td></tr>`:""}
             ${filaDato("Acción terapéutica", her.accion_terapeutica,
                 her.accion_terapeutica && her.accion_terapeutica.soporte
                   ? `${her.accion_terapeutica.soporte} de ${her.accion_terapeutica.soporte_total} productos de la fuente la declaran` : "")}
-            ${her.atc?`<tr><th>Código ATC</th><td class="mono">${esc(her.atc.valor)}<a class="ref" href="#f2">2</a>${her.clase_atc?`<span class="sub">${esc(her.clase_atc.valor)}</span>`:""}</td></tr>`:""}
+            ${her.atc?`<tr><th>Código ATC</th><td class="mono">${esc(her.atc.valor)}${her.clase_atc?`<span class="sub">${esc(her.clase_atc.valor)}</span>`:""}</td></tr>`:""}
+            ${R.certificado?`<tr><th>Certificado ANMAT</th><td class="mono">${esc(R.certificado)}<span class="sub">Es del producto, no del laboratorio: ampara todas las presentaciones de abajo.</span></td></tr>`:""}
           </tbody></table>
         </div>
 
         <div class="f-bloque">
           <div class="f-tit">${ICO.caja} Presentaciones autorizadas</div>
           <div class="pres-scroll"><table class="pres">
-            <thead><tr><th>Envase</th><th>Troquel</th><th>GTIN</th><th>PAMI</th><th>En EyG</th></tr></thead>
+            <thead><tr><th>Envase</th><th>Fórmula</th><th>Troquel</th><th>GTIN</th><th>PAMI</th><th>En EyG</th></tr></thead>
             <tbody>${filasPres}</tbody>
           </table></div>
-          ${pres.length>1?`<p class="pie-t">Las ${num(pres.length)} comparten certificado, fórmula y monografía: cambian el envase, el troquel y la cobertura.<a class="ref" href="#f3">3</a></p>`:""}
+          ${pres.length>1?`<p class="pie-t">Las ${num(pres.length)} comparten certificado y monografía: cambian la forma, la concentración, el envase, el troquel y la cobertura.</p>`:""}
         </div>
 
-        ${bloquesClinicos(her)}
-        ${bloqueFuentes()}
-      </div>
-    </div>`;
-}
-
-/* Ficha del ARTÍCULO nuestro, cuando todavía no cargamos su registro.
-   No hay nombre oficial: se muestra el nuestro y se dice que es el nuestro. */
-function fichaArticulo(f){
-  const P = f.producto||{}, D = f.droga||{}, prop = f.del_producto||{}, her = f.de_la_droga||{};
-  const stk = Number(P.stock)||0;
-  return `
-    <button class="volver" onclick="volver()">‹ Volver a la búsqueda</button>
-    <div class="ficha">
-      <div class="f-hero">
-        <div class="eyebrow">Vademécum · Registro todavía no cargado</div>
-        <h2>${esc(P.nombre||"—")}</h2>
-        <div class="mol">${(P.componentes||[]).map(c=>`<span title="${esc(c.texto)}">${esc(c.nombre)}</span>`).join("")}</div>
-        <div class="firma">
-          <span class="cert">Código interno <b>${esc(P.codigo||"—")}</b></span>
-          <span class="cert">${stk>0?num(stk)+" unidades en stock":"sin stock"}</span>
-        </div>
-      </div>
-      <div class="f-cuerpo">
-        <div class="f-bloque">
-          <div class="f-tit">${ICO.tec} Ficha técnica</div>
-          <table class="tec"><colgroup><col class="rot"><col></colgroup><tbody>
-            <tr><th>Nombre en EyG</th><td>${esc(P.nombre||"—")}<span class="sub">Es como lo llamamos nosotros: todavía no cargamos el nombre del registro.</span></td></tr>
-            ${filaDroga(D)}
-            ${filaDato("Acción terapéutica", her.accion_terapeutica,
-                her.accion_terapeutica && her.accion_terapeutica.soporte
-                  ? `${her.accion_terapeutica.soporte} de ${her.accion_terapeutica.soporte_total} productos de la fuente la declaran` : "")}
-            ${filaDato("Vía de administración", prop.via)}
-            ${filaDato("Forma farmacéutica", prop.forma_farmaceutica)}
-            ${filaDato("Condición de venta", prop.condicion_venta)}
-            ${filaDato("Control", prop.control)}
-            ${filaDato("Origen", prop.origen)}
-            ${her.atc?`<tr><th>Código ATC</th><td class="mono">${esc(her.atc.valor)}<a class="ref" href="#f2">2</a>${her.clase_atc?`<span class="sub">${esc(her.clase_atc.valor)}</span>`:""}</td></tr>`:""}
-          </tbody></table>
-        </div>
         ${bloquesClinicos(her)}
         ${bloqueFuentes()}
       </div>
@@ -419,9 +371,9 @@ function fichaArticulo(f){
 /* El campo lleva id y se engancha por oninput: EYG.buscador ya trae debounce
    y devuelve foco+cursor despues del innerHTML. Sin eso, a la segunda letra
    el input se pierde y no se puede seguir escribiendo. */
-window.buscarVade = EYG.buscador(async v=>{ TERMINO=v; await buscar(v); pintarBusqueda(); });
+window.buscarVade = EYG.buscador(async v=>{ TERMINO=v; await buscar(v); pintarLista(); });
 
-window.volver = ()=> pintarBusqueda();
+window.volver = ()=> pintarShell();
 
 /* Los KPI salen de `vademecum_resumen`, que aplica el MISMO filtro que el
    buscador. Contarlos acá con selects sueltos daría un vademécum inflado:
