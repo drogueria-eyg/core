@@ -624,7 +624,10 @@ window.EYG = (function(){
     const d120 = new Date(Date.now()-120*864e5).toISOString().slice(0,10);
     const stat={};
     try{
-      const allEnv = await rpc("mail.message","search_read",[[["model","=","res.partner"],["body","like","EyGOFENV"],["date",">=",d120+" 00:00:00"]]],{fields:["body"],limit:0});
+      // Mismo LIKE caro, y el panel del comercial hacia EXACTAMENTE esta misma
+      // consulta por su cuenta. Ahora la comparten por la misma clave: la
+      // calcula el primero que entra y el resto la lee.
+      const allEnv = await cacheOdoo("ofertas-enviadas-120d", 600, ()=>rpc("mail.message","search_read",[[["model","=","res.partner"],["body","like","EyGOFENV"],["date",">=",d120+" 00:00:00"]]],{fields:["body"],limit:0}));
       const envTexts = allEnv.map(m=>(m.body||"").replace(/<[^>]+>/g,""));
       await Promise.all(act.map(async o=>{
         const pids=(o.items||[]).map(i=>i.id).filter(Boolean);
@@ -1067,6 +1070,49 @@ window.EYG = (function(){
     await _refrescar(cx);
   }
 
+  /* ===== CACHE COMPARTIDO (Supabase) - para las consultas CARAS a Odoo =====
+     El problema que resuelve, medido el 1/9/2026: hay consultas del Core que
+     buscan marcadores de texto dentro del chatter de Odoo (body like
+     '[BOVEDA]', 'EyGOFENV'). Ese LIKE no usa indice: obliga a Odoo a leer las
+     822.598 filas de mail.message. Cronometrado alternando con un control,
+     tres vueltas seguidas:
+
+         sin body-like: 1,5 s | 1,9 s | 0,8 s
+         con body-like: 3,0 s | 3,9 s | 3,2 s
+
+     O sea ~2 segundos de CPU de Odoo por llamada, y Odoo tiene pocos workers:
+     mientras uno escanea, el resto espera. Eso incluye al bot de WhatsApp, que
+     no usa NINGUNA de estas consultas pero comparte los mismos workers (medido:
+     su consulta pasa de 1,5 s a 8,5 s cuando cae detras de un barrido).
+
+     Cada panel recalculaba lo mismo por su cuenta, varias veces por hora. Ahora
+     se calcula UNA vez y lo leen todos.
+
+     Uso:  const x = await EYG.cacheOdoo("clave", 300, () => rpc(...));
+     Al ESCRIBIR el dato que alimenta un cache hay que olvidarlo, si no la
+     persona que acaba de marcar algo no ve su propio cambio:
+           await EYG.cacheOlvidar("clave");
+     Ante cualquier falla de Supabase se calcula igual: el cache NUNCA puede ser
+     el motivo de que un panel se quede sin datos. */
+  const _cacheMem = {};
+  async function cacheOdoo(clave, ttlSeg, calcular){
+    const ahora = Date.now(), ttl = (ttlSeg||300)*1000;
+    const m = _cacheMem[clave];
+    if(m && ahora-m.t < ttl) return m.v;
+    try{
+      const {data} = await supa().from("eyg_cache").select("valor,cuando").eq("clave",clave).maybeSingle();
+      if(data && ahora-new Date(data.cuando).getTime() < ttl){ _cacheMem[clave]={t:ahora,v:data.valor}; return data.valor; }
+    }catch(e){}
+    const valor = await calcular();
+    _cacheMem[clave] = {t:ahora, v:valor};
+    try{ await supa().from("eyg_cache").upsert({clave, valor, cuando:new Date().toISOString()}); }catch(e){}
+    return valor;
+  }
+  async function cacheOlvidar(clave){
+    delete _cacheMem[clave];
+    try{ await supa().from("eyg_cache").delete().eq("clave",clave); }catch(e){}
+  }
+
   /* ---- Presencia (heartbeat en el Core) ----
      Cada comercial registra SU PROPIA franja de conexión del día en el parámetro
      ir.config_parameter `eyg.presencia.<uid>` (solo él escribe su clave → sin carreras).
@@ -1127,7 +1173,11 @@ window.EYG = (function(){
     const dom=[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual","!=",0]];
     const [lines,msgs]=await Promise.all([
       rpc("account.move.line","search_read",[dom,["partner_id","amount_residual","date_maturity","move_type"]],{limit:0}),
-      rpc("mail.message","search_read",[[["model","=","res.partner"],"|",["body","like","[BOVEDA]"],["body","like",RIESGO_TAG]]],{fields:["res_id","body","date"],limit:0})
+      // ESTE es el barrido caro: sin cota de fecha, LIKE sobre 822k filas. Se
+      // comparte entre todos los paneles y se refresca cada 5 minutos. Lo
+      // invalidan marcarRiesgo/sacarRiesgo y la boveda de Cobranzas, asi que
+      // quien marca a un cliente ve su propio cambio en el acto.
+      cacheOdoo("marcadores-riesgo", 300, ()=>rpc("mail.message","search_read",[[["model","=","res.partner"],"|",["body","like","[BOVEDA]"],["body","like",RIESGO_TAG]]],{fields:["res_id","body","date"],limit:0}))
     ]);
     const M={}; const g=id=>M[id]||(M[id]={deuda:0,vgross:0,gris:0,venc:null});
     for(const l of lines){ if(!l.partner_id) continue; const o=g(l.partner_id[0]); const r=l.amount_residual||0; o.deuda+=r;
@@ -1153,8 +1203,10 @@ window.EYG = (function(){
     return mot.join(" · "); }
   function riesgoStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-riesgo-css")) return; const s=document.createElement("style"); s.id="eyg-riesgo-css"; s.textContent=".eyg-riesgo{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:20px;white-space:nowrap}.eyg-riesgo.alto{background:#FBE4E3;color:#B0322F}.eyg-riesgo.aten{background:#FBF0DA;color:#9A6B12}"; document.head.appendChild(s); }
   function badgeRiesgo(nivel){ if(!nivel||nivel==="ok") return ""; riesgoStyles(); return nivel==="alto"?'<span class="eyg-riesgo alto" title="No ofrecer plazos de pago">⚠ Riesgo de pago</span>':'<span class="eyg-riesgo aten" title="Tiene deuda vencida">⚠ Atención</span>'; }
-  async function marcarRiesgo(id,nota){ return rpc("res.partner","message_post",[[id]],{body:"⚑ "+RIESGO_TAG+" "+(nota||""),message_type:"comment"}); }
-  async function sacarRiesgo(id){ return rpc("res.partner","message_post",[[id]],{body:"✅ "+RIESGO_TAG+" salir",message_type:"comment"}); }
+  // Al marcar o desmarcar hay que OLVIDAR el cache: si no, quien acaba de tocar
+  // el interruptor no ve su propio cambio hasta cinco minutos despues.
+  async function marcarRiesgo(id,nota){ const r=await rpc("res.partner","message_post",[[id]],{body:"⚑ "+RIESGO_TAG+" "+(nota||""),message_type:"comment"}); await cacheOlvidar("marcadores-riesgo"); return r; }
+  async function sacarRiesgo(id){ const r=await rpc("res.partner","message_post",[[id]],{body:"✅ "+RIESGO_TAG+" salir",message_type:"comment"}); await cacheOlvidar("marcadores-riesgo"); return r; }
   /* BCRA (Central de Deudores) por CUIT → resumen + nivel ponderado por monto. */
   async function riesgoBCRA(cuit){
     const c=(cuit||"").replace(/\D/g,""); if(c.length!==11) return null;
@@ -1400,7 +1452,7 @@ window.EYG = (function(){
     return { baseline, meta, meses, nUsados:nums.length };
   }
 
-  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia,
+  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
