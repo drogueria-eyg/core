@@ -420,6 +420,16 @@
   @media(max-width:560px){ .pprow{grid-template-columns:1fr auto} .pprow .go{display:none} }
   /* ===== Vista de pedidos: filtro por período + métricas del comercial ===== */
   .pedbar{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px}
+  .pedbusca{display:flex;align-items:center;gap:9px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:0 13px;margin-bottom:8px;box-shadow:var(--shadow)}
+  .pedbusca:focus-within{border-color:var(--teal-med)}
+  .pedbusca .pb-ic{font-size:15px;line-height:1;opacity:.75}
+  .pedbusca input{flex:1;min-width:0;border:0;outline:0;background:none;font-family:inherit;font-size:14px;color:var(--ink);padding:12px 0}
+  .pedbusca input::placeholder{color:var(--gris2)}
+  .pedbusca input::-webkit-search-cancel-button{display:none}
+  .pedbusca .pb-x{background:none;border:0;color:var(--gris2);font-family:inherit;font-size:15px;font-weight:800;cursor:pointer;padding:4px 2px;line-height:1}
+  .pedbusca .pb-x:hover{color:var(--bad)}
+  .pedhint{font-size:12px;color:var(--gris2);margin:-2px 0 10px;line-height:1.45}
+  .pedhint b{color:var(--teal-deep)}
   .pchip{background:var(--surface);border:1px solid var(--line);color:var(--gris);border-radius:20px;padding:7px 13px;font-family:inherit;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap}
   .pchip:hover{border-color:var(--teal-med);color:var(--teal)}
   .pchip.on{background:var(--teal);border-color:var(--teal);color:#fff}
@@ -1133,8 +1143,51 @@ function pedMetricas(arr){
     m.porDia[o.__d]=(m.porDia[o.__d]||0)+1; }
   m.clientes=cli.size; m.ticket=arr.length?m.monto/arr.length:0; return m;
 }
+/* ===== BÚSQUEDA dentro de la vista de pedidos =====
+   Dos búsquedas en una sola caja, porque para el comercial es una sola pregunta:
+     · cliente y número de pedido -> se resuelve acá, con lo que ya está cargado: instantáneo.
+     · producto -> eso NO viaja en el historial (no traemos los renglones), así que se le
+       pregunta a Odoo, acotado al comercial y al período que está mirando. Tarda ~1,5 s, se
+       hace una sola vez por texto+período y queda cacheado mientras no cambien.
+   Un pedido entra si coincide por cualquiera de las dos vías. */
+const pedNrm=s=>(s||"").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+function pedCoincideLocal(o,q){
+  const donde=pedNrm(o.partner_id?o.partner_id[1]:"")+" "+pedNrm(o.name);
+  return q.split(/\s+/).filter(Boolean).every(t=>donde.includes(t));   // todas las palabras, en cualquier orden
+}
+function pedFiltrarBusqueda(arr){
+  const q=pedNrm(ST.pedQ||"").trim(); if(!q) return arr;
+  const P=ST.pedProd, hits=(P&&P.q===q&&P.ids)?P.ids:null;
+  return arr.filter(o=>pedCoincideLocal(o,q)||(hits&&hits.has(o.id)));
+}
+async function pedBuscarProductos(){
+  const q=pedNrm(ST.pedQ||"").trim(), r=pedRango();
+  if(q.length<3){ ST.pedProd=null; return; }          // con 1-2 letras no vale la pena molestar a Odoo
+  const clave=q+"|"+r.desde+"|"+r.hasta;
+  if(ST.pedProd&&ST.pedProd.clave===clave) return;    // mismo texto y mismo período: ya lo tenemos
+  ST.pedProd={clave,q,ids:null,cargando:true};
+  const repinta=()=>{ try{ EYG.repintar(()=>render()); }catch(e){ render(); } };
+  repinta();
+  try{
+    const ids=await rpc("sale.order","search",[[["user_id","=",ST.userId],["state","in",["sale","done"]],
+      ["date_order",">=",dSum(r.desde,-1)+" 00:00:00"],["date_order","<=",dSum(r.hasta,1)+" 23:59:59"],
+      ["order_line.product_id","ilike",(ST.pedQ||"").trim()]]],{limit:0});
+    if(ST.pedProd&&ST.pedProd.clave===clave) ST.pedProd={clave,q,ids:new Set(ids||[]),cargando:false};
+  }catch(e){
+    if(ST.pedProd&&ST.pedProd.clave===clave) ST.pedProd={clave,q,ids:new Set(),cargando:false,fallo:true};
+  }
+  repinta();
+}
+// El campo se engancha con EYG.buscador: sin eso, cada tecla repinta la vista y el cursor se escapa.
+window.pedBuscar = (EYG.buscador
+  ? EYG.buscador(v=>{ ST.pedQ=v; ST.pedOrigen=null; pedBuscarProductos(); render(); }, 320)
+  : (v=>{ ST.pedQ=v; ST.pedOrigen=null; pedBuscarProductos(); render(); }));
+function pedLimpiarBusqueda(){ ST.pedQ=""; ST.pedProd=null; render(); }
+
 // Botonera: cambiar de período · filtrar por origen · abrir el rango a mano
-function pedPer(k){ ST.pedPer=k; ST.pedOrigen=null; ST.pedRangoAbierto=false; if(k!=="rango"){ ST.pedFuente=null; ST.pedFuenteDesde=hace(190); } render(); }
+function pedPer(k){ ST.pedPer=k; ST.pedOrigen=null; ST.pedRangoAbierto=false; if(k!=="rango"){ ST.pedFuente=null; ST.pedFuenteDesde=hace(190); }
+  pedBuscarProductos();   // el período cambió: la búsqueda por producto se rehace para el nuevo rango
+  render(); }
 function pedFiltrarOrigen(k){ ST.pedOrigen=(ST.pedOrigen===k?null:k); render(); }
 function pedAbrirRango(){ ST.pedRangoAbierto=!ST.pedRangoAbierto; render(); }
 async function pedRangoManual(){
@@ -1283,12 +1336,17 @@ function pedDelta(a,b){
 function pintarVistaPed(app){
   const r=pedRango(), fuente=ST.pedFuente||ST.ordHist||[];
   const enRango=fuente.filter(o=>o.__d>=r.desde&&o.__d<=r.hasta);
-  const m=pedMetricas(enRango);
+  // La BÚSQUEDA recorta todo (tarjetas incluidas): lo que se ve arriba describe lo que se ve abajo.
+  // El filtro por ORIGEN, en cambio, solo recorta la lista: así las cuatro tarjetas de origen
+  // siguen mostrando el reparto completo y se puede saltar de una a otra.
+  const busq=ST.pedQ&&ST.pedQ.trim(), enBusq=pedFiltrarBusqueda(enRango);
+  const m=pedMetricas(enBusq);
   // Período anterior de IGUAL largo, para comparar. Solo si tenemos datos cargados tan atrás.
+  // Con una búsqueda activa no se compara: el período anterior no está buscado, y el número mentiría.
   const largo=diasEntre(r.desde,r.hasta)+1, pHasta=dSum(r.desde,-1), pDesde=dSum(pHasta,-(largo-1));
-  const mp = pDesde>=(ST.pedFuenteDesde||hace(190)) ? pedMetricas(fuente.filter(o=>o.__d>=pDesde&&o.__d<=pHasta)) : null;
+  const mp = (!busq && pDesde>=(ST.pedFuenteDesde||hace(190))) ? pedMetricas(fuente.filter(o=>o.__d>=pDesde&&o.__d<=pHasta)) : null;
   const vs = mp?` <span class="pmt-s" style="display:inline">vs ${largo===1?"el día":largo+" días"} anterior${largo===1?"":"es"}</span>`:"";
-  const arr=(ST.pedOrigen?enRango.filter(o=>origenDe(o)===ST.pedOrigen):enRango)
+  const arr=(ST.pedOrigen?enBusq.filter(o=>origenDe(o)===ST.pedOrigen):enBusq)
     .slice().sort((a,b)=>String(b.date_order||"").localeCompare(String(a.date_order||"")));
 
   const chips=PED_PERIODOS.map(([k,lab])=>{
@@ -1301,6 +1359,25 @@ function pintarVistaPed(app){
       <label>Hasta<input type="date" id="pedH" value="${ST.pedHasta||r.hasta}" max="${hoyStr}"></label>
       <button class="pgo" onclick="pedRangoManual()">Ver</button>
     </div>`:"";
+
+  // Caja de búsqueda + el aviso de qué está pasando con la parte que consulta a Odoo.
+  const caja=`<div class="pedbusca">
+      <span class="pb-ic">🔎</span>
+      <input id="pedQ" type="search" autocomplete="off" placeholder="Buscar por cliente, número de pedido o producto…"
+             value="${esc(ST.pedQ||"")}" oninput="pedBuscar(this.value)">
+      ${busq?`<button class="pb-x" onclick="pedLimpiarBusqueda()" title="Borrar la búsqueda">✕</button>`:""}
+    </div>`;
+  let aviso="";
+  if(busq){
+    const P=ST.pedProd, qn=pedNrm(busq);
+    if(qn.length<3) aviso="Buscando por cliente y número. Escribí <b>3 letras o más</b> para buscar también dentro de los productos.";
+    else if(P&&P.cargando) aviso='<span class="spin-sm"></span> buscando ese producto en los pedidos…';
+    else if(P&&P.fallo) aviso="No pude buscar dentro de los productos (probá de nuevo). Por ahora se busca solo por cliente y número.";
+    // Se informa SOLO lo que se ve. El conteo crudo de Odoo incluye el margen de un dia que se
+    // pide de mas por la diferencia horaria, asi que mostrarlo daria un numero que no cierra con la lista.
+    else if(P&&P.ids) aviso=`<b>${arr.length}</b> resultado${arr.length===1?"":"s"} · busqué por cliente, número de pedido y productos.`;
+  }
+  const busqBox=caja+(aviso?`<div class="pedhint">${aviso}</div>`:"");
 
   const tiles=`<div class="pmts">
     ${pedTile("📦","Pedidos",m.n,(mp?pedDelta(m.n,mp.n)+vs:""),"Pedidos confirmados en el período elegido.")}
@@ -1333,14 +1410,16 @@ function pintarVistaPed(app){
   const TOPE=200, muestra=arr.slice(0,TOPE);
   const cuerpo=arr.length
     ? `<div class="pplist">${muestra.map(o=>ppRow(o,"ped")).join("")}</div>${arr.length>TOPE?`<div class="ppmas">Mostrando los ${TOPE} más recientes de ${arr.length}. Elegí un período más corto para verlos todos.</div>`:""}`
-    : `<div class="ppempty">No hay pedidos ${ST.pedOrigen?"de ese origen ":""}en ${r.lab}.</div>`;
+    : `<div class="ppempty">${busq
+        ? `No encontré pedidos con “${esc(busq)}”${ST.pedOrigen?" de ese origen":""} en ${r.lab}. Probá con otro período.`
+        : `No hay pedidos ${ST.pedOrigen?"de ese origen ":""}en ${r.lab}.`}</div>`;
 
   app.innerHTML=`<div class="vhead">
       <button class="vback" onclick="volverDash()">← Volver</button>
       <h1>📦 Pedidos <span class="vcount">${arr.length}</span></h1>
     </div>
-    <div class="pedbar">${chips}</div>${rangoBox}
-    <div class="psub">Mostrando <b>${r.lab}</b> · del ${diaCorto(r.desde)} al ${diaCorto(r.hasta)}${ST.pedOrigen?` · solo ${ORIG_MAP[ST.pedOrigen].ic} ${ORIG_MAP[ST.pedOrigen].lab}`:""}</div>
+    <div class="pedbar">${chips}</div>${rangoBox}${busqBox}
+    <div class="psub">Mostrando <b>${r.lab}</b> · del ${diaCorto(r.desde)} al ${diaCorto(r.hasta)}${ST.pedOrigen?` · solo ${ORIG_MAP[ST.pedOrigen].ic} ${ORIG_MAP[ST.pedOrigen].lab}`:""}${busq?` · buscando “${esc(busq)}”`:""}</div>
     ${ST.pedCargando?'<div class="floading"><span class="spin-sm"></span> buscando pedidos en Odoo…</div>':""}
     ${tiles}${facSt}${oCards}${cuerpo}`;
 }
