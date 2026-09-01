@@ -42,9 +42,10 @@
   .res .cuantas{font-size:11px;color:var(--gris2);white-space:nowrap}
 
   /* Píldora de principio activo. Es un botón: vuelve a buscar por esa droga. */
-  .badge{display:inline-block;font-size:11px;font-weight:700;line-height:1;padding:5px 9px;border-radius:999px;
+  .badge{display:inline-flex;align-items:baseline;gap:5px;font-size:11px;font-weight:700;line-height:1;padding:5px 9px;border-radius:999px;
          background:#E0EFEE;color:var(--teal-deep);border:1px solid transparent;cursor:pointer;
          font-family:inherit;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  .badge b{font-weight:800;opacity:.75;font-variant-numeric:tabular-nums}
   .badge:hover{border-color:var(--teal-med)}
   .badge.pasivo{background:var(--fondo);color:var(--gris2);cursor:default}
   .badge.pasivo:hover{border-color:transparent}
@@ -172,34 +173,31 @@ async function buscar(q){
 }
 
 /* ---------- render de la lista ---------- */
-/* Las pastillas son las drogas del producto. Vienen como nombres sueltos
-   (un producto puede tener varias) y cada una es un botón: filtra por esa droga. */
+/* Las pastillas son las drogas del producto, CADA UNA CON SU CONCENTRACIÓN.
+   Así la concentración no se repite arriba (la marca ya suele traerla: "TAFIROL
+   1G" + "1 G" quedaba duplicado) y además queda clara en las combinaciones,
+   donde un solo número no alcanza. El botón busca por la droga, sin la dosis. */
 function pastillas(comps, limite){
-  const c = (comps||[]).filter(Boolean);
+  const c = (comps||[]).filter(x => x && x.nombre);
   if(!c.length) return "";
   const vis = c.slice(0, limite||4);
   const resto = c.length - vis.length;
   return '<div class="badges">'
-    + vis.map(n=>`<button class="badge" onclick="porDroga(event,'${esc(n).replace(/'/g,"&#39;")}')">${esc(n)}</button>`).join("")
+    + vis.map(x=>`<button class="badge" onclick="porDroga(event,'${esc(x.nombre).replace(/'/g,"&#39;")}')"
+        >${esc(x.nombre)}${x.cantidad?` <b>${esc(x.cantidad)}</b>`:""}</button>`).join("")
     + (resto>0?`<span class="badge pasivo">+${resto}</span>`:"")
     + '</div>';
 }
 
-/* La variante — concentración y forma — va pegada a la marca, como en
-   vademecum.es: "RELIVERAN 0,2 g/100 ml Gotas orales en sol.". Sin eso las
-   cinco entradas de RELIVERAN se ven todas iguales. */
-function variante(r){
-  return [r.concentracion, r.forma].filter(Boolean).join(" · ");
-}
-
+/* La forma farmacéutica va pegada a la marca — es lo que distingue una entrada
+   de otra: las cinco de RELIVERAN sólo se diferencian por forma y dosis.
+   La CONCENTRACIÓN no va acá: viaja con su droga, en la pastilla. */
 function filaRegistro(r){
-  const v = variante(r);
-  const drogas = (r.composicion||[]).map(x=>x.nombre);
   return `<div class="res" onclick="verFicha('${esc(r.clave)}')">
     <div class="princ">
-      <div class="marca">${esc(r.nombre)}${v?` <span class="variante">${esc(v)}</span>`:""}</div>
+      <div class="marca">${esc(r.nombre)}${r.forma?` <span class="variante">${esc(r.forma)}</span>`:""}</div>
       ${r.laboratorio?`<div class="lab">${esc(r.laboratorio)}</div>`:""}
-      ${pastillas(drogas)}
+      ${pastillas(r.composicion)}
     </div>
     <div class="lado">
       <span class="cuantas">${num(r.envases)} ${Number(r.envases)===1?"envase":"envases"}</span>
@@ -350,15 +348,13 @@ function fichaRegistro(f){
     </tr>`;
   }).join("") : `<tr><td colspan="5" class="nulo" style="padding:14px 0">Sin envases cargados.</td></tr>`;
 
-  const v = variante(R);
-
   return `
     <button class="volver" onclick="volver()">‹ Volver a la búsqueda</button>
     <div class="ficha">
       <div class="f-hero">
         <div class="eyebrow">Vademécum · Droguería EyG</div>
         <h2>${esc(R.nombre||"—")}</h2>
-        ${v?`<div class="variante-hero">${esc(v)}</div>`:""}
+        ${R.forma?`<div class="variante-hero">${esc(R.forma)}</div>`:""}
         <div class="firma">
           ${R.laboratorio?`<span class="lab">${ICO.lab} ${esc(R.laboratorio)}</span>`:""}
         </div>
@@ -373,7 +369,6 @@ function fichaRegistro(f){
           <div class="f-tit">${ICO.tec} Ficha técnica</div>
           <table class="tec"><colgroup><col class="rot"><col></colgroup><tbody>
             ${filaDroga(D)}
-            ${R.forma?`<tr><th>Forma farmacéutica</th><td>${esc(R.forma)}</td></tr>`:""}
             ${filaDato("Acción terapéutica", her.accion_terapeutica,
                 her.accion_terapeutica && her.accion_terapeutica.soporte
                   ? `${her.accion_terapeutica.soporte} de ${her.accion_terapeutica.soporte_total} productos de la fuente la declaran` : "")}
