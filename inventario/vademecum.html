@@ -12,6 +12,9 @@
   .intro{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow);margin-bottom:16px;font-size:13.5px;color:var(--gris)}
   .intro b{color:var(--ink)}
 
+  /* Aviso de carga en curso. Ámbar, no rojo: no es un error, es un estado. */
+  .cargando-aviso{background:#fff8e6;border:1px solid #f0d68c;border-left:4px solid #e0a800;
+    border-radius:10px;padding:11px 14px;margin-bottom:14px;font-size:13px;color:#6b4e00;cursor:help}
   .kpis{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px}
   .kpi{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 16px;box-shadow:var(--shadow);min-width:118px}
   .kpi .n{font-size:22px;font-weight:900;color:var(--ink);line-height:1}
@@ -125,7 +128,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=49"></script>
+<script src="../assets/core.js?v=50"></script>
 <script>
 /* ================= EyG Core · Vademécum =================
    LA UNIDAD ES LA ENTRADA (marca + forma + concentración), NO LA PRESENTACIÓN.
@@ -235,10 +238,11 @@ function pintarShell(){
       Sólo entran <b>medicamentos confirmados en un registro oficial</b>: descartables,
       perfumería, ortopedia y envíos quedan afuera.
     </div>
+    ${avisoCarga()}
     ${KPIS?`<div class="kpis">
-      <div class="kpi"><div class="n">${num(KPIS.registros)}</div><div class="l">Productos</div></div>
-      <div class="kpi"><div class="n">${num(KPIS.presentaciones)}</div><div class="l">Presentaciones</div></div>
-      <div class="kpi"><div class="n">${num(KPIS.datos)}</div><div class="l">Datos con fuente y fecha</div></div>
+      <div class="kpi"><div class="n">${num(KPIS.contenido.entradas)}</div><div class="l">Productos</div></div>
+      <div class="kpi"><div class="n">${num(KPIS.contenido.presentaciones)}</div><div class="l">Presentaciones</div></div>
+      <div class="kpi"><div class="n">${num(KPIS.contenido.datos)}</div><div class="l">Datos con fuente y fecha</div></div>
     </div>`:""}
     <div class="buscador">
       <input type="search" id="q" placeholder="Buscá: tafirol 1 g, gador metoclo, dipirona…" value="${esc(TERMINO)}" autocomplete="off" oninput="buscarVade(this.value)">
@@ -247,13 +251,31 @@ function pintarShell(){
   pintarLista();
 }
 
+/* EL VADEMÉCUM SE ESTÁ CARGANDO Y HAY QUE DECIRLO. Se está barriendo el
+   Vademécum Nacional droga por droga; hasta que termine, que algo no aparezca
+   NO quiere decir que no exista. Callarlo sería peor que no tener el módulo:
+   alguien busca, no encuentra, y se lleva una conclusión falsa. */
+function avisoCarga(){
+  if(!KPIS || !KPIS.drogas) return "";
+  const d = KPIS.drogas;
+  if(d.pendientes <= 0) return "";
+  return `<div class="cargando-aviso" title="Se está barriendo el Vademécum Nacional (ANMAT) droga por droga. Cada tanda agrega productos y presentaciones.">
+    <b>Se está cargando.</b> Van ${num(d.hechas)} drogas de ${num(d.total_a_barrer)}
+    (${d.avance_pct}%). Si no encontrás algo, puede que todavía no esté barrido —
+    no quiere decir que no exista.
+  </div>`;
+}
+
 function pintarLista(){
   const caja = document.getElementById("res");
   if(!caja) return;
   if(TERMINO.trim().length < 2){
     caja.innerHTML = `<div class="vacio">Escribí al menos dos letras.</div>`;
   }else if(!REGISTROS.length){
-    caja.innerHTML = `<div class="vacio">No se encontró <b>${esc(TERMINO)}</b>.</div>`;
+    caja.innerHTML = `<div class="vacio">No se encontró <b>${esc(TERMINO)}</b>.` +
+      (KPIS && KPIS.drogas && KPIS.drogas.pendientes > 0
+        ? ` El vademécum todavía se está cargando (${KPIS.drogas.avance_pct}%), así que puede que aún no esté barrido.`
+        : ``) + `</div>`;
   }else{
     caja.innerHTML = `
       <div class="grupo"><h3>Productos</h3><span class="cuenta">${num(REGISTROS.length)}</span></div>
@@ -423,11 +445,14 @@ window.buscarVade = EYG.buscador(async v=>{ TERMINO=v; await buscar(v); pintarLi
 
 window.volver = ()=> pintarShell();
 
-/* Los KPI salen de `vademecum_resumen`, que aplica el MISMO filtro que el
+/* Los KPI salen de `vademecum_avance`, que aplica el MISMO filtro que el
    buscador. Contarlos acá con selects sueltos daría un vademécum inflado:
-   la tabla de drogas tiene 2.304 filas, pero muchas son etiquetas de rubro. */
+   la tabla de drogas tiene 2.304 filas, pero muchas son etiquetas de rubro.
+   Además del contenido trae CUÁNTO SE BARRIÓ, que es lo que se avisa arriba:
+   mientras el vademécum se está cargando, no encontrar algo NO significa que no
+   exista, y quien consulta tiene que saberlo. */
 async function cargarKpis(){
-  const { data, error } = await EYG.supa().rpc("vademecum_resumen");
+  const { data, error } = await EYG.supa().rpc("vademecum_avance");
   if(error){ console.error(error); return; }
   KPIS = data;
 }
@@ -437,12 +462,12 @@ async function arrancar(){
   pintarBusqueda();
 }
 
-/* EN PRUEBAS: visible sólo para Diego mientras se carga el vademécum.
-   `requireAuth` no tiene candado de pruebas — hay que usar `guard`.
-   Para liberarlo a todo el equipo: borrar el {pruebas:…} de acá Y la línea
-   `pruebas` del módulo "vademecum" en core.js (las dos, o sigue oculto). */
-EYG.guard(["inventario","comercial","lider","direccion","finanzas","maestro"],
-          {pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]})
+/* ABIERTO AL EQUIPO desde el 2/9/2026. Salió de pruebas con el barrido todavía
+   en curso, a pedido de Dirección: lo básico (nombre, laboratorio, forma,
+   concentración, presentaciones autorizadas, certificado ANMAT y ATC) ya sirve.
+   Lo que falta se avisa arriba con el porcentaje real, para que nadie tome un
+   "no se encontró" por un "no existe". */
+EYG.guard(["inventario","comercial","lider","direccion","finanzas","maestro"])
   .then(function(perfil){
     document.body.innerHTML = EYG.layout(perfil,"vademecum",'<div id="cont"><div class="cargando">Cargando…</div></div>',"Vademécum");
     arrancar();
