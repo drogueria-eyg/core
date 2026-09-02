@@ -105,6 +105,9 @@
   ul.ifas li > span:first-child{font-weight:700}
   ul.ifas .guia{flex:1;border-bottom:1px dotted var(--line);transform:translateY(-4px);min-width:10px}
   ul.ifas .cant{white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:800;color:var(--teal-deep)}
+  /* El equivalente en % del mismo número: se lee al lado, no reemplaza a la fuente. */
+  ul.ifas .equiv{margin-left:9px;font-weight:700;color:var(--gris);cursor:help}
+  .res .equiv{margin-left:5px;font-size:12px;font-weight:700;color:var(--gris2)}
   ul.ifas li.falta > span:first-child{color:#9A6A00;font-weight:700}
   ul.ifas li.falta .cant{color:var(--gris2)}
   tr.mia td{background:#E0EFEE}
@@ -187,6 +190,29 @@ async function buscar(q){
    porque en las combinaciones hay una por droga, y porque la marca del registro
    suele traerla ya ("TAFIROL 1G" + "1 G" quedaba duplicado).
    El nombre de cada droga es clickeable: vuelve a buscar por ella. */
+/* CÓMO SE PIDE UN MEDICAMENTO, NO CÓMO LO ARCHIVA ANMAT.
+   El registro normaliza toda concentración a "por 100 ml": METOC figura como
+   "500 MG / 100 ML". Nadie lo pide así — en el mostrador, en el portal y en las
+   demás fuentes es "0,5%". Comprobado contra Precios de Medicamentos (Min. Salud),
+   que para el mismo producto dice "0.5% gts. x 20 ml": es EL MISMO dato en otra
+   notación, no una diferencia de contenido.
+   Se muestra el equivalente al lado, sin borrar nunca lo que dice la fuente.
+   Es aritmética sobre el propio número del registro, no una interpretación:
+     mg/100 ml ÷ 1000 · g/100 ml tal cual · mcg/100 ml ÷ 1.000.000 · mg/ml ÷ 10 */
+function porcentaje(cant){
+  if(!cant) return null;
+  const t = String(cant).toUpperCase().replace(/,/g,".");
+  const m = t.match(/^\s*([\d.]+)\s*(MCG|MG|G)\s*\/\s*(100\s*(?:ML|G|GR)|ML)\s*$/);
+  if(!m) return null;
+  const n = parseFloat(m[1]); if(!isFinite(n)) return null;
+  const uni = m[2], den = m[3].replace(/\s+/g,"");
+  let pct;
+  if(den === "ML")            pct = uni==="G" ? n*100 : uni==="MG" ? n/10 : n/10000;
+  else                        pct = uni==="G" ? n     : uni==="MG" ? n/1000 : n/1000000;
+  if(!isFinite(pct) || pct <= 0 || pct > 100) return null;
+  return (Math.round(pct*10000)/10000).toString().replace(".",",") + "%";
+}
+
 /* La fuente trunca la fórmula a ~100 caracteres y cierra con "...". Ese pedazo
    NO se muestra como si fuera una droga: FALGOS quedaba con un quinto principio
    activo llamado "Hidroxido de ma...", que es media palabra, no un componente.
@@ -197,7 +223,8 @@ function lineaActivos(comps){
   const partes = c.map(x => x.incompleto
     ? '<span class="incompleto" title="La fuente cortó el texto acá. Falta completarlo desde el detalle del registro.">falta un componente</span>'
     : `<button class="droga" onclick="porDroga(event,'${esc(x.nombre).replace(/'/g,"&#39;")}')">${esc(x.nombre)}</button>`
-      + (x.cantidad ? `<span class="dosis">${esc(x.cantidad)}</span>` : ""));
+      + (x.cantidad ? `<span class="dosis">${esc(x.cantidad)}</span>` : "")
+      + (porcentaje(x.cantidad) ? `<span class="equiv">= ${porcentaje(x.cantidad)}</span>` : ""));
   return '<div class="activos">' + partes.join('<span class="mas">+</span>') + '</div>';
 }
 
@@ -374,7 +401,15 @@ function fichaRegistro(f){
        ? `<li class="falta"><span>Falta un componente</span>
           <span class="guia"></span><span class="cant">—</span></li>`
        : `<li><span>${esc(x.nombre)}</span>
-          <span class="guia"></span><span class="cant">${esc(x.cantidad||"—")}</span></li>`).join("")}</ul>`
+          <span class="guia"></span><span class="cant">${esc(x.cantidad||"—")}${
+            porcentaje(x.cantidad)
+              ? `<span class="equiv" title="Es el mismo número que declara el registro, escrito como se pide en el mostrador. El registro normaliza a &quot;por 100 ml&quot;.">= ${porcentaje(x.cantidad)}</span>`
+              : ""}</span></li>`).join("")}</ul>`
+    + (comp.some(x=>porcentaje(x.cantidad)) ? `<p class="pie-t">Las dos cifras son <b>el mismo dato</b>:
+         el Vademécum Nacional (ANMAT) normaliza toda concentración a <b>por 100 ml</b>, y el porcentaje
+         es esa misma cifra en la notación que se usa en el mostrador, en el prospecto y en Precios de
+         Medicamentos del Ministerio de Salud. Se muestran las dos para que se pueda buscar por
+         cualquiera de las dos y para no pisar lo que dice el registro.</p>` : "")
     + (cortada ? `<p class="pie-t">El Vademécum Nacional muestra esta fórmula recortada en su listado
          (la corta a 100 caracteres). Falta completarla desde el detalle del registro y cruzarla con las
          demás fuentes: lo que se ve arriba está verificado, lo que falta está señalado.</p>` : "");
@@ -400,7 +435,14 @@ function fichaRegistro(f){
       <div class="f-hero">
         <div class="eyebrow">Vademécum · Droguería EyG</div>
         <h2>${esc(R.nombre||"—")}</h2>
-        ${R.forma?`<div class="variante-hero">${esc(R.forma)}</div>`:""}
+        ${(()=>{ /* La concentración va en el título, como en cualquier vademécum:
+                    "METOC · Solucion" no distingue nada. Sólo cuando hay UNA sola
+                    droga y su equivalente en % es calculable; con combinaciones se
+                    deja el nombre solo, que la fórmula está abajo. */
+           const c = comp.length===1 && !comp[0].incompleto ? porcentaje(comp[0].cantidad) : null;
+           const partes = [R.forma?esc(R.forma):null, c].filter(Boolean);
+           return partes.length ? `<div class="variante-hero">${partes.join(" · ")}</div>` : "";
+        })()}
         <div class="firma">
           ${R.laboratorio?`<span class="lab">${ICO.lab} ${esc(R.laboratorio)}</span>`:""}
         </div>
