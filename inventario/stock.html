@@ -180,6 +180,10 @@
   .g-liq{grid-template-columns:2.8fr 1.1fr 0.7fr 1fr 1.5fr}
   .g-repo{grid-template-columns:2.4fr 1.4fr 0.8fr 0.8fr 0.9fr 0.9fr}
   .g-win{grid-template-columns:2.4fr 0.8fr 0.9fr 0.8fr 1fr 0.9fr}
+  .g-rep{grid-template-columns:2.6fr 1fr 0.9fr 0.95fr 1.15fr}
+  .repo-tools{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+  .repo-prov{border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:13px;background:var(--surface);color:var(--ink);max-width:280px;cursor:pointer}
+  .repo-prov:focus{outline:none;border-color:var(--teal)}
   .tr-r{text-align:right;font-variant-numeric:tabular-nums}
   .cname{font-weight:700;font-size:13.5px;line-height:1.3;white-space:normal;overflow-wrap:anywhere}
   .cmeta{font-size:11.5px;color:var(--gris2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -292,7 +296,7 @@
   .cotrow .cst{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;font-size:12.5px}
 
   @media(max-width:860px){ .grid2{grid-template-columns:1fr} .rotleg{grid-template-columns:1fr}
-    .g-stock{grid-template-columns:1.8fr 0.7fr 1fr 0.85fr 0.9fr} .g-repo{grid-template-columns:2fr 1fr 0.9fr} .g-win{grid-template-columns:2fr 0.9fr 1fr} .g-liq{grid-template-columns:1.7fr 1fr 1.3fr}
+    .g-stock{grid-template-columns:1.8fr 0.7fr 1fr 0.85fr 0.9fr} .g-repo{grid-template-columns:2fr 1fr 0.9fr} .g-win{grid-template-columns:2fr 0.9fr 1fr} .g-liq{grid-template-columns:1.7fr 1fr 1.3fr} .g-rep{grid-template-columns:1.7fr 0.9fr 0.9fr 1.1fr}
     .hide-sm{display:none} .fbar{width:8px} .spark{width:100%} .health .hh{gap:16px} }
 </style>
 </head>
@@ -351,6 +355,7 @@ let liq={plazo:6};   // Liquidar: plazo de vencimiento en meses para el filtro "
 let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
 let STOCK_CRIT=new Set(), STOCK_PED=new Set();   // marcas manuales de German (param eyg.stock_modo): siempre-en-stock / siempre-contra-pedido
 let qBuscar="", QCACHE=[];   // buscador de la lista de quiebres
+let rBuscar="", rProv="", RCACHE=[];   // buscador + filtro de proveedor de la lista de reposición
 let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
 let rfiltro={q:"",soloRepo:true,sortK:"margenAnual",dir:-1};
 let CAT={loaded:false,loading:false,rows:[],fams:[],labs:[],provs:[]};
@@ -949,10 +954,14 @@ function tabComprar(rd){
   `;
 }
 function reponerSeccion(rd){
-  const topUrg=[...rd.necesita].filter(x=>x.r.provId||x.r.viaOtra)
-    .sort((a,b)=>(URG_ORD[a.rp.urg]-URG_ORD[b.rp.urg])||(CLASE_ORD[a.rp.clase]-CLASE_ORD[b.rp.clase])||(b.r.freq-a.r.freq)).slice(0,12);
   const qc=rd.quiebresCriticos||[], qe=rd.quiebresEspor||[];
   QCACHE=qc;
+  // lista maestra de reposición: todo lo que necesita reponerse, ordenado por urgencia (frecuencia)
+  RCACHE=[...rd.necesita].sort((a,b)=>(URG_ORD[a.rp.urg]-URG_ORD[b.rp.urg])||(b.r.freq-a.r.freq));
+  const provSet={}; rd.necesita.forEach(x=>{ if(x.r.provId) provSet[x.r.provId]=x.r.provName; });
+  const provOpts=`<option value="">Todos los proveedores</option>`
+    +Object.keys(provSet).sort((a,b)=>(provSet[a]||"").localeCompare(provSet[b]||"")).map(id=>`<option value="${id}" ${String(rProv)===String(id)?"selected":""}>${esc(provSet[id])}</option>`).join("")
+    +`<option value="_none" ${rProv==="_none"?"selected":""}>— sin proveedor cargado —</option>`;
   const banner = qc.length ? `
     <div class="quiebre-alert">
       <div class="qa-h">🔴 ${qc.length} producto${qc.length===1?"":"s"} que stockeás ${qc.length===1?"quedó":"quedaron"} SIN STOCK</div>
@@ -972,32 +981,14 @@ function reponerSeccion(rd){
     </div>
     <div class="note info" style="margin-top:2px">Cada producto se mira con <b>su propio ritmo</b>. El sistema separa lo que <b>tenés de stock</b> (si llega a cero es un quiebre real → cartel rojo) de lo que <b>comprás contra pedido</b> (estar en cero es normal). Lo infiere por cómo comprás, y desde la ficha de cada producto lo podés fijar a mano (📌 crítico / contra pedido).</div>
 
-    <h2 class="sec">Lo más urgente para comprar<span class="hint">ordenado por urgencia, ritmo de venta y margen</span></h2>
+    <h2 class="sec">Todo lo que hay que reponer<span class="hint">${rd.necesita.length} producto${rd.necesita.length===1?"":"s"} · filtrá por proveedor y armá el carrito</span></h2>
     <div class="pcard">
-      <ul class="lst">${topUrg.length?topUrg.map(x=>{const r=x.r,rp=x.rp;const c=URG_COL[rp.urg];
-        return `<li class="li" onclick="abrirProd(${r.id})">
-          <span class="pill ${c}">${URG_LBL[rp.urg]}</span>
-          <div class="nm"><b>${esc(cleanName(r.name))}</b>
-            <span>${r.provName?esc(r.provName):(r.viaOtra?"reposición directa":"—")} · cobertura ${rp.cob>900?"—":fmtDur(rp.cob)} · ${CLASE_LBL[rp.clase]} (${r.freq}×/año)</span></div>
-          <div class="amt">${rp.sug} u<span style="display:block;font-size:11px;color:var(--gris);font-weight:600">${money(rp.costoLinea)}</span></div>
-        </li>`}).join(""):'<div class="empty">Nada urgente con la política actual. 👌</div>'}</ul>
+      <div class="repo-tools">
+        <div class="qa-search" style="flex:1;margin:0;min-width:180px"><input id="rbuscar" placeholder="Buscar producto o proveedor…" value="${esc(rBuscar)}" oninput="rBuscar=this.value;pintarRepo()"></div>
+        <select class="repo-prov" id="rprov" onchange="rProv=this.value;pintarRepo()">${provOpts}</select>
+      </div>
+      <div id="rlist">${reponerListaHTML()}</div>
     </div>
-
-    <h2 class="sec">Armá el pedido por proveedor<span class="hint">clic en un proveedor para revisar cantidades y crear el borrador en Odoo</span></h2>
-    ${rd.provs.length?`<div class="prov">${rd.provs.map(g=>{const cad=CAD[g.id]?Math.round(365/CAD[g.id]):null;
-      return `<div class="provcard u-${g.urg}" onclick="abrirProveedor(${g.id})">
-        <div class="pn">${esc(g.name)}</div>
-        <div class="pc">${g.items.length} producto${g.items.length>1?"s":""} a reponer · <span class="pill ${URG_COL[g.urg]}" style="font-size:9.5px">${URG_LBL[g.urg]}</span></div>
-        <div class="pc" style="margin-top:4px">${cad?`le comprás ~cada ${cad} día${cad>1?"s":""}`:"compra poco frecuente"}</div>
-        <div class="pr"><div class="est">${money(g.valor)}<span>pedido estimado</span></div><div class="go">Armar pedido →</div></div>
-      </div>`}).join("")}</div>`:'<div class="pcard empty">No hay nada para reponer con proveedor formal. Ajustá la política arriba.</div>'}
-
-    ${rd.otra.length?`<h2 class="sec">Reposición directa (sin OC)<span class="hint">se reponen por otra vía · no generan documento</span></h2>
-      <div class="pcard"><ul class="lst">${rd.otra.slice(0,30).map(x=>{const r=x.r,rp=x.rp;
-        return `<li class="li" onclick="abrirProd(${r.id})"><span class="pill ${URG_COL[rp.urg]}">${URG_LBL[rp.urg]}</span>
-          <div class="nm"><b>${esc(cleanName(r.name))}</b><span>cobertura ${rp.cob>900?"—":fmtDur(rp.cob)} · sugerido ${rp.sug} u</span></div>
-          <div class="amt">${money(rp.costoLinea)}</div></li>`}).join("")}</ul>
-        ${rd.otra.length>30?`<div class="count-line" style="margin-top:8px">…y ${rd.otra.length-30} más.</div>`:""}</div>`:""}
 
     ${qe.length?`<h2 class="sec" style="margin-top:26px">🟠 Sin stock, pero son de contra pedido<span class="hint">EyG no los stockea · se compran cuando hay pedido · ${qe.length} en total</span></h2>
       <div class="pcard"><ul class="lst">${qe.slice(0,30).map(x=>{const r=x.r;
@@ -1023,6 +1014,50 @@ function quiebresHTML(){
     </div>`}).join("") + (rows.length>cap?`<div class="qa-more">…y ${rows.length-cap} más. Usá el buscador para acotar.</div>`:"");
 }
 function pintarQuiebres(){ const el=document.getElementById("qlist"); if(el) el.innerHTML=quiebresHTML(); }
+// ---- Lista maestra de reposición (con buscador + filtro de proveedor + agregar al carrito) ----
+function reponerListaHTML(){
+  const q=(rBuscar||"").toLowerCase().trim();
+  let rows=RCACHE;
+  if(rProv==="_none") rows=rows.filter(x=>!x.r.provId);
+  else if(rProv) rows=rows.filter(x=>String(x.r.provId)===String(rProv));
+  if(q) rows=rows.filter(x=>(cleanName(x.r.name)+" "+(x.r.code||"")+" "+(x.r.provName||"")).toLowerCase().includes(q));
+  if(!rows.length) return `<div class="qa-empty" style="color:var(--gris)">Nada coincide con el filtro.</div>`;
+  const enCart=id=>Object.keys(CARTS).some(k=>CARTS[k].items.some(it=>it.id===id));
+  const provFiltrado = rProv && rProv!=="_none" ? rows : null;
+  const addAll = provFiltrado ? `<div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <button class="wa-send" style="margin:0;width:auto;padding:9px 16px" onclick="addAllToCart()">🛒 Agregar los ${provFiltrado.length} al carrito de ${esc(provFiltrado[0].r.provName||'')}</button>
+      <span style="font-size:12px;color:var(--gris)">total estimado ${money(provFiltrado.reduce((a,x)=>a+x.rp.sug*(x.r.provPrice||x.r.costoU||0),0))}</span></div>` : "";
+  const cap=Math.min(rows.length,200);
+  return addAll+`<div class="tablecard"><div class="thead g-rep">
+      <div title="Producto y proveedor">Producto</div>
+      <div title="Urgencia = cuán seguido te lo piden">Estado</div>
+      <div class="tr-r hide-sm" title="Para cuánto alcanza (stock + en camino)">Cobertura</div>
+      <div class="tr-r" title="Cuánto conviene comprar para cubrir el objetivo">Sugerido</div>
+      <div style="text-align:right" title="Agregar al carrito de su proveedor">Carrito</div>
+    </div>`+
+    rows.slice(0,cap).map(x=>{const r=x.r,rp=x.rp; const inC=enCart(r.id);
+      const acc = r.provId ? `<button class="mini-btn" ${inC?'disabled style="opacity:.55"':'style="background:var(--teal);color:#fff;border-color:var(--teal)"'} onclick="event.stopPropagation();addToCart(${r.id},${r.provId},'${esc(r.provName||'').replace(/'/g,'')}',${r.provPrice||0},${rp.sug})">${inC?'✓ en carrito':'＋ Carrito'}</button>`
+        : (r.viaOtra?'<span class="tagmini">otra vía</span>':'<span class="tagmini" style="background:#f6e5e2;color:#8E1F14">sin prov.</span>');
+      return `<div class="row g-rep">
+        <div style="cursor:pointer" onclick="abrirProd(${r.id})"><div class="cname" style="color:var(--teal-deep)">${esc(cleanName(r.name))}</div><div class="cmeta">${r.provName?esc(r.provName):(r.viaOtra?"reposición directa":"sin proveedor")} · te lo piden ${r.freq}×/año</div></div>
+        <div><span class="pill ${URG_COL[rp.urg]}">${URG_LBL[rp.urg]}</span></div>
+        <div class="tr-r hide-sm num">${rp.cob>900?"—":fmtDur(rp.cob)}</div>
+        <div class="tr-r num">${rp.sug} u<div style="font-size:11px;color:var(--gris);font-weight:600">${money(rp.costoLinea)}</div></div>
+        <div style="text-align:right">${acc}</div>
+      </div>`;}).join("")+
+    (rows.length>cap?`<div class="empty" style="padding:12px">…y ${rows.length-cap} más. Usá el buscador o el filtro de proveedor.</div>`:"")+
+    `</div>`;
+}
+function pintarRepo(){ const el=document.getElementById("rlist"); if(el) el.innerHTML=reponerListaHTML(); }
+function addAllToCart(){
+  if(!rProv || rProv==="_none") return;
+  const rows=RCACHE.filter(x=>String(x.r.provId)===String(rProv));
+  if(!rows.length) return;
+  const c=cartOf(rows[0].r.provId, rows[0].r.provName);
+  if(c.poId){ toast(`El carrito de ${c.provName} ya tiene borrador creado`); return; }
+  let n=0; rows.forEach(x=>{ if(!c.items.some(it=>it.id===x.r.id)){ c.items.push({id:x.r.id,code:x.r.code||"",name:cleanName(x.r.name),qty:x.rp.sug>0?x.rp.sug:(x.r.minQty||1),precio:x.r.provPrice||x.r.costoU||0}); n++; } });
+  pintarCarrito(); pintarRepo(); toast(`✓ ${n} producto${n===1?"":"s"} al carrito de ${c.provName}`);
+}
 function setComprarSub(s){ comprarSub=s; render(); }
 function setUmbral(v){pol.umbral=parseFloat(v);document.getElementById("lbU").textContent=pol.umbral+(pol.umbral===1?" mes":" meses");render();}
 function setObjetivo(v){pol.objetivo=parseFloat(v);document.getElementById("lbO").textContent=pol.objetivo+" meses";render();}
@@ -1307,7 +1342,7 @@ function renderCatTabla(){
         <div class="tr-r num">${r.qty>0?r.qty.toLocaleString("es-AR"):'<span style="color:var(--gris2)">0</span>'}</div>
         <div class="tr-r hide-sm num" style="font-weight:500">${r.costoU?money(r.costoU):"—"}</div>
         <div class="tr-r hide-sm num">${r.margenPct!==null?r.margenPct.toFixed(0)+"%":"—"}</div>
-        <div style="text-align:right">${(COMPRA.prov&&!COMPRA.poId)?`<button class="mini-btn" style="background:var(--teal);color:#fff;border-color:var(--teal)" onclick="agregarLinea(${r.id})">＋ Agregar</button>`:(r.provId?`<button class="mini-btn" onclick="pedirCat(${r.id})">Pedir</button>`:"")}</div>
+        <div style="text-align:right">${r.provId?`<button class="mini-btn" style="background:var(--teal);color:#fff;border-color:var(--teal)" onclick="event.stopPropagation();addToCart(${r.id},${r.provId},'${esc(r.provName||'').replace(/'/g,'')}',${r.provPrice||0})">＋ Carrito</button>`:""}</div>
       </div>`).join("")}
       ${d.length>300?`<div class="empty" style="padding:16px">…y ${(d.length-300).toLocaleString("es-AR")} más. Afiná los filtros o el buscador.</div>`:""}
       ${!d.length?'<div class="empty">Sin resultados con esos filtros.</div>':""}
@@ -1319,7 +1354,6 @@ function abrirFicha(id){
   const cr=CAT.loaded?CAT.rows.find(x=>x.id===id):null, dr=DATA.find(x=>x.id===id);
   const r=cr||dr; if(!r) return;
   const provs=r.provs||[]; const conP=provs.filter(p=>p.price>0).map(p=>p.price), minP=conP.length?Math.min(...conP):null;
-  const cartActivo=COMPRA.prov&&!COMPRA.poId;
   const d=document.getElementById("drawer");
   d.innerHTML=`
     <div class="dhead"><span class="x" onclick="cerrar()">✕</span>
@@ -1328,8 +1362,7 @@ function abrirFicha(id){
         <span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${r.qty>0?r.qty.toLocaleString("es-AR")+" u en stock":"sin stock"}</span></div>
     </div>
     <div class="dbody">
-      ${cartActivo?`<button class="wa-send" style="margin-top:0" onclick="agregarLinea(${r.id})">＋ Agregar a este pedido (${esc(COMPRA.provName)})</button>`
-        :(r.provId?`<button class="wa-send" style="margin-top:0;background:var(--gold)" onclick="pedirCat(${r.id});cerrar()">🛒 Empezar un pedido con este producto</button>`:"")}
+      ${r.provId?`<button class="wa-send" style="margin-top:0;background:var(--teal)" onclick="addToCart(${r.id},${r.provId},'${esc(r.provName||'').replace(/'/g,'')}',${r.provPrice||0})">🛒 Agregar al carrito de ${esc(r.provName||'')}</button>`:""}
       <div class="dsec"><h4>Datos</h4>
         <div class="kv"><span class="k">Código</span><span class="v">${esc(r.code||"—")}</span></div>
         <div class="kv"><span class="k">Rubro</span><span class="v">${esc(r.fam||"—")}</span></div>
@@ -1551,101 +1584,92 @@ async function crearOC(){
     btn.disabled=false; btn.textContent="📝 Crear borrador en Odoo";
   }
 }
-// ---------- CARGAR COMPRA: arma una OC desde cero (proveedor + productos) → borrador Odoo → confirmar ----------
-let COMPRA={prov:null,provName:"",items:[],poId:null,poName:"",estado:"draft"};
-function nuevaCompra(){ COMPRA={prov:null,provName:"",items:[],poId:null,poName:"",estado:"draft"}; renderCompra(); document.getElementById("drawer").classList.add("on"); document.getElementById("scrim").classList.add("on"); }
-const carritoActivo=()=>!!(COMPRA.prov && !COMPRA.poId);
-// Pedir un producto a un proveedor puntual (desde el detalle o la lista de proveedores) → arranca o suma al carrito y abre el pedido
-function compraDesdeProd(prodId,provId,provName){
-  if(carritoActivo() && provId!==COMPRA.prov){
-    if(!confirm(`Tenés un pedido abierto a ${COMPRA.provName}. Voy a agregar este producto a ESE pedido.\nPara pedirle a ${provName}, primero finalizá o descartá el pedido actual. ¿Continuar?`)) return;
-  } else if(!carritoActivo()){
-    COMPRA={prov:provId,provName,items:[],poId:null,poName:"",estado:"draft"};
-  }
-  agregarLinea(prodId); verCarrito();
+// ---------- CARRITOS DE COMPRA (uno por proveedor) → borrador Odoo → cotizar/confirmar ----------
+let CARTS={};        // provId -> {prov, provName, items:[{id,code,name,qty,precio}], poId, poName, estado}
+let curCart=null;    // provId abierto en el drawer (null = eligiendo proveedor para un carrito nuevo)
+function cartOf(prov,provName){ if(!CARTS[prov]) CARTS[prov]={prov,provName,items:[],poId:null,poName:"",estado:"draft"}; else if(provName) CARTS[prov].provName=provName; return CARTS[prov]; }
+function cur(){ return curCart!=null ? CARTS[curCart] : null; }
+function cartTotal(c){ return c.items.reduce((a,it)=>a+it.qty*it.precio,0); }
+function cartsActivos(){ return Object.keys(CARTS).map(k=>CARTS[k]).filter(c=>c.items.length||c.poId); }
+// Nuevo carrito desde cero (elige proveedor a mano)
+function nuevaCompra(){ curCart=null; renderCompra(); document.getElementById("drawer").classList.add("on"); document.getElementById("scrim").classList.add("on"); }
+// Agregar un producto AL CARRITO DE SU PROVEEDOR (lo crea si no existe). No abre el drawer.
+function addToCart(prodId,provId,provName,price,sug){
+  if(!provId){ toast("Ese producto no tiene proveedor cargado en Odoo"); return; }
+  const c=cartOf(provId,provName);
+  if(c.poId){ toast(`El carrito de ${c.provName} ya tiene borrador creado`); return; }
+  const r=DATA.find(x=>x.id===prodId)||QUIEBRE.find(x=>x.id===prodId)||(CAT.loaded?CAT.rows.find(x=>x.id===prodId):null)||{};
+  if(c.items.some(it=>it.id===prodId)){ toast(`Ya está en el carrito de ${c.provName}`); return; }
+  const qty = sug>0?sug : (r.id?Math.max(1,(repo(r).sug)||r.minQty||1):1);
+  const precio = price>0?price : (r.provPrice||r.costoU||0);
+  c.items.push({id:prodId, code:r.code||"", name:cleanName(r.name||("#"+prodId)), qty, precio});
+  pintarCarrito(); if(TAB==="comprar"&&comprarSub==="reponer") pintarRepo(); if(TAB==="cat") renderCatTabla();
+  toast(`✓ Al carrito de ${c.provName} (${c.items.length})`);
 }
-// Suma un producto al carrito ACTIVO (deriva precio del proveedor del carrito y cantidad sugerida). No abre el drawer.
-function agregarLinea(prodId){
-  if(!carritoActivo()) return;
-  const r=DATA.find(x=>x.id===prodId), cr=(!r&&CAT.loaded)?CAT.rows.find(x=>x.id===prodId):null, src=r||cr;
-  if(!src){ toast("No encuentro ese producto"); return; }
-  const name=r?cleanName(r.name):src.name;
-  const ex=COMPRA.items.find(it=>it.id===prodId);
-  if(ex){ ex.qty += r?Math.max(1,repo(r).sug||1):1; pintarCarrito(); toast(`＋ ${name} (${ex.qty} u)`); return; }
-  const pm=(src.provs||[]).find(p=>p.id===COMPRA.prov);
-  const precio = pm&&pm.price>0 ? pm.price : (src.costoU||src.provPrice||0);
-  const qty = r?Math.max(1,repo(r).sug||r.minQty||1):1;
-  COMPRA.items.push({id:prodId, code:src.code||"", name, qty, precio});
-  pintarCarrito(); toast(`✓ Al pedido: ${name} (${COMPRA.items.length})`);
-}
-// Botón "Pedir" del catálogo cuando NO hay carrito: arranca uno con el proveedor de ese producto y sigue en el catálogo
-function pedirCat(prodId){
-  if(carritoActivo()){ agregarLinea(prodId); return; }
-  const cr=CAT.loaded?CAT.rows.find(x=>x.id===prodId):null, r=DATA.find(x=>x.id===prodId), src=cr||r;
-  if(!src||!src.provId){ toast("Ese producto no tiene proveedor cargado en Odoo. Empezá con 'Cargar una compra'."); return; }
-  COMPRA={prov:src.provId, provName:src.provName, items:[], poId:null, poName:"", estado:"draft"};
-  agregarLinea(prodId);
-  renderCatTabla();  // los botones pasan de "Pedir" a "Agregar"
-}
-// Barra flotante del carrito: se mantiene entre pestañas y con el drawer cerrado
+// Pedir un producto (desde ficha/catálogo) → lo agrega a su carrito y lo abre
+function compraDesdeProd(prodId,provId,provName,price){ addToCart(prodId,provId,provName,price); if(provId){ curCart=provId; verCarrito(provId); } }
+// Alias usados por catálogo/ficha
+function agregarLinea(prodId){ const r=DATA.find(x=>x.id===prodId)||(CAT.loaded?CAT.rows.find(x=>x.id===prodId):null); if(r) addToCart(prodId,r.provId,r.provName,r.provPrice); }
+function pedirCat(prodId){ agregarLinea(prodId); }
+// Barra flotante: un chip por cada carrito en armado
 function pintarCarrito(){
   let bar=document.getElementById("cartbar");
-  if(!carritoActivo()){ if(bar) bar.remove(); return; }
+  const cs=cartsActivos();
+  if(!cs.length){ if(bar) bar.remove(); return; }
   if(!bar){ bar=document.createElement("div"); bar.id="cartbar"; bar.className="cartbar"; document.body.appendChild(bar); }
-  const n=COMPRA.items.length, tot=COMPRA.items.reduce((a,it)=>a+it.qty*it.precio,0);
-  bar.innerHTML=`<div class="ci">🛒<div><b>Pedido a ${esc(COMPRA.provName)}</b><span>${n} producto${n===1?"":"s"} · ${money(tot)}</span></div></div>
-    <div class="ca">
-      ${TAB!=="cat"?`<button class="cbtn ghost" onclick="seguirCatalogo()">Agregar del catálogo</button>`:""}
-      <button class="cbtn" onclick="verCarrito()">Ver / finalizar →</button>
-      <button class="cbtn x" onclick="cancelarCarrito()" title="Descartar pedido">✕</button>
-    </div>`;
+  bar.innerHTML=`<div class="ci">🛒<div><b>${cs.length} carrito${cs.length===1?"":"s"} en armado</b><span>tocá uno para revisarlo y crear el borrador en Odoo</span></div></div>
+    <div class="ca">${cs.map(c=>`<button class="cbtn" onclick="verCarrito(${c.prov})">${esc(c.provName)} · ${c.items.length} · ${money(cartTotal(c))}${c.poId?" ✓":""}</button>`).join("")}
+      <button class="cbtn ghost" onclick="nuevaCompra()">＋ Otro</button></div>`;
 }
-function verCarrito(){ renderCompra(); document.getElementById("drawer").classList.add("on"); document.getElementById("scrim").classList.add("on"); }
-function seguirCatalogo(){ cerrar(); TAB="cat"; cfil.prov=COMPRA.provName||""; render(); }
+function verCarrito(cid){ if(cid!=null) curCart=cid; renderCompra(); document.getElementById("drawer").classList.add("on"); document.getElementById("scrim").classList.add("on"); }
+function seguirCatalogo(){ const c=cur(); cerrar(); TAB="cat"; cfil.prov=c?c.provName:""; render(); }
 function cancelarCarrito(){
-  if(COMPRA.items.length && !confirm("¿Descartar este pedido sin terminar?")) return;
-  COMPRA={prov:null,provName:"",items:[],poId:null,poName:"",estado:"draft"};
-  pintarCarrito(); cerrar(); if(TAB==="cat") renderCatTabla();
+  const c=cur(); if(!c){ cerrar(); return; }
+  if(c.items.length && !confirm(`¿Descartar el carrito de ${c.provName} sin terminar?`)) return;
+  delete CARTS[c.prov]; curCart=null;
+  pintarCarrito(); cerrar(); if(TAB==="cat") renderCatTabla(); else render();
 }
 function pasos(){
-  const p = COMPRA.estado==="sent"?4 : COMPRA.poId?3 : COMPRA.prov?2 : 1;
+  const c=cur();
+  const p = !c ? 1 : c.estado==="sent"?4 : c.poId?3 : 2;
   const S=(n,t)=>`<div class="s ${p>n?'done':p===n?'on':''}"><span class="d">${p>n?'✓':n}</span>${t}</div>`;
   return `<div class="cstep">${S(1,"Proveedor")}<span class="ln"></span>${S(2,"Productos")}<span class="ln"></span>${S(3,"Borrador")}<span class="ln"></span>${S(4,"Enviar")}</div>`;
 }
 function renderCompra(){
   const d=document.getElementById("drawer");
-  const total=COMPRA.items.reduce((a,it)=>a+it.qty*it.precio,0);
+  const c=cur();
+  const total=c?cartTotal(c):0;
   let body;
-  if(!COMPRA.prov){
+  if(!c){
     body=`<div class="dsec"><h4>1 · ¿A qué proveedor le comprás?</h4>
       <input class="cinput" id="cprov" placeholder="Buscar proveedor por nombre o CUIT…" oninput="buscarProvCompra(this.value)" autocomplete="off">
-      <div class="cpick" id="cpickProv" style="display:none"></div></div>`;
-  } else if(!COMPRA.poId){
-    body=`<div class="dsec"><h4>Proveedor</h4><span class="cchip">${esc(COMPRA.provName)} <b onclick="cambiarProv()" title="Cambiar">✕</b></span></div>
-      <div class="dsec"><h4>2 · Agregá productos</h4>
-        <input class="cinput" id="cprod" placeholder="Buscar producto por nombre o código…" oninput="buscarProdCompra(this.value)" autocomplete="off">
+      <div class="cpick" id="cpickProv" style="display:none"></div>
+      ${cartsActivos().length?`<div class="cmeta" style="margin-top:12px">Carritos en armado: ${cartsActivos().map(x=>`<a onclick="verCarrito(${x.prov})" style="cursor:pointer;color:var(--teal-deep)">${esc(x.provName)}</a>`).join(" · ")}</div>`:""}</div>`;
+  } else if(!c.poId){
+    body=`<div class="dsec"><h4>Proveedor</h4><span class="cchip">${esc(c.provName)} <b onclick="cancelarCarrito()" title="Descartar este carrito">✕</b></span></div>
+      <div class="dsec"><h4>2 · Productos del carrito</h4>
+        <input class="cinput" id="cprod" placeholder="Sumar otro producto por nombre o código…" oninput="buscarProdCompra(this.value)" autocomplete="off">
         <div class="cpick" id="cpickProd" style="display:none"></div>
-        <button class="wa-send ghost" style="margin-top:10px" onclick="seguirCatalogo()">🔎 Buscar en el catálogo (más datos y filtros)</button>
-        ${COMPRA.items.length?`<div style="margin-top:12px">
+        ${c.items.length?`<div style="margin-top:12px">
           <div class="ord" style="border-bottom:2px solid var(--line);font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:700"><div>Producto</div><div style="text-align:center">Unid.</div><div style="text-align:right">Precio u.</div></div>
-          ${COMPRA.items.map((it,i)=>`<div class="ord">
+          ${c.items.map((it,i)=>`<div class="ord">
             <div class="on">${esc(it.name)}<span>${it.code?esc(it.code)+" · ":""}<a onclick="quitarLineaCompra(${i})" style="color:var(--red);cursor:pointer">quitar</a></span></div>
             <input class="q" type="number" min="0" step="1" value="${it.qty}" oninput="compraQty(${i},this.value)">
             <input class="cprice" type="number" min="0" step="0.01" value="${it.precio}" oninput="compraPrecio(${i},this.value)"></div>`).join("")}
           <div class="ordfoot"><span>Total estimado</span><b id="cTot">${money(total)}</b></div>
-        </div>`:'<div class="cmeta" style="margin-top:10px">Todavía no agregaste productos.</div>'}
+        </div>`:'<div class="cmeta" style="margin-top:10px">Carrito vacío. Sumá productos desde la lista de reposición o buscándolos acá.</div>'}
       </div>
       <div id="cMsg"></div>
-      <button class="wa-send" id="cBtn" onclick="crearOCCompra()" ${COMPRA.items.length?"":"disabled style=opacity:.5"}>📝 Crear borrador en Odoo</button>`;
+      <button class="wa-send" id="cBtn" onclick="crearOCCompra()" ${c.items.length?"":"disabled style=opacity:.5"}>📝 Crear borrador en Odoo</button>`;
   } else {
-    body=`<div class="dsec"><h4>Proveedor</h4><span class="cchip">${esc(COMPRA.provName)}</span></div>
-      <div class="okbox">✓ Borrador <b>${esc(COMPRA.poName)}</b> creado en Odoo con ${COMPRA.items.filter(i=>i.qty>0).length} líneas por ${money(total)}.</div>
+    body=`<div class="dsec"><h4>Proveedor</h4><span class="cchip">${esc(c.provName)}</span></div>
+      <div class="okbox">✓ Borrador <b>${esc(c.poName)}</b> creado en Odoo con ${c.items.filter(i=>i.qty>0).length} líneas por ${money(total)}.</div>
       <div class="dsec" style="margin-top:14px"><h4>3 · Cotizalo con el proveedor</h4>
         <p style="font-size:13px;color:var(--gris);line-height:1.55">Quedó como presupuesto en Odoo. Ajustá precios y descuentos en vivo, mandáselo por WhatsApp o mail, y confirmalo cuando cierren.</p>
-        <button class="wa-send" onclick="irACotizar(${COMPRA.poId})" style="background:var(--teal)">📄 Cotizar / negociar y enviar →</button></div>
-      <button class="wa-send ghost" onclick="nuevaCompra()" style="margin-top:12px">➕ Otro presupuesto</button>`;
+        <button class="wa-send" onclick="irACotizar(${c.poId})" style="background:var(--teal)">📄 Cotizar / negociar y enviar →</button></div>
+      <button class="wa-send ghost" onclick="nuevaCompra()" style="margin-top:12px">➕ Otro carrito</button>`;
   }
-  d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span><h2>Cargar una compra</h2>
+  d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span><h2>${c?"Carrito de compra":"Nuevo carrito"}</h2>
       <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${money(total)}</span></div></div>
     <div class="dbody">${pasos()}${body}</div>`;
   pintarCarrito();
@@ -1659,8 +1683,7 @@ function buscarProvCompra(q){ clearTimeout(tProv); tProv=setTimeout(async()=>{
     box.innerHTML=r.length?r.map(x=>`<div class="r" onclick="setProvCompra(${x.id},'${esc((x.name||'')).replace(/'/g,'')}')"><span>${esc(x.name)}</span><span class="rp">${esc(x.vat||'')}</span></div>`).join(""):'<div class="r">Sin proveedores. Probá otro nombre.</div>';
   }catch(e){ box.style.display="block"; box.innerHTML='<div class="r">Error: '+esc(e.message)+'</div>'; }
 },260); }
-function setProvCompra(id,name){ COMPRA.prov=id; COMPRA.provName=name; renderCompra(); }
-function cambiarProv(){ COMPRA.prov=null; COMPRA.provName=""; renderCompra(); }
+function setProvCompra(id,name){ curCart=id; cartOf(id,name); renderCompra(); }
 let tProd=null;
 function buscarProdCompra(q){ clearTimeout(tProd); tProd=setTimeout(async()=>{
   const box=document.getElementById("cpickProd"); if(!box) return;
@@ -1671,37 +1694,41 @@ function buscarProdCompra(q){ clearTimeout(tProd); tProd=setTimeout(async()=>{
   }catch(e){ box.style.display="block"; box.innerHTML='<div class="r">Error: '+esc(e.message)+'</div>'; }
 },260); }
 async function addLineaCompra(id,code,name,tmpl,sp){
-  if(COMPRA.items.some(it=>it.id===id)){ toast("Ese producto ya está en la lista"); return; }
+  const c=cur(); if(!c){ toast("Elegí un proveedor primero"); return; }
+  if(c.items.some(it=>it.id===id)){ toast("Ese producto ya está en el carrito"); return; }
   let precio=Math.round((sp||0)*100)/100;
-  try{ const si=await rpc("product.supplierinfo","search_read",[["&",["partner_id","=",COMPRA.prov],"|",["product_tmpl_id","=",tmpl],["product_id","=",id]]],{fields:["price"],limit:1}); if(si.length&&si[0].price>0) precio=si[0].price; }catch(e){}
-  COMPRA.items.push({id,code,name,qty:1,precio}); renderCompra();
+  try{ const si=await rpc("product.supplierinfo","search_read",[["&",["partner_id","=",c.prov],"|",["product_tmpl_id","=",tmpl],["product_id","=",id]]],{fields:["price"],limit:1}); if(si.length&&si[0].price>0) precio=si[0].price; }catch(e){}
+  c.items.push({id,code,name,qty:1,precio}); renderCompra();
 }
-function quitarLineaCompra(i){ COMPRA.items.splice(i,1); renderCompra(); }
-function compraQty(i,v){ COMPRA.items[i].qty=Math.max(0,parseInt(v)||0); const t=COMPRA.items.reduce((a,it)=>a+it.qty*it.precio,0); const e=document.getElementById("cTot"); if(e)e.textContent=money(t); pintarCarrito(); }
-function compraPrecio(i,v){ COMPRA.items[i].precio=Math.max(0,parseFloat(v)||0); const t=COMPRA.items.reduce((a,it)=>a+it.qty*it.precio,0); const e=document.getElementById("cTot"); if(e)e.textContent=money(t); pintarCarrito(); }
+function quitarLineaCompra(i){ const c=cur(); if(!c)return; c.items.splice(i,1); renderCompra(); }
+function compraQty(i,v){ const c=cur(); if(!c)return; c.items[i].qty=Math.max(0,parseInt(v)||0); const e=document.getElementById("cTot"); if(e)e.textContent=money(cartTotal(c)); pintarCarrito(); }
+function compraPrecio(i,v){ const c=cur(); if(!c)return; c.items[i].precio=Math.max(0,parseFloat(v)||0); const e=document.getElementById("cTot"); if(e)e.textContent=money(cartTotal(c)); pintarCarrito(); }
 async function crearOCCompra(){
-  const its=COMPRA.items.filter(it=>it.qty>0); if(!its.length){ toast("Agregá productos con cantidad"); return; }
+  const c=cur(); if(!c)return;
+  const its=c.items.filter(it=>it.qty>0); if(!its.length){ toast("Agregá productos con cantidad"); return; }
   const total=its.reduce((a,it)=>a+it.qty*it.precio,0);
-  if(!confirm(`¿Crear borrador de compra a ${COMPRA.provName} con ${its.length} productos por ${money(total)}?\n\nQueda en borrador en Odoo, sin confirmar.`)) return;
+  if(!confirm(`¿Crear borrador de compra a ${c.provName} con ${its.length} productos por ${money(total)}?\n\nQueda en borrador en Odoo, sin confirmar.`)) return;
   const btn=document.getElementById("cBtn"); if(btn){btn.disabled=true;btn.textContent="Creando en Odoo…";}
   try{
     const dp=new Date(HOY); dp.setDate(dp.getDate()+7);
     const lines=its.map(it=>[0,0,{product_id:it.id, product_qty:it.qty, price_unit:Math.round(it.precio*100)/100, name:it.name, date_planned:iso(dp)+" 00:00:00"}]);
-    const poId=await rpc("purchase.order","create",[{partner_id:COMPRA.prov, order_line:lines}]);
+    const poId=await rpc("purchase.order","create",[{partner_id:c.prov, order_line:lines}]);
     const info=await rpc("purchase.order","read",[[poId],["name"]]);
-    COMPRA.poId=poId; COMPRA.poName=(info&&info[0])?info[0].name:("#"+poId);
+    c.poId=poId; c.poName=(info&&info[0])?info[0].name:("#"+poId);
     renderCompra();
   }catch(e){ if(btn){btn.disabled=false;btn.textContent="📝 Crear borrador en Odoo";} const m=document.getElementById("cMsg"); if(m)m.innerHTML=`<div class="errbox">No pude crear el borrador: ${esc(e.message)}</div>`; }
 }
 async function confirmarOCCompra(){
-  if(!confirm(`¿Confirmar la orden ${COMPRA.poName} y enviarla al proveedor?\n\nPasa de borrador a orden de compra confirmada en Odoo.`)) return;
+  const c=cur(); if(!c)return;
+  if(!confirm(`¿Confirmar la orden ${c.poName} y enviarla al proveedor?\n\nPasa de borrador a orden de compra confirmada en Odoo.`)) return;
   const btn=document.getElementById("cConf"); if(btn){btn.disabled=true;btn.textContent="Confirmando…";}
-  try{ await rpc("purchase.order","button_confirm",[[COMPRA.poId]]); COMPRA.estado="sent"; renderCompra(); toast("✓ Orden confirmada y enviada"); }
+  try{ await rpc("purchase.order","button_confirm",[[c.poId]]); c.estado="sent"; renderCompra(); toast("✓ Orden confirmada y enviada"); }
   catch(e){ if(btn){btn.disabled=false;btn.textContent="✅ Confirmar y enviar al proveedor";} alert("No se pudo confirmar: "+(e.message||e)); }
 }
 function copiarCompra(){
-  const its=COMPRA.items.filter(it=>it.qty>0);
-  let t=`Pedido de compra · Droguería EyG\nProveedor: ${COMPRA.provName}\nOrden: ${COMPRA.poName}\n\n`;
+  const c=cur(); if(!c)return;
+  const its=c.items.filter(it=>it.qty>0);
+  let t=`Pedido de compra · Droguería EyG\nProveedor: ${c.provName}\nOrden: ${c.poName}\n\n`;
   its.forEach(it=>t+=`• ${it.qty} u — ${it.name}${it.code?" ("+it.code+")":""} · ${money(it.precio)}/u\n`);
   t+=`\nTotal estimado: ${money(its.reduce((a,it)=>a+it.qty*it.precio,0))}`;
   navigator.clipboard.writeText(t).then(()=>toast("✓ Pedido copiado"));
@@ -1843,7 +1870,7 @@ async function eliminarPres(id, state, ev){ if(ev){ ev.stopPropagation(); }
   }catch(e){ alert("No se pudo eliminar: "+(e.message||e)); }
 }
 // Desde el carrito recién creado → abrir a cotizar (limpia el carrito y marca la lista para refrescar)
-function irACotizar(id){ COMPRA={prov:null,provName:"",items:[],poId:null,poName:"",estado:"draft"}; pintarCarrito(); PRES.loaded=false; abrirCotizar(id); }
+function irACotizar(id){ PRES.loaded=false; abrirCotizar(id); }
 
 let toastT; function toast(msg){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";
   t.style.cssText="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:600;z-index:99;box-shadow:0 8px 30px rgba(0,0,0,.25)";document.body.appendChild(t);}
