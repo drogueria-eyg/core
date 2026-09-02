@@ -127,7 +127,11 @@
   .quiebre-alert{background:linear-gradient(180deg,#FDECEA,#FCF4F3);border:1px solid #F1B4AD;border-left:5px solid var(--red);border-radius:12px;padding:14px 16px;margin-bottom:14px;box-shadow:var(--shadow)}
   .quiebre-alert .qa-h{font-size:16px;font-weight:800;color:#8E1F14;letter-spacing:.2px}
   .quiebre-alert .qa-sub{font-size:12.5px;color:#9A4238;margin:3px 0 10px}
-  .quiebre-alert .qa-list{display:flex;flex-direction:column;gap:6px}
+  .quiebre-alert .qa-search{margin-bottom:9px}
+  .quiebre-alert .qa-search input{width:100%;box-sizing:border-box;border:1px solid #E7B4AC;background:var(--surface);border-radius:8px;padding:9px 12px;font-size:13px;color:var(--ink);outline:none}
+  .quiebre-alert .qa-search input:focus{border-color:var(--red)}
+  .quiebre-alert .qa-list{display:flex;flex-direction:column;gap:6px;max-height:360px;overflow-y:auto;padding-right:4px}
+  .quiebre-alert .qa-empty{font-size:12.5px;color:#9A4238;padding:10px 2px}
   .quiebre-alert .qa-row{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid #F1C7C1;border-radius:9px;padding:9px 12px;cursor:pointer;transition:.12s}
   .quiebre-alert .qa-row:hover{border-color:var(--red);transform:translateX(2px)}
   .quiebre-alert .qa-nm{flex:1;min-width:0}
@@ -345,6 +349,8 @@ let TAB="comprar";
 let comprarSub="reponer";   // sub-pestaña de Comprar: "reponer" | "pres"
 let liq={plazo:6};   // Liquidar: plazo de vencimiento en meses para el filtro "por vencer"
 let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
+let STOCK_CRIT=new Set(), STOCK_PED=new Set();   // marcas manuales de German (param eyg.stock_modo): siempre-en-stock / siempre-contra-pedido
+let qBuscar="", QCACHE=[];   // buscador de la lista de quiebres
 let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
 let rfiltro={q:"",soloRepo:true,sortK:"margenAnual",dir:-1};
 let CAT={loaded:false,loading:false,rows:[],fams:[],labs:[],provs:[]};
@@ -364,15 +370,19 @@ async function cargar(){
     const ini3=new Date(HOY.getFullYear(),HOY.getMonth()-3,1);
 
     prog("stock, ventas y compras…");
-    const [stock, ventas, ventas3, so, po, cad] = await Promise.all([
+    const [stock, ventas, ventas3, so, po, cad, comprasF, modoParam] = await Promise.all([
       rpc("stock.quant","read_group",[[["location_id.usage","=","internal"],["quantity","!=",0]],["value:sum","quantity:sum"],["product_id"]],{lazy:false,limit:6000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini12)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini3)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
       rpc("sale.order","read_group",[[["state","in",["sale","done"]],["date_order",">=",iso(ini12)],["date_order","<",iso(curIni)]],["amount_untaxed:sum"],["date_order:month"]],{lazy:false}),
       rpc("purchase.order","read_group",[[["state","in",["purchase","done"]],["date_order",">=",iso(ini12)],["date_order","<",iso(curIni)],["partner_id","!=",PROVEEDOR_T]],["amount_untaxed:sum"],["date_order:month"]],{lazy:false}),
       rpc("purchase.order","read_group",[[["state","in",["purchase","done"]],["date_order",">=",iso(ini12)],["partner_id","!=",PROVEEDOR_T]],["__count"],["partner_id"]],{lazy:false,limit:400}),
+      rpc("purchase.order.line","read_group",[[["order_id.state","in",["purchase","done"]],["order_id.date_order",">=",iso(ini12)],["partner_id","!=",PROVEEDOR_T]],["product_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
+      rpc("ir.config_parameter","get_param",["eyg.stock_modo"]).catch(()=>null),
     ]);
 
+    const CF={}; for(const c of comprasF){ if(c.product_id) CF[c.product_id[0]]=c.__count||0; }   // veces que EyG compró cada producto en 12m
+    try{ const mo=modoParam?JSON.parse(modoParam):{}; STOCK_CRIT=new Set(mo.crit||[]); STOCK_PED=new Set(mo.ped||[]); }catch(e){ STOCK_CRIT=new Set(); STOCK_PED=new Set(); }
     const V={}, F={}, V3={};
     for(const v of ventas){ if(v.product_id){ V[v.product_id[0]]=v.product_uom_qty||0; F[v.product_id[0]]=v.__count||0; } }
     for(const v of ventas3){ if(v.product_id) V3[v.product_id[0]]=v.product_uom_qty||0; }
@@ -381,7 +391,7 @@ async function cargar(){
 
     prog("categorías, proveedores y en camino…");
     const [meta, quantsLote] = await Promise.all([
-      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price","incoming_qty","seller_ids","uom_po_id","active","qty_available","x_costo_manual","x_costo_manual_date","x_oportunidad"]]),
+      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","incoming_qty","seller_ids","uom_po_id","active","qty_available","x_costo_manual","x_costo_manual_date","x_oportunidad"]]),
       rpc("stock.quant","search_read",[[["location_id.usage","=","internal"],["quantity",">",0],["lot_id","!=",false]],["product_id","lot_id","quantity","value"]],{limit:5000}),
     ]);
     const M={}; for(const m of meta) M[m.id]=m;
@@ -427,7 +437,7 @@ async function cargar(){
       const provs=Object.values(provMap);
       const costoU=cost, pvp=m.list_price||0;
       return {id, code:m.default_code||"", archivado:m.active===false, valRoto, qa, xop:!!m.x_oportunidad, manualC:m.x_costo_manual||0, manualD:m.x_costo_manual_date||null, name:s.product_id[1], fam:familia(m.categ_id),
-        categ:m.categ_id?m.categ_id[1]:"", val, qty, ventaU, venta3, freq,
+        categ:m.categ_id?m.categ_id[1]:"", tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, val, qty, ventaU, venta3, freq, compraFreq:Math.round(CF[id]||0),
         incoming:Math.round(m.incoming_qty||0),
         meses: meses>900?999:Math.round(meses*10)/10,
         costoU, pvp, margenU:Math.max(0,pvp-costoU), margenPct:pvp>0?(pvp-costoU)/pvp*100:null,
@@ -446,6 +456,15 @@ async function cargar(){
     // sin stock PERO con ventas en el año = quiebre real → hay que reponer (NO debe desaparecer del panel)
     QUIEBRE=TODOS.filter(r=>!r.archivado && !r.valRoto && r.qty<=0 && r.ventaU>0).sort((a,b)=>b.freq-a.freq);
     REPO=DATA.concat(QUIEBRE);                                                     // universo para reposición (con stock + quiebres)
+    // PRECIO DE VENTA REAL desde el motor/listas (pricelist "(1) Farmacias", vía EYGOpo.fetchBase) — NO el list_price,
+    // que en los hospitalarios viene en 1 porque se cotizan por tarifa. Recalcula márgenes con el precio de verdad.
+    try{
+      const tmpls=[...new Set(REPO.map(r=>r.tmpl).filter(Boolean))];
+      const baseByTmpl = (window.EYGOpo && tmpls.length) ? await EYGOpo.fetchBase(rpc, tmpls) : {};
+      for(const r of REPO){ const pv=baseByTmpl[r.tmpl];
+        if(pv>0){ r.pvp=pv; r.margenU=Math.max(0,pv-r.costoU); r.margenPct=pv>0?(pv-r.costoU)/pv*100:null;
+          r.margenAnual=(r.ventaU>0 && pv>r.costoU)?r.ventaU*(pv-r.costoU):0; } }
+    }catch(e){ console.warn("No pude traer el precio real de la lista:", e); }
     // costo actual del motor para los rotos (para revalorizar): última compra vs costo manual, gana el más reciente
     if(VALROTO.length){ try{
       const pol2=await rpc("purchase.order.line","search_read",[[["product_id","in",VALROTO.map(r=>r.id)],["order_id.state","in",["purchase","done"]]]],{fields:["product_id","price_unit","date_planned"],order:"date_planned desc",limit:3000});
@@ -479,20 +498,30 @@ function claseVenta(r){
 }
 const CLASE_LBL={constante:"vende constante",habitual:"vende seguido",esporadico:"vende esporádico",inactivo:"sin ventas"};
 const CLASE_ORD={constante:0,habitual:1,esporadico:2,inactivo:3};
+// ¿EyG lo tiene DE STOCK (quiebre real si queda en 0) o lo compra CONTRA PEDIDO?
+// Se infiere por cómo compra: si lo compra y lo vende muchas más veces de las que lo compra, lo stockea.
+// La marca manual de German (STOCK_CRIT / STOCK_PED) manda por encima de la inferencia.
+function esDeStock(r){
+  if(STOCK_CRIT.has(r.id)) return true;
+  if(STOCK_PED.has(r.id)) return false;
+  const cf=r.compraFreq||0, sf=r.freq||0, inc=r.incoming||0;
+  return inc>0 || (cf>=1 && sf>=cf*3) || cf>=6;   // ya viene en camino, o lo compra seguido y lo vende de stock
+}
 function repo(r){
   const clase=claseVenta(r);
+  const deStock=esDeStock(r);
   const dm=demandaMes(r);
   const pos=r.qty+r.incoming;
   const cob = dm>0 ? pos/dm : (pos>0?999:0);
   const objU = dm*pol.objetivo;
-  const auto = clase==="constante" || clase==="habitual";   // sólo estos se reponen por promedio (los esporádicos, contra pedido)
+  const auto = deStock && (clase==="constante" || clase==="habitual");   // repone por promedio sólo lo que stockeás y vende parejo
   const quiebre = pos<=0 && r.ventaU>0;                      // sin stock y con ventas en el año
   const necesita = auto && dm>0 && cob<pol.umbral;
   let sug = necesita ? Math.max(0, Math.ceil(objU-pos)) : 0;
   if(sug>0 && sug<r.minQty) sug=r.minQty;
   const precio = r.provPrice>0?r.provPrice:r.costoU;
   const urg = quiebre?"quiebre":cob<0.5?"urgente":cob<1?"semana":"reponer";
-  return {clase, auto, quiebre, dm, pos, cob:cob>900?999:Math.round(cob*10)/10, necesita, sug, precio, costoLinea:sug*precio, urg};
+  return {clase, deStock, auto, quiebre, dm, pos, cob:cob>900?999:Math.round(cob*10)/10, necesita, sug, precio, costoLinea:sug*precio, urg};
 }
 const URG_ORD={quiebre:0,urgente:1,semana:2,reponer:3};
 const URG_COL={quiebre:"red",urgente:"org",semana:"yel",reponer:"green"};
@@ -518,10 +547,11 @@ function repoData(){
   // quiebres = sin stock y con ventas; los priorizo por clase (constante primero) y margen
   const quiebreRows=rows.filter(x=>x.rp.quiebre)
     .sort((a,b)=>(CLASE_ORD[a.rp.clase]-CLASE_ORD[b.rp.clase])||(b.r.margenAnual-a.r.margenAnual)||(b.r.freq-a.r.freq));
-  const quiebresCriticos=quiebreRows.filter(x=>x.rp.auto)     // constante/habitual sin stock → reponé ya
-    .sort((a,b)=>(b.r.margenAnual-a.r.margenAnual)||(CLASE_ORD[a.rp.clase]-CLASE_ORD[b.rp.clase])||(b.r.freq-a.r.freq)); // por plata perdida
-  const quiebresEspor=quiebreRows.filter(x=>!x.rp.auto);     // esporádicos sin stock → contra pedido
-  const quiebres=quiebreRows.length;
+  const quiebresCriticos=quiebreRows.filter(x=>x.rp.deStock)   // los que EyG STOCKEA y quedaron en 0 → quiebre real, reponé ya
+    .sort((a,b)=>(b.r.margenAnual-a.r.margenAnual)||((b.r.ventaU*b.r.costoU)-(a.r.ventaU*a.r.costoU))||(b.r.ventaU-a.r.ventaU)); // por plata que perdés al año
+  const quiebresEspor=quiebreRows.filter(x=>!x.rp.deStock)     // no los stockeás (contra pedido / otro proveedor)
+    .sort((a,b)=>b.r.ventaU-a.r.ventaU);
+  const quiebres=quiebresCriticos.length;   // el semáforo cuenta sólo los quiebres reales (de stock)
   const byProv={};
   for(const x of necesita){
     if(!x.r.provId){ continue; }
@@ -922,17 +952,13 @@ function reponerSeccion(rd){
   const topUrg=[...rd.necesita].filter(x=>x.r.provId||x.r.viaOtra)
     .sort((a,b)=>(URG_ORD[a.rp.urg]-URG_ORD[b.rp.urg])||(CLASE_ORD[a.rp.clase]-CLASE_ORD[b.rp.clase])||(b.r.margenAnual-a.r.margenAnual)).slice(0,12);
   const qc=rd.quiebresCriticos||[], qe=rd.quiebresEspor||[];
-  const qcVista=qc.slice(0,12);
+  QCACHE=qc;
   const banner = qc.length ? `
     <div class="quiebre-alert">
-      <div class="qa-h">🔴 ${qc.length} producto${qc.length===1?"":"s"} que vendés ${qc.length===1?"está":"están"} SIN STOCK</div>
-      <div class="qa-sub">Ordenados por la <b>plata que te hacen perder al año</b>. Reponé los de arriba primero — cada día sin stock es venta que se va.</div>
-      <div class="qa-list">${qcVista.map(x=>{const r=x.r;
-        return `<div class="qa-row" onclick="abrirProd(${r.id})">
-          <div class="qa-nm"><b>${esc(cleanName(r.name))}</b><span>${r.provName?esc(r.provName)+" · ":""}${CLASE_LBL[x.rp.clase]} · ${r.freq}×/año${r.incoming>0?` · <b style="color:var(--teal-deep)">${r.incoming} en camino</b>`:""}</span></div>
-          <div class="qa-act">${x.rp.sug>0?`${x.rp.sug} u`:"comprar"}<span>${r.margenAnual>0?"~"+money(r.margenAnual)+"/año":(x.rp.costoLinea>0?money(x.rp.costoLinea):"reponer")}</span></div>
-        </div>`}).join("")}</div>
-      ${qc.length>qcVista.length?`<div class="qa-more">…y ${qc.length-qcVista.length} más — los tenés en «Lo más urgente» y en el pedido por proveedor de abajo.</div>`:""}
+      <div class="qa-h">🔴 ${qc.length} producto${qc.length===1?"":"s"} que stockeás ${qc.length===1?"quedó":"quedaron"} SIN STOCK</div>
+      <div class="qa-sub">Productos que EyG <b>sí tiene de stock</b> y llegaron a cero, ordenados por la <b>plata que perdés al año</b>. Buscá cualquiera por nombre o código.</div>
+      <div class="qa-search"><input id="qbuscar" placeholder="Buscar en los quiebres… (ej. ibuprofeno)" value="${esc(qBuscar)}" oninput="qBuscar=this.value;pintarQuiebres()"></div>
+      <div class="qa-list" id="qlist">${quiebresHTML()}</div>
     </div>` : "";
   return `
     ${banner}
@@ -944,7 +970,7 @@ function reponerSeccion(rd){
       <div class="pol" style="flex:0 0 auto;min-width:auto"><label>Ritmo de venta que uso</label>
         <div class="segs"><button class="${pol.fuente==='12m'?'on':''}" onclick="setFuente('12m')">Año</button><button class="${pol.fuente==='3m'?'on':''}" onclick="setFuente('3m')">Últimos 3m</button></div></div>
     </div>
-    <div class="note info" style="margin-top:2px">El ritmo de compra es <b>por producto</b>: cada uno se clasifica según cuán seguido vende. Los <b>esporádicos</b> (venden de a saltos) no se reponen por promedio para no comprar de más — se compran contra pedido.</div>
+    <div class="note info" style="margin-top:2px">Cada producto se mira con <b>su propio ritmo</b>. El sistema separa lo que <b>tenés de stock</b> (si llega a cero es un quiebre real → cartel rojo) de lo que <b>comprás contra pedido</b> (estar en cero es normal). Lo infiere por cómo comprás, y desde la ficha de cada producto lo podés fijar a mano (📌 crítico / contra pedido).</div>
 
     <h2 class="sec">Lo más urgente para comprar<span class="hint">ordenado por urgencia, ritmo de venta y margen</span></h2>
     <div class="pcard">
@@ -973,16 +999,30 @@ function reponerSeccion(rd){
           <div class="amt">${money(rp.costoLinea)}</div></li>`}).join("")}</ul>
         ${rd.otra.length>30?`<div class="count-line" style="margin-top:8px">…y ${rd.otra.length-30} más.</div>`:""}</div>`:""}
 
-    ${qe.length?`<h2 class="sec" style="margin-top:26px">🟠 Sin stock, pero venden de a saltos<span class="hint">esporádicos · comprá sólo si tenés pedido — no conviene stockearlos</span></h2>
+    ${qe.length?`<h2 class="sec" style="margin-top:26px">🟠 Sin stock, pero son de contra pedido<span class="hint">EyG no los stockea · se compran cuando hay pedido · ${qe.length} en total</span></h2>
       <div class="pcard"><ul class="lst">${qe.slice(0,30).map(x=>{const r=x.r;
-        return `<li class="li" onclick="abrirProd(${r.id})"><span class="pill gray">esporádico</span>
-          <div class="nm"><b>${esc(cleanName(r.name))}</b><span>${r.provName?esc(r.provName)+" · ":""}vendió ${r.ventaU.toLocaleString("es-AR")} u en ${r.freq} venta${r.freq===1?"":"s"} el último año</span></div>
+        return `<li class="li" onclick="abrirProd(${r.id})"><span class="pill gray">contra pedido</span>
+          <div class="nm"><b>${esc(cleanName(r.name))}</b><span>${r.provName?esc(r.provName)+" · ":""}vendió ${r.ventaU.toLocaleString("es-AR")} u en ${r.freq} venta${r.freq===1?"":"s"} · lo compraste ${r.compraFreq}×/año</span></div>
           <div class="amt" style="font-size:12px;color:var(--gris)">${r.provName?"contra pedido":"sin proveedor"}</div></li>`}).join("")}</ul>
-        ${qe.length>30?`<div class="count-line" style="margin-top:8px">…y ${qe.length-30} más.</div>`:""}</div>`:""}
+        ${qe.length>30?`<div class="count-line" style="margin-top:8px">…y ${qe.length-30} más. Si alguno debería estar siempre en stock, abrilo y marcalo 📌 crítico.</div>`:""}</div>`:""}
 
     ${rd.sinProv.length?`<div class="note">Hay <b>${rd.sinProv.length} productos</b> que habría que reponer pero <b>no tienen proveedor cargado</b> en Odoo. Asignales uno para poder armarles el pedido.</div>`:""}
   `;
 }
+// Lista de quiebres (de stock en cero) con buscador — para encontrar cualquiera, no sólo el top
+function quiebresHTML(){
+  const q=(qBuscar||"").toLowerCase().trim();
+  let rows=QCACHE;
+  if(q) rows=QCACHE.filter(x=>(cleanName(x.r.name)+" "+(x.r.code||"")).toLowerCase().includes(q));
+  if(!rows.length) return `<div class="qa-empty">Ningún quiebre coincide con "${esc(qBuscar)}".</div>`;
+  const cap=Math.min(rows.length,80);
+  return rows.slice(0,cap).map(x=>{const r=x.r;
+    return `<div class="qa-row" onclick="abrirProd(${r.id})">
+      <div class="qa-nm"><b>${esc(cleanName(r.name))}</b><span>${r.code?esc(r.code)+" · ":""}${r.provName?esc(r.provName)+" · ":""}${CLASE_LBL[x.rp.clase]} · vende ${r.freq}×/año${STOCK_CRIT.has(r.id)?' · 📌 crítico':""}${r.incoming>0?` · <b style="color:var(--teal-deep)">${r.incoming} en camino</b>`:""}</span></div>
+      <div class="qa-act">${x.rp.sug>0?`${x.rp.sug} u`:"comprar"}<span>${r.margenAnual>0?"~"+money(r.margenAnual)+"/año":r.ventaU.toLocaleString("es-AR")+" u/año"}</span></div>
+    </div>`}).join("") + (rows.length>cap?`<div class="qa-more">…y ${rows.length-cap} más. Usá el buscador para acotar.</div>`:"");
+}
+function pintarQuiebres(){ const el=document.getElementById("qlist"); if(el) el.innerHTML=quiebresHTML(); }
 function setComprarSub(s){ comprarSub=s; render(); }
 function setUmbral(v){pol.umbral=parseFloat(v);document.getElementById("lbU").textContent=pol.umbral+(pol.umbral===1?" mes":" meses");render();}
 function setObjetivo(v){pol.objetivo=parseFloat(v);document.getElementById("lbO").textContent=pol.objetivo+" meses";render();}
@@ -1352,6 +1392,15 @@ function abrirProd(id){
         <div class="kv"><span class="k">Estado</span><span class="v"><span class="pill ${URG_COL[rp.urg]}">${URG_LBL[rp.urg]}</span></span></div>
         ${rp.necesita?`<div class="kv"><span class="k">Sugerido comprar</span><span class="v" style="color:var(--teal-deep)">${rp.sug} u · ${money(rp.costoLinea)}</span></div>`:""}
       </div>
+      <div class="dsec"><h4>Abastecimiento</h4>
+        <div class="kv"><span class="k">Cómo lo trata el sistema</span><span class="v">${STOCK_CRIT.has(r.id)?'📌 Crítico — fijado a mano':STOCK_PED.has(r.id)?'🛒 Contra pedido — fijado a mano':(rp.deStock?`De stock · automático (lo comprás ${r.compraFreq}×/año y lo vendés ${r.freq}×)`:`Contra pedido · automático (casi no lo comprás: ${r.compraFreq}×/año)`)}</span></div>
+        <p style="font-size:12px;color:var(--gris);margin:6px 0 8px">Si está <b>de stock</b> y llega a cero, salta en el cartel rojo de quiebres. Si es <b>contra pedido</b>, estar en cero es normal.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="mini-btn" onclick="marcarModo(${r.id},'crit')" style="${STOCK_CRIT.has(r.id)?'background:var(--red);color:#fff;border-color:var(--red)':'border-color:#F1B4AD;color:#8E1F14'}">📌 Siempre en stock</button>
+          <button class="mini-btn" onclick="marcarModo(${r.id},'ped')" style="${STOCK_PED.has(r.id)?'background:var(--gris);color:#fff;border-color:var(--gris)':''}">🛒 Contra pedido</button>
+          ${(STOCK_CRIT.has(r.id)||STOCK_PED.has(r.id))?`<button class="mini-btn" onclick="marcarModo(${r.id},'auto')">↩ Volver a automático</button>`:""}
+        </div>
+      </div>
       <div class="dsec"><h4>Lotes y vencimiento (${lotes.length})</h4>
         ${lotes.length?lotes.map(l=>{const vt=l.mh===null?"sin fecha":l.mh<0?'<b style="color:var(--red)">VENCIDO</b>':l.mh<6?'<b style="color:var(--org)">'+fmtDur(l.mh)+'</b>':fmtDur(l.mh);
           return `<div class="kv"><span class="k">Lote ${esc(l.lote)} · vence ${l.exp?l.exp.split("-").reverse().join("/"):"—"} · ${vt}</span><span class="v">${l.qty} u</span></div>`}).join(""):'<div class="cmeta">Sin lotes con trazabilidad.</div>'}
@@ -1373,6 +1422,17 @@ function sugerencia(r,rp){
 }
 function cerrar(){document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");}
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){cerrar();cerrarGraf();}});
+// Fijar a mano el modo de abastecimiento (pisa la inferencia). Se guarda en el parámetro eyg.stock_modo.
+async function marcarModo(id, modo){
+  STOCK_CRIT.delete(id); STOCK_PED.delete(id);
+  if(modo==='crit') STOCK_CRIT.add(id);
+  else if(modo==='ped') STOCK_PED.add(id);
+  try{
+    await rpc("ir.config_parameter","set_param",["eyg.stock_modo", JSON.stringify({crit:[...STOCK_CRIT], ped:[...STOCK_PED]})]);
+    toast(modo==='crit'?"📌 Marcado: siempre en stock":modo==='ped'?"🛒 Marcado: contra pedido":"↩ Volvió a automático");
+    computar(); render(); abrirProd(id);
+  }catch(e){ alert("No se pudo guardar la marca: "+(e.message||e)); }
+}
 
 // ====== DRILL-DOWN: tocar una métrica/tarjeta abre la lista de productos detrás ======
 function liberableDe(r){ if(r.ventaU===0) return r.val; const ideal=(r.ventaU/12)*3, cu=r.qty>0?r.val/r.qty:0; return r.qty>ideal?Math.round((r.qty-ideal)*cu):0; }
