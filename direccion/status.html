@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Estado del sistema · EyG Core</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/core.css">
+<style>
+/* ── Estado del sistema ────────────────────────────────────────────────────
+   La página NO chequea nada: lee la foto que dejó `status-check` (que corre
+   sola en Supabase cada 5 minutos). Por eso abre al instante y no le pesa a
+   nadie, aunque la tenga abierta todo el día en una pantalla. */
+.st-wrap{max-width:1080px;margin:0 auto;padding:26px 22px 70px}
+
+/* El cartel grande de arriba: lo primero que se ve, sin tener que leer nada */
+.st-hero{border-radius:18px;padding:26px 28px;color:#fff;display:flex;align-items:center;gap:20px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.st-hero.ok{background:linear-gradient(135deg,#1E7D46,#2FA05C)}
+.st-hero.warn{background:linear-gradient(135deg,#B7791F,#D89B30)}
+.st-hero.bad{background:linear-gradient(135deg,#8F2F2C,#C0504C)}
+.st-hero .pulso{width:56px;height:56px;border-radius:50%;background:rgba(255,255,255,.22);display:flex;align-items:center;justify-content:center;font-size:27px;flex-shrink:0;position:relative}
+.st-hero .pulso::after{content:"";position:absolute;inset:0;border-radius:50%;border:2px solid rgba(255,255,255,.55);animation:stlatido 2.4s ease-out infinite}
+@keyframes stlatido{0%{transform:scale(1);opacity:.8}70%{transform:scale(1.55);opacity:0}100%{opacity:0}}
+.st-hero h1{font-size:24px;font-weight:800;letter-spacing:-.3px;line-height:1.2}
+.st-hero p{font-size:14px;opacity:.92;margin-top:5px}
+.st-hero .acc{margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:8px;text-align:right}
+.st-hero .acc .cuando{font-size:12px;opacity:.9}
+.st-btn{background:rgba(255,255,255,.2);color:#fff;border:0;border-radius:10px;padding:9px 15px;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap}
+.st-btn:hover{background:rgba(255,255,255,.32)}
+.st-btn:disabled{opacity:.55;cursor:default}
+
+/* Grupos y filas */
+.st-grupo{margin-top:30px}
+.st-grupo h2{font-size:12px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:var(--teal-med);margin-bottom:11px}
+.st-lista{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+.st-fila{display:grid;grid-template-columns:1fr auto;gap:6px 18px;padding:15px 18px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
+.st-fila:last-child{border-bottom:0}
+.st-fila:hover{background:#FAFCFC}
+.st-fila .nom{font-size:15px;font-weight:700;display:flex;align-items:center;gap:9px}
+.st-fila .det{font-size:12.5px;color:var(--gris);margin-top:3px;line-height:1.45}
+.st-fila .der{display:flex;flex-direction:column;align-items:flex-end;gap:7px}
+.st-pill{font-size:10.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;padding:4px 10px;border-radius:20px;white-space:nowrap}
+.st-pill.ok{background:var(--okbg);color:var(--ok)}
+.st-pill.lento{background:var(--warnbg);color:var(--warn)}
+.st-pill.falla,.st-pill.caido{background:var(--badbg);color:var(--bad)}
+.st-pill.apagado{background:#EEF2F1;color:var(--gris2)}
+.st-pill.desconocido{background:#EEF2F1;color:var(--gris2)}
+.st-punto{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.st-punto.ok{background:var(--ok)} .st-punto.lento{background:var(--warn)}
+.st-punto.falla,.st-punto.caido{background:var(--bad)}
+.st-punto.apagado,.st-punto.desconocido{background:var(--gris2)}
+.st-ms{font-size:11.5px;color:var(--gris2);font-variant-numeric:tabular-nums}
+
+/* Las barritas de los últimos 90 días */
+.st-barras{grid-column:1/-1;display:flex;gap:2px;align-items:flex-end;height:26px;margin-top:11px}
+.st-barras .b{flex:1;min-width:2px;border-radius:2px;background:var(--line);height:100%}
+.st-barras .b.ok{background:#43B36F} .st-barras .b.lento{background:#E0A93B}
+.st-barras .b.mal{background:#C0504C} .st-barras .b.na{background:#E8EFEE}
+.st-pie{grid-column:1/-1;display:flex;justify-content:space-between;font-size:11px;color:var(--gris2);margin-top:5px}
+
+/* Ficha al tocar una fila */
+.st-ficha{grid-column:1/-1;margin-top:12px;background:#F7FBFA;border:1px solid var(--line);border-radius:11px;padding:14px 16px;font-size:13px;color:var(--gris);line-height:1.6}
+.st-ficha b{color:var(--ink)}
+.st-ficha .kv{display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:8px}
+.st-ficha .kv span{font-size:12px}
+.st-ficha ul{margin:8px 0 0 18px}
+
+/* Incidentes */
+.st-inc{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+.st-inc .it{padding:13px 18px;border-bottom:1px solid var(--line);font-size:13px}
+.st-inc .it:last-child{border-bottom:0}
+.st-inc .it .t{font-weight:700;color:var(--ink);display:flex;align-items:center;gap:8px}
+.st-inc .it .c{color:var(--gris);margin-top:3px;line-height:1.45}
+.st-inc .vacio{padding:22px 18px;text-align:center;color:var(--gris2);font-size:13px}
+.st-nota{margin-top:26px;font-size:12px;color:var(--gris2);text-align:center;line-height:1.6}
+@media(max-width:640px){
+  .st-hero{flex-wrap:wrap} .st-hero .acc{margin-left:0;align-items:flex-start;text-align:left;width:100%}
+  .st-fila{grid-template-columns:1fr} .st-fila .der{flex-direction:row;align-items:center;justify-content:flex-start;gap:12px}
+}
+</style>
+</head>
+<body>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../assets/core.js?v=51"></script>
+<script>
+/* ══════════════════════════════════════════════════════════════════════════
+   ESTADO DEL SISTEMA
+   Muestra cómo viene cada pieza de EyG: el dominio, Odoo, la base, los
+   motores que corren solos, WhatsApp y el buscador. Con el historial de los
+   últimos 90 días y los incidentes.
+
+   DE DÓNDE SALE. De la función `status-check` (Supabase), que corre sola cada
+   5 minutos y deja el resultado en tres tablas. Acá se lee TODO con una sola
+   llamada (`status_resumen`) que ya vuelve resumida. Esta página no consulta
+   Odoo ni nada pesado: por eso abre al instante y se puede dejar puesta.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+const FN_URL = "https://yxotopoklgjowcudveoj.supabase.co/functions/v1/status-check";
+const ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl4b3RvcG9rbGdqb3djdWR2ZW9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0OTE3OTAsImV4cCI6MjEwMDA2Nzc5MH0.39DqIenUuRZovmgG89R_JgHco4Lg6OvmP9AgF1Hd7rQ";
+const DIAS = 90;
+const GRUPOS = [
+  { key: "plataforma", t: "Plataforma" },
+  { key: "motores",    t: "Motores y tareas que corren solas" },
+  { key: "servicios",  t: "Servicios" },
+];
+const TITULO = {
+  ok: "Operativo", lento: "Con demoras", falla: "Con fallas",
+  caido: "Caído", apagado: "Apagado", desconocido: "Sin datos",
+};
+
+let DATOS = null;
+let ABIERTA = "";      // qué ficha está desplegada
+let refrescando = false;
+
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const malo = (n) => n === "falla" || n === "caido";
+
+function hace(iso) {
+  if (!iso) return "nunca";
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (s < 90) return "hace " + Math.round(s) + " s";
+  const m = s / 60;
+  if (m < 90) return "hace " + Math.round(m) + " min";
+  const h = m / 60;
+  if (h < 48) return "hace " + Math.round(h) + " h";
+  return "hace " + Math.round(h / 24) + " días";
+}
+function fecha(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+/* ── El cartel de arriba ─────────────────────────────────────────────────── */
+function pintarHero() {
+  const comps = DATOS.componentes || [];
+  const malos = comps.filter((c) => malo(c.nivel));
+  const lentos = comps.filter((c) => c.nivel === "lento");
+  const clase = malos.length ? "bad" : lentos.length ? "warn" : "ok";
+  const ico = malos.length ? "✕" : lentos.length ? "!" : "✓";
+  const h1 = malos.length
+    ? (malos.length === 1 ? "Hay 1 problema" : `Hay ${malos.length} problemas`)
+    : lentos.length ? "Funcionando, con algo para mirar" : "Todo funcionando";
+  const p = malos.length
+    ? malos.map((c) => c.nombre).join(" · ")
+    : lentos.length ? lentos.map((c) => c.nombre).join(" · ")
+    : `Las ${comps.length} piezas del sistema responden bien`;
+
+  return `<div class="st-hero ${clase}">
+    <div class="pulso">${ico}</div>
+    <div>
+      <h1>${esc(h1)}</h1>
+      <p>${esc(p)}</p>
+    </div>
+    <div class="acc">
+      <button class="st-btn" id="btnAhora" onclick="verificarAhora()">Verificar ahora</button>
+      <span class="cuando">Última revisión ${esc(hace(DATOS.actualizado))}</span>
+    </div>
+  </div>`;
+}
+
+/* ── Las barritas de los últimos 90 días ─────────────────────────────────── */
+// Un día es verde si no hubo ninguna falla, amarillo si hubo demoras y rojo si
+// hubo aunque sea una caída. Gris = todavía no había mediciones ese día.
+function barras(c) {
+  const porDia = new Map((c.dias || []).map((d) => [d.d, d]));
+  const hoy = new Date();
+  const out = [];
+  for (let i = DIAS - 1; i >= 0; i--) {
+    const f = new Date(hoy.getTime() - i * 864e5).toISOString().slice(0, 10);
+    const d = porDia.get(f);
+    let cl = "na", tip = "sin datos";
+    if (d) {
+      const tot = (d.o || 0) + (d.m || 0);
+      if (d.m > 0) { cl = "mal"; tip = `${d.m} chequeo(s) con falla de ${tot}`; }
+      else if (d.l > 0) { cl = "lento"; tip = `${d.l} chequeo(s) con demora de ${tot}`; }
+      else { cl = "ok"; tip = `${tot} chequeo(s), todo bien`; }
+      if (d.ms) tip += ` · ${d.ms} ms promedio`;
+    }
+    out.push(`<div class="b ${cl}" title="${f} — ${tip}"></div>`);
+  }
+  const up = c.uptime == null ? "" : `${(+c.uptime).toFixed(c.uptime >= 99.95 ? 0 : 2)}% disponible`;
+  return `<div class="st-barras">${out.join("")}</div>
+    <div class="st-pie"><span>hace 90 días</span><span>${esc(up)}</span><span>hoy</span></div>`;
+}
+
+/* ── La ficha que se abre al tocar una fila ──────────────────────────────── */
+function ficha(c) {
+  const d = c.dato || {};
+  const partes = [];
+  partes.push(`<b>${esc(TITULO[c.nivel] || c.nivel)}</b> desde ${esc(fecha(c.desde))} (${esc(hace(c.desde))}).`);
+  if (d.que) partes.push(`<br>${esc(d.que)}.`);
+
+  const kv = [];
+  if (d.cada) kv.push(`Corre <b>${esc(d.cada)}</b>`);
+  if (d.ultima) kv.push(`Última corrida: <b>${esc(d.ultima)}</b>`);
+  if (d.vence) kv.push(`Vence: <b>${esc(new Date(d.vence).toLocaleDateString("es-AR"))}</b>`);
+  if (d.dias != null) kv.push(`Quedan <b>${esc(d.dias)}</b> días`);
+  if (d.numero) kv.push(`Número: <b>${esc(d.numero)}</b>`);
+  if (d.calidad) kv.push(`Calidad en Meta: <b>${esc(d.calidad)}</b>`);
+  if (d.filas != null) kv.push(`Filas: <b>${(+d.filas).toLocaleString("es-AR")}</b>`);
+  if (d.commit) kv.push(`Versión publicada: <b>${esc(d.commit)}</b>`);
+  if (d.version) kv.push(`Odoo <b>${esc(d.version)}</b>`);
+  if (c.ms != null) kv.push(`Tardó <b>${esc(c.ms)} ms</b>`);
+  if (kv.length) partes.push(`<div class="kv"><span>${kv.join("</span><span>")}</span></div>`);
+
+  if (Array.isArray(d.malas) && d.malas.length) {
+    partes.push(`<ul>${d.malas.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>`);
+  }
+  if (Array.isArray(d.faltan) && d.faltan.length) {
+    partes.push(`<ul>${d.faltan.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>`);
+  }
+  if (Array.isArray(d.tareas) && d.tareas.length) {
+    partes.push(`<div class="kv">${d.tareas.map((t) =>
+      `<span>${t.act ? "" : "⏸ "}${esc(t.n)}: <b>${esc(t.est || "—")}</b> ${esc(hace(t.ult))}</span>`).join("")}</div>`);
+  }
+  return `<div class="st-ficha">${partes.join(" ")}</div>`;
+}
+
+/* ── El listado ──────────────────────────────────────────────────────────── */
+function pintarGrupo(g) {
+  const comps = (DATOS.componentes || []).filter((c) => c.grupo === g.key);
+  if (!comps.length) return "";
+  const filas = comps.map((c) => `
+    <div class="st-fila" onclick="abrir('${esc(c.comp)}')">
+      <div>
+        <div class="nom"><span class="st-punto ${esc(c.nivel)}"></span>${esc(c.nombre)}</div>
+        <div class="det">${esc(c.detalle)}</div>
+      </div>
+      <div class="der">
+        <span class="st-pill ${esc(c.nivel)}">${esc(TITULO[c.nivel] || c.nivel)}</span>
+        ${c.ms != null ? `<span class="st-ms">${esc(c.ms)} ms</span>` : ""}
+      </div>
+      ${barras(c)}
+      ${ABIERTA === c.comp ? ficha(c) : ""}
+    </div>`).join("");
+  return `<div class="st-grupo"><h2>${esc(g.t)}</h2><div class="st-lista">${filas}</div></div>`;
+}
+
+function pintarIncidentes() {
+  const inc = DATOS.incidentes || [];
+  const items = inc.length ? inc.map((i) => {
+    const dur = i.fin
+      ? `duró ${Math.max(1, Math.round((Date.parse(i.fin) - Date.parse(i.inicio)) / 60000))} min`
+      : "EN CURSO";
+    return `<div class="it">
+      <div class="t"><span class="st-punto ${esc(i.nivel)}"></span>${esc(i.nombre || i.comp)}
+        <span class="st-pill ${i.fin ? "ok" : esc(i.nivel)}">${i.fin ? "resuelto" : "abierto"}</span></div>
+      <div class="c">${esc(fecha(i.inicio))} · ${esc(dur)} — ${esc(i.detalle || "")}</div>
+    </div>`;
+  }).join("") : `<div class="vacio">Sin incidentes registrados. Acá van a quedar anotadas las caídas y cuánto duró cada una.</div>`;
+  return `<div class="st-grupo"><h2>Incidentes</h2><div class="st-inc">${items}</div></div>`;
+}
+
+function pintar() {
+  const html = `<div class="st-wrap">
+    ${pintarHero()}
+    ${GRUPOS.map(pintarGrupo).join("")}
+    ${pintarIncidentes()}
+    <div class="st-nota">
+      El sistema se revisa solo cada 5 minutos, desde afuera, aunque nadie tenga esta página abierta.<br>
+      Cuando algo se cae o se recupera, sale un WhatsApp a Dirección.
+    </div>
+  </div>`;
+  document.getElementById("stMain").innerHTML = html;
+}
+
+/* ── Traer los datos (una sola llamada, ya resumida) ─────────────────────── */
+async function cargar() {
+  const { data, error } = await EYG.supa().rpc("status_resumen", { p_dias: DIAS });
+  if (error) throw error;
+  DATOS = data || { componentes: [], incidentes: [] };
+  pintar();
+}
+
+function abrir(comp) {
+  ABIERTA = (ABIERTA === comp) ? "" : comp;
+  pintar();
+}
+
+// "Verificar ahora" dispara la revisión de verdad y espera el resultado.
+// Va con la sesión del Core: la función valida que sea un usuario activo.
+async function verificarAhora() {
+  if (refrescando) return;
+  refrescando = true;
+  const b = document.getElementById("btnAhora");
+  if (b) { b.disabled = true; b.textContent = "Revisando…"; }
+  try {
+    const s = await EYG.session();
+    await fetch(FN_URL + "?full=1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: ANON, Authorization: "Bearer " + (s && s.access_token ? s.access_token : ANON) },
+      body: "{}",
+    });
+  } catch (e) {
+    console.error("verificar:", e);
+  }
+  refrescando = false;
+  try { await cargar(); } catch (e) { console.error(e); }
+}
+
+/* Se refresca solo cada 60 s. Es una lectura chica de una tabla ya calculada:
+   sirve para dejar la página puesta en una pantalla sin que moleste a nadie. */
+EYG.guard(["direccion", "admin"], { pruebas: ["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"] }).then((perfil) => {
+  document.body.innerHTML = EYG.layout(perfil, "status", `<div id="stMain"><div class="gate"><div class="spinner"></div>Leyendo el estado del sistema…</div></div>`, "Estado del sistema");
+  cargar().catch((e) => {
+    document.getElementById("stMain").innerHTML =
+      `<div class="gate"><div class="big">⚠️</div><h3>No se pudo leer el estado</h3><p>${esc(e.message || e)}</p></div>`;
+  });
+  setInterval(() => { if (!refrescando) cargar().catch(() => {}); }, 60000);
+});
+</script>
+</body>
+</html>

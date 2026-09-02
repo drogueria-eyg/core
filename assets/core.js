@@ -448,6 +448,14 @@ window.EYG = (function(){
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"direccion/agente.html"},
     {key:"usuarios",  dept:"admin", cat:"Sistema", ico:"👤", titulo:"Usuarios y accesos", desc:"Altas de personal, roles y permisos por persona (qué módulos ve cada uno). Restablecé contraseñas por mail.", roles:["admin"], ready:true, path:()=>"admin/usuarios.html"},
+    /* EN PRUEBAS: Estado del sistema (la "status page" de EyG). La revisión la
+       hace sola la function `status-check` en Supabase cada 5 min; esta página
+       solo LEE lo ya calculado (por eso no le pesa a nadie). Para liberarlo:
+       borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de
+       direccion/status.html. */
+    {key:"status", dept:"admin", cat:"Sistema", ico:"🩺", titulo:"Estado del sistema", desc:"Cómo viene cada pieza en vivo: el dominio, Odoo, la base, los motores de precios, WhatsApp y el buscador. Con la historia de los últimos 90 días y aviso por WhatsApp cuando algo se cae.", roles:["direccion","admin"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"direccion/status.html"},
   ];
   /* Acepta el perfil entero (o sólo el rol, por compatibilidad).
      `pruebas` = lista de huellas de email: mientras esté puesta, el módulo NO
