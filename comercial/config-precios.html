@@ -131,7 +131,7 @@ let ESCALA={}, escFiltro="todos", editEsc=null, editLab=null;   // clasificació
 // Regla "Escalera de éticos por precio" (el tope de cada ético sale de su PVP) + intervalo del cron del motor.
 let ET={on:false, bands:[], descmax:12, minstep:0, open:false}, ETCRON={num:15, type:"minutes"};
 // Precios de venta FIJOS temporales (manuales, pisan al motor). Guardados en eyg.precios_fijos_flat.
-let FIJOS=[], _fijoSel=null, _fijoTimer=null;
+let FIJOS=[], _fijoSel=null, _fijoTimer=null, _fijoIdx=null;   // _fijoIdx: fila que se está editando (se edita EN EL LUGAR)
 const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
 
 /* ============ MULTI-TIER: 1 Farmacias (escalera, como hoy) · 2 SAMCOs/clínicas · 3 Instituciones ============ */
@@ -144,6 +144,7 @@ const TKEYS={2:{cfg:"eyg.t2_precios_config",flat:"eyg.t2_precios_flat",fijos:"ey
 const DEF23={2:{genera:true,margen:0.20,descom:0.05,pisoduro:0.15},3:{genera:true,margen:0.13,descom:0,pisoduro:0.13}};
 let CFG23={2:{v:1,reglas:{}},3:{v:1,reglas:{}}};   // reglas por categoría (margen) de cada tier
 let FIJOS23={2:[],3:[]};                            // capa temporal (precio único) por tier
+let _f23Idx=null;                                   // fila de la capa 2/3 que se está editando (en el lugar)
 let editId23=null, _loaded23={2:false,3:false};     // categoría en edición · si ya cargó el tier
 
 const pct=x=>Math.round((x||0)*1000)/10;           // 0.07 -> 7
@@ -233,7 +234,10 @@ window.consolidar = rootId => {
 };
 function render(){
   const cont=document.getElementById("cont");
-  if(TIER!==1){ cont.innerHTML=renderTabs()+renderTier23()+renderEtModal(); return; }
+  // el re-render reconstruye todo #cont: guardamos el scroll para que la pantalla no salte de lugar
+  const _sy=window.scrollY||window.pageYOffset||0;
+  const _paint=html=>{ cont.innerHTML=html; window.scrollTo(0,_sy); };
+  if(TIER!==1){ _paint(renderTabs()+renderTier23()+renderEtModal()); return; }
   if(document.getElementById("et-on")) etLeer();   // preserva lo tipeado en la sección de éticos ante cualquier re-render
   const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA","ETICOS"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
   const savebar=`<div class="savebar"><button class="btn-save" ${dirty?"":"disabled"} onclick="guardarTodo()">💾 Guardar y recalcular</button>${dirty?'<span class="dirty">Tenés cambios sin guardar</span>':'<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>'}</div>`;
@@ -254,7 +258,7 @@ function render(){
     const hb = (rr&&rr.own)?`<span class="badge gen" style="margin-left:8px">regla general</span>`:`<span class="badge no" style="margin-left:8px">sin regla general</span>`;
     return `<div class="grp"><div class="grphead" onclick="toggleGrp('${esc(top)}')"><span>${open?"▾":"▸"}</span> ${esc(top)} ${hb} <span class="cnt">${subs.length} subcat.</span></div>${body}</div>`;
   }).join("");
-  cont.innerHTML=renderTabs()+savebar+intro+renderFijos()+grupos+renderEtModal();
+  _paint(renderTabs()+savebar+intro+renderFijos()+grupos+renderEtModal());
 }
 // pestañas de tier + engranaje (solo ícono) para el ajuste general del motor (cron)
 function renderTabs(){
@@ -264,9 +268,9 @@ function renderTabs(){
 window.setTier = async t => {
   if(t===TIER) return;
   if(dirty && !confirm("Tenés cambios sin guardar en esta pestaña. ¿Cambiar igual y perderlos?")) return;
-  TIER=t; editId=null; editId23=null; _fijoSel=null; _f23Sel=null; dirty=false;
+  TIER=t; editId=null; editId23=null; _fijoSel=null; _f23Sel=null; _fijoIdx=null; _f23Idx=null; _fijoEdit=null; dirty=false;
   if(t!==1 && !_loaded23[t]){ const cont=document.getElementById("cont"); if(cont) cont.innerHTML='<div class="empty">Cargando configuración de '+esc(TINFO[t].n)+'…</div>'; await loadTier(t); }
-  render();
+  render(); window.scrollTo(0,0);   // cambiar de pestaña sí vuelve arriba
 };
 /* =================== CAPA TEMPORAL DE PRECIOS (unificada, pisa al motor) =================== */
 let _fijoEdit=null;   // valores a precargar cuando editás una entrada
@@ -280,10 +284,35 @@ function _fijoDet(f){
   const pf=f.perforar?` · <span style="color:#b0322f;font-weight:700">perfora piso</span>`:"";
   return `escalera (${tr})${dm}${tp}${pf}`;
 }
+/* El formulario es uno solo: se dibuja arriba para AGREGAR, o dentro de la fila para EDITAR EN EL LUGAR. */
+function fijoFormHTML(){
+  const pe=_fijoEdit||{};
+  const editando=(_fijoIdx!=null);
+  const sel = _fijoSel
+    ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;padding:6px 0"><span style="color:var(--gris);font-weight:700">Producto:</span> <b style="color:var(--teal-deep);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(_fijoSel.nombre)}">${esc(_fijoSel.nombre)}</b> <small style="color:var(--gris2)">#${_fijoSel.tmpl}${_fijoSel.etico?" · ético (PVP)":""}</small> ${editando?"":`<button class="btn-mini" onclick="fijoLimpiar()">cambiar</button>`}</div>`
+    : `<input type="text" id="fijo-q" placeholder="Buscar producto por nombre o código…" oninput="fijoBuscar(this.value)" autocomplete="off" style="width:100%;height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"><div id="fijo-results" class="ofbusq" style="display:none"></div>`;
+  const cmp=(lbl,inner)=>`<div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">${lbl}</div>${inner}</div>`;
+  const inp=(id,val,w,ph)=>`<input type="number" id="${id}" step="1" value="${(val===0||val)?val:''}" ${ph?`placeholder="${ph}"`:''} oninput="fijoPreview()" style="height:38px;width:${w}px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit">`;
+  return `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+        <div style="flex:1;min-width:220px;position:relative">${sel}</div>
+        ${cmp("Cant. tramos", inp("fijo-tramos", pe.tramos, 78, "motor"))}
+        ${cmp("Precio único", inp("fijo-precio", pe.precio, 118))}
+        ${cmp("Desc. máx. s/PVP", inp("fijo-descmax", pe.descmax, 76)+" %")}
+        ${cmp("Tope (cajas)", inp("fijo-tope", pe.tope, 78, "franjas"))}
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:#b0322f;height:38px"><input type="checkbox" id="fijo-perforar" ${pe.perforar?'checked':''} style="width:17px;height:17px;accent-color:#b0322f"> perforar piso</label>
+        ${cmp("Hasta (opc.)", `<input type="date" id="fijo-hasta" value="${pe.hasta||''}" style="height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit">`)}
+        <button class="btn-mini cons" onclick="fijoAgregar()">${editando?'✓ Guardar cambios':'＋ Agregar'}</button>
+        ${_fijoSel?`<button class="btn-mini" onclick="fijoLimpiar()">Cancelar</button>`:''}
+      </div>
+      <div id="fijo-preview" class="rentbox" style="margin:0 0 12px;display:${_fijoSel?'block':'none'}">${_fijoSel?fijoPreviewHTML():""}</div>`;
+}
 function renderFijos(){
-  const hoy=hoyStr(); const pe=_fijoEdit||{};
+  const hoy=hoyStr();
+  const editando=(_fijoIdx!=null);
   const rows=FIJOS.map((f,i)=>{
-    if(_fijoSel && f.tmpl===_fijoSel.tmpl) return "";   // se está editando/agregando este: no lo mostramos en la lista
+    // editando esta fila: el formulario ocupa su lugar exacto (la lista no se reordena ni salta)
+    if(editando && i===_fijoIdx) return `<div class="ofrow" style="display:block;background:#f4fbfa;border:2px solid #0f7d84;border-radius:10px;padding:12px 12px 2px">${fijoFormHTML()}</div>`;
+    if(!editando && _fijoSel && f.tmpl===_fijoSel.tmpl) return "";   // se está agregando este mismo: no lo duplicamos
     const venc = f.hasta ? (f.hasta<hoy?`vencido ${f.hasta}`:`hasta ${f.hasta}`) : "sin vencimiento";
     const est = f.pausado?`<span class="badge no">pausado</span>`:(f.hasta&&f.hasta<hoy?`<span class="badge no">vencido</span>`:`<span class="badge own">activo</span>`);
     return `<div class="ofrow">
@@ -295,27 +324,11 @@ function renderFijos(){
       <button class="btn-mini del" onclick="fijoQuitar(${i})">Quitar</button>
     </div>`;
   }).join("") || `<div class="ofrow" style="justify-content:center;color:var(--gris)">No hay precios cargados en esta capa.</div>`;
-  const sel = _fijoSel
-    ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;padding:6px 0"><span style="color:var(--gris);font-weight:700">Producto:</span> <b style="color:var(--teal-deep);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(_fijoSel.nombre)}">${esc(_fijoSel.nombre)}</b> <small style="color:var(--gris2)">#${_fijoSel.tmpl}${_fijoSel.etico?" · ético (PVP)":""}</small> <button class="btn-mini" onclick="fijoLimpiar()">cambiar</button></div>`
-    : `<input type="text" id="fijo-q" placeholder="Buscar producto por nombre o código…" oninput="fijoBuscar(this.value)" autocomplete="off" style="width:100%;height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"><div id="fijo-results" class="ofbusq" style="display:none"></div>`;
-  const cmp=(lbl,inner)=>`<div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">${lbl}</div>${inner}</div>`;
-  const inp=(id,val,w,ph)=>`<input type="number" id="${id}" step="1" value="${(val===0||val)?val:''}" ${ph?`placeholder="${ph}"`:''} oninput="fijoPreview()" style="height:38px;width:${w}px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit">`;
   return `<div class="grp" style="border:2px solid #0f7d84;margin-bottom:14px">
     <div class="grphead" style="cursor:default;background:#eef7f6">💵 Capa temporal de precios (pisa al motor)</div>
     <div style="padding:14px">
       <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual y temporal que <b>pisa</b> al motor cuando conseguís una compra muy buena. La <b>cantidad de tramos</b> manda: <b>1</b> = precio único (una sola línea, en todas las listas); <b>N</b> = escalera de N tramos; <b>vacío</b> = los tramos que calcula el motor. Para éticos la escalera arranca del <b>PVP</b>. Podés poner un <b>descuento máximo más profundo</b> que el del motor e incluso <b>perforar el piso</b>. Al <b>pausar/quitar</b>, vuelve solo a la escalera automática.</p>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
-        <div style="flex:1;min-width:220px;position:relative">${sel}</div>
-        ${cmp("Cant. tramos", inp("fijo-tramos", pe.tramos, 78, "motor"))}
-        ${cmp("Precio único", inp("fijo-precio", pe.precio, 118))}
-        ${cmp("Desc. máx. s/PVP", inp("fijo-descmax", pe.descmax, 76)+" %")}
-        ${cmp("Tope (cajas)", inp("fijo-tope", pe.tope, 78, "franjas"))}
-        <label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:#b0322f;height:38px"><input type="checkbox" id="fijo-perforar" ${pe.perforar?'checked':''} style="width:17px;height:17px;accent-color:#b0322f"> perforar piso</label>
-        ${cmp("Hasta (opc.)", `<input type="date" id="fijo-hasta" value="${pe.hasta||''}" style="height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit">`)}
-        <button class="btn-mini cons" onclick="fijoAgregar()">${pe&&Object.keys(pe).length?'✓ Guardar cambios':'＋ Agregar'}</button>
-        ${_fijoSel?`<button class="btn-mini" onclick="fijoLimpiar()">Cancelar</button>`:''}
-      </div>
-      <div id="fijo-preview" class="rentbox" style="margin:0 0 12px;display:${_fijoSel?'block':'none'}">${_fijoSel?fijoPreviewHTML():""}</div>
+      ${editando?"":fijoFormHTML()}
       <div class="oflist">${rows}</div>
       <div style="margin-top:12px"><button class="btn-save" onclick="guardarFijos()">💾 Guardar capa temporal</button> <span id="fijo-msg" style="font-size:12.5px;color:var(--gris);margin-left:8px"></span></div>
     </div>
@@ -358,7 +371,7 @@ window.fijoBuscar=(q)=>{
     }catch(e){}
   }, 300);
 };
-window.fijoEditar=(i)=>{ const f=FIJOS[i]; if(!f) return; fijoElegir(f.tmpl, f.nombre, {precio:f.precio, descmax:f.descmax, tramos:f.tramos, tope:f.tope, perforar:f.perforar, hasta:f.hasta}); };
+window.fijoEditar=(i)=>{ const f=FIJOS[i]; if(!f) return; _fijoIdx=i; fijoElegir(f.tmpl, f.nombre, {precio:f.precio, descmax:f.descmax, tramos:f.tramos, tope:f.tope, perforar:f.perforar, hasta:f.hasta}); };
 window.fijoElegir=async (id,nombre,prefill)=>{
   _fijoEdit=prefill||null;
   _fijoSel={tmpl:id, nombre:nombre, loading:true}; render();
@@ -375,7 +388,7 @@ window.fijoElegir=async (id,nombre,prefill)=>{
     render();
   }catch(e){ _fijoSel={tmpl:id, nombre:nombre, cost:0, base:0, pvp:0, iva:0, etico:false}; render(); }
 };
-window.fijoLimpiar=()=>{ _fijoSel=null; _fijoEdit=null; render(); };
+window.fijoLimpiar=()=>{ _fijoSel=null; _fijoEdit=null; _fijoIdx=null; render(); };
 window.fijoAgregar=()=>{
   if(!_fijoSel){ if(typeof toast==="function") toast("Elegí un producto primero"); return; }
   const tramos=parseInt((document.getElementById("fijo-tramos")||{}).value)||0;
@@ -387,8 +400,9 @@ window.fijoAgregar=()=>{
   if(tramos===1){ if(!(precio>0)){ if(typeof toast==="function") toast("Para precio único (1 tramo), poné el precio"); return; } }
   else if(!(dm>0||tope>0||tramos>1)){ if(typeof toast==="function") toast("Definí descuento máx., tope o cantidad de tramos"); return; }
   const ent={tmpl:_fijoSel.tmpl, nombre:_fijoSel.nombre, precio:precio, descmax:dm, tramos:tramos, tope:tope, perforar:perf, hasta:hasta, pausado:false};
-  FIJOS=FIJOS.filter(f=>f.tmpl!==_fijoSel.tmpl); FIJOS.unshift(ent);
-  _fijoSel=null; _fijoEdit=null; render();
+  if(_fijoIdx!=null && FIJOS[_fijoIdx]){ ent.pausado=!!FIJOS[_fijoIdx].pausado; FIJOS[_fijoIdx]=ent; }   // editar: queda donde estaba
+  else { FIJOS=FIJOS.filter(f=>f.tmpl!==_fijoSel.tmpl); FIJOS.unshift(ent); }
+  _fijoSel=null; _fijoEdit=null; _fijoIdx=null; render();
 };
 window.fijoPausar=(i)=>{ if(FIJOS[i]){ FIJOS[i].pausado=!FIJOS[i].pausado; render(); } };
 window.fijoQuitar=(i)=>{ if(!confirm("¿Quitar esto? El producto vuelve a la escalera del motor en la próxima corrida.")) return; FIJOS.splice(i,1); render(); };
@@ -854,29 +868,36 @@ function f23PreviewHTML(){
   return `Costo real <b>${EYG.money(cost)}</b>${pr>0?` · precio único <b>${EYG.money(pr)}</b> · margen ${_mrgTxt(pr,cost)}`:""}`;
 }
 window.f23Preview=()=>{ const box=document.getElementById("f23-preview"); if(box){ box.style.display=_f23Sel?"block":"none"; box.innerHTML=f23PreviewHTML(); } };
+/* Un solo formulario: arriba para agregar, o dentro de la fila para editar EN EL LUGAR. */
+function f23FormHTML(){
+  const editando=(_f23Idx!=null);
+  const sel=_f23Sel
+    ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;padding:6px 0"><span style="color:var(--gris);font-weight:700">Producto:</span> <b style="color:var(--teal-deep);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(_f23Sel.nombre)}">${esc(_f23Sel.nombre)}</b> <small style="color:var(--gris2)">#${_f23Sel.tmpl}</small> ${editando?"":`<button class="btn-mini" onclick="f23Limpiar()">cambiar</button>`}</div>`
+    : `<input type="text" id="f23-q" placeholder="Buscar producto por nombre o código…" oninput="f23Buscar(this.value)" autocomplete="off" style="width:100%;height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"><div id="f23-results" class="ofbusq" style="display:none"></div>`;
+  return `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+        <div style="flex:1;min-width:220px;position:relative">${sel}</div>
+        <div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Precio único</div><input type="number" id="f23-precio" step="1" value="${_f23Sel&&_f23Sel.precio?_f23Sel.precio:''}" oninput="f23Preview()" style="height:38px;width:120px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"></div>
+        <div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Hasta (opc.)</div><input type="date" id="f23-hasta" value="${(_f23Sel&&_f23Sel.hasta)||''}" style="height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"></div>
+        <button class="btn-mini cons" onclick="f23Agregar()">${editando?'✓ Guardar cambios':'✓ Guardar'}</button>
+        ${_f23Sel?`<button class="btn-mini" onclick="f23Limpiar()">Cancelar</button>`:''}
+      </div>
+      <div id="f23-preview" class="rentbox" style="margin:0 0 12px;display:${_f23Sel?'block':'none'}">${_f23Sel?f23PreviewHTML():""}</div>`;
+}
 function renderFijos23(){
   const hoy=hoyStr();
+  const editando=(_f23Idx!=null);
   const rows=FIJOS23[TIER].map((f,i)=>{
-    if(_f23Sel && f.tmpl===_f23Sel.tmpl) return "";
+    if(editando && i===_f23Idx) return `<div class="ofrow" style="display:block;background:#f4fbfa;border:2px solid #0f7d84;border-radius:10px;padding:12px 12px 2px">${f23FormHTML()}</div>`;
+    if(!editando && _f23Sel && f.tmpl===_f23Sel.tmpl) return "";
     const venc=f.hasta?(f.hasta<hoy?`vencido ${f.hasta}`:`hasta ${f.hasta}`):"sin vencimiento";
     const est=f.pausado?`<span class="badge no">pausado</span>`:(f.hasta&&f.hasta<hoy?`<span class="badge no">vencido</span>`:`<span class="badge own">activo</span>`);
     return `<div class="ofrow"><div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">#${f.tmpl}</small></div><div class="ofdet">precio único <b>${EYG.money(f.precio)}</b> · ${venc}</div></div>${est}<button class="btn-mini" onclick="f23Editar(${i})">Editar</button><button class="btn-mini" onclick="f23Pausar(${i})">${f.pausado?'Reanudar':'Pausar'}</button><button class="btn-mini del" onclick="f23Quitar(${i})">Quitar</button></div>`;
   }).join("") || `<div class="ofrow" style="justify-content:center;color:var(--gris)">No hay precios cargados en esta capa.</div>`;
-  const sel=_f23Sel
-    ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;padding:6px 0"><span style="color:var(--gris);font-weight:700">Producto:</span> <b style="color:var(--teal-deep);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(_f23Sel.nombre)}">${esc(_f23Sel.nombre)}</b> <small style="color:var(--gris2)">#${_f23Sel.tmpl}</small> <button class="btn-mini" onclick="f23Limpiar()">cambiar</button></div>`
-    : `<input type="text" id="f23-q" placeholder="Buscar producto por nombre o código…" oninput="f23Buscar(this.value)" autocomplete="off" style="width:100%;height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"><div id="f23-results" class="ofbusq" style="display:none"></div>`;
   return `<div class="grp" style="border:2px solid #0f7d84;margin-bottom:14px">
     <div class="grphead" style="cursor:default;background:#eef7f6">💵 Capa temporal de precios (pisa al motor)</div>
     <div style="padding:14px">
       <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual que <b>pisa</b> el precio de esta lista para un producto puntual (por ej. una compra muy buena). Es un <b>precio único</b> final. Al <b>pausar/quitar</b>, el producto vuelve al precio del motor en la próxima corrida.</p>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
-        <div style="flex:1;min-width:220px;position:relative">${sel}</div>
-        <div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Precio único</div><input type="number" id="f23-precio" step="1" value="${_f23Sel&&_f23Sel.precio?_f23Sel.precio:''}" oninput="f23Preview()" style="height:38px;width:120px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"></div>
-        <div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Hasta (opc.)</div><input type="date" id="f23-hasta" value="${(_f23Sel&&_f23Sel.hasta)||''}" style="height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"></div>
-        <button class="btn-mini cons" onclick="f23Agregar()">✓ Guardar</button>
-        ${_f23Sel?`<button class="btn-mini" onclick="f23Limpiar()">Cancelar</button>`:''}
-      </div>
-      <div id="f23-preview" class="rentbox" style="margin:0 0 12px;display:${_f23Sel?'block':'none'}">${_f23Sel?f23PreviewHTML():""}</div>
+      ${editando?"":f23FormHTML()}
       <div class="oflist">${rows}</div>
     </div></div>`;
 }
@@ -902,16 +923,17 @@ window.f23Elegir=async (id,nombre,prefill)=>{
     _f23Sel={tmpl:id, nombre:nombre, cost:cost, precio:(prefill&&prefill.precio)||0, hasta:(prefill&&prefill.hasta)||""}; render();
   }catch(e){ _f23Sel={tmpl:id, nombre:nombre, cost:0, precio:(prefill&&prefill.precio)||0, hasta:(prefill&&prefill.hasta)||""}; render(); }
 };
-window.f23Editar=(i)=>{ const f=FIJOS23[TIER][i]; if(f) f23Elegir(f.tmpl, f.nombre, {precio:f.precio, hasta:f.hasta}); };
-window.f23Limpiar=()=>{ _f23Sel=null; render(); };
+window.f23Editar=(i)=>{ const f=FIJOS23[TIER][i]; if(!f) return; _f23Idx=i; f23Elegir(f.tmpl, f.nombre, {precio:f.precio, hasta:f.hasta}); };
+window.f23Limpiar=()=>{ _f23Sel=null; _f23Idx=null; render(); };
 window.f23Agregar=()=>{
   if(!_f23Sel){ toast("Elegí un producto primero"); return; }
   const precio=parseFloat((document.getElementById("f23-precio")||{}).value)||0;
   const hasta=(document.getElementById("f23-hasta")||{}).value||"";
   if(!(precio>0)){ toast("Poné el precio único"); return; }
   const ent={tmpl:_f23Sel.tmpl, nombre:_f23Sel.nombre, precio:precio, hasta:hasta, pausado:false};
-  FIJOS23[TIER]=FIJOS23[TIER].filter(f=>f.tmpl!==_f23Sel.tmpl); FIJOS23[TIER].unshift(ent);
-  _f23Sel=null; dirty=true; render();
+  if(_f23Idx!=null && FIJOS23[TIER][_f23Idx]){ ent.pausado=!!FIJOS23[TIER][_f23Idx].pausado; FIJOS23[TIER][_f23Idx]=ent; }   // editar: queda donde estaba
+  else { FIJOS23[TIER]=FIJOS23[TIER].filter(f=>f.tmpl!==_f23Sel.tmpl); FIJOS23[TIER].unshift(ent); }
+  _f23Sel=null; _f23Idx=null; dirty=true; render();
 };
 window.f23Pausar=(i)=>{ if(FIJOS23[TIER][i]){ FIJOS23[TIER][i].pausado=!FIJOS23[TIER][i].pausado; dirty=true; render(); } };
 window.f23Quitar=(i)=>{ if(!confirm("¿Quitar esto? El producto vuelve al precio del motor en la próxima corrida.")) return; FIJOS23[TIER].splice(i,1); dirty=true; render(); };
