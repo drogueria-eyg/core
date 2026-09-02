@@ -955,13 +955,13 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     });
     $("nConv").textContent=lista.length?lista.length:"";
     /* sin parpadeo: si nada cambió, no se toca el DOM */
-    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.ultimo||v.write_date}|${enLinea(v)?1:0}|${(dueno[v.id]||{}).cliente?1:0}|${cfg.pausadas.includes(v.id)?1:0}|${cfg.asignadas[v.id]||""}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0);
+    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.ultimo||v.write_date}|${enLinea(v)?1:0}|${(dueno[v.id]||{}).cliente?1:0}|${cfg.pausadas.includes(v.id)?1:0}|${(asignadaDe(v.id)||{}).nombre||""}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0);
     if(firma===firmaConvs) return;
     firmaConvs=firma;
     const c=$("convs");
     if(!lista.length){ c.innerHTML=`<div class="vacio">${f?"NADA COINCIDE":(modo==="guardadas"?"TODAVÍA NO HAY NADA GUARDADO":(verArchivadas?"NO HAY NADA ARCHIVADO":"SIN CONVERSACIONES<br>—<br>APARECEN SOLAS CUANDO<br>UN CLIENTE ESCRIBE"))}</div>`; return; }
     c.innerHTML=lista.map(v=>{
-      const eq=cfg.pausadas.includes(v.id), asig=cfg.asignadas[v.id];
+      const eq=cfg.pausadas.includes(v.id), asig=asignadaDe(v.id);
       /* Para el comercial vale el nombre del CLIENTE, no el que la persona tiene
          puesto en su teléfono ("Emi", "marco tappari"): ese no le dice nada. */
       const casa=delEquipo(v.whatsapp_number);
@@ -1169,7 +1169,7 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     const casaH=delEquipo(sel.whatsapp_number);
     /* El nombre del padrón antes que el del perfil de WhatsApp, igual que en la lista */
     const nom=(casaH&&casaH.nombre)||sel._cliente||nom1(sel.whatsapp_partner_id)||sel.name||sel.whatsapp_number;
-    const eq=cfg.pausadas.includes(sel.id), asig=cfg.asignadas[sel.id];
+    const eq=cfg.pausadas.includes(sel.id), asig=asignadaDe(sel.id);
     const firmaCli=ficha ? (nom1(ficha.parent_id)||ficha.name||"") : "";
     const comercialCli=ficha ? nom1(ficha.user_id) : "";
     const bajo=[
@@ -1182,12 +1182,49 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     $("chatH").innerHTML=`<div class="av">${esc(inicial(nom))}</div>
       <div><b>${esc(nom)}</b>${casaH?'<span class="pin casa" style="margin-left:7px">'+CHIP(casaH)+'</span>':""}<br><span class="num">${bajo}</span></div>
       <button class="hb ${eq?"":"stop"}" id="btnTomar" style="margin-left:auto;flex:none">${eq?"DEVOLVER AL BOT":"TOMAR"}</button>
+      <button class="hb" id="btnResp" style="flex:none" title="El asistente relee toda la conversación y contesta lo que haya quedado pendiente. Sirve cuando cambió algo (se cargó el contacto, entró stock) o cuando una persona tomó el chat y ya terminó.">RESPONDER</button>
       <button class="hb lila" id="btnAsig" style="flex:none">ASIGNAR</button>`;
     $("btnTomar").onclick=async()=>{
-      if(eq) cfg.pausadas=cfg.pausadas.filter(x=>x!==sel.id);
-      else cfg.pausadas=[...new Set([...cfg.pausadas,sel.id])];
+      if(eq){
+        cfg.pausadas=cfg.pausadas.filter(x=>x!==sel.id);
+        // LA ASIGNACION TAMBIEN SE VA. Son dos cosas distintas guardadas
+        // aparte (pausadas y asignadas) y esto solo sacaba la pausa: el chat
+        // volvia al asistente pero en la bandeja seguia figurando "asignada a
+        // Diego" para siempre. Quien mira la lista lo daba por atendido por
+        // otro y no lo tocaba.
+        if(cfg.asignadas && cfg.asignadas[sel.id]) delete cfg.asignadas[sel.id];
+      } else {
+        cfg.pausadas=[...new Set([...cfg.pausadas,sel.id])];
+      }
       anotar("eq",eq?"vuelve al asistente":"la toma el equipo");
       await guardarCfg(); pintarChat(true);
+    };
+    /* ══ RESPONDER: devolverle la palabra al asistente ══════════════════════
+       Había chats donde el asistente no iba a contestar NUNCA más y no existía
+       forma de destrabarlo: quedó asignado a alguien que ya terminó, o cambió
+       el DATO y no la charla (a Gabi de Farmacia Müller se le cargó el número y
+       pasó a ser clienta, pero el chat seguía esperando una verificación que ya
+       estaba hecha), o quedó algo pedido sin contestar y el cliente no volvió a
+       escribir — y sin mensaje nuevo no hay nada que despierte al bot.
+       Esto le dice "releé todo y cerrá lo que quedó abierto". Vuelve a mirar
+       desde cero: quién es el cliente HOY, qué lista tiene, qué hay en stock
+       ahora. Pisa la pausa a propósito: lo está apretando una persona.
+       La llave del asistente NO viaja al navegador: la pone wsp-responder del
+       lado del servidor y esta función exige sesión del Core. */
+    $("btnResp").onclick=async()=>{
+      const b=$("btnResp"); const antes=b.textContent;
+      b.disabled=true; b.textContent="LEYENDO…";
+      try{
+        const {data,error}=await EYG.supa().functions.invoke("wsp-responder",{body:{canal:sel.id}});
+        if(error||!data||!data.ok) throw new Error((data&&data.error)||(error&&error.message)||"no pude");
+        // Si decidió que no había nada pendiente hay que DECIRLO: si no, parece
+        // que el botón no anduvo y lo aprietan cinco veces.
+        const a=String(data.accion||"");
+        anotar("sis", a==="respondido" ? "el asistente retomó y contestó" : ("el asistente releyó: "+(a||"sin novedad")));
+        if(a!=="respondido") alert("El asistente releyó la conversación y no encontró nada pendiente para contestar.\n\n("+(a||"sin novedad")+")");
+        ultimoOdoo=0; await pintarChat(true);
+      }catch(e){ alert("No pude pedirle que responda: "+e.message); }
+      b.disabled=false; b.textContent=antes;
     };
     $("btnAsig").onclick=abrirAsignar;
 
@@ -1407,6 +1444,23 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
         <div class="dato"><span class="k">SALDO</span><span class="v ${venc>0?"err":""}">${plata(deuda)}${venc>0?" · "+plata(venc)+" vencido":""}</span></div>
         ${ult?`<div class="dato"><span class="k">ÚLTIMO</span><span class="v">${esc(ult.name)} · ${esc(String(ult.date_order||"").slice(0,10).split("-").reverse().join("/"))}<br><span style="color:var(--hud-dim);font-weight:400">${esc(estados[ult.state]||ult.state)} · ${plata(ult.amount_untaxed)}</span></span></div>`:""}
       </div>`;
+  }
+
+  /* UNA ASIGNACIÓN SIN PAUSA NO ES UNA ASIGNACIÓN.
+     Son dos cosas guardadas por separado (cfg.pausadas y cfg.asignadas) y se
+     desincronizaban: al devolverle el chat al asistente se quitaba la pausa
+     pero quedaba el nombre pegado, así que en la bandeja seguía figurando
+     "asignada a Diego" con el bot contestando. El que miraba la lista lo daba
+     por atendido por otro y no lo tocaba.
+     Acá se toma la pausa como la verdad —es lo que de verdad calla al bot— y si
+     hay un nombre colgado sin pausa se borra solo la próxima vez que se guarda
+     la configuración. Arregla también los que ya quedaron mal. */
+  function asignadaDe(canalId){
+    const a = cfg.asignadas && cfg.asignadas[canalId];
+    if(!a) return null;
+    if(cfg.pausadas.includes(canalId)) return a;
+    delete cfg.asignadas[canalId];   // quedó huérfana: afuera
+    return null;
   }
 
   /* ══ asignar la conversación a un comercial ══ */
