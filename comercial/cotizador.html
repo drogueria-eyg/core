@@ -68,6 +68,20 @@
   .step input{width:62px;height:30px;border:1px solid var(--line);border-radius:8px;text-align:center;font-family:inherit;font-size:14px;font-weight:700;color:var(--ink)}
   .step .del{color:var(--bad);font-size:14px}
   .nextd{display:inline-block;background:var(--okbg);color:var(--ok);font-size:11px;font-weight:800;border-radius:7px;padding:3px 8px;margin-top:6px;line-height:1.25}
+  /* Escalera por cantidad: el comercial ve dónde conviene empujar el pedido.
+     Cada tramo es tocable → pone esa cantidad y cotiza con ese descuento. */
+  .esc{margin-top:8px}
+  .esc .et{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:800;margin-bottom:4px}
+  .esc .er{display:flex;flex-wrap:wrap;gap:5px}
+  .tr-t{font-family:inherit;font-size:11px;font-weight:700;border:1px solid var(--line);background:var(--surface);color:var(--gris);border-radius:7px;padding:4px 7px;cursor:pointer;line-height:1.3;white-space:nowrap}
+  .tr-t:hover{border-color:var(--teal);color:var(--teal-deep)}
+  .tr-t.on{background:var(--teal);border-color:var(--teal);color:#fff}
+  .tr-t b{font-weight:800}
+  .tr-t .dp{color:var(--ok);font-weight:800;margin-left:3px}
+  .tr-t.on .dp{color:#CFF3E2}
+  .descb{display:inline-block;background:var(--okbg);color:var(--ok);font-size:10px;font-weight:800;border-radius:6px;padding:2px 6px;line-height:1.3;margin-bottom:3px;white-space:nowrap}
+  .escmini{font-size:11px;color:var(--gris);margin-top:3px;line-height:1.35}
+  .escmini b{color:var(--teal-deep)} .escmini .dp{color:var(--ok);font-weight:800}
 
   .tot{padding:14px 16px;border-top:2px solid var(--line);background:#FAFDFC;border-radius:0 0 14px 14px}
   .tr{display:flex;justify-content:space-between;font-size:13px;color:var(--gris);padding:3px 0}
@@ -121,8 +135,8 @@ const LISTAS_POR_USER = { 520:[3,16,5], 215:[3,16], 18:[3,16,5], 498:[3,16,5] };
 const LISTAS_DEF=[3,16,5];
 
 let PERFIL=null, USERID=null, COMERCIAL="";
-const ST={ listas:[], lista:null, modo:"cotizacion", conIva:false,
-           q:"", res:[], buscando:false, items:[], precios:{}, tiers:{}, taxes:{}, taxmap:null };
+const ST={ listas:[], lista:null, modo:"cotizacion", conIva:false, conEscalera:false,
+           q:"", res:[], buscando:false, items:[], precios:{}, tiers:{}, pvp:{}, taxes:{}, taxmap:null };
 
 /* ---------------- arranque ---------------- */
 EYG.guard(["comercial","lider","admin","direccion"]).then(async perfil=>{
@@ -204,11 +218,22 @@ async function cargarPrecios(prods){
     if(arr.length && arr[0].q<1) arr[0]={...arr[0],q:1};
     ST.tiers[p.id]=arr;
     ST.precios[p.id]= arr.length? arr[0].p : (p.list_price>1?p.list_price:null);
+    if(p.list_price>0) ST.pvp[p.id]=p.list_price;   // PVP (Alfabeta en éticos): base del % de descuento
   });
 }
 function tramoDe(pid,q){ const t=ST.tiers[pid]||[]; let r=t[0]||null; for(const x of t){ if(x.q<=Math.max(1,q)) r=x; } return r; }
 function proxTramo(pid,q){ const t=ST.tiers[pid]||[]; const cur=tramoDe(pid,q);
   for(const x of t){ if(x.q>Math.max(1,q) && (!cur||x.p<cur.p)) return {need:x.q-Math.max(0,q), tier:x}; } return null; }
+/* % de descuento de un tramo, MISMO criterio que “Cargar venta” y que la web:
+   la base es el PVP (list_price = Alfabeta en éticos). Si el producto no tiene
+   PVP real (los hospitalarios traen 0/1), la base es el primer tramo de la lista. */
+function descPct(pid,tier){
+  const t=ST.tiers[pid]||[]; if(!t.length||!tier) return 0;
+  const pvp=ST.pvp[pid]||0; const base = pvp>1 ? pvp : t[0].p;
+  return base>0 ? Math.round((1-tier.p/base)*100) : 0;
+}
+/* Descuento que está aplicado AHORA en esa línea (0 si está en el primer tramo). */
+function descAplicado(it){ return descPct(it.id, tramoDe(it.id, it.cant)); }
 function unitDe(it){ const tr=tramoDe(it.id, it.cant); const base = tr? tr.p : ST.precios[it.id];
   if(base==null) return null; return ST.conIva ? base*(1+tasaDe(it)) : base; }
 
@@ -246,8 +271,11 @@ function enLista(id){ return ST.items.some(x=>x.id===id); }
 function agregar(id){
   const p=ST.res.find(x=>x.id===id); if(!p) return;
   if(enLista(id)){ quitar(id); return; }
+  // Guardamos el PVP con el ítem: es la base del % de descuento y no cambia con la lista.
+  // Si no, al recargar la página los % se calcularían contra otra base y no coincidirían.
   ST.items.push({ id:p.id, code:p.default_code||"", name:limpiaNom(p.name), cant:1,
-                  taxes_id:p.taxes_id||[], tmpl:p.product_tmpl_id?p.product_tmpl_id[0]:null });
+                  taxes_id:p.taxes_id||[], tmpl:p.product_tmpl_id?p.product_tmpl_id[0]:null,
+                  pvp:p.list_price||0 });
   guardar(); render();
 }
 function quitar(id){ ST.items=ST.items.filter(x=>x.id!==id); guardar(); render(); }
@@ -263,13 +291,13 @@ function limpiaNom(n){ return String(n||"").replace(/^\[[^\]]*\]\s*/,"").trim();
 /* La cotización sobrevive a recargas y a cambiar de módulo: es un borrador de
    trabajo del comercial, no un dato del sistema, así que vive en el navegador. */
 const LSKEY="eyg_cotizador";
-function guardar(){ try{ localStorage.setItem(LSKEY, JSON.stringify({items:ST.items, lista:ST.lista, modo:ST.modo, conIva:ST.conIva})); }catch(e){} }
+function guardar(){ try{ localStorage.setItem(LSKEY, JSON.stringify({items:ST.items, lista:ST.lista, modo:ST.modo, conIva:ST.conIva, conEscalera:ST.conEscalera})); }catch(e){} }
 function restaurar(){
   try{ const o=JSON.parse(localStorage.getItem(LSKEY)||"{}");
     if(Array.isArray(o.items)) ST.items=o.items;
     if(o.lista && ST.listas.some(l=>l.id===o.lista)) ST.lista=o.lista;
     if(o.modo) ST.modo=o.modo;
-    ST.conIva=!!o.conIva;
+    ST.conIva=!!o.conIva; ST.conEscalera=!!o.conEscalera;
   }catch(e){}
 }
 
@@ -278,7 +306,7 @@ function restaurar(){
    adorno) y al RESTAURAR del navegador (guardamos los productos, no sus precios:
    si guardáramos el precio, una cotización vieja mostraría un precio viejo). */
 async function preciarItems(incluirRes){
-  const pend=ST.items.map(it=>({id:it.id, product_tmpl_id:it.tmpl?[it.tmpl]:null, list_price:0}));
+  const pend=ST.items.map(it=>({id:it.id, product_tmpl_id:it.tmpl?[it.tmpl]:null, list_price:it.pvp||0}));
   const todo = incluirRes ? pend.concat(ST.res.map(p=>({id:p.id, product_tmpl_id:p.product_tmpl_id, list_price:p.list_price}))) : pend;
   if(todo.length) await cargarPrecios(todo);
 }
@@ -288,6 +316,7 @@ async function setLista(id){
 }
 function setModo(m){ ST.modo=m; guardar(); render(); }
 function setIva(v){ ST.conIva=!!v; guardar(); render(); }
+function setEscalera(v){ ST.conEscalera=!!v; guardar(); render(); }
 
 /* ---------------- render ---------------- */
 function render(){
@@ -312,6 +341,9 @@ function render(){
       </div>
       <div class="fld"><span class="lb">Impuesto</span>
         <label class="swi" title="Los precios de la tarifa son NETOS. Tildá esto para mostrarlos con IVA, como los ve el cliente en la web."><input type="checkbox" ${ST.conIva?"checked":""} onchange="setIva(this.checked)"> Mostrar con IVA</label>
+      </div>
+      <div class="fld"><span class="lb">En el mensaje</span>
+        <label class="swi" title="Suma al texto de WhatsApp la escalera de cada producto, para que el cliente vea desde cuántas unidades le baja el precio."><input type="checkbox" ${ST.conEscalera?"checked":""} onchange="setEscalera(this.checked)"> Incluir la escalera</label>
       </div>
     </div>
     <div class="cot">
@@ -346,14 +378,37 @@ function pintarRes(){
     const t=(ST.taxmap&&ivaDe(p.taxes_id))||null;
     const pr = base==null? null : (ST.conIva? base*(1+((t&&t.pct)||0)/100) : base);
     const ya=enLista(p.id);
-    const esc0=(ST.tiers[p.id]||[]).length>1;
+    const tt=ST.tiers[p.id]||[];
+    // La escalera ya en el resultado: se ve el descuento por cantidad antes de sumarlo.
+    const escP = tt.length>1 ? `<div class="escmini">Por cantidad: ${tt.map(x=>{ const d=descPct(p.id,x);
+      const pp = ST.conIva ? x.p*(1+(((t&&t.pct)||0)/100)) : x.p;
+      return `desde <b>${nf(x.q)} u</b> ${money(pp)}${d>0?` <span class="dp">−${d}%</span>`:""}`; }).join(" · ")}</div>` : "";
     return `<div class="row">
       <div class="nm"><b>${esc(limpiaNom(p.name))}</b>
-        <span>${p.default_code?esc(p.default_code)+" · ":""}${t?esc(t.label):""}${esc0?" · tiene escalera por cantidad":""}${p.qty_available>0?` · ${nf(p.qty_available)} en stock`:" · sin stock"}</span></div>
+        <span>${p.default_code?esc(p.default_code)+" · ":""}${t?esc(t.label):""}${p.qty_available>0?` · ${nf(p.qty_available)} en stock`:" · sin stock"}</span>${escP}</div>
       <div class="pr"><b>${pr!=null?money(pr):"—"}</b><span>${pr!=null?(ST.conIva?"c/IVA":"neto")+" c/u":"sin precio en la lista"}</span></div>
       <button class="add ${ya?"qui":""}" onclick="agregar(${p.id})">${ya?"✓ Quitar":"＋ Sumar"}</button>
     </div>`;
   }).join("");
+}
+
+/* La escalera de precios por cantidad, tramo por tramo. Es la herramienta para
+   cotizar con descuento: el comercial ve a partir de cuántas unidades baja el
+   precio y cuánto, y TOCANDO un tramo pone esa cantidad en la cotización.
+   En “Solo precios” no hay cantidades, así que va como texto informativo. */
+function escaleraHTML(it, soloPrecios){
+  const t=ST.tiers[it.id]||[];
+  if(t.length<2) return "";                       // sin escalera real: no ensuciamos
+  const cur=tramoDe(it.id, it.cant);
+  const pu=x=> ST.conIva ? x.p*(1+tasaDe(it)) : x.p;
+  if(soloPrecios){
+    return `<div class="escmini">Por cantidad: ${t.map(x=>{ const d=descPct(it.id,x);
+      return `desde <b>${nf(x.q)} u</b> ${money(pu(x))}${d>0?` <span class="dp">−${d}%</span>`:""}`; }).join(" · ")}</div>`;
+  }
+  return `<div class="esc"><div class="et">Escalera por cantidad — tocá un tramo</div><div class="er">${
+    t.map(x=>{ const d=descPct(it.id,x); const on=cur&&cur.q===x.q;
+      return `<button class="tr-t ${on?"on":""}" onclick="setCant(${it.id},${x.q})" title="${on?"Es el tramo que estás cotizando":"Poner "+nf(x.q)+" unidades y cotizar a este precio"}">desde <b>${nf(x.q)}</b> u · ${money(pu(x))}${d>0?`<span class="dp">−${d}%</span>`:""}</button>`;
+    }).join("")}</div></div>`;
 }
 
 function pintarItems(){
@@ -370,6 +425,7 @@ function pintarItems(){
     const sub=(u!=null)? u*it.cant : null;
     const nx= precios? null : proxTramo(it.id,it.cant);
     const v=ivaDe(it.taxes_id);
+    const dp= precios? 0 : descAplicado(it);
     return `<div class="it">
       <div class="nm"><b>${esc(it.name)}</b>
         ${precios?"":`<div class="step">
@@ -379,10 +435,12 @@ function pintarItems(){
           <button class="del" onclick="quitar(${it.id})" title="Quitar">🗑</button>
         </div>`}
         ${nx?`<div class="nextd">＋${nf(nx.need)} u → ${money(ST.conIva? nx.tier.p*(1+tasaDe(it)) : nx.tier.p)} c/u</div>`:""}
+        ${escaleraHTML(it, precios)}
         ${precios?`<div style="margin-top:6px"><button class="chip" style="padding:4px 9px;font-size:11px" onclick="quitar(${it.id})">Quitar</button></div>`:""}
       </div>
       <div class="r">
         ${v?`<span class="iva ${v.exento?"ex":"si"}">${esc(v.label)}</span>`:""}
+        ${(!precios&&dp>0)?`<div><span class="descb">−${dp}% aplicado</span></div>`:""}
         <div class="u">${u!=null?money(u)+" c/u":"sin precio"}</div>
         ${precios?"":`<div class="sub">${sub!=null?money(sub):"—"}</div>`}
       </div>
@@ -430,7 +488,10 @@ function textoDe(tipo){
   const l=ST.listas.find(x=>x.id===ST.lista);
   if(tipo==="precios"){
     let t=`*Droguería EyG · Precios*\n\n`;
-    ST.items.forEach(it=>{ const u=unitDe(it); t+=`• ${it.name} — ${u!=null?money(u):"a confirmar"}\n`; });
+    ST.items.forEach(it=>{
+      const u=unitDe(it); t+=`• ${it.name} — ${u!=null?money(u):"a confirmar"}\n`;
+      t+=escaleraTexto(it,"   ");
+    });
     t+=`\n_Precios${ST.conIva?" con IVA":" sin IVA"} · sujetos a stock._`;
     return t;
   }
@@ -438,9 +499,12 @@ function textoDe(tipo){
   let t=`*Droguería EyG · Cotización*\n\n`;
   ST.items.forEach(it=>{
     const u=unitDe(it); const sub=(u!=null)?u*it.cant:null;
+    const dp=descAplicado(it);
+    const marca = dp>0 ? ` (−${dp}%)` : "";   // que el cliente vea que le hicimos precio
     t += (tipo==="detalle")
-      ? `• ${it.name}\n   ${nf(it.cant)} × ${u!=null?money(u):"—"} = ${sub!=null?money(sub):"—"}\n`
-      : `• ${nf(it.cant)}× ${it.name} — ${sub!=null?money(sub):"—"}\n`;
+      ? `• ${it.name}\n   ${nf(it.cant)} × ${u!=null?money(u):"—"}${marca} = ${sub!=null?money(sub):"—"}\n`
+      : `• ${nf(it.cant)}× ${it.name} — ${sub!=null?money(sub):"—"}${marca}\n`;
+    t += escaleraTexto(it,"   ");
   });
   t+=`\n———————————\n`;
   /* Si los renglones YA van con IVA, desglosar "Neto + IVA" abajo confunde: el
@@ -452,6 +516,16 @@ function textoDe(tipo){
   t+=`*TOTAL: ${money(r.total)}*\n`;
   t+=`\n_Sujeto a stock. Precios${ST.conIva?" con IVA incluido":(r.iva>0?" netos, se factura + IVA":" netos (productos exentos de IVA)")}._`;
   return t;
+}
+/* La escalera dentro del mensaje: sirve para EMPUJAR el pedido (“si llevás 9 te
+   sale $600”). Va solo si el comercial lo pide, porque no siempre conviene
+   mostrarle al cliente toda la grilla. */
+function escaleraTexto(it, sangria){
+  if(!ST.conEscalera) return "";
+  const t=ST.tiers[it.id]||[]; if(t.length<2) return "";
+  const pu=x=> ST.conIva ? x.p*(1+tasaDe(it)) : x.p;
+  return t.map(x=>{ const d=descPct(it.id,x);
+    return `${sangria}desde ${nf(x.q)} u: ${money(pu(x))}${d>0?` (−${d}%)`:""}`; }).join("\n")+"\n";
 }
 async function copiar(tipo){
   const txt=textoDe(tipo);
