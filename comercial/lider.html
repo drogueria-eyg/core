@@ -2220,9 +2220,19 @@ async function reasignar(id, uidStr){
   if(!c){ c=CT.sinAsig.find(x=>x.id===id); desdeSin=true; }
   if(!c)return;
   const t=dueno(uid); const prev=c.user_id;
+  // Pasar un cliente de una cartera a otra mueve su deuda y su historial de un lado al otro.
+  // Se avisa antes y queda registrado en el chatter del cliente, con quién lo hizo y de quién a quién.
+  const deQuien=(prev&&prev[1])||"sin asignar";
+  const aMi=(uid===LIDER.uid);
+  if(!confirm("¿Pasar «"+(c.name||"este cliente")+"» de "+deQuien+" a "+t.name+"?"+
+    (aMi?"\n\n⚠ Te lo estás asignando a vos misma.":"")+
+    "\n\nEsta acción QUEDA REGISTRADA en el cliente, con tu nombre, la fecha y de quién a quién pasó.")) {
+    renderContactos(); return;
+  }
   c.user_id=[uid,t.name];   // optimista
   try{
     await EYG.rpc("res.partner","write",[[id],{user_id:uid}]);
+    try{ await EYG.rpc("res.partner","message_post",[[id]],{body:"🔁 [EyG-TRASPASO] "+esc(deQuien)+" → "+esc(t.name)+" · lo hizo "+esc(LIDER.name)+(aMi?" (se lo asignó a sí misma)":""), message_type:"comment"}); }catch(e){}
     if(desdeSin){ CT.sinAsig=CT.sinAsig.filter(x=>x.id!==id); CT.list.push(c); }  // sale del pool, entra al equipo
     FICHAS_STALE=true;   // cambió la cartera: al volver a Rendimiento se recalcula
     toast((desdeSin?"Asignado a ":"Reasignado a ")+t.name+" ✓", true);
