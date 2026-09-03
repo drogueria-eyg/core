@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=54"></script>
+<script src="../assets/core.js?v=55"></script>
 <style>
   /* Tres columnas: la bandeja limpia a la izquierda, el chat al medio y todo
      el asistente a la derecha (orbe, ficha del contacto, lo que va pasando y
@@ -220,6 +220,17 @@
   .ficha{padding:10px 16px 10px}
   .ficha .nom{font-size:15px;font-weight:800;color:var(--hud-txt);line-height:1.3}
   .ficha .sub{font-family:var(--mono);font-size:10px;color:var(--hud-dim);margin-top:3px;letter-spacing:.5px}
+  /* Filtro de INTERESADOS: gente que escribió, no es cliente y no le aparece a
+     ningún comercial. Medido el 3/9/2026: eran 10, tres habían escrito ese
+     mismo día y uno llevaba 26 mensajes de ida y vuelta. Nadie los estaba
+     mirando — no por un error del recorte, sino porque no existía dónde verlos. */
+  .filint{display:flex;gap:6px;padding:0 13px 9px}
+  .filint button{flex:1;font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:1px;
+      border-radius:8px;padding:6px 8px;cursor:pointer;transition:.14s;
+      background:transparent;color:var(--hud-txt2);border:1px solid rgba(95,200,191,.16)}
+  .filint button:hover{border-color:rgba(95,200,191,.34);color:var(--hud-aqua)}
+  .filint button.on{background:rgba(240,177,90,.12);color:var(--hud-gold);border-color:rgba(240,177,90,.4)}
+  .filint .cu{margin-left:5px;opacity:.8}
   .chips{display:flex;flex-wrap:wrap;gap:5px;margin:9px 0 11px}
   .chip{font-family:var(--mono);font-size:8.5px;font-weight:700;letter-spacing:.9px;border-radius:20px;padding:3px 8px;
         border:1px solid var(--hud-line2);color:var(--hud-txt2)}
@@ -343,6 +354,10 @@
     <div class="ptitle">CONVERSACIONES <span class="n" id="nConv"></span>
       <button class="verarch" id="btnArch" title="Ver las conversaciones archivadas">ARCHIVADAS</button></div>
     <div class="buscador"><input id="buscar" placeholder="Buscar por nombre o número…" autocomplete="off"></div>
+    <div class="filint" id="filInt">
+      <button data-v="todo" class="on">TODAS</button>
+      <button data-v="interesados" title="Escribieron, no son clientes y no le aparecen a ningún comercial. Son altas posibles.">INTERESADOS<span class="cu" id="nInt"></span></button>
+    </div>
     <div class="convs" id="convs"><div class="vacio">CARGANDO…</div></div>
   </aside>
 
@@ -410,6 +425,8 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
   let cfg={activo:false,numeros:[],pausadas:[],asignadas:{},voz:"espejo"};
   let convs=[], sel=null, msgs=[], ficha=null, comerciales=[];
   let cargando=false, filtro="", vistoId=0, primeraCarga=true;
+  /* "todo" | "interesados" — ver el comentario del CSS .filint */
+  let verSolo="todo";
   let firmaConvs="", firmaMsgs="", firmaFicha="";
   let verArchivadas=false;
   /* "bandeja" | "archivadas" (en Odoo) | "guardadas" (la copia propia en Supabase) */
@@ -957,17 +974,24 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
   }
   function pintarConvs(){
     const f=filtro.trim().toLowerCase();
+    /* INTERESADO = escribió, no es de la casa y no se resolvió a ningún cliente.
+       El dato ya está en el mapa "dueno" (wsp_canal_dueno), que se carga igual
+       para pintar la lista: no cuesta una consulta más. */
+    const esInteresado=v=>!delEquipo(v.whatsapp_number) && !((dueno[v.id]||{}).cliente);
     const lista=convs.filter(v=>{
+      if(verSolo==="interesados" && !esInteresado(v)) return false;
       if(!f) return true;
       return ((nom1(v.whatsapp_partner_id)||v.name||"")+" "+(v.whatsapp_number||"")).toLowerCase().includes(f);
     });
+    const cuantosInt=convs.filter(esInteresado).length;
+    const elInt=$("nInt"); if(elInt) elInt.textContent=cuantosInt||"";
     $("nConv").textContent=lista.length?lista.length:"";
     /* sin parpadeo: si nada cambió, no se toca el DOM */
-    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.ultimo||v.write_date}|${enLinea(v)?1:0}|${(dueno[v.id]||{}).cliente?1:0}|${cfg.pausadas.includes(v.id)?1:0}|${(asignadaDe(v.id)||{}).nombre||""}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0);
+    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.ultimo||v.write_date}|${enLinea(v)?1:0}|${(dueno[v.id]||{}).cliente?1:0}|${cfg.pausadas.includes(v.id)?1:0}|${(asignadaDe(v.id)||{}).nombre||""}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0)+"|"+verSolo;
     if(firma===firmaConvs) return;
     firmaConvs=firma;
     const c=$("convs");
-    if(!lista.length){ c.innerHTML=`<div class="vacio">${f?"NADA COINCIDE":(modo==="guardadas"?"TODAVÍA NO HAY NADA GUARDADO":(verArchivadas?"NO HAY NADA ARCHIVADO":"SIN CONVERSACIONES<br>—<br>APARECEN SOLAS CUANDO<br>UN CLIENTE ESCRIBE"))}</div>`; return; }
+    if(!lista.length){ c.innerHTML=`<div class="vacio">${f?"NADA COINCIDE":(verSolo==="interesados"?"NADIE ESPERANDO<br>—<br>TODOS LOS QUE ESCRIBIERON<br>YA SON CLIENTES":(modo==="guardadas"?"TODAVÍA NO HAY NADA GUARDADO":(verArchivadas?"NO HAY NADA ARCHIVADO":"SIN CONVERSACIONES<br>—<br>APARECEN SOLAS CUANDO<br>UN CLIENTE ESCRIBE")))}</div>`; return; }
     c.innerHTML=lista.map(v=>{
       const eq=cfg.pausadas.includes(v.id), asig=asignadaDe(v.id);
       /* Para el comercial vale el nombre del CLIENTE, no el que la persona tiene
@@ -1017,6 +1041,12 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
   }
   $("verLog").onclick=()=>{ const l=$("log"); l.classList.toggle("abierto"); $("verLog").textContent=l.classList.contains("abierto")?"OCULTAR":"DETALLE"; };
   $("buscar").addEventListener("input",e=>{ filtro=e.target.value; firmaConvs=""; pintarConvs(); });
+  $("filInt").addEventListener("click",e=>{
+    const b=e.target.closest("button"); if(!b) return;
+    verSolo=b.dataset.v;
+    $("filInt").querySelectorAll("button").forEach(x=>x.classList.toggle("on", x===b));
+    firmaConvs=""; pintarConvs();
+  });
   /* Tres vistas con un solo botón: la bandeja, lo archivado en Odoo, y la
      MEMORIA PROPIA — lo que quedó guardado en Supabase, exista o no en Odoo.
      Ahí siguen estando las conversaciones borradas, para poder leerlas. */
