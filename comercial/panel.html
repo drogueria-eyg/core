@@ -36,12 +36,25 @@
   .hero .msg{color:var(--gris);font-size:14px;margin-top:2px}
   /* Botón flotante de los chats. Abajo a la izquierda: a la derecha, en el
      teléfono, cae justo donde está el pulgar y taparía el contenido. */
-  .fabchats{position:fixed;left:18px;bottom:18px;z-index:60;display:inline-flex;align-items:center;gap:9px;
+  /* EL ASISTENTE. Es lo único del panel que no es una pantalla de números, así
+     que se comporta distinto: respira despacio, como algo que está encendido
+     esperando. El halo es sutil a propósito — tiene que invitar, no gritar. */
+  .fabchats{position:fixed;left:18px;bottom:18px;z-index:60;display:inline-flex;align-items:center;gap:10px;
             background:linear-gradient(135deg,var(--teal),var(--teal-deep));color:#fff;text-decoration:none;
-            font-weight:800;font-size:14px;padding:12px 18px;border-radius:999px;
-            box-shadow:0 8px 26px rgba(4,135,130,.34);transition:.14s}
-  .fabchats:hover{transform:translateY(-2px);box-shadow:0 12px 30px rgba(4,135,130,.42)}
-  .fabchats .ic{font-size:17px;line-height:1}
+            font-weight:800;font-size:14px;padding:12px 19px 12px 15px;border-radius:999px;
+            box-shadow:0 8px 26px rgba(4,135,130,.34);transition:transform .16s, box-shadow .16s;
+            isolation:isolate;overflow:hidden}
+  /* El halo que respira. Va detrás del contenido y no captura el mouse. */
+  .fabchats::before{content:"";position:absolute;inset:-40%;z-index:-1;pointer-events:none;
+            background:radial-gradient(closest-side,rgba(255,255,255,.30),transparent 70%);
+            opacity:.55;animation:fabrespira 4.2s ease-in-out infinite}
+  @keyframes fabrespira{0%,100%{transform:scale(.82);opacity:.34}50%{transform:scale(1.06);opacity:.62}}
+  .fabchats:hover{transform:translateY(-2px);box-shadow:0 14px 34px rgba(4,135,130,.46)}
+  .fabchats .ic{display:inline-flex;line-height:0}
+  .fabchats .ic svg{width:19px;height:19px;display:block;
+            filter:drop-shadow(0 0 5px rgba(255,255,255,.55));animation:fabchispa 4.2s ease-in-out infinite}
+  @keyframes fabchispa{0%,100%{opacity:.88;transform:scale(1)}50%{opacity:1;transform:scale(1.07)}}
+  @media (prefers-reduced-motion:reduce){ .fabchats::before,.fabchats .ic svg{animation:none} }
   .fabchats .n{min-width:21px;height:21px;padding:0 6px;border-radius:999px;background:rgba(255,255,255,.22);
                display:inline-flex;align-items:center;justify-content:center;font-size:12px}
   .fabchats .n:empty{display:none}
@@ -3327,18 +3340,35 @@ async function botonChats(perfil){
   b.className="fabchats";
   b.href="../comunicaciones/whatsapp.html";
   b.target="_blank"; b.rel="noopener";
-  b.title="Las conversaciones del asistente con tus clientes (se abre en otra pestaña)";
-  b.innerHTML='<span class="ic">💬</span><span class="tx">Chats</span><span class="n"></span><i class="vv"></i>';
+  b.title="Mirá lo que el asistente está hablando con tus clientes (se abre en otra pestaña)";
+  /* La chispa es la convención visual de IA. Va en SVG y no como emoji: el emoji
+     se ve distinto en cada teléfono y no se le puede dar brillo. */
+  b.innerHTML='<span class="ic"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">'+
+    '<path d="M12 2.4l1.75 4.85L18.6 9l-4.85 1.75L12 15.6l-1.75-4.85L5.4 9l4.85-1.75L12 2.4z"/>'+
+    '<path d="M18.7 14.1l.85 2.35 2.35.85-2.35.85-.85 2.35-.85-2.35-2.35-.85 2.35-.85.85-2.35z" opacity=".7"/>'+
+    '</svg></span><span class="tx">Asistente</span><span class="n"></span><i class="vv"></i>';
   document.body.appendChild(b);
+  /* EL BOTÓN NO SE ESCONDE MÁS.
+     Estaba con `display = n ? "" : "none"`: si en ese momento la persona no
+     tenía ningún chat resuelto a su nombre, el asistente DESAPARECÍA del panel.
+     Medido el 3/9/2026: de las ocho comerciales, solo tres tenían algún canal
+     con dueño (Claudia 12, Antonella 1, Maricruz 1). O sea que a cinco no les
+     aparecía nunca, y a las otras les iba y venía según la hora. Encima
+     cualquier error pasajero de red lo escondía también.
+     El asistente es una herramienta que está siempre; el número de chats es un
+     detalle que va en la burbuja. Si algo falla se deja como estaba: un botón
+     de más no molesta, uno que desaparece hace pensar que el sistema se rompió. */
   async function refrescar(){
     try{
       const {data,error}=await EYG.supa().functions.invoke("wsp-visibles",{body:{accion:"lista"}});
-      if(error||!data||!data.ok){ b.style.display="none"; return; }
+      if(error||!data||!data.ok) return;     // se queda como estaba
       const n=(data.canales||[]).length;
-      b.style.display=n?"":"none";           // sin chats propios, no molesta
       b.querySelector(".n").textContent=n||"";
       b.classList.toggle("viva", !!data.en_vivo);
-    }catch(e){ b.style.display="none"; }
+      b.title = n
+        ? `Mirá lo que el asistente está hablando con ${n===1?"tu cliente":"tus "+n+" clientes"} (se abre en otra pestaña)`
+        : "Todavía no hay conversaciones tuyas. Acá vas a ver lo que el asistente habla con tus clientes.";
+    }catch(e){ /* se queda como estaba */ }
   }
   refrescar();
   setInterval(refrescar,60000);
