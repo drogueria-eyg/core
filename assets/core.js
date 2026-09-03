@@ -151,7 +151,7 @@ window.EYG = (function(){
      (modulos_extra), esa página SÍ lo deja entrar. Se aplica en requireAuth y en
      guard, apenas se confirma el perfil. Reversible: borrar este bloque y sus dos
      llamadas + la línea de puedeVer. */
-  const COMERCIAL_OK = ["panel.html","vender.html","pendientes.html"];
+  const COMERCIAL_OK = ["panel.html","vender.html","pendientes.html","cotizador.html"];
   function comercialLock(p){
     if(!p || p.rol!=="comercial") return false;
     if(typeof location==="undefined") return false;
@@ -365,6 +365,9 @@ window.EYG = (function(){
       path:p=>{ if(p.rol==="admin"||p.rol==="direccion") return "comercial/comerciales.html"; if(p.rol==="lider") return "comercial/lider.html"; return `comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`; }},
     /* "Cargar venta" (comercial/vender.html) NO va como módulo suelto del menú:
        se entra desde ADENTRO del panel del comercial (botón "Cargar una venta" en panel.html). */
+    {key:"cotizador", dept:"comercial", cat:"Comercial", ico:"🧮", titulo:"Cotizador",
+      desc:"Armar una cotización o pasar precios sueltos SIN elegir cliente y sin crear un presupuesto en Odoo. Todas las listas de precios a mano y un botón para copiarlo a WhatsApp.",
+      roles:["comercial","lider","admin","direccion"], ready:true, path:()=>"comercial/cotizador.html"},
     /* "CRM · Clientes" (comercial/crm.html) se unificó en "Clientes (CRM)" — el módulo real
        es datos/contactos.html (abajo, en Comercial). Se sacó la tarjeta placeholder duplicada. */
     /* Precios y Rentabilidad: función de ADMINISTRACIÓN (define/analiza precios, escalas y
