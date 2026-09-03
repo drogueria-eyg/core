@@ -68,22 +68,25 @@
   .step input{width:62px;height:30px;border:1px solid var(--line);border-radius:8px;text-align:center;font-family:inherit;font-size:14px;font-weight:700;color:var(--ink)}
   .step .del{color:var(--bad);font-size:14px}
   .nextd{display:inline-block;background:var(--okbg);color:var(--ok);font-size:11px;font-weight:800;border-radius:7px;padding:3px 8px;margin-top:6px;line-height:1.25}
-  /* Escalera por cantidad: el comercial ve dónde conviene empujar el pedido.
-     Cada tramo es tocable → pone esa cantidad y cotiza con ese descuento. */
-  .esc{margin-top:8px}
-  .esc .et{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:800;margin-bottom:4px}
-  .esc .er{display:flex;flex-wrap:wrap;gap:5px}
-  /* flex:0 0 auto es obligatorio: sin eso el contenedor angosto los encoge y el
-     texto se parte en tres líneas aunque tengan white-space:nowrap. */
-  .tr-t{flex:0 0 auto;font-family:inherit;font-size:11px;font-weight:700;border:1px solid var(--line);background:var(--surface);color:var(--gris);border-radius:7px;padding:5px 8px;cursor:pointer;line-height:1.3;white-space:nowrap}
-  .tr-t:hover{border-color:var(--teal);color:var(--teal-deep)}
-  .tr-t.on{background:var(--teal);border-color:var(--teal);color:#fff}
-  .tr-t b{font-weight:800}
-  .tr-t .dp{color:var(--ok);font-weight:800;margin-left:3px}
-  .tr-t.on .dp{color:#CFF3E2}
+  /* Escalera por cantidad. Ocupa lo mínimo: al lado de la cantidad va sólo un
+     cartelito ("−21%" o "hasta −21%"). La grilla completa se abre en un globo
+     sólo si el comercial la pide, y se cierra al elegir un tramo. */
+  .escbtn{font-family:inherit;font-size:10.5px;font-weight:800;border:1px solid #CFE7DF;background:var(--okbg);color:var(--ok);border-radius:7px;padding:5px 8px;cursor:pointer;line-height:1;white-space:nowrap;margin-left:4px}
+  .escbtn:hover{filter:brightness(.97)}
+  .escbtn.plano{background:var(--surface);border-color:var(--line);color:var(--gris)}
+  .escwrap{position:relative;display:inline-block}
+  .pop{position:absolute;z-index:40;top:calc(100% + 6px);right:0;min-width:196px;background:var(--surface);border:1px solid var(--line);border-radius:11px;box-shadow:0 12px 30px rgba(6,65,62,.18);padding:7px;animation:pin .12s ease-out}
+  @keyframes pin{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+  .pop .ph{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:800;padding:3px 7px 6px}
+  .pop .pl{display:flex;align-items:center;gap:8px;width:100%;font-family:inherit;font-size:12px;border:0;background:none;border-radius:7px;padding:6px 7px;cursor:pointer;text-align:left;color:var(--ink)}
+  .pop .pl:hover{background:#F2F9F8}
+  .pop .pl.on{background:var(--teal);color:#fff}
+  .pop .pl .q{flex:1;white-space:nowrap;font-weight:700}
+  .pop .pl .p{font-weight:800;white-space:nowrap}
+  .pop .pl .d{font-size:10.5px;font-weight:800;color:var(--ok);white-space:nowrap}
+  .pop .pl.on .d{color:#CFF3E2}
   .descb{display:inline-block;background:var(--okbg);color:var(--ok);font-size:10px;font-weight:800;border-radius:6px;padding:2px 6px;line-height:1.3;margin-bottom:3px;white-space:nowrap}
-  .escmini{font-size:11px;color:var(--gris);margin-top:3px;line-height:1.35}
-  .escmini b{color:var(--teal-deep)} .escmini .dp{color:var(--ok);font-weight:800}
+  .escmini{font-size:11px;color:var(--ok);font-weight:700;margin-top:3px;line-height:1.35}
 
   .tot{padding:14px 16px;border-top:2px solid var(--line);background:#FAFDFC;border-radius:0 0 14px 14px}
   .tr{display:flex;justify-content:space-between;font-size:13px;color:var(--gris);padding:3px 0}
@@ -107,7 +110,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=57"></script>
+<script src="../assets/core.js?v=56"></script>
 <script>
 /* ============================================================
    COTIZADOR — precios sueltos y cotizaciones, SIN cliente
@@ -137,7 +140,7 @@ const LISTAS_POR_USER = { 520:[3,16,5], 215:[3,16], 18:[3,16,5], 498:[3,16,5] };
 const LISTAS_DEF=[3,16,5];
 
 let PERFIL=null, USERID=null, COMERCIAL="";
-const ST={ listas:[], lista:null, modo:"cotizacion", conIva:false, conEscalera:false,
+const ST={ listas:[], lista:null, modo:"cotizacion", conIva:false, conEscalera:false, escAbierta:null,
            q:"", res:[], buscando:false, items:[], precios:{}, tiers:{}, pvp:{}, taxes:{}, taxmap:null };
 
 /* ---------------- arranque ---------------- */
@@ -387,10 +390,9 @@ function pintarRes(){
     const pr = base==null? null : (ST.conIva? base*(1+((t&&t.pct)||0)/100) : base);
     const ya=enLista(p.id);
     const tt=ST.tiers[p.id]||[];
-    // La escalera ya en el resultado: se ve el descuento por cantidad antes de sumarlo.
-    const escP = tt.length>1 ? `<div class="escmini">Por cantidad: ${tt.map(x=>{ const d=descPct(p.id,x);
-      const pp = ST.conIva ? x.p*(1+(((t&&t.pct)||0)/100)) : x.p;
-      return `desde <b>${nf(x.q)} u</b> ${money(pp)}${d>0?` <span class="dp">−${d}%</span>`:""}`; }).join(" · ")}</div>` : "";
+    // Que se sepa que tiene escalera antes de sumarlo, en un renglón y nada más.
+    const maxD = tt.length>1 ? Math.max(...tt.map(x=>descPct(p.id,x))) : 0;
+    const escP = maxD>0 ? `<div class="escmini">Por cantidad, hasta −${maxD}%</div>` : "";
     return `<div class="row">
       <div class="nm"><b>${esc(limpiaNom(p.name))}</b>
         <span>${p.default_code?esc(p.default_code)+" · ":""}${t?esc(t.label):""}${p.qty_available>0?` · ${nf(p.qty_available)} en stock`:" · sin stock"}</span>${escP}</div>
@@ -407,17 +409,31 @@ function pintarRes(){
 function escaleraHTML(it, soloPrecios){
   const t=ST.tiers[it.id]||[];
   if(t.length<2) return "";                       // sin escalera real: no ensuciamos
-  const cur=tramoDe(it.id, it.cant);
   const pu=x=> ST.conIva ? x.p*(1+tasaDe(it)) : x.p;
-  if(soloPrecios){
-    return `<div class="escmini">Por cantidad: ${t.map(x=>{ const d=descPct(it.id,x);
-      return `desde <b>${nf(x.q)} u</b> ${money(pu(x))}${d>0?` <span class="dp">−${d}%</span>`:""}`; }).join(" · ")}</div>`;
-  }
-  return `<div class="esc"><div class="et">Escalera por cantidad — tocá un tramo</div><div class="er">${
-    t.map(x=>{ const d=descPct(it.id,x); const on=cur&&cur.q===x.q;
-      return `<button class="tr-t ${on?"on":""}" onclick="setCant(${it.id},${x.q})" title="${on?"Es el tramo que estás cotizando":"Poner "+nf(x.q)+" unidades y cotizar a este precio"}">desde <b>${nf(x.q)}</b> u · ${money(pu(x))}${d>0?`<span class="dp">−${d}%</span>`:""}</button>`;
-    }).join("")}</div></div>`;
+  const maxD=Math.max(...t.map(x=>descPct(it.id,x)));
+  // En “Solo precios” no hay cantidad ni botones: alcanza con una línea.
+  if(soloPrecios) return maxD>0 ? `<div class="escmini">Por cantidad, hasta −${maxD}%</div>` : "";
+  const dp=descAplicado(it);
+  const abierto = ST.escAbierta===it.id;
+  const cur=tramoDe(it.id, it.cant);
+  const lbl = dp>0 ? `−${dp}%` : `hasta −${maxD}%`;
+  return `<span class="escwrap">
+    <button class="escbtn ${dp>0?"":"plano"}" onclick="togEsc(${it.id})"
+      title="${dp>0?`Estás cotizando con −${dp}%. `:""}Ver la escalera por cantidad y elegir un tramo">🏷️ ${lbl} ▾</button>
+    ${abierto?`<div class="pop" onclick="event.stopPropagation()">
+      <div class="ph">Precio por cantidad</div>
+      ${t.map(x=>{ const d=descPct(it.id,x); const on=cur&&cur.q===x.q;
+        return `<button class="pl ${on?"on":""}" onclick="setCant(${it.id},${x.q});togEsc(null)">
+          <span class="q">desde ${nf(x.q)} u</span><span class="p">${money(pu(x))}</span>${d>0?`<span class="d">−${d}%</span>`:""}</button>`;
+      }).join("")}
+    </div>`:""}
+  </span>`;
 }
+/* Un solo globo abierto a la vez. Un clic en cualquier otro lado lo cierra. */
+function togEsc(id){ ST.escAbierta = (ST.escAbierta===id||id==null) ? null : id; pintarItems(); }
+document.addEventListener("click", e=>{
+  if(ST.escAbierta!=null && !e.target.closest(".escwrap")) togEsc(null);
+});
 
 function pintarItems(){
   const c=document.getElementById("items"), t=document.getElementById("tot");
@@ -433,7 +449,6 @@ function pintarItems(){
     const sub=(u!=null)? u*it.cant : null;
     const nx= precios? null : proxTramo(it.id,it.cant);
     const v=ivaDe(it.taxes_id);
-    const dp= precios? 0 : descAplicado(it);
     return `<div class="it">
       <div class="nm"><b>${esc(it.name)}</b>
         ${precios?"":`<div class="step">
@@ -441,14 +456,14 @@ function pintarItems(){
           <input type="number" min="1" value="${it.cant}" onfocus="this.select()" onchange="setCant(${it.id},this.value)">
           <button onclick="chgCant(${it.id},1)">＋</button>
           <button class="del" onclick="quitar(${it.id})" title="Quitar">🗑</button>
+          ${escaleraHTML(it,false)}
         </div>`}
         ${nx?`<div class="nextd">＋${nf(nx.need)} u → ${money(ST.conIva? nx.tier.p*(1+tasaDe(it)) : nx.tier.p)} c/u</div>`:""}
-        ${escaleraHTML(it, precios)}
+        ${precios?escaleraHTML(it,true):""}
         ${precios?`<div style="margin-top:6px"><button class="chip" style="padding:4px 9px;font-size:11px" onclick="quitar(${it.id})">Quitar</button></div>`:""}
       </div>
       <div class="r">
         ${v?`<span class="iva ${v.exento?"ex":"si"}">${esc(v.label)}</span>`:""}
-        ${(!precios&&dp>0)?`<div><span class="descb">−${dp}% aplicado</span></div>`:""}
         <div class="u">${u!=null?money(u)+" c/u":"sin precio"}</div>
         ${precios?"":`<div class="sub">${sub!=null?money(sub):"—"}</div>`}
       </div>
