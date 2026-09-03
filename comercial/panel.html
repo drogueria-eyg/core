@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=53"></script>
+<script src="../assets/core.js?v=51"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -395,7 +395,7 @@
   .pplist{display:flex;flex-direction:column;gap:9px;margin-bottom:8px}
   .pplist.mini{gap:7px}
   .pplist.mini .pprow{padding:10px 12px;box-shadow:none}
-  .pprow{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 15px;box-shadow:var(--shadow);cursor:pointer;transition:transform .1s,border-color .1s;animation:fadeup .4s both}
+  .pprow{display:grid;grid-template-columns:1fr auto auto auto;gap:12px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 15px;box-shadow:var(--shadow);cursor:pointer;transition:transform .1s,border-color .1s;animation:fadeup .4s both}
   .pprow:hover{transform:translateY(-1px);border-color:var(--teal-med)}
   .pprow>div{min-width:0}
   .pprow .cli{font-weight:700;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -417,7 +417,8 @@
   .ppa-go{font-size:12.5px;font-weight:800;color:var(--teal-deep);white-space:nowrap}
   .ppalert.urge .ppa-go{color:var(--bad)}
   .ppempty{text-align:center;padding:26px 16px;color:var(--gris);background:var(--surface);border:1px dashed var(--line);border-radius:12px}
-  @media(max-width:560px){ .pprow{grid-template-columns:1fr auto} .pprow .go{display:none} }
+  .pprow .ntslot:empty{display:none}   /* panel ajeno: no hay boton, la columna se cierra */
+  @media(max-width:560px){ .pprow{grid-template-columns:1fr auto auto} .pprow .go{display:none} }
   /* ===== Vista de pedidos: filtro por período + métricas del comercial ===== */
   .pedbar{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px}
   /* ===== Anotaciones del comercial ===== */
@@ -904,6 +905,22 @@ async function cargar(){
     let porCobrar=0, vencido=0, nDeud=0;
     for(const pid in porP){ const d=porP[pid].deuda; if(d>1){porCobrar+=d; vencido+=porP[pid].vencido; nDeud++;} }
     ST.cc={ porP, porCobrar, vencido, cobradoMes:cobrado[0]?.amount||0, aFacturar:afSin, nDeud };
+    // ---- DEUDA QUE MIDE LA SALUD: la de SUS ventas, no la de su cartera ----
+    // La lista de arriba (por cliente) sigue mostrando lo que debe CADA CLIENTE — es lo que necesita
+    // para cobrar. Pero la salud se calcula sobre lo que ella vendió: si un cliente cambió de manos,
+    // la deuda vieja queda con quien hizo la venta. Los SALDOS INICIALES (diarios 32/33, deuda migrada
+    // de antes del sistema) no son venta de nadie y quedan afuera.
+    try{
+      const dSal=extra=>[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["journal_id","not in",[32,33]],...extra,
+        "|",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",ST.userId],
+            "&",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",452],["move_id.invoice_line_ids.sale_line_ids.order_id.partner_id.user_id","=",ST.userId]];
+      const [dTot,dVen]=await Promise.all([
+        rpc("account.move.line","read_group",[dSal([]),["amount_residual:sum"],[]],{lazy:false}),
+        rpc("account.move.line","read_group",[dSal([["date_maturity","<",hoyStr.slice(0,10)]]),["amount_residual:sum"],[]],{lazy:false}),
+      ]);
+      ST.cc.saludPorCobrar=(dTot[0]?.amount_residual)||0;
+      ST.cc.saludVencido=(dVen[0]?.amount_residual)||0;
+    }catch(e){ ST.cc.saludPorCobrar=porCobrar; ST.cc.saludVencido=vencido; }
     // Perfil crediticio: historial de pago interno (riesgoCartera) + umbral + cache BCRA. Alimentan
     // el badge abreviado de la lista Y el detalle de la ficha. El BCRA se completa en 2º plano (trickle).
     EYG.riesgoCartera().then(m=>{ ST.riesgos=m||{}; if(document.getElementById("lista")) lista(); refrescarPerfilFicha(); }).catch(()=>{});
@@ -1059,7 +1076,8 @@ function ayudaHTML(){
     <h4>💰 Objetivo de cobranza — ${money(b.objetivoCobro||0)}</h4>
     <p>= promedio de lo <b>cobrado</b> en los últimos 3 meses + 10%. Mide plata que entra (cobros), no facturación. La cobranza la lleva el sector de Cobranzas; vos ayudás a que el cliente pague.</p>
     <h4>🩺 Salud de la cuenta (el freno)</h4>
-    <p>Arranca en 100 y baja por: <b>vencido</b> (solo saldos <b>pasados de plazo</b> — lo que está dentro del plazo del cliente no cuenta), facturar por debajo de tu ritmo habitual, y fichas incompletas. Cada baja te recorta hasta 1 punto de la tasa de comisión.</p>
+    <p>Arranca en 100 y baja por: <b>vencido de tus ventas</b> (solo lo <b>pasado de plazo</b> de facturas que salieron de <b>tus</b> pedidos — si un cliente pasó a tu cartera con deuda vieja de otra persona, esa no te cuenta; y el saldo inicial con el que arrancó el sistema tampoco), facturar por debajo de tu ritmo habitual, y fichas incompletas. Cada baja te recorta hasta 1 punto de la tasa de comisión.</p>
+    <p style="font-size:12px;color:var(--gris2)">Ojo: la deuda que ves <b>en cada cliente</b> de tu cartera es la total de ese cliente (la necesitás para cobrar). Para la salud solo pesa la parte que vendiste vos.</p>
     <h4>🏆 Nivel (multiplica tu comisión: Bronce ×1 → Diamante ×1,20)</h4>
     <p>Sumás hasta 100 puntos cumpliendo objetivos:</p>
     <ul class="ayl">
@@ -1115,7 +1133,10 @@ function saludCuenta(){
   const cl=(x,a,b)=>Math.max(a,Math.min(b,x));
   const total=ST.contactos.length||1;
   const fichas=ST.contactos.filter(c=>completar(c).pct>=100).length/total;
-  const venc=ST.cc.porCobrar>0?ST.cc.vencido/ST.cc.porCobrar:0;
+  // el vencido que frena la comisión es el de SUS ventas (no el de la cartera que le tocó)
+  const sPC=(ST.cc.saludPorCobrar!=null)?ST.cc.saludPorCobrar:ST.cc.porCobrar;
+  const sVE=(ST.cc.saludVencido!=null)?ST.cc.saludVencido:ST.cc.vencido;
+  const venc=sPC>0?sVE/sPC:0;
   const d=now.getDate(), dim=new Date(now.getFullYear(),now.getMonth()+1,0).getDate();
   const esperado=(ST.base?.factBaseline||0)*(d/dim); // piso prorrateado por día del mes (sobre tus pedidos)
   const factRatio=esperado>0?(ST.ventaMes||0)/esperado:1;
@@ -1125,7 +1146,7 @@ function saludCuenta(){
   const salud=Math.max(0,100-pV-pF-pO);
   const penaltyPt=esExterno()?0:(100-salud)/100; // hasta 1 punto de tasa
   return {salud, penaltyPt, venc, fichas, factRatio,
-    items:[{ic:"🩸",lab:"Vencido de cartera",pts:pV,max:45,det:money(ST.cc.vencido)+" vencido ("+Math.round(venc*100)+"% de lo por cobrar) · solo lo pasado de plazo"},
+    items:[{ic:"🩸",lab:"Vencido de tus ventas",pts:pV,max:45,det:money(sVE)+" vencido ("+Math.round(venc*100)+"% de "+money(sPC)+" por cobrar) · solo lo que vendiste vos y ya pasó el plazo"},
            {ic:"📉",lab:"Facturado vs tu piso",pts:pF,max:30,det:Math.round(factRatio*100)+"% del ritmo esperado"},
            {ic:"🗂️",lab:"Fichas completas",pts:pO,max:25,det:Math.round(fichas*100)+"% de la cartera"}]};
 }
@@ -1448,7 +1469,8 @@ function ppRow(o,t){
     <div><div class="cli">${esc(cli)}${tag}</div>
     <div class="meta">${esc(o.name||'')}${extra?' · '+extra:''}${f?' · '+f:''}</div></div>
     <div class="tot">${money(monto)}</div>
-    <div class="go">${pin}${go}</div>
+    <div class="ntslot">${pin}</div>
+    <div class="go">${go}</div>
   </div>`;
 }
 // Prioridad de un presupuesto para ordenar la lista: primero los que piden acción del comercial.

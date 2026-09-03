@@ -12,6 +12,7 @@
 (function(){
 "use strict";
 const GEN=452;                                   // cuenta genérica "Drogueria EyG"
+const SALDOS_INI=[32,33];                        // diarios "Saldos Iniciales" y "Saldos Iniciales B": deuda migrada, sin venta detrás
 const PERFIL={ inst:{valor:38,activ:12,nom:"Instituciones"}, farm:{valor:25,activ:25,nom:"Farmacias / Comercial"} };
 const OF_PTS_ENV=8, OF_META_ENV=30, OF_PTS_VEN=17, OF_META_VEN=10;
 const NUEVOS_META=3, NUEVOS_PTS=20, CONST_META=10, CONST_PTS=5;
@@ -97,13 +98,18 @@ async function gamificacion(uid,r,ofertasMes){
   const ids=cart.map(c=>c.id);
   const fichas=cart.length?cart.filter(c=>pctFicha(c)>=100).length/cart.length:0;
   const pay=(desde,hasta)=>rpc("account.payment","read_group",[[["partner_id","in",ids],["payment_type","=","inbound"],["state","=","posted"],["date",">=",desde],["date","<=",hasta]],["amount:sum"],[]],{lazy:false}).catch(()=>[]);
-  const recv=extra=>rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],...extra,["partner_id","in",ids]],["amount_residual:sum"],["partner_id"]],{lazy:false}).catch(()=>[]);
-  const [cobMes,cob100,ordHist,nuevos,ccLines,ovG,migG,waMsgs,ofEnv]=await Promise.all([
+  // DEUDA POR QUIEN VENDIO (no por cartera): la factura impaga se le cuenta a quien generó el pedido.
+  // Si el cliente cambia de manos, la deuda vieja no la hereda quien lo recibe. Los SALDOS INICIALES
+  // (diarios 32 y 33, la deuda migrada con la que arrancó el sistema) quedan afuera: no son venta de nadie.
+  const recv=extra=>rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["journal_id","not in",SALDOS_INI],...extra,
+    "|",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",uid],
+        "&",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",GEN],["move_id.invoice_line_ids.sale_line_ids.order_id.partner_id.user_id","=",uid]],
+    ["amount_residual:sum"],[]],{lazy:false}).catch(()=>[]);
+  const [cobMes,cob100,ordHist,nuevos,deuG,ovG,waMsgs,ofEnv]=await Promise.all([
     pay(r.ini,r.fin), pay(r.d100,r.fin),
     rpc("sale.order","search_read",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",r.d190],["date_order","<=",r.finH]]],{fields:["partner_id","date_order"],limit:0}).catch(()=>[]),
     rpc("res.partner","search_count",[[["user_id","=",uid],["type","=","contact"],["parent_id","=",false],["create_date",">=",r.ini],["create_date","<=",r.finH]]]).catch(()=>0),
-    ids.length?rpc("res.partner","read",[ids],{fields:["total_due"],context:{lang:"es_AR"}}).catch(()=>[]):[],
-    recv([["date_maturity","<=",r.topeVenc]]), recv([["date_maturity","=",false]]),
+    recv([]), recv([["date_maturity","<=",r.topeVenc]]),
     ids.length?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",r.fin+" 00:00:00"],["date","<=",r.finH],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id"],limit:0}).catch(()=>[]):[],
     uPartner?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","=",uPartner],["date",">=",r.ini+" 00:00:00"],["date","<=",r.finH],["body","like","EyGOFENV"]]],{fields:["date"],limit:0}).catch(()=>[]):[],
   ]);
@@ -118,13 +124,9 @@ async function gamificacion(uid,r,ofertasMes){
   const promPed=Math.round(prev.reduce((s,m)=>s+bk[m].ped,0)/nP)||1;
   const promCli=Math.round(prev.reduce((s,m)=>s+bk[m].cli.size,0)/nP)||1;
   const actPed=bk[mes]?bk[mes].ped:0, actCli=bk[mes]?bk[mes].cli.size:0;
-  // deuda / vencido
-  const ovMap={},migMap={};
-  (ovG||[]).forEach(g=>{ if(g.partner_id) ovMap[g.partner_id[0]]=g.amount_residual||0; });
-  (migG||[]).forEach(g=>{ if(g.partner_id) migMap[g.partner_id[0]]=g.amount_residual||0; });
-  let porCobrar=0,vencido=0;
-  for(const c of (ccLines||[])){ const d=(typeof c.total_due==="number")?c.total_due:0;
-    if(d>1){ porCobrar+=d; vencido+=Math.max(0,(ovMap[c.id]||0)+(migMap[c.id]||0)); } }
+  // deuda / vencido — de SUS ventas, saldos iniciales afuera
+  const porCobrar=((deuG[0]||{}).amount_residual)||0;
+  const vencido=((ovG[0]||{}).amount_residual)||0;
   // ofertas colocadas (clientes de su cartera que compraron una oferta dentro de su vigencia)
   let ofVendidas=0; const idset=new Set(ids);
   for(const o of (ofertasMes||[])){
@@ -169,7 +171,7 @@ function saludDe(g,neto,baseline,prop){
   const pV=cl((venc-0.10)/0.40,0,1)*45, pF=cl((1-factRatio)/0.30,0,1)*30, pO=cl((0.40-g.fichas)/0.40,0,1)*25;
   const salud=Math.max(0,100-pV-pF-pO);
   return { salud, penaltyPt:(100-salud)/100, venc, fichas:g.fichas, factRatio,
-    items:[{ic:"🩸",lab:"Vencido de cartera",resta:pV,max:45,det:M(g.vencido)+" vencido = "+Math.round(venc*100)+"% de lo por cobrar"},
+    items:[{ic:"🩸",lab:"Vencido de sus ventas",resta:pV,max:45,det:M(g.vencido)+" vencido = "+Math.round(venc*100)+"% de "+M(g.porCobrar)+" por cobrar (solo lo que vendió, sin saldos iniciales)"},
            {ic:"📉",lab:"Facturado vs su piso",resta:pF,max:30,det:Math.round(factRatio*100)+"% del ritmo esperado"+((prop!=null&&prop<1)?" (piso prorrateado: "+M(esperado)+" al día de hoy)":"")},
            {ic:"🗂️",lab:"Fichas completas",resta:pO,max:25,det:Math.round(g.fichas*100)+"% de la cartera"}]};
 }
