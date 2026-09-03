@@ -404,6 +404,12 @@ window.EYG = (function(){
     {key:"tesoreria", dept:"finanzas", cat:"Administración", ico:"💰", titulo:"Tesorería", desc:"Dónde está la plata hoy: saldo de cada banco y caja, cheques de terceros en cartera con sus vencimientos, y qué falta cruzar con el resumen del banco.", roles:["finanzas","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/tesoreria.html"},
+    /* EN PRUEBAS: carga de cheques de terceros (lo urgente de Federico). Crea el recibo RE-X
+       en el diario "Cheques de terceros" igual que Odoo, y lo imputa a las facturas del cliente.
+       Para liberarlo: borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/cheques.html. */
+    {key:"cheques", dept:"finanzas", cat:"Administración", ico:"🧾", titulo:"Cargar cheques", desc:"Cargá los cheques de terceros que trae un cliente, todos juntos, y se imputan solos a sus facturas pendientes. Guarda el CUIT del emisor y el banco, que hoy casi nunca quedan registrados.", roles:["finanzas","direccion"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"finanzas/cheques.html"},
     {key:"stock",     dept:"compras", cat:"Compras", ico:"📦", titulo:"Stock, Compras y Reposición", desc:"Qué conviene comprar y cuándo, pedido por proveedor (borrador en Odoo), productos ganadores, sobrestock y vencimientos. Con tarjeta de salud del abastecimiento.", roles:["finanzas","inventario"], ready:true, path:()=>"inventario/stock.html"},
     /* Vademécum: consulta de medicamentos. La monografía se guarda POR DROGA y
        cada ficha de producto la hereda; las presentaciones autorizadas salen del
