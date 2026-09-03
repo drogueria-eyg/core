@@ -1406,7 +1406,7 @@ function ntEditorEntregaHTML(e){
   const d=ntDet();
   const pideFecha=(d.modo==="junto"||d.modo==="retira"||d.modo==="especial");
   return `
-    <div class="ntpublica">🚚 <b>Esto lo ve logística</b> en el pedido de Odoo, donde ya lo miran hoy. No es una nota privada.</div>
+    <div class="ntpublica">🚚 <b>Esto sale impreso en el remito</b> (WH/OUT), que es lo que arma logística. No es una nota privada.</div>
     <div class="ntfld"><label>¿Cómo hay que entregarlo?</label>
       <div class="ntmodos">${NT_MODOS.map(m=>`<button class="ntmodo${d.modo===m.k?" on":""}" onclick="ntEntModo('${m.k}')">
         <span class="m-ic">${m.ic}</span><span><span>${m.lab}</span><div class="m-d">${m.det}</div></span></button>`).join("")}</div></div>
@@ -1525,43 +1525,49 @@ function ntEntResumen(d){
   }
   return M.lab+(d.fecha?" — "+ntFechaLarga(d.fecha):"");
 }
-// El bloque que ve LOGÍSTICA dentro del pedido de Odoo.
-const NT_INI="<!--ENTREGA-CORE-->", NT_FIN="<!--/ENTREGA-CORE-->";
-function ntEntBloqueHTML(d, quien){
+/* El texto que ve LOGÍSTICA. Va como RENGLÓN DE NOTA del pedido (display_type
+   'line_note'), porque es lo ÚNICO que el remito WH/OUT imprime: su plantilla hace
+   `o.sale_id.order_line.filtered(l.display_type == 'line_note')` y lo saca bajo el
+   título "Notas:". El campo "Términos y condiciones" del pedido NO baja al remito
+   (verificado: el WH/OUT del pedido queda con su campo de notas vacío), y el campo
+   "Notas" del propio remito tampoco se imprime. Los comerciales ya usan estos
+   renglones para esto mismo ("LO RETIRA EN LA DROGUERIA", "lleva Natividad"). */
+const NT_MARCA="ENTREGA · ";
+function ntEntTexto(d, quien){
   const M=NT_MODO_MAP[d.modo]||NT_MODO_MAP.asap;
   const L=((ST.ntLineas||{}).filas)||[];
-  const P=[];
-  P.push('<p><b>━━━ ENTREGA · lo indicó '+esc(quien)+' ━━━</b></p>');
-  P.push('<p>'+M.ic+' <b>'+esc(M.lab.toUpperCase())+'</b>'+(d.fecha&&d.modo!=="partes"?' · <b>'+ntFechaLarga(d.fecha)+'</b>':'')+'</p>');
+  const P=[NT_MARCA+M.lab.toUpperCase()+(d.fecha&&d.modo!=="partes"?" el "+ntFechaLarga(d.fecha):"")+" (lo indicó "+quien+")"];
   if(d.modo==="partes"){
     const val=(d.tramos||[]).filter(t=>t.cant>0&&t.fecha)
       .sort((a,b)=>String(a.fecha).localeCompare(String(b.fecha)));
-    if(val.length){
-      P.push("<ul>");
-      val.forEach(t=>{ const f=L.find(x=>x.id===t.line_id)||{};
-        P.push("<li><b>"+t.cant+"</b> de "+esc(f.nom||"producto")+(f.total?" (el pedido tiene "+f.total+")":"")+" &rarr; <b>"+ntFechaLarga(t.fecha)+"</b></li>"); });
-      P.push("</ul>");
-      // lo que no se repartió sale cuando esté, y conviene decirlo
-      const sobra=L.filter(f=>{ const u=val.filter(t=>t.line_id===f.id).reduce((a,t)=>a+Number(t.cant),0); return u>0&&u<f.total; });
-      if(sobra.length) P.push("<p><i>Del resto de esos productos, lo que no figura arriba sale cuando esté disponible.</i></p>");
-    }
+    val.forEach(t=>{ const f=L.find(x=>x.id===t.line_id)||{};
+      P.push("· "+t.cant+" de "+(f.nom||"producto")+(f.total?" (de "+f.total+")":"")+" el "+ntFechaLarga(t.fecha)); });
+    const sobra=L.filter(f=>{ const u=val.filter(t=>t.line_id===f.id).reduce((a,t)=>a+Number(t.cant),0); return u>0&&u<f.total; });
+    if(sobra.length) P.push("· El resto de esos productos sale cuando esté disponible.");
   }
-  if(d.aclaracion) P.push("<p>📝 "+esc(d.aclaracion)+"</p>");
-  P.push('<p><i>━━━ fin de la indicación de entrega ━━━</i></p>');
-  return P.join("");
+  if(d.aclaracion) P.push(d.aclaracion);
+  return P.join("\n");
 }
-// Escribe (o borra) el bloque en el pedido de Odoo, sin tocar el resto de la nota.
-async function ntEntEscribirOdoo(pedidoId, bloque, fechaISO){
-  const [o]=await rpc("sale.order","read",[[pedidoId]],{fields:["note"]});
-  const actual=(o&&o.note)||"";
-  let base=actual;
-  const i=actual.indexOf(NT_INI), j=actual.indexOf(NT_FIN);
-  if(i>=0&&j>i) base=actual.slice(0,i)+actual.slice(j+NT_FIN.length);   // saco el bloque viejo
-  const vals={ note: bloque ? (base+NT_INI+bloque+NT_FIN) : base };
-  // La "Fecha de entrega" nativa de Odoo: hoy nadie la usa y es la que va a ordenar
-  // el reparto cuando exista el módulo de logística. Mediodía UTC = 9 de la mañana acá.
-  if(fechaISO) vals.commitment_date=fechaISO+" 12:00:00";
-  await rpc("sale.order","write",[[pedidoId],vals],{context:{mail_auto_subscribe_no_notify:true}});
+/* Crea, actualiza o borra el renglón de nota. Se guarda su id en la anotación para
+   poder tocarlo después con exactitud; si el id se perdió, se lo busca por la marca. */
+async function ntEntEscribirOdoo(pedidoId, texto, fechaISO, lineId){
+  let id=lineId||null;
+  if(id){
+    const ex=await rpc("sale.order.line","search",[[["id","=",id],["order_id","=",pedidoId]]],{limit:1});
+    if(!ex||!ex.length) id=null;                 // lo borraron a mano en Odoo
+  }
+  if(!id){
+    const m=await rpc("sale.order.line","search",[[["order_id","=",pedidoId],["display_type","=","line_note"],["name","like",NT_MARCA]]],{limit:1});
+    if(m&&m.length) id=m[0];
+  }
+  const CTX={context:{mail_auto_subscribe_no_notify:true}};
+  if(!texto){ if(id) await rpc("sale.order.line","unlink",[[id]],CTX); return null; }
+  if(id) await rpc("sale.order.line","write",[[id],{name:texto}],CTX);
+  else   id=await rpc("sale.order.line","create",[{order_id:pedidoId,display_type:"line_note",name:texto,product_uom_qty:0,sequence:999}],CTX);
+  // La "Fecha de entrega" nativa: hoy está vacía en todos los pedidos y es la que va a
+  // ordenar el reparto cuando exista el módulo de logística. Mediodía UTC = 9 acá.
+  if(fechaISO) await rpc("sale.order","write",[[pedidoId],{commitment_date:fechaISO+" 12:00:00"}],CTX);
+  return id;
 }
 
 async function ntGuardar(){
@@ -1603,8 +1609,14 @@ async function ntGuardar(){
   // igual y se avisa: es peor perder lo que escribió que no llegar a Odoo en el momento.
   if(esEnt){
     try{
-      await ntEntEscribirOdoo(NT_EDIT.pedido_id, ntEntBloqueHTML(detalle,(p.comercial_ref||p.nombre||COMERCIAL)), fecha);
-      toast("🚚 Guardado y avisado a logística");
+      const quien=(p.comercial_ref||p.nombre||COMERCIAL);
+      const lineId=await ntEntEscribirOdoo(NT_EDIT.pedido_id, ntEntTexto(detalle,quien), fecha, detalle.line_note_id);
+      // se recuerda el renglón para poder editarlo o borrarlo después sin adivinar
+      if(lineId&&lineId!==detalle.line_note_id){
+        detalle.line_note_id=lineId;
+        try{ await EYG.supa().from("comercial_nota").update({detalle}).eq("pedido_id",NT_EDIT.pedido_id).eq("tipo","entrega"); }catch(e){}
+      }
+      toast("🚚 Va a salir impreso en el remito");
     }catch(e){ toast("Guardé la anotación, pero no pude escribirla en el pedido de Odoo"); }
   } else toast("📝 Anotación guardada");
   ntCerrar(); await ntCargar(); render();
@@ -1634,7 +1646,7 @@ async function ntBorrar(){
   const v=(ST.notas||[]).find(x=>x.id===NT_BORRAR);
   // Si era una indicación de entrega, hay que sacarla también del pedido de Odoo:
   // si no, logística seguiría leyendo una instrucción que ya no vale.
-  if(v&&v.tipo==="entrega"&&v.pedido_id){ try{ await ntEntEscribirOdoo(v.pedido_id,"",null); }catch(e){} }
+  if(v&&v.tipo==="entrega"&&v.pedido_id){ try{ await ntEntEscribirOdoo(v.pedido_id,"",null,(v.detalle||{}).line_note_id); }catch(e){} }
   try{ const {error}=await EYG.supa().from("comercial_nota").delete().eq("id",NT_BORRAR); if(error) throw error;
     NT_BORRAR=null; ntCerrar(); await ntCargar(); render(); toast("Anotación borrada");
   }catch(e){ toast("No pude borrarla"); }
