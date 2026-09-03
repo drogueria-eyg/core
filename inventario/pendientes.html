@@ -51,6 +51,17 @@
   .bita{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
   .bita .t{font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:800;margin-bottom:6px}
   .bita .e{font-size:12px;color:var(--gris);padding:2px 0}.bita .e b{color:var(--ink)}
+  .oc{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:800;background:var(--orgbg);color:var(--org);border-radius:99px;padding:3px 10px;text-decoration:none;white-space:nowrap}
+  .oc:hover{filter:brightness(.95)}
+  .ocbox{margin-top:12px;padding:11px 13px;background:var(--orgbg);border:1px solid #E9C9AF;border-left:4px solid var(--org);border-radius:10px;font-size:13px;color:#6E3416}
+  .ocbox b{color:var(--org)} .ocbox a{color:var(--org);font-weight:800}
+  .ocbox.ok{background:var(--greenbg);border-color:#BFE0DC;border-left-color:var(--green);color:#155C33}.ocbox.ok b,.ocbox.ok a{color:var(--green)}
+  .provrow{display:flex;align-items:center;gap:10px;padding:10px 11px;border:1px solid var(--line);border-radius:10px;margin-bottom:7px;cursor:pointer}
+  .provrow:hover{border-color:var(--teal)} .provrow.on{border-color:var(--teal);background:#F2F9F8;box-shadow:0 0 0 1px var(--teal) inset}
+  .provrow .pn{flex:1;min-width:0}.provrow .pn b{font-size:13.5px;display:block;overflow-wrap:anywhere}
+  .provrow .pn span{font-size:11.5px;color:var(--gris)}
+  .tagmini{font-size:9.5px;font-weight:800;background:#E6F3F1;color:var(--teal-deep);border-radius:99px;padding:2px 7px;margin-left:5px;vertical-align:1px}
+  .tagmini.cheap{background:var(--greenbg);color:var(--green)}
   .avisorep{background:var(--greenbg);border:1px solid #BFE0DC;border-left:4px solid var(--green);border-radius:10px;padding:10px 13px;font-size:13px;color:#155C33;margin-bottom:12px}.avisorep b{color:var(--green)}
   .avisoabr{background:#E6F3F1;border:1px solid #BFE0DC;border-left:4px solid var(--teal);border-radius:10px;padding:10px 13px;font-size:13px;color:#245C57;margin-bottom:12px}.avisoabr b{color:var(--teal-deep)}
   .cerrada{opacity:.75}
@@ -76,8 +87,19 @@ const nf=n=>Math.round(n||0).toLocaleString("es-AR");
 function toast(m){ let t=document.getElementById("toast"); if(!t){t=document.createElement("div");t.id="toast";document.body.appendChild(t);} t.textContent=m; t.classList.add("on"); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove("on"),2600); }
 function fdt(ts){ try{ return new Date(ts).toLocaleString("es-AR",{day:"2-digit",month:"2-digit",year:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch(e){ return ""; } }
 const EST_LBL={abierta:"Abierta — se puede sumar",aceptada:"Aceptada",en_compra:"En compra",repuesta:"Repuesta",entregada:"Entregada",cancelada:"Cancelada"};
-const ACC_LBL={crear:"abrió la orden",agregar:"sumó unidades",editar_recibir:"editó la cantidad a recibir",editar_producto:"cambió el producto que va a ingresar",aceptar:"aceptó la orden",en_compra:"pasó a en compra",repuesta:"marcó repuesta",entregada:"marcó entregada",cancelada:"canceló"};
+const ACC_LBL={crear:"abrió la orden",agregar:"sumó unidades",editar_recibir:"editó la cantidad a recibir",editar_producto:"cambió el producto que va a ingresar",aceptar:"aceptó la orden",en_compra:"pasó a en compra",oc_crear:"generó la orden de compra",oc_agregar:"agregó el producto a una orden de compra",oc_recibida:"— llegó la mercadería (Odoo)",repuesta:"marcó repuesta",entregada:"marcó entregada",cancelada:"canceló"};
 const cerrada=o=>o.estado!=="abierta";
+
+/* ---- Odoo: la compra real ----
+   El módulo dejó de ser un tablero de carteles. "En compra" ya no se pone a mano:
+   lo pone la creación de la ORDEN DE COMPRA en Odoo, y "Repuesta" lo pone Odoo
+   cuando la mercadería entra. Cada orden guarda su po_id para poder seguirla. */
+const rpc=EYG.rpc, money=EYG.money;
+const ODOO="https://drogueriaeyg.odoo.com/web#";
+const ocLink=poId=>`${ODOO}id=${poId}&model=purchase.order&view_type=form`;
+const PROVEEDOR_T=2634;   // compra informal: fuera del flujo formal de compras
+const PO_LBL={draft:"borrador",sent:"enviada al proveedor",purchase:"confirmada",done:"cerrada",cancel:"cancelada"};
+let POINFO=new Map();     // orden_id -> {state, recibido, pedido, name}
 
 let PERFIL=null, GESTION=false, MIREF="", MIEMAIL="";
 let ORD=[], BYID=new Map();
@@ -108,7 +130,63 @@ async function cargar(){
     (l.data||[]).forEach(x=>{ const o=BYID.get(x.orden_id); if(o){ o.lineas.push(x); o.total+=(x.cantidad||0); } });
     (g.data||[]).forEach(x=>{ const o=BYID.get(x.orden_id); if(o) o.logs.push(x); });
     render();
+    sincroOC();   // en segundo plano: estado real de las OC en Odoo
   }catch(e){ cap.innerHTML='<div class="pcard empty">No se pudo cargar: '+esc(e.message||String(e))+'<br><br><button class="mini-btn pri" onclick="cargar()">Reintentar</button></div>'; }
+}
+
+/* Mira en Odoo cómo va cada orden de compra generada desde acá y, cuando la
+   mercadería YA ENTRÓ (qty_received cubre lo pedido), pasa la orden a Repuesta
+   sola y le avisa a los comerciales que la pidieron — que es justo cuando
+   tienen que llamar al cliente. Nadie se tiene que acordar de marcar nada.
+   El update lleva .eq("estado","en_compra") para que, si dos personas tienen la
+   pantalla abierta a la vez, el aviso salga una sola vez (gana el primero). */
+async function sincroOC(){
+  const conOC=ORD.filter(o=>o.po_id && (o.estado==="en_compra"||o.estado==="aceptada"));
+  if(!conOC.length) return;
+  try{
+    const poIds=[...new Set(conOC.map(o=>o.po_id))];
+    const [pos,pols]=await Promise.all([
+      rpc("purchase.order","read",[poIds,["name","state"]]),
+      rpc("purchase.order.line","search_read",[[["order_id","in",poIds]]],{fields:["order_id","product_id","product_qty","qty_received"],limit:2000})
+    ]);
+    const ST={}; (pos||[]).forEach(p=>ST[p.id]={state:p.state,name:p.name});
+    POINFO=new Map();
+    const recibidas=[];
+    for(const o of conOC){
+      const st=ST[o.po_id]; if(!st) continue;
+      const lin=(pols||[]).filter(l=>l.order_id&&l.order_id[0]===o.po_id&&l.product_id&&l.product_id[0]===o.producto_id);
+      const pedido=lin.reduce((a,l)=>a+(l.product_qty||0),0);
+      const recibido=lin.reduce((a,l)=>a+(l.qty_received||0),0);
+      POINFO.set(o.id,{state:st.state,name:st.name,pedido,recibido});
+      if(o.estado==="en_compra" && st.state!=="cancel" && pedido>0 && recibido>=pedido) recibidas.push({o,recibido});
+    }
+    for(const {o,recibido} of recibidas) await marcarRepuestaPorOdoo(o,recibido);
+    if(recibidas.length) await cargar(); else render();
+  }catch(e){ /* si Odoo no responde, la pantalla sigue andando con lo que hay */ }
+}
+async function marcarRepuestaPorOdoo(o,recibido){
+  try{
+    const {data,error}=await EYG.supa().from("reposicion_orden").update({estado:"repuesta"})
+      .eq("id",o.id).eq("estado","en_compra").select("id");
+    if(error||!data||!data.length) return;   // otro ya lo marcó: no duplicar el aviso
+    await _log(o.id,"oc_recibida",`entraron ${nf(recibido)} u por ${o.po_name||("OC #"+o.po_id)}`);
+    await avisarComerciales(o, "✅ Ya llegó lo que pediste reponer",
+      `Entró la mercadería de "${o.producto_nombre}". Ya hay stock: cerrá la venta con tu cliente.`);
+  }catch(e){}
+}
+/* Aviso por la campanita, dirigido SOLO a los comerciales que pidieron ese producto. */
+async function avisarComerciales(o,titulo,cuerpo){
+  try{
+    const emails=[...new Set((o.lineas||[]).map(l=>l.comercial_email).filter(Boolean))];
+    if(!emails.length || !EYG.comsLeer || !EYG.comsGuardar) return;
+    const arr=await EYG.comsLeer();
+    arr.push({ id:"repo-"+o.id+"-"+Date.now(), clase:"novedad", activo:true,
+      alcance:"personas", personas:emails, titulo, cuerpo,
+      autor:(PERFIL&&(PERFIL.nombre||PERFIL.email))||"Compras", ts:new Date().toISOString(),
+      hasta:new Date(Date.now()+14*86400000).toISOString().slice(0,10),
+      link:"inventario/pendientes.html", linkLabel:"Ver pendientes →", leidoPor:[] });
+    await EYG.comsGuardar(arr);
+  }catch(e){}
 }
 
 function miLinea(o){ return o.lineas.some(l=>(l.comercial===MIREF)||(l.comercial_email&&l.comercial_email===MIEMAIL)); }
@@ -130,7 +208,10 @@ function viewGestion(){
   const q=F.q.toLowerCase(); if(q) arr=arr.filter(o=>(o.producto_nombre||"").toLowerCase().includes(q)||(o.producto_codigo||"").toLowerCase().includes(q));
   arr.sort((a,b)=>b.total-a.total);
   const cards = arr.length ? arr.map(cardGestion).join("") : '<div class="pcard empty">No hay órdenes en este estado.</div>';
-  return kpis+bar+`<div class="count-line"><b>${arr.length}</b> orden${arr.length===1?"":"es"}. Tocá para ver quién pidió y editar la cantidad a recibir.</div>`+cards;
+  const guia = F.estado==="aceptada" ? "Aceptada = ya no se le suma más. El paso siguiente es <b>🛒 Pedir al proveedor</b>: genera la orden de compra en Odoo."
+    : F.estado==="en_compra" ? "Estas ya tienen <b>orden de compra en Odoo</b>. Cuando entre la mercadería pasan solas a Repuesta y se avisa a los comerciales."
+    : "Tocá para ver quién pidió, fijar la cantidad a recibir y generar la compra.";
+  return kpis+bar+`<div class="count-line"><b>${arr.length}</b> orden${arr.length===1?"":"es"}. ${guia}</div>`+cards;
 }
 function cardGestion(o){
   const ab=F.abiertos.has(o.id);
@@ -138,6 +219,7 @@ function cardGestion(o){
     <div class="oh" onclick="tog(${o.id})">
       <div class="nm"><b>${esc(o.producto_nombre||"—")}</b><span>${esc(o.producto_codigo||"")} · ${o.lineas.length} comercial${o.lineas.length===1?"":"es"} · abrió ${esc(o.creada_por||"—")} el ${fdt(o.ts)}</span></div>
       <div class="tot"><b>${nf(o.cantidad_recibir!=null?o.cantidad_recibir:o.total)}</b><span>${o.cantidad_recibir!=null?"a recibir":"pedido"}</span></div>
+      ${o.po_id?`<a class="oc" href="${ocLink(o.po_id)}" target="_blank" onclick="event.stopPropagation()" title="Orden de compra en Odoo${o.proveedor_nombre?" · "+esc(o.proveedor_nombre):""}">🧾 ${esc(o.po_name||("#"+o.po_id))}</a>`:""}
       <span class="badge b-${o.estado}">${EST_LBL[o.estado]||o.estado}</span>
       <div class="cv">${ab?"▾":"▸"}</div>
     </div>
@@ -154,16 +236,31 @@ function obodyGestion(o){
   const acts=[];
   if(o.estado!=="cancelada"&&o.estado!=="entregada") acts.push(`<button class="mini-btn" onclick="editarProducto(${o.id})">✏️ Editar producto (otra marca)</button>`);
   if(o.estado==="abierta") acts.push(`<button class="mini-btn grn" onclick="aceptar(${o.id})">✔ Aceptar (cierra el agregado)</button>`);
-  if(o.estado==="aceptada") acts.push(`<button class="mini-btn gold" onclick="setEstado(${o.id},'en_compra')">🛒 En compra</button>`);
-  if(o.estado==="aceptada"||o.estado==="en_compra") acts.push(`<button class="mini-btn grn" onclick="setEstado(${o.id},'repuesta')">✅ Repuesta</button>`);
+  if(o.estado==="aceptada"&&!o.po_id) acts.push(`<button class="mini-btn gold" onclick="pedirProveedor(${o.id})">🛒 Pedir al proveedor</button>`);
+  if(o.estado==="aceptada"||o.estado==="en_compra") acts.push(`<button class="mini-btn grn" onclick="setEstado(${o.id},'repuesta')">✅ Repuesta${o.po_id?" a mano":""}</button>`);
   if(o.estado==="repuesta") acts.push(`<button class="mini-btn" onclick="setEstado(${o.id},'entregada')">📦 Entregada</button>`);
   if(o.estado!=="cancelada"&&o.estado!=="entregada") acts.push(`<button class="mini-btn" onclick="setEstado(${o.id},'cancelada')">Cancelar</button>`);
   return `<div class="obody">
     ${lineas}
     ${recibir}
+    ${ocEstado(o)}
     <div class="acts">${acts.join("")}</div>
     ${bitacora(o)}
   </div>`;
+}
+/* Estado REAL de la compra, leído de Odoo. Mientras no responda muestra lo guardado. */
+function ocEstado(o){
+  if(!o.po_id) return "";
+  const i=POINFO.get(o.id);
+  const link=`<a href="${ocLink(o.po_id)}" target="_blank">${esc(o.po_name||("OC #"+o.po_id))} ↗</a>`;
+  const prov=o.proveedor_nombre?` a <b>${esc(o.proveedor_nombre)}</b>`:"";
+  if(!i) return `<div class="ocbox">🧾 Orden de compra ${link}${prov} — leyendo el estado en Odoo…</div>`;
+  const falta=Math.max(0,(i.pedido||0)-(i.recibido||0));
+  if(i.recibido>0 && falta<=0) return `<div class="ocbox ok">✅ <b>Ya entró la mercadería</b> — ${nf(i.recibido)} u por ${link}${prov}.</div>`;
+  if(i.recibido>0) return `<div class="ocbox">📦 Entró una parte: <b>${nf(i.recibido)} de ${nf(i.pedido)} u</b> por ${link}${prov}. Faltan ${nf(falta)}.</div>`;
+  if(i.state==="cancel") return `<div class="ocbox">⚠️ La orden ${link} está <b>cancelada</b> en Odoo. Volvé a pedirla o cancelá esta reposición.</div>`;
+  if(i.state==="draft") return `<div class="ocbox">📝 ${link}${prov} está en <b>borrador</b>: hay que confirmarla en Odoo para que el proveedor la reciba. Pedido: ${nf(i.pedido)} u.</div>`;
+  return `<div class="ocbox">🚚 ${link}${prov} — <b>${esc(PO_LBL[i.state]||i.state)}</b>, ${nf(i.pedido)} u en camino. Cuando entren, esta orden pasa sola a Repuesta.</div>`;
 }
 function bitacora(o){
   if(!o.logs.length) return "";
@@ -195,7 +292,7 @@ function cardComMio(o){
   const puede = o.estado==="abierta";
   return `<div class="ordcard ${cerrada(o)?'cerrada':''} ${o.estado==='abierta'?'abierta':''}">
     <div class="oh" style="cursor:default">
-      <div class="nm"><b>${esc(o.producto_nombre||"—")}</b><span>${mias.map(l=>`${esc(l.cliente_nombre||"—")}: ${nf(l.cantidad)}`).join(" · ")}</span></div>
+      <div class="nm"><b>${esc(o.producto_nombre||"—")}</b><span>${mias.map(l=>`${esc(l.cliente_nombre||"—")}: ${nf(l.cantidad)}`).join(" · ")}${o.estado==="en_compra"&&o.proveedor_nombre?` · <b>ya se le pidió a ${esc(o.proveedor_nombre)}</b>`:""}</span></div>
       <div class="tot"><b>${nf(total)}</b><span>tus unid.</span></div>
       <span class="badge b-${o.estado}">${EST_LBL[o.estado]||o.estado}</span>
     </div>
@@ -282,6 +379,130 @@ async function guardarEditarProducto(id){
     cerrarOv(); toast("✓ Producto actualizado — se avisó a los comerciales"); await cargar();
   }catch(e){ alert("No se pudo guardar: "+(e.message||e)); }
 }
+/* ============ PEDIR AL PROVEEDOR: de la reposición a la compra real ============
+   Acá se cierra el circuito que faltaba. Antes "En compra" era un cartel puesto a
+   mano y no generaba nada. Ahora este botón:
+     1) trae de Odoo los proveedores de ESE producto (con precio y mínimo),
+     2) si ese proveedor ya tiene un borrador de OC abierto, ofrece SUMARLE el
+        producto en vez de crear otro borrador suelto,
+     3) crea/actualiza la purchase.order en Odoo,
+     4) guarda po_id en la orden y la pasa a "En compra" sola.
+   El estado "En compra" pasa a significar algo verificable: hay una OC. */
+let PROV={ordenId:null, items:[], sel:null, borradores:{}, destino:"nueva", cant:0, busca:[]};
+async function pedirProveedor(id){
+  const o=BYID.get(id); if(!o) return;
+  if(o.po_id){ toast("Esta orden ya tiene una OC generada"); return; }
+  const ov=document.getElementById("ov");
+  PROV={ordenId:id, items:[], sel:null, borradores:{}, destino:"nueva",
+        cant:(o.cantidad_recibir!=null?o.cantidad_recibir:o.total)||1, busca:[]};
+  ov.innerHTML=`<div class="modbox" style="width:520px"><h3>🛒 Pedir al proveedor</h3>
+    <p style="font-size:13px;color:var(--gris);margin:4px 0 6px">${esc(o.producto_nombre||"")}</p>
+    <div id="pv-body" style="margin-top:10px"><div class="spin" style="margin:30px auto"></div></div></div>`;
+  ov.classList.add("on");
+  try{
+    const prod=await rpc("product.product","read",[[o.producto_id],["seller_ids","uom_po_id","standard_price","name"]]);
+    const p=(prod||[])[0]||{};
+    PROV.uomPo=p.uom_po_id?p.uom_po_id[0]:1; PROV.costo=p.standard_price||0; PROV.nombreOdoo=p.name||o.producto_nombre;
+    const sids=p.seller_ids||[];
+    const si=sids.length? await rpc("product.supplierinfo","read",[sids,["partner_id","price","min_qty","sequence","delay"]]) : [];
+    const map={};
+    for(const s of (si||[]).sort((a,b)=>(a.sequence||0)-(b.sequence||0))){
+      if(!s.partner_id || s.partner_id[0]===PROVEEDOR_T) continue;     // la compra informal va por fuera
+      const pid=s.partner_id[0];
+      if(!map[pid] || (s.min_qty||1)<map[pid].minQty)
+        map[pid]={id:pid,name:s.partner_id[1],price:s.price>0?s.price:0,minQty:s.min_qty||1,delay:s.delay||7};
+    }
+    PROV.items=Object.values(map);
+    if(PROV.items.length) PROV.sel=PROV.items[0].id;
+    await cargarBorradores(PROV.items.map(x=>x.id));
+    pintarProv();
+  }catch(e){ document.getElementById("pv-body").innerHTML=`<div style="font-size:13px;color:var(--red)">No pude leer los proveedores de Odoo: ${esc(e.message||e)}</div>`; }
+}
+/* Borradores de OC ya abiertos por proveedor: para no llenar Odoo de órdenes sueltas. */
+async function cargarBorradores(ids){
+  PROV.borradores={};
+  if(!ids.length) return;
+  try{
+    const pos=await rpc("purchase.order","search_read",[[["state","in",["draft","sent"]],["partner_id","in",ids]]],
+      {fields:["name","partner_id","state","amount_untaxed"],order:"id desc",limit:200});
+    (pos||[]).forEach(p=>{ const k=p.partner_id[0]; if(!PROV.borradores[k]) PROV.borradores[k]=[]; PROV.borradores[k].push(p); });
+  }catch(e){}
+}
+function pintarProv(){
+  const o=BYID.get(PROV.ordenId); if(!o) return;
+  const b=document.getElementById("pv-body"); if(!b) return;
+  const lista=PROV.items.length?PROV.items:PROV.busca;
+  const minP=lista.filter(x=>x.price>0).reduce((m,x)=>m==null?x.price:Math.min(m,x.price),null);
+  const filas=lista.map((p,i)=>`<div class="provrow ${PROV.sel===p.id?'on':''}" onclick="selProv(${p.id})">
+      <div class="pn"><b>${esc(p.name)}${PROV.items.length&&i===0?' <span class="tagmini">preferido</span>':''}${lista.length>1&&minP!=null&&p.price===minP&&p.price>0?' <span class="tagmini cheap">más barato</span>':''}</b>
+        <span>${p.price>0?money(p.price)+" /u":"sin precio cargado"}${p.minQty>1?` · mínimo ${nf(p.minQty)} u`:""}${PROV.borradores[p.id]?` · ${PROV.borradores[p.id].length} borrador${PROV.borradores[p.id].length===1?"":"es"} abierto${PROV.borradores[p.id].length===1?"":"s"}`:""}</span></div>
+    </div>`).join("");
+  const sel=lista.find(x=>x.id===PROV.sel);
+  const brs=sel?(PROV.borradores[sel.id]||[]):[];
+  const destino = brs.length? `<label>Dónde va</label>
+    <div class="provrow ${PROV.destino==="nueva"?'on':''}" onclick="selDest('nueva')"><div class="pn"><b>Crear una orden de compra nueva</b><span>queda en borrador en Odoo, sin confirmar</span></div></div>
+    ${brs.map(p=>`<div class="provrow ${PROV.destino===("po:"+p.id)?'on':''}" onclick="selDest('po:${p.id}')"><div class="pn"><b>Sumarlo a ${esc(p.name)}</b><span>${esc(PO_LBL[p.state]||p.state)} · ${money(p.amount_untaxed||0)} — evitás otro borrador suelto</span></div></div>`).join("")}`:"";
+  const aviso = sel&&sel.minQty>1&&PROV.cant<sel.minQty
+    ? `<div style="font-size:12px;color:var(--yel);font-weight:700;margin-top:6px">⚠ ${esc(sel.name)} pide un mínimo de ${nf(sel.minQty)} u.</div>`:"";
+  b.innerHTML = (lista.length? `<label>Proveedor</label>${filas}${destino}` :
+      `<div style="font-size:13px;color:var(--gris);margin-bottom:8px">Este producto <b>no tiene proveedor cargado</b> en Odoo. Buscá a quién comprárselo:</div>
+       <input id="pv-q" placeholder="Buscar proveedor…" oninput="buscarProv(this.value)">`)
+    + `<label>Cantidad a pedir</label><input id="pv-cant" type="number" min="1" value="${PROV.cant}" oninput="PROV.cant=parseInt(this.value)||0;pintarProv()">
+       <div style="font-size:12px;color:var(--gris);margin-top:5px">Los comerciales pidieron <b>${nf(o.total)} u</b>${o.cantidad_recibir!=null?` · fijaste recibir <b>${nf(o.cantidad_recibir)}</b>`:""}${sel&&sel.price>0?` · total estimado <b>${money(sel.price*PROV.cant)}</b>`:""}</div>
+       ${aviso}
+       <div class="mb"><button class="mini-btn" onclick="cerrarOv()">Cancelar</button>
+         <button class="mini-btn pri" id="pv-ok" onclick="generarOC()" ${PROV.sel?"":"disabled style=opacity:.5"}>Generar orden de compra</button></div>`;
+}
+function selProv(id){ PROV.sel=id; PROV.destino="nueva"; pintarProv(); }
+function selDest(d){ PROV.destino=d; pintarProv(); }
+const buscarProv=EYG.debounce(async q=>{
+  q=(q||"").trim(); if(q.length<3){ PROV.busca=[]; return; }
+  try{
+    const r=await rpc("res.partner","search_read",[[["supplier_rank",">",0],["name","ilike",q],["id","!=",PROVEEDOR_T]]],{fields:["name"],limit:12});
+    PROV.busca=(r||[]).map(x=>({id:x.id,name:x.name,price:0,minQty:1,delay:7}));
+    const inp=document.getElementById("pv-q"); const val=inp?inp.value:"";
+    pintarProv(); const n=document.getElementById("pv-q"); if(n){ n.value=val; n.focus(); }
+  }catch(e){}
+},350);
+
+async function generarOC(){
+  const o=BYID.get(PROV.ordenId); if(!o) return;
+  const lista=PROV.items.length?PROV.items:PROV.busca;
+  const p=lista.find(x=>x.id===PROV.sel);
+  if(!p){ toast("Elegí un proveedor"); return; }
+  const cant=PROV.cant;
+  if(!(cant>0)){ toast("Poné una cantidad"); return; }
+  const suma=PROV.destino.startsWith("po:");
+  const poExist=suma?parseInt(PROV.destino.slice(3),10):null;
+  const brs=PROV.borradores[p.id]||[]; const nom=suma?(brs.find(x=>x.id===poExist)||{}).name:null;
+  if(!confirm(suma
+      ? `¿Sumar ${nf(cant)} u de este producto a la orden ${nom||("#"+poExist)} de ${p.name}?`
+      : `¿Crear una orden de compra a ${p.name} por ${nf(cant)} u?\n\nQueda en BORRADOR en Odoo, sin confirmar: revisala y confirmala desde ahí.`)) return;
+  const btn=document.getElementById("pv-ok"); if(btn){ btn.disabled=true; btn.textContent="Generando en Odoo…"; }
+  try{
+    const dp=new Date(); dp.setDate(dp.getDate()+(p.delay||7));
+    const precio=p.price>0?p.price:(PROV.costo||0);
+    const linea=[0,0,{product_id:o.producto_id, product_qty:cant, price_unit:Math.round(precio*100)/100,
+      product_uom:PROV.uomPo, name:PROV.nombreOdoo||o.producto_nombre, date_planned:dp.toISOString().slice(0,10)+" 00:00:00"}];
+    let poId, poName;
+    if(suma){ await rpc("purchase.order","write",[[poExist],{order_line:[linea]}]); poId=poExist; poName=nom||("#"+poExist); }
+    else{ poId=await rpc("purchase.order","create",[{partner_id:p.id, order_line:[linea]}]);
+          const info=await rpc("purchase.order","read",[[poId],["name"]]); poName=(info&&info[0])?info[0].name:("#"+poId); }
+    const {error}=await EYG.supa().from("reposicion_orden").update({
+      estado:"en_compra", proveedor_id:p.id, proveedor_nombre:p.name, po_id:poId, po_name:poName,
+      po_ts:new Date().toISOString(), cantidad_recibir:cant,
+      ult_mod_por:(PERFIL.nombre||PERFIL.email), ult_mod_ts:new Date().toISOString()}).eq("id",PROV.ordenId);
+    if(error) throw error;
+    await _log(PROV.ordenId, suma?"oc_agregar":"oc_crear", `${nf(cant)} u a ${p.name} · ${poName}`);
+    await avisarComerciales(o, "🛒 Ya se pidió al proveedor lo que reservaste",
+      `"${o.producto_nombre}" se le pidió a ${p.name} (${nf(cant)} u, orden ${poName}). Te avisamos de nuevo cuando entre la mercadería.`);
+    cerrarOv(); toast("✓ "+(suma?"Sumado a ":"Orden ")+poName); await cargar();
+  }catch(e){
+    if(btn){ btn.disabled=false; btn.textContent="Generar orden de compra"; }
+    alert("No se pudo generar la orden en Odoo: "+(e.message||e));
+  }
+}
+
 // gestión: editar cantidad a recibir
 async function editarRecibir(id){
   const v=parseFloat((document.getElementById("rec-"+id).value||"").replace(",","."));
@@ -302,10 +523,15 @@ async function aceptar(id){
 }
 async function setEstado(id,estado){
   if(estado==="cancelada" && !confirm("¿Cancelar esta orden de reposición?")) return;
+  const o=BYID.get(id);
   try{
     const {error}=await EYG.supa().from("reposicion_orden").update({estado}).eq("id",id);
     if(error) throw error;
-    await _log(id,estado); toast("✓ "+(EST_LBL[estado]||estado)); await cargar();
+    await _log(id,estado);
+    // Repuesta a mano (llegó por otra vía, o sin OC): el comercial también tiene que enterarse.
+    if(estado==="repuesta" && o) await avisarComerciales(o, "✅ Ya llegó lo que pediste reponer",
+      `Ya hay stock de "${o.producto_nombre}". Cerrá la venta con tu cliente.`);
+    toast("✓ "+(EST_LBL[estado]||estado)); await cargar();
   }catch(e){ alert("No se pudo actualizar: "+(e.message||e)); }
 }
 </script>
