@@ -184,6 +184,13 @@
   .repo-tools{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
   .repo-prov{border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:13px;background:var(--surface);color:var(--ink);max-width:280px;cursor:pointer}
   .repo-prov:focus{outline:none;border-color:var(--teal)}
+  .badge-ok{display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;background:#e7f3f1;color:var(--teal-deep);border:1px solid #bfe0dc}
+  .badge-no{display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;background:#fdeceb;color:#8E1F14;border:1px solid #f1b4ad}
+  .link-und{font-size:11px;color:var(--teal-deep);cursor:pointer;text-decoration:underline}
+  .row-acts{display:flex;gap:6px;justify-content:flex-end;margin-top:6px;flex-wrap:wrap}
+  .chip-act{font-size:10.5px;font-weight:700;padding:4px 10px;border-radius:20px;border:1px solid var(--line);background:var(--surface);cursor:pointer;transition:.12s;white-space:nowrap}
+  .chip-act.ok{color:var(--teal-deep);border-color:#bfe0dc}.chip-act.ok:hover{background:#e7f3f1}
+  .chip-act.no{color:#8E1F14;border-color:#f1b4ad}.chip-act.no:hover{background:#fdeceb}
   .tr-r{text-align:right;font-variant-numeric:tabular-nums}
   .cname{font-weight:700;font-size:13.5px;line-height:1.3;white-space:normal;overflow-wrap:anywhere}
   .cmeta{font-size:11.5px;color:var(--gris2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -356,7 +363,7 @@ let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
 let STOCK_CRIT=new Set(), STOCK_PED=new Set();   // marcas manuales de German (param eyg.stock_modo): siempre-en-stock / siempre-contra-pedido
 let qBuscar="", QCACHE=[];   // buscador de la lista de quiebres
 let rBuscar="", rProv="", rVista="reponer", RCACHE=[];   // buscador + filtro proveedor + vista (reponer/pedidos)
-let PEDIDOS_OC={}, PEDIDO_MANUAL={};   // productos ya en una OC (borrador/enviado, auto) / marcados a mano como pedidos (param eyg.stock_pedido_manual)
+let PEDIDOS_OC={}, PEDIDO_MANUAL={}, DESCARTADO={};   // ya en OC (auto) / marcados pedidos a mano (eyg.stock_pedido_manual) / descartados "no pedir" (eyg.stock_descartados)
 let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
 let rfiltro={q:"",soloRepo:true,sortK:"margenAnual",dir:-1};
 let CAT={loaded:false,loading:false,rows:[],fams:[],labs:[],provs:[]};
@@ -376,7 +383,7 @@ async function cargar(){
     const ini3=new Date(HOY.getFullYear(),HOY.getMonth()-3,1);
 
     prog("stock, ventas y compras…");
-    const [stock, ventas, ventas3, so, po, cad, comprasF, modoParam, pedidosOC, pedidoManParam, cartsParam] = await Promise.all([
+    const [stock, ventas, ventas3, so, po, cad, comprasF, modoParam, pedidosOC, pedidoManParam, descartParam] = await Promise.all([
       rpc("stock.quant","read_group",[[["location_id.usage","=","internal"],["quantity","!=",0]],["value:sum","quantity:sum"],["product_id"]],{lazy:false,limit:6000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini12)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini3)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
@@ -387,7 +394,7 @@ async function cargar(){
       rpc("ir.config_parameter","get_param",["eyg.stock_modo"]).catch(()=>null),
       rpc("purchase.order.line","search_read",[[["state","in",["draft","sent"]],["product_id","!=",false]]],{fields:["product_id","product_qty","order_id","state"],limit:3000}).catch(()=>[]),
       rpc("ir.config_parameter","get_param",["eyg.stock_pedido_manual"]).catch(()=>null),
-      rpc("ir.config_parameter","get_param",["eyg.stock_carritos"]).catch(()=>null),
+      rpc("ir.config_parameter","get_param",["eyg.stock_descartados"]).catch(()=>null),
     ]);
 
     const CF={}; for(const c of comprasF){ if(c.product_id) CF[c.product_id[0]]=c.__count||0; }   // veces que EyG compró cada producto en 12m
@@ -396,17 +403,22 @@ async function cargar(){
     PEDIDOS_OC={}; for(const l of pedidosOC){ if(!l.product_id) continue; const id=l.product_id[0];
       const e=PEDIDOS_OC[id]||(PEDIDOS_OC[id]={qty:0,orders:[],state:l.state}); e.qty+=l.product_qty||0; const on=l.order_id?l.order_id[1]:""; if(on&&!e.orders.includes(on)) e.orders.push(on); }
     try{ PEDIDO_MANUAL=pedidoManParam?JSON.parse(pedidoManParam):{}; }catch(e){ PEDIDO_MANUAL={}; }
-    // carritos persistidos (se retoman entre sesiones/dispositivos)
-    try{ CARTS=cartsParam?JSON.parse(cartsParam):{}; }catch(e){ CARTS={}; }
+    try{ DESCARTADO=descartParam?JSON.parse(descartParam):{}; }catch(e){ DESCARTADO={}; }
+    // carritos persistidos EN CORE (localStorage del navegador), no en Odoo
+    try{ CARTS=JSON.parse(localStorage.getItem("eyg_stock_carritos")||"{}"); }catch(e){ CARTS={}; }
     const V={}, F={}, V3={};
     for(const v of ventas){ if(v.product_id){ V[v.product_id[0]]=v.product_uom_qty||0; F[v.product_id[0]]=v.__count||0; } }
     for(const v of ventas3){ if(v.product_id) V3[v.product_id[0]]=v.product_uom_qty||0; }
     for(const g of cad){ if(g.partner_id) CAD[g.partner_id[0]]=g.__count||0; }
     const stockIds=stock.filter(s=>s.product_id).map(s=>s.product_id[0]);
+    const stockSet=new Set(stockIds);
+    // productos que VENDEN pero NO tienen stock/quant (se vaciaron del todo) → quiebres que el panel no veía. Se suman.
+    const extraIds=Object.keys(V).map(Number).filter(id=>V[id]>0 && !stockSet.has(id));
+    const allIds=[...stockIds, ...extraIds];
 
     prog("categorías, proveedores y en camino…");
     const [meta, quantsLote] = await Promise.all([
-      rpc("product.product","read",[stockIds,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","incoming_qty","seller_ids","uom_po_id","active","qty_available","x_costo_manual","x_costo_manual_date","x_oportunidad"]]),
+      rpc("product.product","read",[allIds,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","incoming_qty","seller_ids","uom_po_id","active","qty_available","x_costo_manual","x_costo_manual_date","x_oportunidad"]]),
       rpc("stock.quant","search_read",[[["location_id.usage","=","internal"],["quantity",">",0],["lot_id","!=",false]],["product_id","lot_id","quantity","value"]],{limit:5000}),
     ]);
     const M={}; for(const m of meta) M[m.id]=m;
@@ -434,12 +446,13 @@ async function cargar(){
       if(mh!==null){ if(mh<vp.min)vp.min=mh; if(mh<0)vp.venc+=q.value; else if(mh<6)vp.v6+=q.value; else if(mh<12)vp.v12+=q.value; }
     }
 
-    DATA=stock.filter(s=>s.product_id).map(s=>{
-      const id=s.product_id[0], m=M[id]||{}, vp=vencP[id]||{};
+    // s = fila de stock.quant (o null para los que venden sin stock: qty=0, val=0)
+    const mkRow=(id, s)=>{
+      const m=M[id]||{}, vp=vencP[id]||{};
       const ventaU=Math.round(V[id]||0), venta3=Math.round(V3[id]||0), freq=Math.round(F[id]||0);
       const cost=m.standard_price||0, qa=Math.round(m.qty_available||0);
       const qty=qa;                                 // cantidad = on-hand real (neto, como en Odoo)
-      const val=Math.round(s.value||0);             // valor NETO de Odoo (suma de todos los quants) — sin inventar nada
+      const val=s?Math.round(s.value||0):0;         // valor NETO de Odoo; sin quant = 0
       const valRoto = val<0;                        // Odoo lo valoriza en negativo (roto por stock negativo) → a "A revisar"
       const meses = ventaU>0 ? qty/(ventaU/12) : 999;
       const sellers=(m.seller_ids||[]).map(sid=>SI[sid]).filter(Boolean).sort((a,b)=>(a.sequence||0)-(b.sequence||0));
@@ -451,7 +464,7 @@ async function cargar(){
         if(!provMap[pid] || (x.min_qty||1)<provMap[pid].minQty) provMap[pid]={id:pid,name:x.partner_id[1],price:x.price>0?x.price:0,minQty:x.min_qty||1}; }
       const provs=Object.values(provMap);
       const costoU=cost, pvp=m.list_price||0;
-      return {id, code:m.default_code||"", archivado:m.active===false, valRoto, qa, xop:!!m.x_oportunidad, manualC:m.x_costo_manual||0, manualD:m.x_costo_manual_date||null, name:s.product_id[1], fam:familia(m.categ_id),
+      return {id, code:m.default_code||"", archivado:m.active===false, valRoto, qa, xop:!!m.x_oportunidad, manualC:m.x_costo_manual||0, manualD:m.x_costo_manual_date||null, name:(s?s.product_id[1]:(m.name||("#"+id))), fam:familia(m.categ_id),
         categ:m.categ_id?m.categ_id[1]:"", tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, val, qty, ventaU, venta3, freq, compraFreq:Math.round(CF[id]||0),
         incoming:Math.round(m.incoming_qty||0),
         meses: meses>900?999:Math.round(meses*10)/10,
@@ -462,7 +475,8 @@ async function cargar(){
         uomPo:m.uom_po_id?m.uom_po_id[0]:1, viaOtra:!formal&&hayT,
         min:(vp.min!==undefined&&vp.min<9999)?Math.round(vp.min*10)/10:null,
         valVenc:valRoto?0:Math.round(vp.venc||0), val6:valRoto?0:Math.round(vp.v6||0), val12:valRoto?0:Math.round(vp.v12||0)};
-    });
+    };
+    DATA=stock.filter(s=>s.product_id).map(s=>mkRow(s.product_id[0], s)).concat(extraIds.map(id=>mkRow(id, null)));
     // apartar de las listas normales: archivados y valorización rota
     const TODOS=DATA;
     ARCH=TODOS.filter(r=>r.archivado).sort((a,b)=>b.val-a.val);
@@ -562,7 +576,7 @@ function repoData(){
   // quiebres = sin stock y con ventas; los priorizo por clase (constante primero) y margen
   const quiebreRows=rows.filter(x=>x.rp.quiebre)
     .sort((a,b)=>(CLASE_ORD[a.rp.clase]-CLASE_ORD[b.rp.clase])||(b.r.margenAnual-a.r.margenAnual)||(b.r.freq-a.r.freq));
-  const quiebresCriticos=quiebreRows.filter(x=>x.rp.deStock)   // los que EyG STOCKEA y quedaron en 0 → quiebre real, reponé ya
+  const quiebresCriticos=quiebreRows.filter(x=>x.rp.deStock && !pedidoInfo(x.r.id) && !esDescartado(x.r.id))   // de stock, sin resolver (ni pedido ni descartado)
     .sort((a,b)=>(b.r.freq-a.r.freq)||(b.r.margenAnual-a.r.margenAnual)||(b.r.ventaU-a.r.ventaU)); // por URGENCIA = cuán seguido te lo piden (rotación); plata como desempate
   const quiebresEspor=quiebreRows.filter(x=>!x.rp.deStock)     // no los stockeás (contra pedido / otro proveedor)
     .sort((a,b)=>b.r.ventaU-a.r.ventaU);
@@ -994,7 +1008,7 @@ function reponerSeccion(rd){
     <h2 class="sec">Todo lo que hay que reponer<span class="hint">${rd.necesita.length} producto${rd.necesita.length===1?"":"s"} · filtrá por proveedor y armá el carrito</span></h2>
     <div class="pcard">
       <div class="repo-tools">
-        <div class="qa-search" style="flex:1;margin:0;min-width:180px"><input id="rbuscar" placeholder="Buscar producto o proveedor…" value="${esc(rBuscar)}" oninput="rBuscar=this.value;pintarRepo()"></div>
+        <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input id="rbuscar" placeholder="Buscar producto o proveedor…" value="${esc(rBuscar)}" oninput="rBuscar=this.value;pintarRepo()"></div>
         <select class="repo-prov" id="rprov" onchange="rProv=this.value;pintarRepo()">${provOpts}</select>
       </div>
       <div id="rlist">${reponerListaHTML()}</div>
@@ -1033,20 +1047,22 @@ function reponerListaHTML(){
     return true;
   };
   const base=RCACHE.filter(pasa);
-  const porReponer=base.filter(x=>!pedidoInfo(x.r.id));
+  const porReponer=base.filter(x=>!pedidoInfo(x.r.id) && !esDescartado(x.r.id));
   const yaPedidos=base.filter(x=>pedidoInfo(x.r.id));
+  const noPedir=base.filter(x=>esDescartado(x.r.id));
   const seg=`<div class="segs" style="margin-bottom:12px">
     <button class="${rVista==='reponer'?'on':''}" onclick="rVista='reponer';pintarRepo()">Por reponer · ${porReponer.length}</button>
-    <button class="${rVista==='pedidos'?'on':''}" onclick="rVista='pedidos';pintarRepo()">📦 Ya pedidos · ${yaPedidos.length}</button></div>`;
-  const rows = rVista==="pedidos" ? yaPedidos : porReponer;
-  if(!rows.length) return seg+`<div class="qa-empty" style="color:var(--gris)">${rVista==="pedidos"?"Nada pedido con este filtro.":"Nada por reponer con este filtro. 👌"}</div>`;
+    <button class="${rVista==='pedidos'?'on':''}" onclick="rVista='pedidos';pintarRepo()">📦 Ya pedidos · ${yaPedidos.length}</button>
+    <button class="${rVista==='nopedir'?'on':''}" onclick="rVista='nopedir';pintarRepo()">🚫 No pedir · ${noPedir.length}</button></div>`;
+  const rows = rVista==="pedidos" ? yaPedidos : rVista==="nopedir" ? noPedir : porReponer;
+  if(!rows.length) return seg+`<div class="qa-empty" style="color:var(--gris)">${rVista==="pedidos"?"Nada pedido con este filtro.":rVista==="nopedir"?"Nada descartado.":"Nada por reponer con este filtro. 👌"}</div>`;
   const enCart=id=>Object.keys(CARTS).some(k=>CARTS[k].items.some(it=>it.id===id));
   const provFiltrado = (rVista==="reponer" && rProv && rProv!=="_none") ? rows : null;
   const addAll = provFiltrado ? `<div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <button class="wa-send" style="margin:0;width:auto;padding:9px 16px" onclick="addAllToCart()">🛒 Agregar los ${provFiltrado.length} al carrito de ${esc(provFiltrado[0].r.provName||'')}</button>
       <span style="font-size:12px;color:var(--gris)">total estimado ${money(provFiltrado.reduce((a,x)=>a+x.rp.sug*(x.r.provPrice||x.r.costoU||0),0))}</span></div>` : "";
   const cap=Math.min(rows.length,200);
-  const ultCol = rVista==="pedidos" ? "Estado del pedido" : "Carrito";
+  const ultCol = rVista==="reponer" ? "Acciones" : rVista==="pedidos" ? "Pedido" : "Descartado";
   return seg+addAll+`<div class="tablecard"><div class="thead g-rep">
       <div title="Producto y proveedor">Producto</div>
       <div title="Urgencia = cuán seguido te lo piden">Urgencia</div>
@@ -1058,12 +1074,14 @@ function reponerListaHTML(){
       let acc;
       if(rVista==="pedidos"){
         acc = pinf.tipo==="oc"
-          ? `<span class="tagmini" style="background:#eef6f5;color:var(--teal-deep)" title="Detectado en Odoo">📦 en ${esc(pinf.orders.join(", "))}</span>`
-          : `<span class="tagmini" style="background:#eef6f5;color:var(--teal-deep)">✓ pedido a mano${pinf.fecha?" · "+pinf.fecha.split("-").reverse().join("/"):""}</span><div style="margin-top:5px"><a onclick="event.stopPropagation();desmarcarPedido(${r.id})" style="font-size:11px;color:var(--teal-deep);cursor:pointer;text-decoration:underline">↩ volver a reponer</a></div>`;
+          ? `<span class="badge-ok" title="Detectado en una orden de Odoo">📦 ${esc(pinf.orders.join(", "))}</span>`
+          : `<span class="badge-ok">✓ pedido a mano${pinf.fecha?" · "+pinf.fecha.split("-").reverse().join("/"):""}</span><div style="margin-top:5px"><a class="link-und" onclick="event.stopPropagation();desmarcarPedido(${r.id})">↩ volver</a></div>`;
+      } else if(rVista==="nopedir"){
+        acc = `<span class="badge-no">🚫 no pedir${DESCARTADO[r.id]&&DESCARTADO[r.id].fecha?" · "+DESCARTADO[r.id].fecha.split("-").reverse().join("/"):""}</span><div style="margin-top:5px"><a class="link-und" onclick="event.stopPropagation();undescartar(${r.id})">↩ volver</a></div>`;
       } else {
         const cart = r.provId ? `<button class="mini-btn" ${inC?'disabled style="opacity:.55"':'style="background:var(--teal);color:#fff;border-color:var(--teal)"'} onclick="event.stopPropagation();addToCart(${r.id},${r.provId},'${esc(r.provName||'').replace(/'/g,'')}',${r.provPrice||0},${rp.sug})">${inC?'✓ en carrito':'＋ Carrito'}</button>`
           : (r.viaOtra?'<span class="tagmini">otra vía</span>':'<span class="tagmini" style="background:#f6e5e2;color:#8E1F14">sin prov.</span>');
-        acc = cart+`<div style="margin-top:5px"><a onclick="event.stopPropagation();marcarPedido(${r.id})" style="font-size:11px;color:var(--gris);cursor:pointer;text-decoration:underline">marcar ya pedido</a></div>`;
+        acc = cart+`<div class="row-acts"><button class="chip-act ok" onclick="event.stopPropagation();marcarPedido(${r.id})" title="Ya lo pediste">✓ ya pedido</button><button class="chip-act no" onclick="event.stopPropagation();descartar(${r.id})" title="No pedir este producto">🚫 no pedir</button></div>`;
       }
       return `<div class="row g-rep">
         <div style="cursor:pointer" onclick="abrirProd(${r.id})"><div class="cname" style="color:var(--teal-deep)">${esc(cleanName(r.name))}</div><div class="cmeta">${r.provName?esc(r.provName):(r.viaOtra?"reposición directa":"sin proveedor")} · te lo piden ${r.freq}×/año${r.incoming>0?` · ${r.incoming} en camino`:""}</div></div>
@@ -1083,8 +1101,12 @@ function pedidoInfo(id){
   return null;
 }
 async function savePedidoManual(){ try{ await rpc("ir.config_parameter","set_param",["eyg.stock_pedido_manual", JSON.stringify(PEDIDO_MANUAL)]); }catch(e){} }
-function marcarPedido(id){ PEDIDO_MANUAL[id]={fecha:iso(HOY)}; savePedidoManual(); pintarRepo(); toast("✓ Marcado como ya pedido"); }
+function marcarPedido(id){ PEDIDO_MANUAL[id]={fecha:iso(HOY)}; delete DESCARTADO[id]; savePedidoManual(); saveDescartados(); pintarRepo(); toast("✓ Marcado como ya pedido"); }
 function desmarcarPedido(id){ delete PEDIDO_MANUAL[id]; savePedidoManual(); pintarRepo(); toast("↩ De vuelta a reponer"); }
+async function saveDescartados(){ try{ await rpc("ir.config_parameter","set_param",["eyg.stock_descartados", JSON.stringify(DESCARTADO)]); }catch(e){} }
+function descartar(id){ DESCARTADO[id]={fecha:iso(HOY)}; delete PEDIDO_MANUAL[id]; saveDescartados(); savePedidoManual(); pintarRepo(); toast("🚫 Descartado — no se pedirá"); }
+function undescartar(id){ delete DESCARTADO[id]; saveDescartados(); pintarRepo(); toast("↩ De vuelta a reponer"); }
+const esDescartado=id=>!!DESCARTADO[id];
 function addAllToCart(){
   if(!rProv || rProv==="_none") return;
   const rows=RCACHE.filter(x=>String(x.r.provId)===String(rProv) && !pedidoInfo(x.r.id));
@@ -1627,9 +1649,10 @@ function cartOf(prov,provName){ if(!CARTS[prov]) CARTS[prov]={prov,provName,item
 function cur(){ return curCart!=null ? CARTS[curCart] : null; }
 function cartTotal(c){ return c.items.reduce((a,it)=>a+it.qty*it.precio,0); }
 function cartsActivos(){ return Object.keys(CARTS).map(k=>CARTS[k]).filter(c=>c.items.length||c.poId); }
-// Persistencia de los carritos en un parámetro de Odoo (compartido, sobrevive recargas y dispositivos)
-async function saveCarts(){ try{ await rpc("ir.config_parameter","set_param",["eyg.stock_carritos", JSON.stringify(CARTS)]); }catch(e){} }
-let tSaveCarts=null; function saveCartsSoon(){ clearTimeout(tSaveCarts); tSaveCarts=setTimeout(saveCarts, 700); }
+// Persistencia de los carritos EN CORE (localStorage del navegador) — NO en Odoo, para no generar basura.
+// A Odoo solo van cuando se crea el borrador de OC. Sobrevive recargas/navegación.
+function saveCarts(){ try{ localStorage.setItem("eyg_stock_carritos", JSON.stringify(CARTS)); }catch(e){} }
+function saveCartsSoon(){ saveCarts(); }
 // Nuevo carrito desde cero (elige proveedor a mano)
 function nuevaCompra(){ curCart=null; renderCompra(); document.getElementById("drawer").classList.add("on"); document.getElementById("scrim").classList.add("on"); }
 // Agregar un producto AL CARRITO DE SU PROVEEDOR (lo crea si no existe). No abre el drawer.
