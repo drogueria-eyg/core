@@ -231,6 +231,10 @@
   .citem .ci-r{margin-left:auto;text-align:right;flex:none}
   .citem .ci-u{font-size:11px;color:var(--gris);white-space:nowrap}
   .ci-disc{display:inline-block;background:var(--okbg);color:var(--ok);font-size:11px;font-weight:800;border-radius:7px;padding:2px 7px;line-height:1.25;white-space:nowrap}
+  /* IVA del producto: los comerciales lo necesitan a la vista mientras cargan (exento vs 21%) */
+  .citem .ci-iva{display:inline-block;font-size:10px;font-weight:800;border-radius:6px;padding:2px 6px;line-height:1.3;white-space:nowrap;margin-bottom:3px;letter-spacing:.2px}
+  .citem .ci-iva.ex{background:#EAF1F0;color:#4A6B68;border:1px solid #D3E2E0}
+  .citem .ci-iva.iva{background:#FBF0DA;color:#8A6A1F;border:1px solid #EAD6A6}
   .citem .ci-sub{font-weight:800;font-size:15px;color:var(--teal-deep);margin-top:1px}
   .ministep{display:flex;align-items:center;gap:5px;margin-top:7px}
   .ministep button{width:32px;height:32px;border-radius:8px;border:0;font-size:18px;font-weight:800;cursor:pointer;background:var(--agua);color:var(--teal-deep)}
@@ -329,7 +333,7 @@ let ST = {
   amount:{untaxed:0, total:0},
   syncing:false, dirty:false,
   // catálogo
-  fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, prodCache:{}, ofertaPids:new Set(), ofertaTmpls:new Set(), ofertaInfo:{}, ofertaRule:{}, _ofLoaded:false, cargandoCat:false,
+  fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, prodCache:{}, taxCache:{}, ofertaPids:new Set(), ofertaTmpls:new Set(), ofertaInfo:{}, ofertaRule:{}, _ofLoaded:false, cargandoCat:false,
   fisico:{}, comprometido:{}, _compTs:0,   // stock físico y comprometido (confirmado sin entregar) por producto → disponible
   cartOpen:false,
   vista:(function(){ try{ return localStorage.getItem("eyg_vender_vista")||"filas"; }catch(e){ return "filas"; } })(),  // "filas" | "grilla"
@@ -341,6 +345,59 @@ function ini(nombre){ const p=(nombre||"?").trim().split(/\s+/); return ((p[0]||
 function catCorta(cn){ return String(cn||"").replace("ALL / ","").split(" / ").slice(1).join(" · ") || String(cn||"").replace("ALL / ",""); }
 function plazoTxt(c){ const t=c&&c.property_payment_term_id; if(!t||!t[1]) return ""; const m=String(t[1]).match(/(\d+)/); return m?(m[1]+" días"):t[1]; }
 function nItems(){ return Object.values(ST.want).filter(q=>q>0).length; }
+
+/* ============================================================
+   IVA DEL PRODUCTO (lo que el comercial ve en Odoo)
+   ============================================================
+   Los comerciales necesitan saber, mientras cargan, si el producto es EXENTO
+   o lleva IVA — en EyG conviven las dos cosas (los éticos son exentos, los
+   descartables llevan 21%) y eso cambia el total que le van a decir al cliente.
+
+   De dónde sale el dato, en orden de confianza:
+     1) sale.order.line.tax_id — el impuesto REAL de la línea, ya con la
+        posición fiscal del cliente aplicada. Es exactamente lo que Odoo va a
+        facturar. Se usa siempre que la línea exista.
+     2) product.product.taxes_id — el impuesto de venta del producto. Se usa
+        para lo que todavía no se guardó como línea.
+   Los nombres se leen de account.tax una sola vez (no están hardcodeados: si
+   mañana cambian una alícuota en Odoo, el badge la sigue sin tocar código). */
+let TAXMAP=null;              // id de account.tax -> {label, exento}
+async function cargarImpuestos(){
+  if(TAXMAP) return TAXMAP;
+  try{
+    const tx=await rpc("account.tax","search_read",[[["type_tax_use","=","sale"]]],{fields:["id","name","amount","amount_type"],limit:100});
+    TAXMAP={};
+    (tx||[]).forEach(t=>{
+      const pct=(t.amount_type==="percent")?(t.amount||0):0;
+      const exento=!(pct>0);
+      TAXMAP[t.id]={ exento, label: exento ? "Exento" : ("IVA "+String(pct).replace(".",",")+"%") };
+    });
+  }catch(e){ TAXMAP=null; }
+  return TAXMAP;
+}
+/* Devuelve {label, exento} para una lista de ids de impuesto, o null si no se sabe.
+   Si un producto tuviera varios impuestos, manda el de alícuota > 0. */
+function ivaDe(taxIds){
+  if(!TAXMAP || !taxIds || !taxIds.length) return null;
+  const info=taxIds.map(id=>TAXMAP[id]).filter(Boolean);
+  if(!info.length) return null;
+  return info.find(x=>!x.exento) || info[0];
+}
+/* El impuesto de un producto del carrito: primero la línea de Odoo, si no el producto. */
+function ivaDeProducto(pid){
+  const l=ST.lines[pid];
+  if(l && l.taxIds && l.taxIds.length){ const v=ivaDe(l.taxIds); if(v) return v; }
+  const p=(ST.prods||[]).find(x=>x.id==pid) || ST.taxCache[pid];
+  return p ? ivaDe(p.taxes_id) : null;
+}
+/* El carrito sobrevive a los cambios de familia y de búsqueda, pero ST.prods no:
+   guardamos el impuesto de todo lo que pasó por el catálogo para no perder el badge. */
+function recordarImpuestos(prods){ (prods||[]).forEach(p=>{ if(p&&p.id) ST.taxCache[p.id]={taxes_id:p.taxes_id||[]}; }); }
+function badgeIVA(pid){
+  const v=ivaDeProducto(pid);
+  if(!v) return "";
+  return `<span class="ci-iva ${v.exento?"ex":"iva"}" title="${v.exento?"Producto exento de IVA":"Este producto tributa "+esc(v.label)}">${esc(v.label)}</span>`;
+}
 
 /* ============================================================
    ARRANQUE
@@ -366,6 +423,9 @@ async function cargar(){
     ST.drafts = drafts;
     cargarListas();          // precargar las listas (para que el paso de selección salga al toque)
     precargarCatalogo();     // precargar productos de Hospitalarios en 2º plano → entrar a la venta es instantáneo
+    // Nombres de los impuestos de venta (una sola vez). Cuando llegan, repintamos
+    // el carrito para que aparezcan los badges de IVA/Exento sin esperar a nada más.
+    cargarImpuestos().then(()=>{ if(ST.view==="venta") renderCart(); });
     // Alerta de crédito (motor compartido): se trae aparte para no frenar el arranque y
     // repinta cuando llega. Avisa al comercial (ej. no ofrecer plazos a un mal pagador).
     EYG.riesgoCartera().then(m=>{ ST.riesgos=m||{}; if(ST.view==="picker") renderCliList(); else if(ST.view==="venta") render(); }).catch(()=>{});
@@ -785,7 +845,7 @@ async function precargarCatalogo(){
     const fam=FAMILIAS.find(f=>f.k==="HOSPITALARIOS")||FAMILIAS[0];
     if(ST.prodCache[fam.k]) return;
     const prods=await rpc("product.product","search_read",[[["categ_id","child_of",fam.id],["qty_available",">",0]]],
-      {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price"],context:ES,order:"name",limit:200});
+      {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price","taxes_id"],context:ES,order:"name",limit:200});
     ST.prodCache[fam.k]=prods;
     cargarLotes(prods);   // y los vencimientos de esos productos
   }catch(e){}
@@ -807,7 +867,7 @@ async function variantesDeRows(rows){
   const rank={}; tmplIds.forEach((id,i)=>{ rank[id]=i; });   // orden de relevancia que ya calculó buscar_web
   const prods=await rpc("product.product","search_read",
     [[["product_tmpl_id","in",tmplIds]]],
-    {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price"], context:ES, limit:200});
+    {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price","taxes_id"], context:ES, limit:200});
   const conStock=prods.filter(p=>(p.qty_available||0)>0);   // sólo con stock (como el catálogo)
   conStock.sort((a,b)=>{
     const ra=rank[a.product_tmpl_id&&a.product_tmpl_id[0]] ?? 1e9, rb=rank[b.product_tmpl_id&&b.product_tmpl_id[0]] ?? 1e9;
@@ -835,7 +895,7 @@ async function buscarProductosOdoo(q){
   CATALOG_ROOTS.forEach(id=>rootsOr.push(["categ_id","child_of",id]));
   const dom=["&","&",["qty_available",">",0],"|",["name","ilike",q],["default_code","ilike",q]].concat(rootsOr);
   return await rpc("product.product","search_read",[dom],
-    {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price"], context:ES, order:"name", limit:200});
+    {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price","taxes_id"], context:ES, order:"name", limit:200});
 }
 async function cargarCatalogo(){
   const token=(ST._catToken=(ST._catToken||0)+1);
@@ -882,11 +942,12 @@ async function cargarCatalogo(){
       dom=[["categ_id","child_of",fam.id],["qty_available",">",0]];
     }
     prods = await rpc("product.product","search_read",[dom],
-      {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price"], context:ES, order:"name", limit:200});
+      {fields:["id","default_code","name","categ_id","product_tmpl_id","qty_available","list_price","taxes_id"], context:ES, order:"name", limit:200});
     if(token!==ST._catToken) return;              // el usuario cambió de familia/búsqueda: descartamos
     if(cacheable) ST.prodCache[key]=prods;
     }
     ST.prods=prods;
+    recordarImpuestos(prods);    // para que el badge de IVA del carrito sobreviva al cambio de familia/búsqueda
     await cargarPrecios(prods);
     cargarLotes(prods);          // vencimientos en paralelo (no bloquea el catálogo; repinta al llegar)
     if(token!==ST._catToken) return;
@@ -1278,10 +1339,10 @@ async function refrescarLineas(){
   const ids=o.order_line||[];
   ST.lines={};
   if(ids.length){
-    const ls=await rpc("sale.order.line","read",[ids],{fields:["id","product_id","product_uom_qty","price_unit","discount","price_subtotal","name"],context:ES});
+    const ls=await rpc("sale.order.line","read",[ids],{fields:["id","product_id","product_uom_qty","price_unit","discount","price_subtotal","name","tax_id"],context:ES});
     ls.forEach(l=>{ if(!l.product_id) return; const pid=l.product_id[0];
       ST.lines[pid]={ pid, lineId:l.id, qty:l.product_uom_qty, price_unit:l.price_unit, discount:l.discount||0,
-        subtotal:l.price_subtotal, name:l.product_id[1] }; });
+        subtotal:l.price_subtotal, name:l.product_id[1], taxIds:l.tax_id||[] }; });
   }
 }
 
@@ -1373,6 +1434,7 @@ function renderCart(){
         ${esTier2()?`<div class="descstep"><span class="dl">Desc.</span><button onclick="chgDesc(${pid},-1)">−</button><span class="dv">${desc}%</span><button onclick="chgDesc(${pid},1)">＋</button></div>`:""}
       </div>
       <div class="ci-r">
+        ${badgeIVA(pid)}
         <div class="ci-u">${unit!=null?money(unit)+" c/u":"…"}</div>
         <div class="ci-sub">${sub!=null?money(sub):"…"}</div>
       </div>
