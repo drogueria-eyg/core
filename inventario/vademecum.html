@@ -51,6 +51,16 @@
   .res .incompleto{font-size:12px;font-weight:700;color:#9A6A00;background:#FFF3D6;border-radius:5px;padding:2px 7px}
   /* Renglón 3: el laboratorio titular. */
   .res .lab{font-size:12px;color:var(--gris);margin-top:4px;line-height:1.35}
+  /* Sólo aparece cuando se busca por código de barras: cuál de los envases es. */
+  .res .envase-cod{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;
+    font-weight:700;color:var(--teal-deep);background:var(--agua);border-radius:7px;
+    padding:4px 9px;width:fit-content;max-width:100%;line-height:1.3}
+  .res .envase-cod svg{width:13px;height:13px;flex:none;opacity:.75}
+  .res .envase-cod .mas{font-weight:600;color:var(--gris)}
+  /* El envase que ANMAT no publica y sí la lista de precios. Ámbar: es un estado. */
+  table.pres td.env .solofte{display:inline-block;margin-top:3px;font-size:10px;font-weight:800;
+    letter-spacing:.04em;text-transform:uppercase;color:#8A6100;background:#FFF3D6;
+    border-radius:5px;padding:2px 7px;cursor:help}
   .res .lado{flex:none;text-align:right;display:flex;flex-direction:column;gap:3px;align-items:flex-end;padding-top:1px}
   .res .cuantas{font-size:11px;color:var(--gris2);white-space:nowrap}
 
@@ -135,6 +145,12 @@
   .pie-t{font-size:10.5px;color:var(--gris2);line-height:1.5;margin-top:10px}
 
   .f-bloque p.prosa{font-size:14.5px;line-height:1.6;color:var(--ink);max-width:66ch;margin:0}
+  .f-bloque p.prosa + ul.prosa-lista{margin-top:8px}
+  .f-bloque ul.prosa-lista{font-size:14.5px;line-height:1.6;color:var(--ink);max-width:66ch;
+    margin:0;padding-left:0;list-style:none;display:flex;flex-direction:column;gap:6px}
+  .f-bloque ul.prosa-lista li{padding-left:16px;position:relative}
+  .f-bloque ul.prosa-lista li::before{content:"";position:absolute;left:2px;top:.62em;
+    width:5px;height:5px;border-radius:50%;background:var(--teal);opacity:.45}
 
   ol.refs{font-size:11.5px;line-height:1.55;margin:0;padding-left:18px;color:var(--gris)}
   ol.refs li{margin-bottom:9px}
@@ -260,6 +276,15 @@ function filaRegistro(r){
       <div class="marca">${esc(r.nombre)}${r.forma?` <span class="variante">${esc(r.forma)}</span>`:""}</div>
       ${lineaActivos(r.composicion)}
       <div class="lab">${r.laboratorio?esc(r.laboratorio):"—"}</div>
+      ${/* SÓLO CUANDO SE BUSCÓ POR CÓDIGO DE BARRAS O TROQUEL. Un producto tiene
+            varios envases; si alguien pasa el lector, lo que necesita saber es
+            CUÁL escaneó. En las búsquedas por texto esto no viene, porque ahí no
+            hay un envase en particular y poner uno cualquiera sería inventar. */
+        r.envase ? `<div class="envase-cod" title="Es el envase que corresponde al código que buscaste">
+          ${ICO.caja} ${esc(r.envase_contraste === 'solo precios' ? envaseProlijo(r.envase) : r.envase)}${
+          Number(r.envases_del_codigo) > 1
+            ? ` <span class="mas">y ${num(Number(r.envases_del_codigo)-1)} más con ese código</span>` : ""}
+        </div>` : ""}
     </div>
     <div class="lado">
       <span class="cuantas">${num(r.presentaciones)} ${Number(r.presentaciones)===1?"presentación":"presentaciones"}</span>
@@ -275,7 +300,9 @@ function pintarShell(){
   document.getElementById("cont").innerHTML = `
     <div class="intro">
       <b>Vademécum de EyG.</b> Buscá por <b>producto, laboratorio o droga</b> —
-      alcanza con parte de la palabra y no importa el orden. Vas a ver qué es cada
+      alcanza con parte de la palabra y no importa el orden — o pasá el
+      <b>código de barras</b> del envase, que también entra el troquel y el
+      certificado. Vas a ver qué es cada
       medicamento, para qué sirve y en qué presentaciones está autorizado, con
       <b>la fuente y la fecha de cada dato</b>.
       Sólo entran <b>medicamentos confirmados en un registro oficial</b>: descartables,
@@ -288,7 +315,7 @@ function pintarShell(){
       <div class="kpi"><div class="n">${num(KPIS.contenido.datos)}</div><div class="l">Datos con fuente y fecha</div></div>
     </div>`:""}
     <div class="buscador">
-      <input type="search" id="q" placeholder="Buscá: tafirol 1 g, gador metoclo, dipirona…" value="${esc(TERMINO)}" autocomplete="off" oninput="buscarVade(this.value)">
+      <input type="search" id="q" placeholder="Buscá: tafirol 1 g, gador metoclo, dipirona, o pasá el código de barras…" value="${esc(TERMINO)}" autocomplete="off" oninput="buscarVade(this.value)">
     </div>
     <div id="res"></div>`;
   pintarLista();
@@ -344,6 +371,73 @@ window.porDroga = function(ev, nombre){
 function norm2(s){ return String(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"")
   .toLowerCase().replace(/[^a-z0-9]+/g,""); }
 
+/* ACOMODAR EL TEXTO CLÍNICO PARA LEERLO — SIN CAMBIAR NI UNA PALABRA.
+   ---------------------------------------------------------------------------
+   La fuente entrega la monografía como un párrafo corrido, con las listas metidas
+   adentro con guiones. Acá se acomoda para MOSTRARLO; lo guardado en la base no
+   se toca, porque tiene que seguir siendo la transcripción fiel de la fuente.
+
+   LO QUE SE ARREGLA: espacios de más; el espacio que quedó ANTES de una coma o un
+   punto ("tratamiento ,de forma"); la lista que viene pegada al párrafo, cuando
+   hay " - " seguido de MAYÚSCULA; y "Stevens- Johnson" -> "Stevens-Johnson".
+
+   LO QUE NO SE TOCA, y esto importa más:
+     · el punto pegado a una mayúscula: parecen 810 errores y no lo son, son las
+       abreviaturas de la fuente — I.R. (insuficiencia renal), I.H. (hepática);
+     · el guion pegado a la palabra: "cocos gram-", "Na+ K+ Cl-",
+       "hipo- o aclorhidria", "bi- o trifasciculares" están BIEN escritos;
+     · las 32 palabras que el original parte al cortar el renglón
+       ("insufi- ciencia"): unirlas exigiría saber que son una sola palabra, y eso
+       es criterio nuestro, no de la fuente.
+   Verificado sobre los 4.123 textos: ninguno pierde una letra ni un número. */
+function prosa(t){
+  if(!t) return "";
+  let s = String(t).replace(/\s+/g, " ").trim();
+  s = s.replace(/([A-Za-zÁÉÍÓÚÜÑáéíóúüñ])-\s+(?=[A-ZÁÉÍÓÚÑ])/g, "$1-");
+  s = s.replace(/\s+([,;:.])/g, "$1");
+  s = s.replace(/([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]),(?=[A-Za-zÁÉÍÓÚÜÑáéíóúüñ])/g, "$1, ");
+  const partes = s.split(/\s-\s+(?=[A-ZÁÉÍÓÚÑ¿])/);
+  if (partes.length < 2) return `<p class="prosa">${esc(s)}</p>`;
+  const intro = partes[0].trim();
+  return (intro ? `<p class="prosa">${esc(intro)}</p>` : "")
+    + `<ul class="prosa-lista">`
+    + partes.slice(1).map(x => `<li>${esc(x.trim())}</li>`).join("")
+    + `</ul>`;
+}
+
+/* EL ENVASE DE LA LISTA DE PRECIOS, ESCRITO COMO EL RESTO.
+   ANMAT escribe "BLISTER por 20 UNIDADES"; la lista de precios del Ministerio
+   escribe lo mismo en telegrama: "400mg blíst.x50 x10comp.". Los envases que sólo
+   publica ella quedaban desparejos al lado de los otros. Acá se acomodan PARA
+   MOSTRARLOS y debajo queda el texto tal cual lo publica la fuente: no se pierde
+   nada y se puede auditar de un vistazo. La concentración se saca del principio
+   porque ya está arriba, en el producto — ANMAT tampoco la repite en este campo. */
+const ABREV = {
+  blist:"BLISTER", comp:"COMPRIMIDOS", caps:"CAPSULAS", tab:"TABLETAS",
+  grag:"GRAGEAS", susp:"SUSPENSION", jbe:"JARABE", sol:"SOLUCION", gts:"GOTAS",
+  amp:"AMPOLLAS", fco:"FRASCO", fcoamp:"FRASCO AMPOLLA", iny:"INYECTABLE",
+  sob:"SOBRES", sup:"SUPOSITORIOS", ov:"OVULOS", ung:"UNGUENTO", crem:"CREMA",
+  pom:"POMADA", par:"PARCHES", rec:"RECUBIERTOS", ran:"RANURADOS",
+  efer:"EFERVESCENTES", mast:"MASTICABLES", disp:"DISPERSABLES",
+  perfus:"PERFUSION", pol:"POLVO", loc:"LOCION", esp:"ESPUMA", jer:"JERINGA",
+};
+function pal(s){
+  return String(s||"").replace(/\bc\//gi, "con ")
+    .split(/[\s.]+/).filter(Boolean)
+    .map(w=>{ const k = norm2(w); return ABREV[k] || ABREV[k.replace(/s$/,"")] || w.toUpperCase(); })
+    .join(" ").trim();
+}
+function envaseProlijo(t){
+  if(!t) return "";
+  let s = String(t).trim().replace(/^\s*[\d.,]+\s*(mg|mcg|g|ui|%)\s*/i, "");
+  let m = s.match(/^(.+?)\.?\s*x\s*(\d+)\s+x\s*(\d+)\s*(.+?)\.?$/i);
+  if(m) return `${m[2]} ${pal(m[1])} por ${m[3]} ${pal(m[4])}`;
+  m = s.match(/^(.+?)\.?\s*x\s*(\d+)\s*(ml|l|g|mg|mcg|ui)?\.?$/i);
+  if(m) return m[3] ? `${pal(m[1])} por ${m[2]} ${m[3].toUpperCase()}`
+                    : `${m[2]} ${pal(m[1])}`;
+  return pal(s);
+}
+
 function filaDato(rot, d, extra){
   if(!d) return "";
   return `<tr><th>${esc(rot)}</th><td>${esc(d.valor)}${extra?`<span class="sub">${extra}</span>`:""}</td></tr>`;
@@ -394,15 +488,15 @@ function selloMonografia(m){
 function bloquesClinicos(her){
   return (her.mecanismo_accion?`<div class="f-bloque">
       <div class="f-tit">${ICO.mec} Mecanismo de acción</div>
-      <p class="prosa">${esc(her.mecanismo_accion.valor)}</p>
+      ${prosa(her.mecanismo_accion.valor)}
     </div>`:"")
   + (her.indicaciones?`<div class="f-bloque">
       <div class="f-tit">${ICO.ind} Indicaciones</div>
-      <p class="prosa">${esc(her.indicaciones.valor)}</p>
+      ${prosa(her.indicaciones.valor)}
     </div>`:"")
   + (her.modo_administracion?`<div class="f-bloque">
       <div class="f-tit">${ICO.adm} Modo de administración</div>
-      <p class="prosa">${esc(her.modo_administracion.valor)}</p>
+      ${prosa(her.modo_administracion.valor)}
     </div>`:"");
 }
 
@@ -477,13 +571,21 @@ function fichaRegistro(f){
     const mia = p.nuestra;
     const stk = mia ? Number(mia.stock)||0 : 0;
     return `<tr class="${mia?"mia":""}">
-      <td class="env"><b>${esc(p.presentacion||"—")}</b>${
+      <td class="env"><b>${esc(
+        /* Si el envase sólo lo publica la lista de precios, su texto viene en
+           telegrama y se acomoda para que lea como los de ANMAT. El original
+           queda abajo, sin recortar. */
+        p.contraste === 'solo precios' ? envaseProlijo(p.presentacion) : (p.presentacion||"—"))}</b>${
         /* Cómo nombra el mismo envase la otra fuente oficial: "0.5% gts.x 20 ml".
            Es la notación con la que se pide, y no repite si es igual. */
-        p.comercial && norm2(p.comercial) !== norm2(p.presentacion)
+        p.contraste === 'solo precios'
+          ? `<span class="comercial" title="Tal cual lo publica Precios de Medicamentos (Min. Salud). Arriba está acomodado para leerlo; acá está el texto original.">${esc(p.presentacion)}</span>`
+        : p.comercial && norm2(p.comercial) !== norm2(p.presentacion)
           ? `<span class="comercial" title="Así lo nombra Precios de Medicamentos (Min. Salud), cruzado por código de barras">${esc(p.comercial)}</span>` : ""}${
         p.contraste === 'coincide'
-          ? `<span class="doble" title="Este envase existe en las dos fuentes oficiales, cruzado por su código de barras">✓ dos fuentes</span>` : ""}</td>
+          ? `<span class="doble" title="Este envase existe en las dos fuentes oficiales, cruzado por su código de barras">✓ dos fuentes</span>`
+        : p.contraste === 'solo precios'
+          ? `<span class="solofte" title="ANMAT no publica este envase. Lo publica Precios de Medicamentos del Ministerio de Salud, con precio vigente. Que no figure en ese listado no lo hace ilegal.">sólo lista de precios</span>` : ""}</td>
       <td class="mono-c">${p.troquel?esc(p.troquel):'<span class="nulo">—</span>'}</td>
       <td class="mono-c">${p.gtin?esc(p.gtin):'<span class="nulo">—</span>'}</td>
       <td>${p.cobertura_pami?esc(p.cobertura_pami):'<span class="nulo">—</span>'}</td>
@@ -518,6 +620,20 @@ function fichaRegistro(f){
           ${composicion}
         </div>`:""}
 
+        ${/* POR QUÉ ESTA FICHA TIENE MENOS DATOS QUE LAS DEMÁS.
+              Hay 634 productos que se venden en el país y que el listado del
+              Vademécum Nacional no publica. Entraron por la lista de precios del
+              Ministerio, que no trae certificado ni fórmula autorizada. Sin este
+              aviso, la ficha parece incompleta por error nuestro — y no lo es.
+              Ámbar, como el resto de los avisos: es un estado, no una falla. */""}
+        ${!R.certificado ? `<div class="f-bloque"><div class="retenido">
+          <b>Este producto no figura en el listado del Vademécum Nacional (ANMAT).</b>
+          Está publicado en <b>Precios de Medicamentos del Ministerio de Salud</b>, con
+          precio vigente, y por eso está acá: se vende legalmente. Esa fuente no publica
+          el número de certificado ni la fórmula autorizada, así que esos dos datos
+          aparecen vacíos. No es un dato que nos falte cargar: es un dato que la fuente
+          no da.
+        </div></div>` : ""}
         <div class="f-bloque">
           <div class="f-tit">${ICO.tec} Ficha técnica</div>
           <table class="tec"><colgroup><col class="rot"><col></colgroup><tbody>
