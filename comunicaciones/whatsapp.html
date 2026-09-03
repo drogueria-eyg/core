@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=51"></script>
+<script src="../assets/core.js?v=52"></script>
 <style>
   /* Tres columnas: la bandeja limpia a la izquierda, el chat al medio y todo
      el asistente a la derecha (orbe, ficha del contacto, lo que va pasando y
@@ -1177,7 +1177,8 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
       casaH ? "· "+esc(casaH.cargo||ROTULO_NIVEL[casaH.nivel]||"equipo") : "",
       (!casaH && firmaCli && firmaCli!==nom) ? "· "+esc(firmaCli) : "",
       (!casaH && comercialCli) ? "· comercial "+esc(String(comercialCli).split(" ")[0]) : "",
-      asig ? "· asignada a "+esc(asig.nombre) : "",
+      asig ? "· a cargo de "+esc(asig.nombre) : "",
+      eq ? "· TOMADA, el asistente no responde" : "",
     ].filter(Boolean).join(" ");
     $("chatH").innerHTML=`<div class="av">${esc(inicial(nom))}</div>
       <div><b>${esc(nom)}</b>${casaH?'<span class="pin casa" style="margin-left:7px">'+CHIP(casaH)+'</span>':""}<br><span class="num">${bajo}</span></div>
@@ -1185,17 +1186,14 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
       <button class="hb" id="btnResp" style="flex:none" title="El asistente relee toda la conversación y contesta lo que haya quedado pendiente. Sirve cuando cambió algo (se cargó el contacto, entró stock) o cuando una persona tomó el chat y ya terminó.">RESPONDER</button>
       <button class="hb lila" id="btnAsig" style="flex:none">ASIGNAR</button>`;
     $("btnTomar").onclick=async()=>{
-      if(eq){
-        cfg.pausadas=cfg.pausadas.filter(x=>x!==sel.id);
-        // LA ASIGNACION TAMBIEN SE VA. Son dos cosas distintas guardadas
-        // aparte (pausadas y asignadas) y esto solo sacaba la pausa: el chat
-        // volvia al asistente pero en la bandeja seguia figurando "asignada a
-        // Diego" para siempre. Quien mira la lista lo daba por atendido por
-        // otro y no lo tocaba.
-        if(cfg.asignadas && cfg.asignadas[sel.id]) delete cfg.asignadas[sel.id];
-      } else {
-        cfg.pausadas=[...new Set([...cfg.pausadas,sel.id])];
-      }
+      /* SON DOS COSAS DISTINTAS Y NO SE PISAN.
+         · TOMAR / DEVOLVER  → calla o despierta al asistente.
+         · ASIGNAR           → de quién es el tema. No calla a nadie.
+         Derivarle un chat a un comercial para que lo dé de alta o le cierre una
+         venta no tiene por qué dejar mudo al bot: el contacto puede seguir
+         preguntando precios mientras tanto. Se quita con QUITAR ASIGNACIÓN. */
+      if(eq) cfg.pausadas=cfg.pausadas.filter(x=>x!==sel.id);
+      else cfg.pausadas=[...new Set([...cfg.pausadas,sel.id])];
       anotar("eq",eq?"vuelve al asistente":"la toma el equipo");
       await guardarCfg(); pintarChat(true);
     };
@@ -1456,11 +1454,7 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
      hay un nombre colgado sin pausa se borra solo la próxima vez que se guarda
      la configuración. Arregla también los que ya quedaron mal. */
   function asignadaDe(canalId){
-    const a = cfg.asignadas && cfg.asignadas[canalId];
-    if(!a) return null;
-    if(cfg.pausadas.includes(canalId)) return a;
-    delete cfg.asignadas[canalId];   // quedó huérfana: afuera
-    return null;
+    return (cfg.asignadas && cfg.asignadas[canalId]) || null;
   }
 
   /* ══ asignar la conversación a un comercial ══ */
@@ -1482,7 +1476,7 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     d.className="scrim";
     d.innerHTML=`<div class="modal">
       <h3>Asignar la conversación</h3>
-      <p>El chat queda a cargo de esa persona: el asistente deja de responder y en la bandeja figura con su nombre. Se puede devolver al asistente cuando quieran.</p>
+      <p>Le pasás el tema a esa persona —darlo de alta, cerrarle una venta, contestarle algo— y le llega un WhatsApp con el contacto y un resumen de la charla.<br><b>El asistente sigue respondiendo igual:</b> el cliente puede seguir preguntando. Si además querés que el bot se calle, usá TOMAR.</p>
       ${sug?`<div class="hint">El comercial de este cliente en Odoo es <b>${esc(nom1(ficha.user_id))}</b>.</div>`:""}
       <label>A QUIÉN</label>
       <div class="gente">${comerciales.map(c=>`
@@ -1505,12 +1499,19 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
       const c=comerciales.find(x=>x.id===Number(el.dataset.id));
       if(!c) return;
       cfg.asignadas[sel.id]={id:c.id,nombre:c.nombre};
-      if(!cfg.pausadas.includes(sel.id)) cfg.pausadas=[...cfg.pausadas,sel.id];
       await guardarCfg();
       /* queda constancia en la conversación y, si se puede, le llega en Odoo */
       EYG.rpc("discuss.channel","message_post",[sel.id],
-        {body:`👤 <b>Conversación asignada a ${esc(c.nombre)}</b><br/>El asistente deja de responder en este chat.`,
+        {body:`👤 <b>A cargo de ${esc(c.nombre)}</b><br/>El asistente sigue respondiendo normalmente.`,
          message_type:"comment", subtype_xmlid:"mail.mt_note"}).catch(()=>{});
+      /* Y SE LE AVISA. Antes esto no pasaba: el chat quedaba esperando a alguien
+         que no sabía que lo esperaban. Le llega por WhatsApp el teléfono del
+         contacto, si ya es cliente o no, y un resumen de qué pidió y qué quedó
+         pendiente. La llave del asistente no viaja al navegador. */
+      EYG.supa().functions.invoke("wsp-responder",{body:{canal:sel.id, accion:"asignada", user_id:c.id}})
+        .then(({data})=>{ anotar("asig", (data&&data.ok) ? ("se le avisó por WhatsApp a "+c.nombre)
+                                                         : ("no se le pudo avisar a "+c.nombre+((data&&data.error)?": "+data.error:""))); })
+        .catch(()=>anotar("asig","no se le pudo avisar a "+c.nombre));
       if(c.partner) EYG.rpc("discuss.channel","add_members",[[sel.id]],{partner_ids:[c.partner]}).catch(()=>{});
       anotar("asig","asignada a "+c.nombre);
       pintarChat(true); d.remove();
