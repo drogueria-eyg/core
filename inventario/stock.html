@@ -282,7 +282,10 @@
   .prescard .ph{display:flex;justify-content:space-between;align-items:center;gap:8px}
   .prescard .pnm{font-weight:800;font-size:15px}
   .prescard .pest{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;padding:2px 8px;border-radius:20px}
+  .pest{display:inline-block;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;padding:2px 8px;border-radius:20px;white-space:nowrap}
   .pest.pe-draft{background:#EEF2F1;color:var(--gris)} .pest.pe-sent{background:var(--agua);color:var(--teal-deep)}
+  .pest.pe-ok{background:#e7f3f1;color:var(--teal-deep)} .pest.pe-done{background:#eef6ea;color:#3f7a2e}
+  .g-comp{grid-template-columns:1.8fr 1.6fr 0.9fr 0.9fr 1fr 1.4fr}
   .prescard .pprov{font-size:13px;color:var(--gris);margin:6px 0 10px;overflow-wrap:anywhere}
   .prescard .pfoot{display:flex;justify-content:space-between;align-items:baseline;border-top:1px solid var(--line);padding-top:9px;font-size:12.5px;color:var(--gris)}
   .prescard .pfoot b{font-size:16px;color:var(--ink)}
@@ -303,7 +306,7 @@
   .cotrow .cst{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;font-size:12.5px}
 
   @media(max-width:860px){ .grid2{grid-template-columns:1fr} .rotleg{grid-template-columns:1fr}
-    .g-stock{grid-template-columns:1.8fr 0.7fr 1fr 0.85fr 0.9fr} .g-repo{grid-template-columns:2fr 1fr 0.9fr} .g-win{grid-template-columns:2fr 0.9fr 1fr} .g-liq{grid-template-columns:1.7fr 1fr 1.3fr} .g-rep{grid-template-columns:1.7fr 0.9fr 0.9fr 1.1fr}
+    .g-stock{grid-template-columns:1.8fr 0.7fr 1fr 0.85fr 0.9fr} .g-repo{grid-template-columns:2fr 1fr 0.9fr} .g-win{grid-template-columns:2fr 0.9fr 1fr} .g-liq{grid-template-columns:1.7fr 1fr 1.3fr} .g-rep{grid-template-columns:1.7fr 0.9fr 0.9fr 1.1fr} .g-comp{grid-template-columns:1.5fr 0.9fr 1fr 1.3fr}
     .hide-sm{display:none} .fbar{width:8px} .spark{width:100%} .health .hh{gap:16px} }
 </style>
 </head>
@@ -368,6 +371,7 @@ let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
 let rfiltro={q:"",soloRepo:true,sortK:"margenAnual",dir:-1};
 let CAT={loaded:false,loading:false,rows:[],fams:[],labs:[],provs:[]};
 let PRES={loaded:false,loading:false,rows:[],base:"",vista:"lista"};   // presupuestos (RFQ borrador/enviado de Odoo)
+let COMP={loaded:false,loading:false,rows:[],base:"",estado:"",prov:"",q:"",nPres:0};   // sección Compras (órdenes de compra tipo panel de ventas)
 let COT={po:null,lines:[]};                              // presupuesto que se está cotizando
 let cfil={q:"",fam:"",lab:"",prov:"",stock:"",sortK:"name",dir:1};
 // laboratorio fabricante = segmento después de "ETICOS" en la categoría (los éticos se ordenan por lab)
@@ -811,7 +815,8 @@ function tabsBar(rd){
   const nrep=rd.necesita.filter(x=>x.r.provId||x.r.viaOtra).length;
   const nliq=DATA.filter(r=>r.min!=null && r.min<6).length;   // por vencer < 6 meses
   return `<div class="tabs">
-    <button class="tab ${TAB==="comprar"?"on":""}" onclick="setTab('comprar')">🛒 Comprar ${nrep?`<span class="b">${nrep}</span>`:""}</button>
+    <button class="tab ${TAB==="comprar"?"on":""}" onclick="setTab('comprar')">🛒 Reponer ${nrep?`<span class="b">${nrep}</span>`:""}</button>
+    <button class="tab ${TAB==="compras"?"on":""}" onclick="setTab('compras')">🧾 Compras${COMP.loaded&&COMP.nPres?`<span class="b">${COMP.nPres}</span>`:""}</button>
     <button class="tab ${TAB==="liquidar"?"on":""}" onclick="setTab('liquidar')">🏷️ Liquidar / Ofertar ${nliq?`<span class="b">${nliq}</span>`:""}</button>
     <button class="tab ${TAB==="win"?"on":""}" onclick="setTab('win')">⭐ Ganadores</button>
     <button class="tab ${TAB==="inventario"?"on":""}" onclick="setTab('inventario')">📦 Inventario</button>
@@ -822,7 +827,8 @@ function tabsBar(rd){
 function setTab(t){ TAB=t; render(); }
 function renderTab(rd){
   const c=document.getElementById("tabc");
-  if(TAB==="comprar") { c.innerHTML=tabComprar(rd); if(comprarSub==="pres"&&PRES.loaded) renderPresList(); }
+  if(TAB==="comprar") { c.innerHTML=tabComprar(rd); }
+  else if(TAB==="compras") { c.innerHTML=tabCompras(); if(COMP.loaded) renderComprasList(); }
   else if(TAB==="liquidar") c.innerHTML=tabLiquidar(rd);
   else if(TAB==="win") { c.innerHTML=tabWin(rd); renderWin(); }
   else if(TAB==="revisar") c.innerHTML=tabRevisar();
@@ -964,17 +970,12 @@ async function accionArchivar(id){
 
 // ---------- TAB: Comprar (reponer + cargar compra + presupuestos, todo junto) ----------
 function tabComprar(rd){
-  const nrep=rd.necesita.filter(x=>x.r.provId||x.r.viaOtra).length;
-  const npres=PRES.loaded?PRES.rows.length:null;
   return `
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0 6px">
-      <div class="segs">
-        <button class="${comprarSub==='reponer'?'on':''}" onclick="setComprarSub('reponer')">🔁 Reponer${nrep?` · ${nrep}`:""}</button>
-        <button class="${comprarSub==='pres'?'on':''}" onclick="setComprarSub('pres')">📄 Presupuestos${npres!=null?` · ${npres}`:""}</button>
-      </div>
-      <button class="wa-send" style="width:auto;margin:0;padding:10px 18px;background:var(--gold);margin-left:auto" onclick="nuevaCompra()">➕ Nuevo pedido</button>
+      <div style="font-size:13px;color:var(--gris)">Armá los carritos por proveedor. Las órdenes y presupuestos que mandes a Odoo los seguís en <a onclick="setTab('compras')" style="color:var(--teal);cursor:pointer;font-weight:700">🧾 Compras</a>.</div>
+      <button class="wa-send" style="width:auto;margin:0;padding:10px 18px;background:var(--gold);margin-left:auto" onclick="nuevaCompra()">➕ Nuevo pedido a mano</button>
     </div>
-    ${comprarSub==='pres' ? presSeccion() : reponerSeccion(rd)}
+    ${reponerSeccion(rd)}
   `;
 }
 function reponerSeccion(rd){
@@ -1776,7 +1777,7 @@ async function crearOCCompra(){
     const lines=its.map(it=>[0,0,{product_id:it.id, product_qty:it.qty, price_unit:Math.round(it.precio*100)/100, name:it.name, date_planned:iso(dp)+" 00:00:00"}]);
     const poId=await rpc("purchase.order","create",[{partner_id:c.prov, order_line:lines}]);
     const info=await rpc("purchase.order","read",[[poId],["name"]]);
-    c.poId=poId; c.poName=(info&&info[0])?info[0].name:("#"+poId); saveCarts();
+    c.poId=poId; c.poName=(info&&info[0])?info[0].name:("#"+poId); saveCarts(); COMP.loaded=false;
     renderCompra();
   }catch(e){ if(btn){btn.disabled=false;btn.textContent="📝 Crear borrador en Odoo";} const m=document.getElementById("cMsg"); if(m)m.innerHTML=`<div class="errbox">No pude crear el borrador: ${esc(e.message)}</div>`; }
 }
@@ -1797,6 +1798,70 @@ function copiarCompra(){
 }
 
 // ===================== PRESUPUESTOS · RFQ de Odoo (cotizar / enviar / confirmar) =====================
+// ===================== COMPRAS · órdenes de compra de Odoo (consulta tipo panel de ventas) =====================
+const EST_COMPRA={draft:["Borrador","pe-draft"],sent:["Presupuesto enviado","pe-sent"],purchase:["Confirmada","pe-ok"],done:["Recibida","pe-done"]};
+function odooPO(id){ return (COMP.base||"https://drogueriaeyg.odoo.com").replace(/\/$/,"")+"/web#id="+id+"&model=purchase.order&view_type=form"; }
+function tabCompras(){
+  if(!COMP.loaded){ if(!COMP.loading) setTimeout(loadCompras,10);
+    return `<div class="pcard empty"><div class="spinner" style="margin:6px auto 14px"></div>Cargando las compras desde Odoo…</div>`; }
+  const provSet={}; COMP.rows.forEach(p=>{ if(p.partner_id) provSet[p.partner_id[0]]=p.partner_id[1]; });
+  const provOpts=`<option value="">Todos los proveedores</option>`+Object.keys(provSet).sort((a,b)=>(provSet[a]||"").localeCompare(provSet[b]||"")).map(id=>`<option value="${id}" ${String(COMP.prov)===String(id)?"selected":""}>${esc(provSet[id])}</option>`).join("");
+  return `<div class="note info" style="margin-top:6px">Todas las compras de Odoo: presupuestos, órdenes confirmadas y recibidas. Tocá una para <b>ver el detalle en Odoo</b>; los <b>presupuestos</b> los podés cotizar (editar precios en vivo) y enviar al proveedor.</div>
+    <div class="repo-tools" style="margin-top:12px">
+      <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input id="cbuscar" placeholder="Buscar por N° de orden o proveedor…" value="${esc(COMP.q)}" oninput="COMP.q=this.value;renderComprasList()"></div>
+      <select class="repo-prov" onchange="COMP.prov=this.value;renderComprasList()">${provOpts}</select>
+      <button class="mini-btn" onclick="loadCompras()">🔄 Actualizar</button>
+    </div>
+    <div class="segs" style="margin:2px 0 12px" id="compsegs"></div>
+    <div id="compslist"></div>`;
+}
+async function loadCompras(){
+  COMP.loading=true; const el0=document.getElementById("compslist"); if(el0) el0.innerHTML='<div class="pcard empty"><div class="spinner" style="margin:8px auto"></div></div>';
+  try{
+    if(!COMP.base){ try{ COMP.base=(await rpc("ir.config_parameter","get_param",["web.base.url"]))||"https://drogueriaeyg.odoo.com"; PRES.base=COMP.base; }catch(e){ COMP.base="https://drogueriaeyg.odoo.com"; } }
+    COMP.rows=await rpc("purchase.order","search_read",[[["state","!=","cancel"],["partner_id","!=",PROVEEDOR_T]]],
+      {fields:["id","name","partner_id","amount_untaxed","date_order","state","order_line"],limit:400,order:"date_order desc"});
+    COMP.nPres=COMP.rows.filter(p=>p.state==="draft"||p.state==="sent").length;
+    COMP.loaded=true; COMP.loading=false;
+    if(TAB==="compras") render(); else pintarCarrito();
+  }catch(e){ COMP.loading=false; const c=document.getElementById("compslist"); if(c)c.innerHTML='<div class="errbox">No pude cargar las compras: '+esc(e.message)+'</div>'; }
+}
+function renderComprasList(){
+  const segEl=document.getElementById("compsegs"), el=document.getElementById("compslist"); if(!el) return;
+  const q=(COMP.q||"").toLowerCase().trim();
+  let rows=COMP.rows;
+  if(COMP.prov) rows=rows.filter(p=>p.partner_id&&String(p.partner_id[0])===String(COMP.prov));
+  if(q) rows=rows.filter(p=>((p.name||"")+" "+(p.partner_id?p.partner_id[1]:"")).toLowerCase().includes(q));
+  const cnt=e=>rows.filter(p=> e==="pres"?(p.state==="draft"||p.state==="sent") : e?p.state===e : true).length;
+  if(segEl) segEl.innerHTML=`
+    <button class="${COMP.estado===''?'on':''}" onclick="COMP.estado='';renderComprasList()">Todas · ${cnt("")}</button>
+    <button class="${COMP.estado==='pres'?'on':''}" onclick="COMP.estado='pres';renderComprasList()">📄 Presupuestos · ${cnt("pres")}</button>
+    <button class="${COMP.estado==='purchase'?'on':''}" onclick="COMP.estado='purchase';renderComprasList()">✅ Confirmadas · ${cnt("purchase")}</button>
+    <button class="${COMP.estado==='done'?'on':''}" onclick="COMP.estado='done';renderComprasList()">📦 Recibidas · ${cnt("done")}</button>`;
+  if(COMP.estado==="pres") rows=rows.filter(p=>p.state==="draft"||p.state==="sent");
+  else if(COMP.estado) rows=rows.filter(p=>p.state===COMP.estado);
+  if(!rows.length){ el.innerHTML='<div class="pcard empty">No hay compras con este filtro.</div>'; return; }
+  const cap=Math.min(rows.length,250);
+  el.innerHTML=`<div class="tablecard"><div class="thead g-comp">
+      <div title="N° de orden de compra">Orden</div><div class="hide-sm">Proveedor</div><div class="tr-r hide-sm" title="Fecha del pedido">Fecha</div><div class="tr-r" title="Total sin IVA">Total</div><div class="tr-r">Estado</div><div style="text-align:right">Acciones</div>
+    </div>`+
+    rows.slice(0,cap).map(p=>{const e=EST_COMPRA[p.state]||[p.state,"pe-draft"]; const n=(p.order_line||[]).length; const esPres=p.state==="draft"||p.state==="sent"; const f=(p.date_order||"").slice(0,10);
+      return `<div class="row g-comp">
+        <div style="cursor:pointer" onclick="${esPres?`abrirCotizar(${p.id})`:`window.open('${odooPO(p.id)}','_blank')`}"><div class="cname" style="color:var(--teal-deep)">${esc(p.name)}</div><div class="cmeta">${esc(p.partner_id?p.partner_id[1]:"—")} · ${n} prod.</div></div>
+        <div class="hide-sm cmeta">${esc(p.partner_id?p.partner_id[1]:"—")}</div>
+        <div class="tr-r hide-sm num" style="font-weight:500">${f?f.split("-").reverse().join("/"):"—"}</div>
+        <div class="tr-r num">${money(p.amount_untaxed||0)}</div>
+        <div class="tr-r"><span class="pest ${e[1]}">${e[0]}</span></div>
+        <div style="text-align:right;display:flex;gap:6px;justify-content:flex-end;align-items:center;flex-wrap:wrap">
+          ${esPres?`<button class="mini-btn" style="background:var(--teal);color:#fff;border-color:var(--teal)" onclick="event.stopPropagation();abrirCotizar(${p.id})">Cotizar</button>`:""}
+          <a class="mini-btn" href="${odooPO(p.id)}" target="_blank" rel="noopener" style="text-decoration:none" onclick="event.stopPropagation()">Odoo →</a>
+          ${esPres?`<button class="delx" onclick="eliminarPres(${p.id},'${p.state}',event)" title="Eliminar">🗑</button>`:""}
+        </div>
+      </div>`;}).join("")+
+    (rows.length>cap?`<div class="empty" style="padding:12px">…y ${rows.length-cap} más. Afiná el filtro o el buscador.</div>`:"")+
+    `</div>`;
+}
+
 function presSeccion(){
   if(!PRES.loaded){ if(!PRES.loading) setTimeout(loadPres,10);
     return `<div class="pcard empty"><div class="spinner" style="margin:6px auto 14px"></div>Cargando los presupuestos abiertos…</div>`; }
@@ -1912,14 +1977,14 @@ function cotCopiarLink(){ navigator.clipboard.writeText(cotLink()).then(()=>toas
 function cotWhatsApp(){ const t=`Hola, te paso el presupuesto de Droguería EyG (${COT.po.name}): ${cotLink()}`; window.open("https://wa.me/?text="+encodeURIComponent(t),"_blank"); }
 function cotMail(){ const to=COT.po._email||""; const sub=`Presupuesto Droguería EyG · ${COT.po.name}`; const body=`Hola,\n\nTe paso el presupuesto para tu revisión:\n${cotLink()}\n\nSaludos.`; window.location.href=`mailto:${to}?subject=${encodeURIComponent(sub)}&body=${encodeURIComponent(body)}`; }
 async function cotConfirmar(){ if(!confirm(`¿Confirmar ${COT.po.name}? Pasa a orden de compra confirmada en Odoo.\nLa recepción de la mercadería se hará en Depósito.`)) return;
-  try{ await rpc("purchase.order","button_confirm",[[COT.po.id]]); toast("✓ Pedido confirmado"); cerrar(); PRES.loaded=false; loadPres(); }
+  try{ await rpc("purchase.order","button_confirm",[[COT.po.id]]); toast("✓ Pedido confirmado"); cerrar(); PRES.loaded=false; COMP.loaded=false; if(TAB==="compras") loadCompras(); }
   catch(e){ alert("No se pudo confirmar: "+(e.message||e)); } }
 async function cotCancelar(){ if(!confirm(`¿Cancelar el presupuesto ${COT.po.name}?`)) return;
   try{ await rpc("purchase.order","button_cancel",[[COT.po.id]]); toast("Presupuesto cancelado"); cerrar(); PRES.loaded=false; loadPres(); }
   catch(e){ alert("No se pudo cancelar: "+(e.message||e)); } }
 // Eliminar un presupuesto. Odoo EXIGE cancelar antes de borrar (incluso borradores): cancelamos y borramos en un paso.
 async function eliminarPres(id, state, ev){ if(ev){ ev.stopPropagation(); }
-  const p=PRES.rows.find(x=>x.id===id); const nm=p?p.name:("#"+id);
+  const p=(COMP.rows.find(x=>x.id===id)||PRES.rows.find(x=>x.id===id)); const nm=p?p.name:("#"+id);
   const msg = state==="draft"
     ? `¿Eliminar el presupuesto "${nm}"? Se borra de Odoo y no se puede deshacer.`
     : `"${nm}" está ${state==="sent"?"enviado":"confirmado"}. Para borrarlo primero se cancela. ¿Cancelar y eliminar?`;
@@ -1927,7 +1992,9 @@ async function eliminarPres(id, state, ev){ if(ev){ ev.stopPropagation(); }
   try{
     await rpc("purchase.order","button_cancel",[[id]]);   // Odoo pide cancelar antes de eliminar, sea cual sea el estado
     await rpc("purchase.order","unlink",[[id]]);
-    PRES.rows=PRES.rows.filter(x=>x.id!==id); toast("🗑 Presupuesto eliminado"); renderPresList();
+    PRES.rows=PRES.rows.filter(x=>x.id!==id); COMP.rows=COMP.rows.filter(x=>x.id!==id); COMP.nPres=COMP.rows.filter(q=>q.state==="draft"||q.state==="sent").length;
+    toast("🗑 Presupuesto eliminado");
+    if(TAB==="compras") renderComprasList(); else if(document.getElementById("preslist")) renderPresList();
     if(document.getElementById("drawer").classList.contains("on")&&COT.po&&COT.po.id===id) cerrar();
   }catch(e){ alert("No se pudo eliminar: "+(e.message||e)); }
 }
