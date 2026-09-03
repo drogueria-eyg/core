@@ -1406,7 +1406,7 @@ function ntEditorEntregaHTML(e){
   const d=ntDet();
   const pideFecha=(d.modo==="junto"||d.modo==="retira"||d.modo==="especial");
   return `
-    <div class="ntpublica">🚚 <b>Esto sale impreso en el remito</b> (WH/OUT), que es lo que arma logística. No es una nota privada.</div>
+    <div class="ntpublica">🚚 <b>Esto sale impreso en el remito</b> (WH/OUT) y también queda en la pestaña Nota del remito, así logística lo ve en pantalla. No es una nota privada.</div>
     <div class="ntfld"><label>¿Cómo hay que entregarlo?</label>
       <div class="ntmodos">${NT_MODOS.map(m=>`<button class="ntmodo${d.modo===m.k?" on":""}" onclick="ntEntModo('${m.k}')">
         <span class="m-ic">${m.ic}</span><span><span>${m.lab}</span><div class="m-d">${m.det}</div></span></button>`).join("")}</div></div>
@@ -1561,13 +1561,28 @@ async function ntEntEscribirOdoo(pedidoId, texto, fechaISO, lineId){
     if(m&&m.length) id=m[0];
   }
   const CTX={context:{mail_auto_subscribe_no_notify:true}};
-  if(!texto){ if(id) await rpc("sale.order.line","unlink",[[id]],CTX); return null; }
+  if(!texto){ if(id) await rpc("sale.order.line","unlink",[[id]],CTX); await ntEntEscribirRemitos(pedidoId,""); return null; }   // tambien limpia la Nota del remito
   if(id) await rpc("sale.order.line","write",[[id],{name:texto}],CTX);
   else   id=await rpc("sale.order.line","create",[{order_id:pedidoId,display_type:"line_note",name:texto,product_uom_qty:0,sequence:999}],CTX);
   // La "Fecha de entrega" nativa: hoy está vacía en todos los pedidos y es la que va a
   // ordenar el reparto cuando exista el módulo de logística. Mediodía UTC = 9 acá.
   if(fechaISO) await rpc("sale.order","write",[[pedidoId],{commitment_date:fechaISO+" 12:00:00"}],CTX);
+  await ntEntEscribirRemitos(pedidoId, texto);
   return id;
+}
+/* El renglón de nota hace que la indicación SALGA IMPRESA en el remito. Pero si
+   logística lo mira en pantalla, el renglón vive en el pedido, no en el remito: por
+   eso se copia también en el campo "Nota" del propio WH/OUT (su formulario tiene una
+   pestaña Nota). Solo en los remitos que todavía hay que preparar: los ya hechos o
+   cancelados no se tocan. Si el pedido aún no generó remitos, no pasa nada: el
+   renglón de nota ya cubre la impresión. */
+async function ntEntEscribirRemitos(pedidoId, texto){
+  try{
+    const ids=await rpc("stock.picking","search",[[["sale_id","=",pedidoId],["state","not in",["done","cancel"]]]],{limit:0});
+    if(!ids||!ids.length) return;
+    const html=texto ? texto.split("\n").map(l=>"<p>"+esc(l)+"</p>").join("") : false;
+    await rpc("stock.picking","write",[ids,{note:html}],{context:{mail_auto_subscribe_no_notify:true}});
+  }catch(e){ /* si falla, la indicación igual sale impresa desde el renglón de nota */ }
 }
 
 async function ntGuardar(){
