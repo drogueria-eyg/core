@@ -181,6 +181,11 @@
   .g-repo{grid-template-columns:2.4fr 1.4fr 0.8fr 0.8fr 0.9fr 0.9fr}
   .g-win{grid-template-columns:2.4fr 0.8fr 0.9fr 0.8fr 1fr 0.9fr}
   .g-rep{grid-template-columns:2.6fr 1fr 0.9fr 0.95fr 1.15fr}
+  .chips-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .quiebre-mini{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:linear-gradient(180deg,#FDECEA,#FCF4F3);border:1px solid #F1B4AD;border-left:5px solid var(--red);border-radius:12px;padding:12px 16px;margin-bottom:14px;cursor:pointer;box-shadow:var(--shadow);transition:.12s}
+  .quiebre-mini:hover{border-color:var(--red);transform:translateY(-1px)}
+  .quiebre-mini span:first-child{font-size:13.5px;color:#7a2320}.quiebre-mini b{color:#8E1F14}
+  .quiebre-mini .qm-go{font-size:12.5px;font-weight:800;color:#fff;background:var(--red);padding:6px 12px;border-radius:20px;white-space:nowrap}
   .repo-tools{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
   .repo-prov{border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:13px;background:var(--surface);color:var(--ink);max-width:280px;cursor:pointer}
   .repo-prov:focus{outline:none;border-color:var(--teal)}
@@ -365,7 +370,7 @@ let liq={plazo:6};   // Liquidar: plazo de vencimiento en meses para el filtro "
 let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
 let STOCK_CRIT=new Set(), STOCK_PED=new Set();   // marcas manuales de German (param eyg.stock_modo): siempre-en-stock / siempre-contra-pedido
 let qBuscar="", QCACHE=[];   // buscador de la lista de quiebres
-let rBuscar="", rProv="", rVista="reponer", RCACHE=[];   // buscador + filtro proveedor + vista (reponer/pedidos)
+let rBuscar="", rProv="", rVista="reponer", rStock="", RCACHE=[];   // buscador + filtro proveedor + vista (reponer/pedidos/nopedir) + filtro de stock (''/sin/bajo)
 let PEDIDOS_OC={}, PEDIDO_MANUAL={}, DESCARTADO={};   // ya en OC (auto) / marcados pedidos a mano (eyg.stock_pedido_manual) / descartados "no pedir" (eyg.stock_descartados)
 let filtro={q:"",fam:"",chip:"",sortK:"val",dir:-1};
 let rfiltro={q:"",soloRepo:true,sortK:"margenAnual",dir:-1};
@@ -980,22 +985,19 @@ function tabComprar(rd){
 }
 function reponerSeccion(rd){
   const qc=rd.quiebresCriticos||[], qe=rd.quiebresEspor||[];
-  QCACHE=qc;
-  // lista maestra de reposición: todo lo que necesita reponerse, ordenado por urgencia (frecuencia)
-  RCACHE=[...rd.necesita].sort((a,b)=>(URG_ORD[a.rp.urg]-URG_ORD[b.rp.urg])||(b.r.freq-a.r.freq));
-  const provSet={}; rd.necesita.forEach(x=>{ if(x.r.provId) provSet[x.r.provId]=x.r.provName; });
+  // lista maestra UNIFICADA: todo lo que necesita reponerse (incluye los sin stock), sin duplicar, por urgencia
+  const byId={}; [...rd.necesita, ...qc].forEach(x=>{ byId[x.r.id]=x; });
+  RCACHE=Object.values(byId).sort((a,b)=>(URG_ORD[a.rp.urg]-URG_ORD[b.rp.urg])||(b.r.freq-a.r.freq));
+  const provSet={}; RCACHE.forEach(x=>{ if(x.r.provId) provSet[x.r.provId]=x.r.provName; });
   const provOpts=`<option value="">Todos los proveedores</option>`
     +Object.keys(provSet).sort((a,b)=>(provSet[a]||"").localeCompare(provSet[b]||"")).map(id=>`<option value="${id}" ${String(rProv)===String(id)?"selected":""}>${esc(provSet[id])}</option>`).join("")
     +`<option value="_none" ${rProv==="_none"?"selected":""}>— sin proveedor cargado —</option>`;
-  const banner = qc.length ? `
-    <div class="quiebre-alert">
-      <div class="qa-h">🔴 ${qc.length} producto${qc.length===1?"":"s"} que stockeás ${qc.length===1?"quedó":"quedaron"} SIN STOCK</div>
-      <div class="qa-sub">Productos que EyG <b>sí tiene de stock</b> y llegaron a cero, ordenados por <b>urgencia</b>: primero los que <b>más seguido te piden</b> (cada día sin stock son ventas perdidas). Buscá cualquiera por nombre o código.</div>
-      <div class="qa-search"><input id="qbuscar" placeholder="Buscar en los quiebres… (ej. ibuprofeno)" value="${esc(qBuscar)}" oninput="qBuscar=this.value;pintarQuiebres()"></div>
-      <div class="qa-list" id="qlist">${quiebresHTML()}</div>
-    </div>` : "";
+  const nSin=RCACHE.filter(x=>x.rp.pos<=0 && !pedidoInfo(x.r.id) && !esDescartado(x.r.id)).length;
+  const alerta = nSin ? `<div class="quiebre-mini" onclick="rVista='reponer';rStock='sin';pintarRepo();var e=document.getElementById('rlist');if(e)e.scrollIntoView({behavior:'smooth',block:'start'})">
+      <span>🔴 <b>${nSin} producto${nSin===1?"":"s"} que stockeás ${nSin===1?"está":"están"} SIN STOCK</b> — son los más urgentes.</span>
+      <span class="qm-go">Ver solo sin stock →</span></div>` : "";
   return `
-    ${banner}
+    ${alerta}
     <div class="policy">
       <div class="pol"><label>Avisar cuando la cobertura baje de <b id="lbU">${pol.umbral} mes</b></label>
         <input type="range" min="0.25" max="3" step="0.25" value="${pol.umbral}" oninput="setUmbral(this.value)"></div>
@@ -1004,9 +1006,9 @@ function reponerSeccion(rd){
       <div class="pol" style="flex:0 0 auto;min-width:auto"><label>Ritmo de venta que uso</label>
         <div class="segs"><button class="${pol.fuente==='12m'?'on':''}" onclick="setFuente('12m')">Año</button><button class="${pol.fuente==='3m'?'on':''}" onclick="setFuente('3m')">Últimos 3m</button></div></div>
     </div>
-    <div class="note info" style="margin-top:2px">Cada producto se mira con <b>su propio ritmo</b>. El sistema separa lo que <b>tenés de stock</b> (si llega a cero es un quiebre real → cartel rojo) de lo que <b>comprás contra pedido</b> (estar en cero es normal). Lo infiere por cómo comprás, y desde la ficha de cada producto lo podés fijar a mano (📌 crítico / contra pedido).</div>
+    <div class="note info" style="margin-top:2px">Una sola lista con <b>todo lo que hay que reponer</b>. Filtrá por <b>🔴 sin stock</b> (lo urgente) o <b>🟠 stock bajo</b> (el resto), por proveedor, y armá el carrito. Lo que EyG <b>compra contra pedido</b> (estar en cero es normal) no ensucia esta lista.</div>
 
-    <h2 class="sec">Todo lo que hay que reponer<span class="hint">${rd.necesita.length} producto${rd.necesita.length===1?"":"s"} · filtrá por proveedor y armá el carrito</span></h2>
+    <h2 class="sec">Reposición<span class="hint">filtrá por estado de stock y proveedor · armá el carrito</span></h2>
     <div class="pcard">
       <div class="repo-tools">
         <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input id="rbuscar" placeholder="Buscar producto o proveedor…" value="${esc(rBuscar)}" oninput="rBuscar=this.value;pintarRepo()"></div>
@@ -1055,8 +1057,17 @@ function reponerListaHTML(){
     <button class="${rVista==='reponer'?'on':''}" onclick="rVista='reponer';pintarRepo()">Por reponer · ${porReponer.length}</button>
     <button class="${rVista==='pedidos'?'on':''}" onclick="rVista='pedidos';pintarRepo()">📦 Ya pedidos · ${yaPedidos.length}</button>
     <button class="${rVista==='nopedir'?'on':''}" onclick="rVista='nopedir';pintarRepo()">🚫 No pedir · ${noPedir.length}</button></div>`;
-  const rows = rVista==="pedidos" ? yaPedidos : rVista==="nopedir" ? noPedir : porReponer;
-  if(!rows.length) return seg+`<div class="qa-empty" style="color:var(--gris)">${rVista==="pedidos"?"Nada pedido con este filtro.":rVista==="nopedir"?"Nada descartado.":"Nada por reponer con este filtro. 👌"}</div>`;
+  // filtro de estado de stock (solo en Por reponer): sin stock / stock bajo
+  const nSin=porReponer.filter(x=>x.rp.pos<=0).length, nBajo=porReponer.length-nSin;
+  const chips = rVista==="reponer" ? `<div class="chips-row">
+    <span class="chip ${rStock===''?'on':''}" onclick="rStock='';pintarRepo()">Todos · ${porReponer.length}</span>
+    <span class="chip ${rStock==='sin'?'on':''}" onclick="rStock='sin';pintarRepo()">🔴 Sin stock · ${nSin}</span>
+    <span class="chip ${rStock==='bajo'?'on':''}" onclick="rStock='bajo';pintarRepo()">🟠 Stock bajo · ${nBajo}</span></div>` : "";
+  let rows = rVista==="pedidos" ? yaPedidos : rVista==="nopedir" ? noPedir : porReponer;
+  if(rVista==="reponer" && rStock==="sin") rows=rows.filter(x=>x.rp.pos<=0);
+  else if(rVista==="reponer" && rStock==="bajo") rows=rows.filter(x=>x.rp.pos>0);
+  const seg2=seg+chips;
+  if(!rows.length) return seg2+`<div class="qa-empty" style="color:var(--gris)">${rVista==="pedidos"?"Nada pedido con este filtro.":rVista==="nopedir"?"Nada descartado.":rStock==="sin"?"Nada sin stock con este filtro. 👌":rStock==="bajo"?"Nada con stock bajo.":"Nada por reponer con este filtro. 👌"}</div>`;
   const enCart=id=>Object.keys(CARTS).some(k=>CARTS[k].items.some(it=>it.id===id));
   const provFiltrado = (rVista==="reponer" && rProv && rProv!=="_none") ? rows : null;
   const addAll = provFiltrado ? `<div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -1064,7 +1075,7 @@ function reponerListaHTML(){
       <span style="font-size:12px;color:var(--gris)">total estimado ${money(provFiltrado.reduce((a,x)=>a+x.rp.sug*(x.r.provPrice||x.r.costoU||0),0))}</span></div>` : "";
   const cap=Math.min(rows.length,200);
   const ultCol = rVista==="reponer" ? "Acciones" : rVista==="pedidos" ? "Pedido" : "Descartado";
-  return seg+addAll+`<div class="tablecard"><div class="thead g-rep">
+  return seg2+addAll+`<div class="tablecard"><div class="thead g-rep">
       <div title="Producto y proveedor">Producto</div>
       <div title="Urgencia = cuán seguido te lo piden">Urgencia</div>
       <div class="tr-r hide-sm" title="Para cuánto alcanza (stock + en camino)">Cobertura</div>
@@ -1110,7 +1121,8 @@ function undescartar(id){ delete DESCARTADO[id]; saveDescartados(); pintarRepo()
 const esDescartado=id=>!!DESCARTADO[id];
 function addAllToCart(){
   if(!rProv || rProv==="_none") return;
-  const rows=RCACHE.filter(x=>String(x.r.provId)===String(rProv) && !pedidoInfo(x.r.id));
+  const rows=RCACHE.filter(x=>String(x.r.provId)===String(rProv) && !pedidoInfo(x.r.id) && !esDescartado(x.r.id)
+    && (rStock==="sin"?x.rp.pos<=0 : rStock==="bajo"?x.rp.pos>0 : true));   // respeta el filtro de stock activo
   if(!rows.length){ toast("No quedan productos por reponer de ese proveedor"); return; }
   const c=cartOf(rows[0].r.provId, rows[0].r.provName);
   if(c.poId){ toast(`El carrito de ${c.provName} ya tiene borrador creado`); return; }
