@@ -134,10 +134,29 @@ const POS       = "0001";  // punto de venta de los recibos
 
 const ST = { cliente:null, deuda:[], cheques:[], bancos:[], bancosError:false,
              fileName:"", extracting:false, error:null, texto:"", leidos:0,
-             guardando:false, hecho:null, usados:0 };
+             guardando:false, hecho:null, usados:0,
+             liq:null, fecha:HOY, otrosFirmantes:[] };
 
 /* ---------- utilidades ---------- */
-const num = v => Number(String(v==null?"":v).replace(/[^\d,.-]/g,"").replace(/\./g,"").replace(",","."))||0;
+/* Un importe puede venir en formato argentino (1.070.182,50) o inglés
+   (2,176,256.87 — así lo imprime la liquidación del Macro). Se decide por el
+   ÚLTIMO separador: si le siguen 1 o 2 dígitos es la coma decimal; si le siguen
+   3, es separador de miles y el número es entero.
+   OJO: la versión vieja borraba todos los puntos, así que un "1070182.5" leído
+   del archivo terminaba cargándose como $10.701.825. */
+function num(v){
+  let s = String(v==null?"":v).replace(/[^\d,.-]/g,"");
+  if(!s) return 0;
+  const neg = /^-/.test(s); s = s.replace(/-/g,"");
+  const uComa = s.lastIndexOf(","), uPunto = s.lastIndexOf(".");
+  let dec = uComa > uPunto ? "," : (uPunto > uComa ? "." : "");
+  if(dec && (s.length - 1 - s.lastIndexOf(dec)) > 2) dec = "";   // 980.000 → miles
+  if(dec === ",")      s = s.replace(/\./g,"").replace(",",".");
+  else if(dec === ".") s = s.replace(/,/g,"");
+  else                 s = s.replace(/[.,]/g,"");
+  const n = Number(s);
+  return isNaN(n) ? 0 : (neg ? -n : n);
+}
 const cuitLimpio = v => String(v||"").replace(/\D/g,"");
 const cuitOk = v => cuitLimpio(v).length===11;
 const fmtCuit = v => { const c=cuitLimpio(v); return c.length===11 ? c.slice(0,2)+"-"+c.slice(2,10)+"-"+c.slice(10) : v; };
@@ -189,9 +208,32 @@ function onOver(e){ e.preventDefault(); const el=document.getElementById("drop")
 function onLeave(e){ const el=document.getElementById("drop"); if(el)el.classList.remove("over"); }
 function pegar(){ const t=document.getElementById("pegado"); if(t && t.value.trim()) aplicarTexto(t.value); }
 
-function aplicarTexto(text){
-  ST.texto = text;
-  const hallados = parseCheques(text);
+async function aplicarTexto(text){
+  ST.texto = text; ST.error=null; ST.liq=null; ST.otrosFirmantes=[]; ST.fecha=HOY;
+
+  /* Primero se prueba con la liquidación del banco, que es el papel que sube
+     Federico y trae también el emisor y la fecha valor. Si no es una, se cae al
+     lector genérico de planillas. */
+  const liq = parseLiquidacion(String(text||"").split(/\r?\n/));
+  let hallados;
+  if(liq){
+    ST.liq = liq;
+    if(liq.fechaValor) ST.fecha = normFecha(liq.fechaValor);
+    /* Una liquidación puede traer varios firmantes. Se carga un firmante por vez
+       —el recibo es de un cliente— y los otros quedan avisados, no descartados
+       en silencio. */
+    const cuits = [...new Set(liq.cheques.map(c=>c.cuit).filter(Boolean))];
+    const elCuit = cuits[0] || "";
+    ST.otrosFirmantes = cuits.slice(1).map(cu=>({
+      cuit: cu,
+      nombre: (liq.cheques.find(c=>c.cuit===cu)||{}).firmante || "",
+      cuantos: liq.cheques.filter(c=>c.cuit===cu).length
+    }));
+    hallados = elCuit ? liq.cheques.filter(c=>c.cuit===elCuit) : liq.cheques;
+  }else{
+    hallados = parseCheques(text);
+  }
+
   ST.extracting=false;
   ST.leidos = hallados.length;
   if(hallados.length){
@@ -203,6 +245,94 @@ function aplicarTexto(text){
     if(!ST.cheques.length) ST.cheques=[chequeVacio()];
   }
   render();
+
+  /* El emisor del cheque es el cliente del recibo: se busca solo por el CUIT. */
+  const cuitCli = (hallados[0]||{}).cuit;
+  if(cuitCli && !ST.cliente) await elegirPorCuit(cuitCli, (hallados[0]||{}).firmante);
+}
+
+/* Busca el cliente por CUIT y lo deja elegido. Si no está en Odoo, lo avisa en
+   vez de dejar el paso 2 vacío sin explicación. */
+async function elegirPorCuit(cuit, nombreEnPapel){
+  const limpio = cuitLimpio(cuit);
+  let res=[];
+  try{ res = await R("res.partner","search_read",
+    [["|",["vat","=",fmtCuit(cuit)],["vat","=",limpio]],["id","name","vat"]],{limit:5}); }catch(e){}
+  if(res.length){ await elegir(res[0].id, res[0].name); }
+  else{
+    ST.error = "No encontré en Odoo ningún cliente con el CUIT "+fmtCuit(cuit)+
+               (nombreEnPapel?" ("+nombreEnPapel+")":"")+". Buscalo a mano o dalo de alta.";
+    render();
+  }
+}
+
+/* =========================================================================
+   LIQUIDACIÓN DE DESCUENTO DEL BANCO  (el papel que sube Federico)
+   -------------------------------------------------------------------------
+   Es el comprobante que emite el banco cuando EyG le descuenta los cheques.
+   Trae todo lo que hace falta para cargar el cheque, así:
+
+     Firmante: CUIT - 30546057328 - SANATORIO PARQUE S A     ← emisor
+     NºCheque    Depósito   Cle Acred      Plazo Tasa   TEA    Importe  …
+     7-267-19239 28/08/2026 24  31/08/2026 4     28.65  33.24  2,176,256.87 …
+
+   Verificado contra el recibo que Federico cargó con este mismo papel
+   (RE-X 0001-00012853): número 00019239 = último tramo del NºCheque a 8
+   dígitos, CUIT del Firmante, fecha de pago = columna Depósito (no Acred),
+   importe = columna Importe, fecha del recibo = Fecha Valor.
+   El banco del cheque NO figura en la liquidación: el que aparece es el que
+   descuenta (Macro), no el que lo emitió. Por eso queda vacío.
+   ========================================================================= */
+function parseLiquidacion(lineas){
+  const texto = lineas.join("\n");
+  const esLiq = /liquidaci[oó]n de operaciones de descuento/i.test(texto)
+             || (/n[ºo°]?\s*cheque/i.test(texto) && /liquidado/i.test(texto) && /firmante/i.test(texto));
+  if(!esLiq) return null;
+
+  const uno = re => { const m = texto.match(re); return m ? m[1].trim() : ""; };
+  const plata = re => num(uno(re));
+
+  const liq = {
+    banco:      uno(/Recibimos del\s+(.+?)\s+el importe/i) || uno(/^\s*(BANCO .+?)\s*$/mi),
+    operacion:  uno(/Nro\.?\s*Operaci[oó]n:\s*([\d-]+)/i),
+    fechaValor: uno(/Fecha Valor:\s*(\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4})/i),
+    neto:       plata(/Neto\s+([\d.,]+)\s*$/mi),
+    sinImp:     plata(/Neto sin Impuestos:\s*([\d.,]+)/i),
+    iva:        plata(/IVA Base:\s*([\d.,]+)/i),
+    percep:     plata(/IVA Percepci[oó]n:\s*([\d.,]+)/i),
+    sellos:     plata(/Sellos[^\d\n]{0,40}([\d.,]+)/i),
+    cheques:    []
+  };
+
+  let cuit="", firmante="";
+  for(const L of lineas){
+    const linea = L.replace(/\s+/g," ").trim();
+
+    const mF = linea.match(/Firmante:\s*(?:CUIT\s*[-:]\s*)?(\d{11}|\d{2}-\d{8}-\d)\s*-\s*(.+)$/i);
+    if(mF){ cuit = fmtCuit(mF[1]); firmante = mF[2].trim(); continue; }
+
+    /* Una fila de cheque empieza con el número (dígitos y guiones) seguido de la
+       fecha de depósito. La fila de "Totales:" no la tiene, así que queda afuera. */
+    const mFila = linea.match(/^(\d[\d-]{2,24})\s+(\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4})\b/);
+    if(!mFila) continue;
+
+    /* Sólo cuentan como plata los números con EXACTAMENTE 2 decimales: las tasas
+       vienen con 4 (28.6597, 33.2488) y así no se cuelan. De los que quedan, el
+       Importe del cheque es el mayor (los demás son netos, interés y gastos). */
+    const montos = (linea.match(/\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\b/g)||[]).map(num).filter(n=>n>0);
+    if(!montos.length) continue;
+
+    const tramos = String(mFila[1]).split("-").filter(Boolean);
+    liq.cheques.push({
+      numero:   String(tramos[tramos.length-1]).replace(/\D/g,"").padStart(8,"0"),
+      cuit:     cuit,
+      firmante: firmante,
+      banco:    "",
+      importe:  Math.max.apply(null, montos).toFixed(2),
+      vence:    normFecha(mFila[2])
+    });
+  }
+  return liq.cheques.length ? liq : null;
 }
 
 /* Detecta cheques línea por línea. Una línea cuenta como cheque si tiene, en
@@ -240,7 +370,7 @@ function parseCheques(texto){
       numero: mNum ? mNum[1] : "",
       cuit:   mCuit ? fmtCuit(mCuit[1]) : "",
       banco:  detectarBanco(linea),
-      importe: String(monto),
+      importe: monto.toFixed(2),
       vence:  mFecha ? normFecha(mFecha[1]) : hoyMas(30)
     });
   }
@@ -326,10 +456,10 @@ async function elegir(id, nombre){
   render();
 }
 function cambiarCliente(){ ST.cliente=null; ST.deuda=[]; render(); }
-function empezarDeNuevo(){ ST.cliente=null; ST.deuda=[]; ST.cheques=[chequeVacio()]; ST.hecho=null; ST.texto=""; ST.fileName=""; ST.leidos=0; ST.error=null; render(); }
+function empezarDeNuevo(){ ST.cliente=null; ST.deuda=[]; ST.cheques=[chequeVacio()]; ST.hecho=null; ST.texto=""; ST.fileName=""; ST.leidos=0; ST.error=null; ST.liq=null; ST.otrosFirmantes=[]; ST.fecha=HOY; render(); }
 
 /* ---------- cheques ---------- */
-function chequeVacio(){ return {numero:"",cuit:"",banco:"",importe:"",vence:hoyMas(30),auto:false}; }
+function chequeVacio(){ return {numero:"",cuit:"",banco:"",importe:"",vence:hoyMas(30),firmante:"",auto:false}; }
 function addCheque(){ ST.cheques.push(chequeVacio()); render();
   setTimeout(function(){ const f=document.querySelectorAll(".chq input"); if(f.length) f[(ST.cheques.length-1)*5].focus(); },30); }
 function delCheque(i){ ST.cheques.splice(i,1); if(!ST.cheques.length) ST.cheques.push(chequeVacio()); render(); }
@@ -364,11 +494,41 @@ function card1(){
       cuerpo+'<input id="file" type="file" accept=".pdf,.xlsx,.xls,.csv,.txt" onchange="onFile(this.files[0])"></div>'+
     (ST.error?'<div class="aviso a-bad">'+esc(ST.error)+'</div>':'')+
     (ST.leidos?'<div class="aviso a-ok">Reconocí <b>'+ST.leidos+'</b> cheque'+(ST.leidos>1?"s":"")+' en '+esc(ST.fileName)+'. Revisalos abajo: los que salieron del archivo están en celeste.</div>':'')+
+    bloqueLiquidacion()+
     '<details class="raw"><summary>Pegar el detalle a mano</summary>'+
       '<textarea id="pegado" placeholder="Pegá acá el listado de cheques (uno por línea)…" style="margin-top:8px"></textarea>'+
       '<div class="actions"><button class="btn ghost" onclick="pegar()">Leer lo pegado</button></div></details>'+
     (ST.texto?'<details class="raw"><summary>Ver el texto leído del archivo</summary><textarea readonly style="margin-top:8px">'+esc(ST.texto.slice(0,4000))+'</textarea></details>':'')+
     '</div>';
+}
+
+/* Lo que la liquidación del banco dice además de los cheques. No se escribe en
+   Odoo (el recibo es sólo del cheque): se muestra para que Federico controle
+   contra el papel y sepa qué costó el descuento. */
+function bloqueLiquidacion(){
+  const q = ST.liq; if(!q) return "";
+  const bruto = (q.cheques||[]).reduce((a,c)=>a+num(c.importe),0);
+  const interes = (q.sinImp && bruto) ? bruto - q.sinImp : 0;
+  const dato = (l,v) => v ? '<div class="pv-tile"><div class="l">'+l+'</div><div class="v">'+v+'</div></div>' : "";
+  const otros = ST.otrosFirmantes.length
+    ? '<div class="aviso a-warn">Esta liquidación trae cheques de <b>'+ST.otrosFirmantes.length+'</b> firmante'+
+      (ST.otrosFirmantes.length>1?"s":"")+' más: '+
+      ST.otrosFirmantes.map(f=>esc(f.nombre||fmtCuit(f.cuit))+' ('+f.cuantos+')').join(" · ")+
+      '. El recibo es de un solo cliente, así que cargá primero estos y después volvé a subir el archivo para los otros.</div>'
+    : "";
+  return '<div class="aviso a-ok" style="margin-top:10px">Es una <b>liquidación de descuento</b>'+
+      (q.banco?' de '+esc(q.banco):'')+(q.operacion?' · operación '+esc(q.operacion):'')+
+      (q.fechaValor?' · fecha valor '+esc(q.fechaValor):'')+'. El recibo se fecha el '+fechaCorta(ST.fecha)+'.</div>'+
+    otros+
+    '<div class="pv-tiles" style="margin-top:10px">'+
+      dato("Cheques", money(bruto))+
+      dato("Interés", interes>0?money(interes):"")+
+      dato("IVA 10,5%", q.iva?money(q.iva):"")+
+      dato("Percepción", q.percep?money(q.percep):"")+
+      dato("Sellos", q.sellos?money(q.sellos):"")+
+      dato("Neto acreditado", q.neto?money(q.neto):"")+
+    '</div>'+
+    '<div class="hint">El costo del descuento y el neto que entró al banco no se cargan acá: este módulo genera el recibo del cheque. El movimiento del banco entra por el extracto.</div>';
 }
 
 function card2(){
@@ -458,11 +618,12 @@ async function generar(){
   for(const c of ST.cheques){
     const vals={
       journal_id:J_CHEQUES, payment_type:"inbound", partner_type:"customer",
-      partner_id:ST.cliente.id, amount:num(c.importe), date:HOY,
+      partner_id:ST.cliente.id, amount:num(c.importe), date:ST.fecha||HOY,
       payment_method_line_id:PML_NUEVO,
       l10n_latam_document_type_id:DOCTYPE,
       l10n_latam_document_number:POS+"-"+String(prox).padStart(8,"0"),
-      l10n_latam_check_number:String(c.numero).trim(),
+      /* Federico los carga siempre a 8 dígitos con ceros adelante (00019239) */
+      l10n_latam_check_number:String(c.numero).replace(/\D/g,"").padStart(8,"0"),
       l10n_latam_check_issuer_vat:cuitLimpio(c.cuit),
       l10n_latam_check_payment_date:c.vence
     };
