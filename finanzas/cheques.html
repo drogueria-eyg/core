@@ -11,7 +11,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-<script src="../assets/core.js?v=57"></script>
+<script src="../assets/core.js?v=58"></script>
 <style>
   /* Mismo sistema visual que "Cargar crédito bancario" (finanzas/creditos-bancarios.html). */
   :root{
@@ -281,8 +281,9 @@ async function elegirPorCuit(cuit, nombreEnPapel){
    (RE-X 0001-00012853): número 00019239 = último tramo del NºCheque a 8
    dígitos, CUIT del Firmante, fecha de pago = columna Depósito (no Acred),
    importe = columna Importe, fecha del recibo = Fecha Valor.
-   El banco del cheque NO figura en la liquidación: el que aparece es el que
-   descuenta (Macro), no el que lo emitió. Por eso queda vacío.
+   El banco NO figura con su nombre —el único que se nombra es el que descuenta,
+   Macro— pero sí va escondido en el número: el primer tramo es el código de
+   entidad del BCRA (007 = Galicia). Ver bancoPorNumero().
    ========================================================================= */
 function parseLiquidacion(lineas){
   const texto = lineas.join("\n");
@@ -334,7 +335,8 @@ function parseLiquidacion(lineas){
       numero:   numero,
       cuit:     cuit,
       firmante: firmante,
-      banco:    "",
+      /* el banco sale del PRIMER tramo del número: es el código del BCRA */
+      banco:    bancoPorNumero(mFila[1]),
       importe:  Math.max.apply(null, montos).toFixed(2),
       vence:    normFecha(mFila[2])
     });
@@ -404,6 +406,42 @@ function detectarBanco(linea){
 
 /* ---------- bancos ---------- */
 function nombreBanco(n){ return String(n||"").split(" - ")[0].trim(); }
+const sinTildes = s => String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+
+/* Código de entidad financiera del BCRA. Es el primer tramo del número de
+   cheque: en "7-267-19239" el 7 es el banco (007 = Galicia), 267 la sucursal y
+   19239 el número. Se guarda la palabra con la que se encuentra el banco en
+   `res.bank` en vez del nombre completo, así no depende de cómo esté escrito.
+   Comprobado contra los CBU cargados en Odoo, que empiezan con el mismo código:
+   017 → BBVA, 072 → Santander Río, 011 → Nación. Y el propio Odoo ya tiene a
+   Coinag con `bic = 431`, que es su código. */
+const CODIGOS_BANCO = {
+  "007":"galicia", "011":"nacion argentina", "014":"provincia de buenos aires",
+  "015":"industrial and commercial", "016":"citibank", "017":"frances",
+  "020":"provincia de cordoba", "027":"supervielle", "029":"ciudad de buenos aires",
+  "034":"patagonia", "044":"hipotecario", "045":"san juan", "060":"tucuman",
+  "065":"municipal de rosario", "072":"santander", "083":"chubut",
+  "086":"santa cruz", "093":"pampa", "094":"corrientes", "097":"neuquen",
+  "143":"brubank", "150":"hsbc", "191":"credicoop", "198":"valores",
+  "247":"roela", "254":"mariva", "259":"itau", "268":"tierra del fuego",
+  "277":"saenz", "285":"macro", "299":"comafi", "300":"inversion y comercio",
+  "301":"piano", "305":"julio", "309":"la rioja", "310":"del sol",
+  "311":"chaco", "312":"voii", "315":"formosa", "319":"cmf",
+  "321":"santiago del estero", "322":"industrial", "330":"santa fe",
+  "338":"servicios y transacciones", "340":"bacs", "386":"entre rios",
+  "389":"columbia", "426":"bica", "431":"coinag", "432":"de comercio"
+};
+
+/* Del "7-267-19239" saca el banco. Devuelve "" si el código no lo conoce o si
+   ese banco no está en Odoo: preferible dejarlo vacío que poner uno mal. */
+function bancoPorNumero(numeroCompleto){
+  const tramos = String(numeroCompleto||"").split("-").filter(Boolean);
+  if(tramos.length < 2) return "";                       // sin prefijo no hay banco
+  const codigo = String(tramos[0]).replace(/\D/g,"").padStart(3,"0");
+  const clave = CODIGOS_BANCO[codigo]; if(!clave) return "";
+  const b = ST.bancos.find(x=>sinTildes(nombreBanco(x.name)).indexOf(clave)>=0);
+  return b ? nombreBanco(b.name) : "";
+}
 function bancoIdPorNombre(txt){
   const t=String(txt||"").trim().toLowerCase(); if(!t) return null;
   const b = ST.bancos.find(x=>nombreBanco(x.name).toLowerCase()===t)
