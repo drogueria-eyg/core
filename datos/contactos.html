@@ -233,7 +233,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=57"></script>
+<script src="../assets/core.js?v=56"></script>
 <script>
 /* ===== EyG Core · Contactos: la base única de contactos de EyG =====
    Una sola casa para TODOS los contactos: los que ya son nuestros (con la ficha completa,
@@ -265,7 +265,46 @@ const norm2 = s => (s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"")
 /* ================= Estado ================= */
 const RUBRO_FIELD="x_studio_selection_field_6ui_1j42g6fu9";
 const RUBROS7=["FARMACIAS","INSTITUCIONES","DISTRIBUIDORAS","VETERINARIAS","EMPRESAS DE SALUD","DROGUERIAS","PERSONAL"];
-const PFIELDS=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","customer_rank","supplier_rank","parent_id","function","comment","website","x_studio_selection_field_6ui_1j42g6fu9"];
+const PFIELDS=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","customer_rank","supplier_rank","parent_id","function","comment","website","x_studio_selection_field_6ui_1j42g6fu9","property_payment_term_id"];
+/* ---- Condición de pago (plazo) ----------------------------------------
+   Es el campo que DETERMINA EL VENCIMIENTO de cada factura, así que si el
+   cliente no lo tiene cargado, Odoo factura a vencimiento inmediato y
+   Cobranzas lo ve vencido al día siguiente.
+
+   OJO con los nombres: en este Odoo hay plazos cuyo nombre NO coincide con
+   los días que calculan (ej. "30 días" que vence a 21, "45 días" que vence a
+   60). Por eso el selector muestra SIEMPRE los días reales al lado del
+   nombre: el comercial elige por el vencimiento, no por la etiqueta. */
+let PLAZOS=[];
+async function cargarPlazos(){
+  try{
+    const t=await rpc("account.payment.term","search_read",[[["active","=",true]]],{fields:["id","name","line_ids"],limit:80,context:{lang:"es_AR"}});
+    const ids=[].concat(...t.map(x=>x.line_ids||[]));
+    const ls=ids.length? await rpc("account.payment.term.line","read",[ids,["nb_days","value_amount","delay_type","payment_id"]]) : [];
+    const by={}; ls.forEach(l=>{ if(l.payment_id) (by[l.payment_id[0]]=by[l.payment_id[0]]||[]).push(l); });
+    PLAZOS=t.map(x=>{
+      const li=by[x.id]||[];
+      // días reales: si son varias cuotas, mostramos la última (cuando termina de vencer)
+      const dias = li.length ? Math.max(...li.map(l=>l.nb_days||0)) : null;
+      const finMes = li.some(l=>/end_of_next_month/.test(l.delay_type||""));
+      const cuotas = li.length>1;
+      let det = finMes ? "fin del mes siguiente" : (dias!=null ? (dias===0?"al contado":dias+" días") : "—");
+      if(cuotas) det += " (en cuotas)";
+      // ¿el nombre miente sobre los días? lo marcamos para que se vea
+      const m=(x.name||"").match(/(\d+)\s*d/i);
+      const enga = !!(m && dias!=null && !finMes && parseInt(m[1],10)!==dias);
+      return {id:x.id, name:x.name, dias, det, enga};
+    }).sort((a,b)=>(a.dias==null?999:a.dias)-(b.dias==null?999:b.dias));
+  }catch(e){ PLAZOS=[]; }
+  return PLAZOS;
+}
+/* <option> del selector: siempre con los días reales visibles. */
+function optPlazo(sel){
+  return `<option value="">— sin condición de pago —</option>`+
+    PLAZOS.map(p=>`<option value="${p.id}" ${String(sel)===String(p.id)?"selected":""}>${esc(p.name)} · vence a ${esc(p.det)}${p.enga?" ⚠":""}</option>`).join("");
+}
+const plazoTxt=id=>{ const p=PLAZOS.find(x=>x.id===id); return p? (p.name+" · vence a "+p.det) : null; };
+
 const PPAL_TAG="[ENTREGA-PPAL]";   // misma marca que usan el panel del comercial y Cargar Venta para la dirección de entrega principal
 const ROLES={"German Banquero":{label:"Gerente",cls:"gerente"},"Diego Velazquez":{label:"Dirección",cls:"gerente"},"Marcela Carranza":{label:"Líder Comercial",cls:"lider"}};
 const rolRank=n=>(n==="German Banquero"||n==="Diego Velazquez")?0:n==="Marcela Carranza"?1:n==="Sin asignar"?9:2;
@@ -338,10 +377,11 @@ async function cargar(silent){
     ]);
     // catálogos + roster de comerciales: no cambian seguido → se cargan 1 sola vez
     if(!CAT.prov.length){
-      const [fiscal,idt,prov,users,vent]=await Promise.all([
+      const [fiscal,idt,prov,_plz,users,vent]=await Promise.all([
         rpc("l10n_ar.afip.responsibility.type","search_read",[[]],{fields:["id","name"],context:{lang:"es_AR"}}),
         rpc("l10n_latam.identification.type","search_read",[[["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}}),
         rpc("res.country.state","search_read",[[["country_id.code","=","AR"]]],{fields:["id","name"],limit:0}),
+        cargarPlazos(),
         rpc("res.users","search_read",[[["share","=",false],["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}}),
         // organigrama real: empleados ACTIVOS del depto Ventas → los comerciales de verdad
         rpc("hr.employee","search_read",[[["department_id.name","ilike","venta"],["active","=",true]]],{fields:["name","job_title","user_id","parent_id"],context:{lang:"es_AR"}})
@@ -391,6 +431,8 @@ async function cargar(silent){
         cuit:p.vat||"", fiscal:p.l10n_ar_afip_responsibility_type_id?p.l10n_ar_afip_responsibility_type_id[1]:"",
         comercial:p.user_id?p.user_id[1]:"Sin asignar", comercialId:p.user_id?p.user_id[0]:false,
         rubro:p[RUBRO_FIELD]||"", esCliente:p.customer_rank>0||nped>0, compro:nped>0, nped, dias,
+        plazoId:p.property_payment_term_id?p.property_payment_term_id[0]:null,
+        plazo:p.property_payment_term_id?p.property_payment_term_id[1]:"",
         proveedor:(p.supplier_rank||0)>0, empresa:(p.is_company||p.company_type==="company"),
         comprado:v.tot||0, mesv:v.mes||0, semv:v.sem||0, faltantes,
         wa:waNumber(p.mobile,p.phone), tellink:telLink(p.mobile,p.phone),
@@ -400,6 +442,8 @@ async function cargar(silent){
         padreId:p.parent_id?p.parent_id[0]:false, padre:p.parent_id?p.parent_id[1]:"", cargo:p.function||"",
         noUsar:/\(no usar\)/i.test(p.name||""), combo:/combo|super combo|^oferta|^promo|^tanda|^bloque|prueba|test\b/i.test(p.name||"") };
       c.seg=segmentar(c);
+      // Solo se le reclama a los que YA son clientes: en un prospecto todavía no aplica.
+      if(c.esCliente && !c.plazoId) c.faltantes.push("cond. de pago");
       return c;
     });
     if(UNI) cruzar();
@@ -1324,6 +1368,11 @@ function abrir(id){
         <div class="muted" style="margin-top:6px">Cambiá el comercial y se reasigna al toque en Odoo.</div></div>
       <div class="dsec"><h4>Rubro</h4>
         <div class="assign"><select id="qrubro" onchange="rubroRapido(${id},this.value)"><option value="">— sin rubro —</option>${RUBROS7.map(r=>`<option value="${esc(r)}" ${c.rubro===r?'selected':''}>${esc(r)}</option>`).join("")}</select></div></div>
+      <div class="dsec"><h4>Condición de pago</h4>
+        <div class="assign"><select id="qplazo" onchange="plazoRapido(${id},this.value)">${optPlazo(c.plazoId)}</select></div>
+        <div class="muted" style="margin-top:6px">${c.plazoId
+          ? "Es lo que fija el <b>vencimiento</b> de cada factura de este cliente."
+          : "<b>⚠ Sin condición de pago:</b> Odoo le factura a vencimiento inmediato y Cobranzas lo va a ver vencido enseguida."}</div></div>
       ${c.faltantes.length?`<div class="dsec"><h4>⚠ Faltan datos</h4>${c.faltantes.map(f=>`<span class="badge bad" style="margin:0 5px 5px 0;display:inline-block">${f}</span>`).join("")}</div>`:'<div class="dsec"><span class="badge ok">✓ Datos completos</span></div>'}
       ${c.wa?`<div class="dsec"><h4>WhatsApp</h4>
         <div class="tmpls">${tmpl("Presentación",`Hola, ¿qué tal? Te escribo de Droguería EyG. Trabajamos con medicamentos e insumos con muy buena cobertura y precios para farmacias e instituciones. ¿Te puedo pasar nuestra lista y condiciones?`)}${tmpl("Seguimiento",`Hola, ¿cómo va? Te escribo de Droguería EyG para ver si necesitás reponer algo. Tenemos ofertas de la semana. ¿Te preparo un pedido?`)}${tmpl("Reactivar",`Hola, ¿cómo estás? Hace un tiempo que no hacés pedidos con Droguería EyG y queríamos saber cómo andás. ¿Coordinamos una visita o te paso novedades?`)}</div>
@@ -1652,6 +1701,22 @@ async function rubroRapido(id,val){
   catch(e){ if(sel)sel.disabled=false; toast("⚠ No se pudo: "+(e.message||e)); }
 }
 
+/* Guarda la condición de pago del cliente. Es el campo que define el
+   vencimiento, así que se escribe directo en Odoo y se refresca la ficha. */
+async function plazoRapido(id,val){
+  const c=DATA.find(x=>x.id===id); if(!c) return;
+  const sel=document.getElementById("qplazo"); if(sel) sel.disabled=true;
+  const pid = val ? parseInt(val,10) : false;
+  try{
+    await rpc("res.partner","write",[[id],{property_payment_term_id:pid}],{context:{lang:"es_AR"}});
+    c.plazoId=pid||null; c.plazo=pid?plazoTxt(pid):"";
+    if(c.part) c.part.property_payment_term_id = pid ? [pid, c.plazo] : false;
+    if(sel) sel.disabled=false;
+    toast(pid ? ("✅ Condición de pago: "+c.plazo) : "Condición de pago borrada");
+    abrir(id); renderLista();
+  }catch(e){ if(sel)sel.disabled=false; toast("⚠ No se pudo: "+(e.message||e)); }
+}
+
 /* ================= Dar de baja (archiva en Odoo con etiqueta) ================= */
 // busca/crea la etiqueta "DADO DE BAJA" (category_id) una sola vez
 async function tagBaja(){
@@ -1902,6 +1967,10 @@ function crearProspecto(idx){
         <div class="fld"><label>CUIT</label><input id="np_vat" placeholder="30-12345678-9"></div>
         <div class="fld"><label>Cond. fiscal (AFIP)</label><select id="np_fiscal">${optSel(CAT.fiscal,false,'— condición —')}</select></div>
       </div>
+      <div class="grid2">
+        <div class="fld"><label>Condición de pago (plazo)</label><select id="np_plazo">${optPlazo(false)}</select>
+          <div class="muted" style="margin-top:4px;font-size:11.5px">Define el <b>vencimiento</b> de sus facturas. Si queda vacío, Odoo factura a vencimiento inmediato.</div></div>
+      </div>
       <div class="fld"><label>Comercial asignado</label><select id="np_com">${optCom(false)}</select></div>
     </div>
     <div class="dfoot"><button class="btn-save" id="btnNew" onclick="guardarProspecto(${idx})">Crear contacto en Odoo</button></div>`;
@@ -1967,7 +2036,8 @@ async function guardarProspecto(idx){
     state_id:num("np_state"), street:val("np_street")?oracion(val("np_street")):false, user_id:num("np_com"),
     phone:val("np_phone")?fmtTel(val("np_phone")):false, email:val("np_email")||false,
     vat:tieneVat?fmtDoc(val("np_vat"),IDT.cuit):false, l10n_latam_identification_type_id:tieneVat?IDT.cuit:false,
-    l10n_ar_afip_responsibility_type_id:num("np_fiscal") };
+    l10n_ar_afip_responsibility_type_id:num("np_fiscal"),
+    property_payment_term_id:num("np_plazo") };
   vals[RUBRO_FIELD]=val("np_rubro")||false;
   try{
     const newId=await rpc("res.partner","create",[vals],{context:{lang:"es_AR"}});
