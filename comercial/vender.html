@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=56"></script>
+<script src="../assets/core.js?v=57"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF; --agua:#E2F1EF;
@@ -251,6 +251,17 @@
   .cfoot .row{display:flex;justify-content:space-between;font-size:13.5px;color:var(--gris);margin-bottom:4px}
   .cfoot .row.tot{font-size:20px;font-weight:800;color:var(--ink);margin:8px 0 12px}
   .cfoot .btns{display:flex;flex-direction:column;gap:9px}
+  /* OC del cliente: el PDF que manda la institución y sobre el que se cotiza.
+     Vanesa lo necesita al facturar para corroborar contra el pedido. */
+  .ocbox{border:1px dashed var(--line);border-radius:11px;padding:11px 12px;margin-bottom:12px;background:#FAFDFC}
+  .ocbox .oct{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:800;margin-bottom:7px}
+  .ocfile{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--surface);margin-bottom:6px}
+  .ocfile a{flex:1;min-width:0;color:var(--teal-deep);font-weight:700;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ocfile .del{border:0;background:none;color:var(--bad);cursor:pointer;font-size:14px;padding:0 2px}
+  .ocadd{display:inline-flex;align-items:center;gap:7px;font-family:inherit;font-size:13px;font-weight:700;border:1px solid var(--teal);background:var(--surface);color:var(--teal-deep);border-radius:9px;padding:9px 13px;cursor:pointer}
+  .ocadd:hover{background:#F2F9F8}
+  .ocadd:disabled{opacity:.55;cursor:wait}
+  .ocnota{font-size:11.5px;color:var(--gris);margin-top:6px;line-height:1.4}
 
   .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;padding:13px 24px;border-radius:30px;font-weight:600;font-size:14px;opacity:0;transition:.3s;z-index:120;box-shadow:0 8px 30px rgba(0,0,0,.25);max-width:90vw}
   .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -853,9 +864,11 @@ async function reanudar(orderId){
 
 async function entrarVenta(){
   ST.view="venta"; ST.fam="HOSPITALARIOS"; ST.qProd=""; ST.cartOpen=false;
+  ST.ocFiles=[];
   render();
   if(esTier2()) cargarMaxDescT2();   // tope de descuento comercial según el piso de margen
   cargarOfertas();          // en paralelo: marca los productos en oferta (no bloquea el catálogo)
+  ocCargar().then(()=>{ if(ST.view==="venta") renderCart(); });   // OC ya adjuntas (al reanudar)
   await cargarCatalogo();
 }
 
@@ -1502,12 +1515,86 @@ function renderCart(){
   foot.innerHTML=`
     <div class="row"><span>Neto (sin IVA)</span><b>${money(ST.amount.untaxed)}</b></div>
     <div class="row tot"><span>Total</span><span>${money(ST.amount.total)}</span></div>
+    ${ocHTML()}
     <div class="btns">
       <button class="btn grn big" onclick="confirmarVenta()" ${ST.syncing?"disabled":""}>✓ Confirmar venta</button>
       <button class="btn red" onclick="pedirDescartar()">Descartar presupuesto</button>
     </div>`;
 }
 function quitar(pid){ delete ST.want[pid]; refrescarCelda(pid); marcarDirty(); renderCart(); }
+
+/* ============================================================
+   OC DEL CLIENTE (documento de respaldo)
+   ============================================================
+   Las instituciones mandan su orden de compra en PDF y el comercial cotiza
+   sobre eso. Al facturar, Vanesa necesita esa OC a mano para corroborar que
+   el pedido coincide con lo que el cliente autorizó.
+
+   Se sube como adjunto del PEDIDO en Odoo y además se publica en el chatter,
+   así queda a la vista de quien abre la orden y con el nombre de quién la
+   cargó (el create_uid de Odoo es el conector, no la persona del Core).
+   Tope de 8 MB: la subida viaja en base64 por la edge function. */
+const OC_MAX_MB = 8;
+function ocHTML(){
+  const fs=ST.ocFiles||[];
+  return `<div class="ocbox">
+    <div class="oct">📎 OC del cliente (respaldo)</div>
+    ${fs.map(a=>`<div class="ocfile">
+        <a href="${ODOO_BASE}/web/content/${a.id}?download=true" target="_blank" title="${esc(a.name)}">${esc(a.name)}</a>
+        <span style="color:var(--gris2);font-size:11px">${Math.max(1,Math.round((a.file_size||0)/1024))} KB</span>
+        <button class="del" title="Quitar" onclick="ocQuitar(${a.id})">🗑</button>
+      </div>`).join("")}
+    <button class="ocadd" id="ocbtn" onclick="ocElegir()">${fs.length?"＋ Adjuntar otra":"📎 Adjuntar la OC (PDF)"}</button>
+    <input type="file" id="ocinput" accept="application/pdf,image/*" style="display:none" onchange="ocSubir(this)">
+    <div class="ocnota">${fs.length
+      ? "Queda adjunta al pedido en Odoo: al facturar se ve como respaldo."
+      : "Subí la orden de compra que mandó el cliente. Queda adjunta al pedido para que se pueda corroborar al facturar."}</div>
+  </div>`;
+}
+function ocElegir(){ const i=document.getElementById("ocinput"); if(i){ i.value=""; i.click(); } }
+async function ocCargar(){
+  if(!ST.order || !ST.order.id){ ST.ocFiles=[]; return; }
+  try{
+    ST.ocFiles = await rpc("ir.attachment","search_read",
+      [[["res_model","=","sale.order"],["res_id","=",ST.order.id]]],
+      {fields:["id","name","file_size","mimetype"], order:"create_date desc", limit:20});
+  }catch(e){ ST.ocFiles=[]; }
+}
+async function ocSubir(input){
+  const f=input.files&&input.files[0]; if(!f) return;
+  if(f.size > OC_MAX_MB*1024*1024){ toast(`El archivo pesa ${Math.round(f.size/1048576)} MB. El máximo es ${OC_MAX_MB} MB.`); return; }
+  const btn=document.getElementById("ocbtn"); if(btn){ btn.disabled=true; btn.textContent="Subiendo…"; }
+  try{
+    const b64=await new Promise((res,rej)=>{
+      const r=new FileReader();
+      r.onload=()=>res(String(r.result).split(",")[1]);   // saca el prefijo data:...;base64,
+      r.onerror=()=>rej(new Error("No pude leer el archivo"));
+      r.readAsDataURL(f);
+    });
+    const aid=await rpc("ir.attachment","create",[{
+      name:f.name, datas:b64, res_model:"sale.order", res_id:ST.order.id,
+      mimetype:f.type||"application/pdf"}]);
+    // que quede en el chatter con quién la subió: el create_uid es el conector, no la persona
+    try{ await rpc("sale.order","message_post",[[ST.order.id]],
+      {body:"📎 OC del cliente adjuntada por "+esc(COMERCIAL)+": "+esc(f.name),
+       message_type:"comment", attachment_ids:[aid]}); }catch(e){}
+    await ocCargar(); renderCart(); toast("✓ OC adjuntada");
+  }catch(e){
+    toast("No pude adjuntar: "+(e.message||e));
+    const b=document.getElementById("ocbtn"); if(b){ b.disabled=false; b.textContent="📎 Adjuntar la OC (PDF)"; }
+  }
+}
+function ocQuitar(id){
+  const a=(ST.ocFiles||[]).find(x=>x.id===id);
+  modal(`<h3>Quitar adjunto</h3><p>¿Quitar <b>${esc(a?a.name:"el archivo")}</b> del pedido?</p>
+    <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
+      <button class="btn red" onclick="doOcQuitar(${id})">Sí, quitar</button></div>`);
+}
+async function doOcQuitar(id){
+  cerrarModal();
+  try{ await rpc("ir.attachment","unlink",[[id]]); await ocCargar(); renderCart(); toast("Adjunto quitado"); }
+  catch(e){ toast("No pude quitarlo: "+(e.message||e)); }
+}
 
 /* ============================================================
    CONFIRMAR / DESCARTAR
