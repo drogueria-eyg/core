@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=57"></script>
+<script src="../assets/core.js?v=56"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF; --agua:#E2F1EF;
@@ -482,9 +482,51 @@ function vInicio(){
   }).join("");
   return `<div class="hero"><h1>Cargar venta 🛒</h1><p>Elegí el cliente y armá el pedido desde el catálogo. Se guarda solo como presupuesto en Odoo hasta que lo confirmes.</p></div>
     <button class="btn teal big" onclick="abrirPicker()">＋ Nueva venta</button>
-    ${d.length?`<div class="sect-t">Presupuestos en curso (${d.length})</div><div class="draft-list">${rows}</div>`
+    ${d.length?`<div class="sect-t">Presupuestos en curso (${d.length})
+        <button class="dbtn" style="float:right;font-size:12px;padding:5px 10px;width:auto;border-radius:8px"
+                title="Borra tus presupuestos sin tocar hace más de 90 días. Te dice cuántos son antes de borrar nada."
+                onclick="limpiarViejos()">🧹 Limpiar abandonados</button></div>
+       <div class="draft-list">${rows}</div>`
       :`<div class="empty" style="padding:34px 0">No tenés presupuestos en curso.</div>`}`;
 }
+/* Limpieza de presupuestos abandonados.
+   La lista de arriba muestra solo los 50 más recientes, así que los viejos ni
+   se ven y se van amontonando (había 1.324 en total, 840 con más de 90 días).
+   Esto busca los TUYOS sin tocar hace más de 90 días, te dice cuántos son y
+   recién borra si confirmás. */
+const DIAS_ABANDONO = 90;
+async function limpiarViejos(){
+  const corte=new Date(Date.now()-DIAS_ABANDONO*86400000).toISOString().slice(0,19).replace("T"," ");
+  let viejos=[];
+  try{
+    viejos=await rpc("sale.order","search_read",
+      [[["user_id","=",ST.userId],["state","in",["draft","sent"]],["write_date","<",corte]]],
+      {fields:["id","name","amount_total"], order:"write_date asc", limit:500, context:ES});
+  }catch(e){ toast("No pude buscarlos: "+(e.message||e)); return; }
+  if(!viejos.length){ toast("No tenés presupuestos abandonados 🎉"); return; }
+  const tot=viejos.reduce((a,o)=>a+(o.amount_total||0),0);
+  modal(`<h3>Limpiar presupuestos abandonados</h3>
+    <p>Encontré <b>${viejos.length} presupuesto${viejos.length===1?"":"s"}</b> tuyo${viejos.length===1?"":"s"} sin tocar hace más de ${DIAS_ABANDONO} días, por un total de <b>${money(tot)}</b>.</p>
+    <p style="font-size:13px;color:#666">Se eliminan de Odoo y no se puede deshacer. Los pedidos ya confirmados no se tocan.</p>
+    <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
+      <button class="btn red" onclick="doLimpiarViejos()">Sí, eliminar ${viejos.length}</button></div>`);
+  ST._viejos=viejos;
+}
+async function doLimpiarViejos(){
+  const lista=ST._viejos||[]; cerrarModal();
+  if(!lista.length) return;
+  const app=document.getElementById("app");
+  let ok=0, fallo=0;
+  for(let i=0;i<lista.length;i++){
+    app.innerHTML=`<div class="loading"><div class="spinner"></div>Eliminando ${i+1} de ${lista.length}…</div>`;
+    const err=await borrarPresupuesto(lista[i].id);
+    if(err) fallo++; else ok++;
+  }
+  ST._viejos=null;
+  toast(`✓ ${ok} eliminado${ok===1?"":"s"}${fallo?` · ${fallo} no se pudo`:""}`);
+  cargar();
+}
+
 /* Eliminar un presupuesto rápido, sin entrar. */
 function eliminarDraft(id, ev){
   if(ev){ ev.stopPropagation(); }
@@ -493,10 +535,27 @@ function eliminarDraft(id, ev){
   modal(`<h3>Eliminar presupuesto</h3><p>¿Eliminar el presupuesto de <b>${esc(cli)}</b>? No se puede deshacer.</p>
     <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cancelar</button><button class="btn red" onclick="doEliminarDraft(${id})">Sí, eliminar</button></div>`);
 }
+/* Borrar un presupuesto, resolviendo el caso que hacía fallar el botón.
+   Odoo NO deja hacer unlink de una cotización en estado "enviada": tira
+   "No puede eliminar una cotización enviada... primero debe cancelarla".
+   Y `action_cancel` por RPC no sirve: devuelve un ASISTENTE (sale.order.cancel),
+   así que el estado queda igual. La salida es escribir el estado a mano y
+   recién ahí borrar. Devuelve null si borró, o el mensaje real del error. */
+async function borrarPresupuesto(id){
+  try{ await rpc("sale.order","unlink",[[id]]); return null; }
+  catch(e){
+    try{
+      await rpc("sale.order","write",[[id],{state:"cancel"}]);
+      await rpc("sale.order","unlink",[[id]]);
+      return null;
+    }catch(e2){ return (e2 && e2.message) ? e2.message : String(e2); }
+  }
+}
 async function doEliminarDraft(id){
   cerrarModal();
-  try{ await rpc("sale.order","unlink",[[id]]); ST.drafts=(ST.drafts||[]).filter(x=>x.id!==id); toast("Presupuesto eliminado"); }
-  catch(e){ toast("No pude eliminar"); }
+  const err=await borrarPresupuesto(id);
+  if(err){ toast("No pude eliminar: "+err); }             // el motivo real, no un genérico
+  else { ST.drafts=(ST.drafts||[]).filter(x=>x.id!==id); toast("Presupuesto eliminado"); }
   render();
 }
 
@@ -1506,8 +1565,8 @@ function pedirDescartar(){
 async function doDescartar(){
   cerrarModal();
   document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Descartando…</div>';
-  try{ await rpc("sale.order","unlink",[[ST.order.id]]); toast("Presupuesto descartado"); }
-  catch(e){ toast("No pude descartar"); }
+  const err=await borrarPresupuesto(ST.order.id);
+  toast(err ? ("No pude descartar: "+err) : "Presupuesto descartado");
   ST.order=null; ST.want={}; ST.lines={}; cargar();
 }
 
