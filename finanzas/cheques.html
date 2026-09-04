@@ -499,20 +499,52 @@ function pintarBancos(){
 function alternarBancos(){ ST.verTodosBancos = !ST.verTodosBancos; pintarBancos(); render(); }
 
 /* ---------- cliente ---------- */
-let buscaT=null;
+let buscaT=null, buscaSeq=0;
+const TOPE_BUSCA = 40;
+
+/* Arma un dominio de Odoo con todas las condiciones en AND (notación prefija). */
+const yTodas = ts => new Array(Math.max(0, ts.length-1)).fill("&").concat(ts);
+
 function onBusca(v){
   clearTimeout(buscaT);
   const q=String(v||"").trim();
   const box=document.getElementById("sug");
   if(q.length<3){ if(box) box.innerHTML=""; return; }
+  const mio = ++buscaSeq;                 // si el usuario sigue tecleando, la respuesta vieja no pisa a la nueva
   buscaT=setTimeout(async function(){
+    /* Cada palabra tiene que estar en el nombre, en cualquier orden: así
+       "union policlinicos" encuentra a POLICLINICOS UNION S.R.L. */
+    const palabras = q.split(/\s+/).filter(p=>p.length>1);
+    let dom = yTodas((palabras.length?palabras:[q]).map(p=>["name","ilike",p]));
+    /* Por CUIT sólo si escribió números; con "" el ilike traía cualquier cosa.
+       En Odoo el CUIT está guardado de las dos formas —667 con guiones y 623
+       sin— así que con 11 dígitos hay que buscar los dos formatos. Con menos,
+       los dígitos sueltos ya encuentran los 8 del medio en ambos. */
+    const digitos = q.replace(/\D/g,"");
+    if(digitos.length>=6){
+      const formas = digitos.length===11 ? [digitos, fmtCuit(digitos)] : [digitos];
+      formas.forEach(f=>{ dom = ["|"].concat(dom, [["vat","ilike",f]]); });
+    }
+
     let res=[];
+    /* NO se filtra por customer_rank: dejaba afuera 856 contactos, 220 de ellos
+       con facturas. Se traen todos y se ordena para que los clientes de verdad
+       queden arriba. */
     try{ res = await R("res.partner","search_read",
-      [[["customer_rank",">",0],"|",["name","ilike",q],["vat","ilike",q.replace(/\D/g,"")]],["id","name","vat"]],{limit:12}); }catch(e){}
-    if(!box) return;
-    box.innerHTML = res.length
-      ? res.map(p=>'<div onclick="elegir('+p.id+',\''+esc(String(p.name).replace(/'/g,"\\'"))+'\')">'+esc(p.name)+(p.vat?'<div class="cu">'+esc(p.vat)+'</div>':'')+'</div>').join("")
-      : '<div class="muted" style="cursor:default">Sin resultados</div>';
+      [dom,["id","name","vat","city","customer_rank","parent_id"]],
+      {limit:TOPE_BUSCA+1, order:"customer_rank desc, name asc"}); }catch(e){}
+    if(!box || mio!==buscaSeq) return;
+    const hayMas = res.length > TOPE_BUSCA;
+    res = res.slice(0, TOPE_BUSCA);
+    if(!res.length){ box.innerHTML='<div class="muted" style="cursor:default">Sin resultados</div>'; return; }
+    box.innerHTML = res.map(function(p){
+      const abajo = [p.vat||"sin CUIT", p.city||"", p.parent_id?"de "+p.parent_id[1]:"" ]
+        .filter(Boolean).join(" · ");
+      return '<div onclick="elegir('+p.id+',\''+esc(String(p.name).replace(/'/g,"\\'"))+'\')">'+
+        esc(p.name)+(p.customer_rank>0?'':' <span class="muted">(sin ventas)</span>')+
+        '<div class="cu">'+esc(abajo)+'</div></div>';
+    }).join("") + (hayMas
+      ? '<div class="muted" style="cursor:default">Hay más de '+TOPE_BUSCA+'. Agregá otra palabra o el CUIT.</div>' : '');
   }, 260);
 }
 async function elegir(id, nombre){
