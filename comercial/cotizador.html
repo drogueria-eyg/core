@@ -94,6 +94,13 @@
   .pop .pl .p{font-weight:800;white-space:nowrap}
   .pop .pl .d{font-size:10.5px;font-weight:800;color:var(--ok);white-space:nowrap}
   .pop .pl.on .d{color:#CFF3E2}
+  /* Vencimiento del lote que sale primero. En rojo si le quedan <180 días:
+     las instituciones suelen exigir un vencimiento mínimo. */
+  .vtob{flex:0 0 auto;font-family:inherit;font-size:10.5px;font-weight:800;border:1px solid #CFE0EA;background:#EDF4F8;color:#2C5468;border-radius:7px;padding:0 9px;height:30px;line-height:1;white-space:nowrap;cursor:pointer;margin-left:2px}
+  .vtob.corto{background:#FBE4E3;border-color:#F0BEBC;color:#8A2E2B}
+  .step .escwrap .vtob{width:auto;min-width:0}
+  .row .vtob{height:auto;padding:2px 7px;margin:4px 0 0;cursor:default;display:inline-block}
+  .pop .pl .p.lcorto{color:#8A2E2B}
   .descb{display:inline-block;background:var(--okbg);color:var(--ok);font-size:10px;font-weight:800;border-radius:6px;padding:2px 6px;line-height:1.3;margin-bottom:3px;white-space:nowrap}
   .escmini{font-size:11px;color:var(--ok);font-weight:700;margin-top:3px;line-height:1.35}
 
@@ -119,7 +126,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=56"></script>
+<script src="../assets/core.js?v=57"></script>
 <script>
 /* ============================================================
    COTIZADOR — precios sueltos y cotizaciones, SIN cliente
@@ -150,6 +157,7 @@ const LISTAS_DEF=[3,16,5];
 
 let PERFIL=null, USERID=null, COMERCIAL="";
 const ST={ listas:[], lista:null, modo:"cotizacion", conIva:false, conEscalera:false, escAbierta:null,
+           lotes:{}, _lotesDone:null, lotAbierto:null, conVto:false,
            q:"", res:[], buscando:false, items:[], precios:{}, tiers:{}, pvp:{}, taxes:{}, taxmap:null };
 
 /* ---------------- arranque ---------------- */
@@ -282,9 +290,53 @@ const buscar = EYG.buscador(async v=>{
     await cargarPrecios(prods);
     if(token!==ST._tk) return;
     ST.res=prods; ST.buscando=false; pintarRes();
+    cargarLotes(prods).then(()=>{ if(token===ST._tk){ pintarRes(); pintarItems(); } });  // repinta al llegar
   }catch(e){ if(token===ST._tk){ ST.res=[]; ST.buscando=false; pintarRes(); toast("No pude buscar: "+(e.message||e)); } }
 }, 280);
 async function buscarWeb(q){ const {data,error}=await EYG.supa().rpc("buscar_web",{q,lim:40}); if(error) throw error; return data||[]; }
+
+/* ---------------- lotes y vencimiento ----------------
+   Las instituciones piden vencimiento mínimo, así que el comercial necesita
+   verlo MIENTRAS cotiza y no después. Mismo criterio que “Cargar venta”:
+   solo lotes CON stock, ordenados por vencimiento (primero el que vence antes,
+   que es el que sale por FEFO) y en rojo si le quedan menos de 180 días. */
+const VTO_CORTO = 180;
+function fmtVto(d){ if(!d) return "—"; const p=String(d).split("-"); return p.length===3 ? (p[2]+"/"+p[1]+"/"+p[0].slice(2)) : d; }
+function diasHasta(d){ if(!d) return 99999; try{ const t=new Date(d+"T00:00:00"), h=new Date(EYG.argToday()+"T00:00:00"); return Math.round((t-h)/86400000); }catch(e){ return 99999; } }
+async function cargarLotes(prods){
+  try{
+    ST._lotesDone = ST._lotesDone || new Set();
+    const pids=(prods||[]).map(p=>p.id).filter(id=>!ST._lotesDone.has(id));
+    if(!pids.length) return;
+    pids.forEach(id=>ST._lotesDone.add(id));
+    const lots=await EYG.rpc("stock.lot","search_read",
+      [[["product_id","in",pids],["product_qty",">",0]],["product_id","name","expiration_date","product_qty"]],{limit:5000});
+    const by={};
+    (lots||[]).forEach(l=>{ if(!l.product_id) return; const pid=l.product_id[0];
+      (by[pid]=by[pid]||[]).push({n:l.name||"", exp:(l.expiration_date||"").slice(0,10), qty:l.product_qty||0}); });
+    Object.keys(by).forEach(pid=>by[pid].sort((a,b)=>(a.exp||"9999").localeCompare(b.exp||"9999")));
+    ST.lotes=Object.assign(ST.lotes||{}, by);
+  }catch(e){}
+}
+const lotesDe=id=>(ST.lotes&&ST.lotes[id])||[];
+/* Etiqueta compacta con el vencimiento más próximo. Tocándola se abren todos. */
+function vtoHTML(id, conPop){
+  const ls=lotesDe(id); if(!ls.length) return "";
+  const pr=ls[0]; if(!pr.exp) return "";
+  const corto=diasHasta(pr.exp)<VTO_CORTO;
+  const abierto = conPop && ST.lotAbierto===id;
+  const btn=`<button class="vtob ${corto?"corto":""}" ${conPop?`onclick="togLot(${id})"`:""}
+     title="Vence primero el ${fmtVto(pr.exp)}${ls.length>1?` · ${ls.length} lotes con stock`:""}">⏳ ${fmtVto(pr.exp)}${conPop&&ls.length>1?" ▾":""}</button>`;
+  if(!abierto) return conPop?`<span class="escwrap">${btn}</span>`:btn;
+  return `<span class="escwrap">${btn}<div class="pop" onclick="event.stopPropagation()">
+    <div class="ph">Lotes con stock</div>
+    ${ls.map((l,i)=>`<div class="pl" style="cursor:default">
+      <span class="q">Lote ${esc(l.n||"—")}${i===0?' <b style="color:var(--ok)">·1º</b>':""}</span>
+      <span class="p ${diasHasta(l.exp)<VTO_CORTO?"lcorto":""}">${l.exp?fmtVto(l.exp):"sin vto"}</span>
+      <span class="d" style="color:var(--gris)">${nf(l.qty)} u</span></div>`).join("")}
+  </div></span>`;
+}
+function togLot(id){ ST.lotAbierto = ST.lotAbierto===id ? null : id; ST.escAbierta=null; render(); }
 
 /* ---------------- carrito ---------------- */
 function enLista(id){ return ST.items.some(x=>x.id===id); }
@@ -311,13 +363,13 @@ function limpiaNom(n){ return String(n||"").replace(/^\[[^\]]*\]\s*/,"").trim();
 /* La cotización sobrevive a recargas y a cambiar de módulo: es un borrador de
    trabajo del comercial, no un dato del sistema, así que vive en el navegador. */
 const LSKEY="eyg_cotizador";
-function guardar(){ try{ localStorage.setItem(LSKEY, JSON.stringify({items:ST.items, lista:ST.lista, modo:ST.modo, conIva:ST.conIva, conEscalera:ST.conEscalera})); }catch(e){} }
+function guardar(){ try{ localStorage.setItem(LSKEY, JSON.stringify({items:ST.items, lista:ST.lista, modo:ST.modo, conIva:ST.conIva, conEscalera:ST.conEscalera, conVto:ST.conVto})); }catch(e){} }
 function restaurar(){
   try{ const o=JSON.parse(localStorage.getItem(LSKEY)||"{}");
     if(Array.isArray(o.items)) ST.items=o.items;
     if(o.lista && ST.listas.some(l=>l.id===o.lista)) ST.lista=o.lista;
     if(o.modo) ST.modo=o.modo;
-    ST.conIva=!!o.conIva; ST.conEscalera=!!o.conEscalera;
+    ST.conIva=!!o.conIva; ST.conEscalera=!!o.conEscalera; ST.conVto=!!o.conVto;
   }catch(e){}
 }
 
@@ -328,7 +380,7 @@ function restaurar(){
 async function preciarItems(incluirRes){
   const pend=ST.items.map(it=>({id:it.id, product_tmpl_id:it.tmpl?[it.tmpl]:null, list_price:it.pvp||0}));
   const todo = incluirRes ? pend.concat(ST.res.map(p=>({id:p.id, product_tmpl_id:p.product_tmpl_id, list_price:p.list_price}))) : pend;
-  if(todo.length) await cargarPrecios(todo);
+  if(todo.length){ await cargarPrecios(todo); await cargarLotes(todo); }
 }
 async function setLista(id){
   ST.lista=id; guardar(); render();
@@ -337,6 +389,7 @@ async function setLista(id){
 function setModo(m){ ST.modo=m; guardar(); render(); }
 function setIva(v){ ST.conIva=!!v; guardar(); render(); }
 function setEscalera(v){ ST.conEscalera=!!v; guardar(); render(); }
+function setVto(v){ ST.conVto=!!v; guardar(); render(); }
 
 /* ---------------- render ---------------- */
 function render(){
@@ -364,6 +417,7 @@ function render(){
       </div>
       <div class="fld"><span class="lb">En el mensaje</span>
         <label class="swi" title="Suma al texto de WhatsApp la escalera de cada producto, para que el cliente vea desde cuántas unidades le baja el precio."><input type="checkbox" ${ST.conEscalera?"checked":""} onchange="setEscalera(this.checked)"> Incluir la escalera</label>
+        <label class="swi" title="Suma el vencimiento del lote que sale primero. Útil para instituciones que exigen un vencimiento mínimo."><input type="checkbox" ${ST.conVto?"checked":""} onchange="setVto(this.checked)"> Incluir vencimiento</label>
       </div>
     </div>
     <div class="cot">
@@ -404,7 +458,8 @@ function pintarRes(){
     const escP = maxD>0 ? `<div class="escmini">Por cantidad, hasta −${maxD}%</div>` : "";
     return `<div class="row">
       <div class="nm"><b>${esc(limpiaNom(p.name))}</b>
-        <span>${p.default_code?esc(p.default_code)+" · ":""}${t?esc(t.label):""}${p.qty_available>0?` · ${nf(p.qty_available)} en stock`:" · sin stock"}</span>${escP}</div>
+        <span>${p.default_code?esc(p.default_code)+" · ":""}${t?esc(t.label):""}${p.qty_available>0?` · ${nf(p.qty_available)} en stock`:" · sin stock"}</span>${escP}
+        ${vtoHTML(p.id,false)}</div>
       <div class="pr"><b>${pr!=null?money(pr):"—"}</b><span>${pr!=null?(ST.conIva?"c/IVA":"neto")+" c/u":"sin precio en la lista"}</span></div>
       <button class="add ${ya?"qui":""}" onclick="agregar(${p.id})">${ya?"✓ Quitar":"＋ Sumar"}</button>
     </div>`;
@@ -441,7 +496,9 @@ function escaleraHTML(it, soloPrecios){
 /* Un solo globo abierto a la vez. Un clic en cualquier otro lado lo cierra. */
 function togEsc(id){ ST.escAbierta = (ST.escAbierta===id||id==null) ? null : id; pintarItems(); }
 document.addEventListener("click", e=>{
-  if(ST.escAbierta!=null && !e.target.closest(".escwrap")) togEsc(null);
+  if(e.target.closest(".escwrap")) return;
+  if(ST.escAbierta!=null){ togEsc(null); return; }
+  if(ST.lotAbierto!=null){ ST.lotAbierto=null; render(); }
 });
 
 function pintarItems(){
@@ -466,9 +523,11 @@ function pintarItems(){
           <button onclick="chgCant(${it.id},1)">＋</button>
           <button class="del" onclick="quitar(${it.id})" title="Quitar">🗑</button>
           ${escaleraHTML(it,false)}
+          ${vtoHTML(it.id,true)}
         </div>`}
         ${nx?`<div class="nextd">＋${nf(nx.need)} u → ${money(ST.conIva? nx.tier.p*(1+tasaDe(it)) : nx.tier.p)} c/u</div>`:""}
         ${precios?escaleraHTML(it,true):""}
+        ${precios?vtoHTML(it.id,true):""}
         ${precios?`<div style="margin-top:6px"><button class="chip" style="padding:4px 9px;font-size:11px" onclick="quitar(${it.id})">Quitar</button></div>`:""}
       </div>
       <div class="r">
@@ -522,7 +581,7 @@ function textoDe(tipo){
     let t=`*Droguería EyG · Precios*\n\n`;
     ST.items.forEach(it=>{
       const u=unitDe(it); t+=`• ${it.name} — ${u!=null?money(u):"a confirmar"}\n`;
-      t+=escaleraTexto(it,"   ");
+      t+=vtoTexto(it,"   ")+escaleraTexto(it,"   ");
     });
     t+=`\n_Precios${ST.conIva?" con IVA":" sin IVA"} · sujetos a stock._`;
     return t;
@@ -536,7 +595,7 @@ function textoDe(tipo){
     t += (tipo==="detalle")
       ? `• ${it.name}\n   ${nf(it.cant)} × ${u!=null?money(u):"—"}${marca} = ${sub!=null?money(sub):"—"}\n`
       : `• ${nf(it.cant)}× ${it.name} — ${sub!=null?money(sub):"—"}${marca}\n`;
-    t += escaleraTexto(it,"   ");
+    t += vtoTexto(it,"   ")+escaleraTexto(it,"   ");
   });
   t+=`\n———————————\n`;
   /* Si los renglones YA van con IVA, desglosar "Neto + IVA" abajo confunde: el
@@ -552,6 +611,14 @@ function textoDe(tipo){
 /* La escalera dentro del mensaje: sirve para EMPUJAR el pedido (“si llevás 9 te
    sale $600”). Va solo si el comercial lo pide, porque no siempre conviene
    mostrarle al cliente toda la grilla. */
+/* Vencimiento en el mensaje. Va el del lote que sale primero (FEFO), que es el
+   dato que pide la institución. El número de lote NO se manda: al despachar
+   puede salir otro y no queremos prometer algo que después no se cumple. */
+function vtoTexto(it, sangria){
+  if(!ST.conVto) return "";
+  const ls=lotesDe(it.id); if(!ls.length || !ls[0].exp) return "";
+  return `${sangria}vto ${fmtVto(ls[0].exp)}\n`;
+}
 function escaleraTexto(it, sangria){
   if(!ST.conEscalera) return "";
   const t=ST.tiers[it.id]||[]; if(t.length<2) return "";
