@@ -134,7 +134,7 @@ const POS       = "0001";  // punto de venta de los recibos
 
 const ST = { cliente:null, deuda:[], cheques:[], bancos:[], bancosError:false,
              fileName:"", extracting:false, error:null, texto:"", leidos:0,
-             guardando:false, hecho:null };
+             guardando:false, hecho:null, usados:0 };
 
 /* ---------- utilidades ---------- */
 const num = v => Number(String(v==null?"":v).replace(/[^\d,.-]/g,"").replace(/\./g,"").replace(",","."))||0;
@@ -278,6 +278,22 @@ function bancoIdPorNombre(txt){
 async function init(){
   try{ ST.bancos = await R("res.bank","search_read",[[],["id","name"]],{limit:500,order:"name"}); }
   catch(e){ ST.bancos=[]; ST.bancosError=true; }
+  /* La lista se ordena por USO REAL: los bancos que aparecen en los cheques que
+     EyG ya recibió van primero, del más frecuente al menos. Los 6 bancos de EyG
+     explican el 76% pero 1 de cada 4 cheques viene de otro banco (Galicia,
+     Santander, BICA…), porque el banco de un cheque de tercero es el del CLIENTE
+     que lo firma, no el nuestro. Por eso quedan todos disponibles. */
+  try{
+    const uso = await R("account.payment","read_group",
+      [[["l10n_latam_check_bank_id","!=",false]],["id"],["l10n_latam_check_bank_id"]],{lazy:false,limit:60});
+    const veces={}; uso.forEach(u=>{ if(u.l10n_latam_check_bank_id) veces[u.l10n_latam_check_bank_id[0]]=u.__count; });
+    ST.usados = uso.length;
+    ST.bancos.sort(function(a,b){
+      const ua=veces[a.id]||0, ub=veces[b.id]||0;
+      if(ua!==ub) return ub-ua;                                  // más usados primero
+      return nombreBanco(a.name).localeCompare(nombreBanco(b.name));
+    });
+  }catch(e){ ST.usados=0; }
   document.getElementById("listaBancos").innerHTML = ST.bancos.map(b=>'<option value="'+esc(nombreBanco(b.name))+'">').join("");
   ST.cheques=[chequeVacio()];
   render();
@@ -379,7 +395,7 @@ function card2(){
     '<tbody>'+filas+'</tbody></table></div></div>'+
     (ST.bancosError?'<div class="aviso a-warn">No se pudo cargar la lista de bancos. Podés escribir el nombre igual.</div>':'')+
     '<div class="actions"><button class="btn ghost" onclick="addCheque()">+ Agregar otro cheque</button>'+
-    '<span class="hint" style="margin:0">'+ST.bancos.length+' bancos: escribí las primeras letras</span></div></div>';
+    '<span class="hint" style="margin:0">Banco: escribí las primeras letras. Aparecen primero los '+(ST.usados||0)+' que más usan los clientes de EyG; están los '+ST.bancos.length+' del sistema.</span></div></div>';
 }
 
 function card3(){
