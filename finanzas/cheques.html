@@ -132,11 +132,25 @@ const PML_NUEVO = 9;       // método "Nuevo Cheque de Terceros"
 const DOCTYPE   = 147;     // tipo de comprobante "RECIBOS X"
 const POS       = "0001";  // punto de venta de los recibos
 
+/* Recibo de SÓLO retención: el que se hace cuando después llega el certificado.
+   Copiado de los que ya existen (RE-X 0001-00010840, Mapaci): importe 0, diario
+   Efectivo, método Manual, y las retenciones como líneas. */
+const J_EFECTIVO = 15;     // diario "Efectivo"
+const PML_MANUAL = 19;     // método "Manual"
+
+/* Los 4 impuestos de retención de cliente que hay cargados en Odoo. */
+const RETENCIONES = [
+  {id:75,  nombre:"Ganancias"},
+  {id:89,  nombre:"IIBB Santa Fe"},
+  {id:77,  nombre:"IIBB CABA"},
+  {id:125, nombre:"IVA"}
+];
+
 const ST = { cliente:null, deuda:[], cheques:[], bancos:[], bancosError:false,
              fileName:"", extracting:false, error:null, texto:"", leidos:0,
              guardando:false, hecho:null, usados:0,
              liq:null, fecha:HOY, otrosFirmantes:[],
-             veces:{}, verTodosBancos:false };
+             veces:{}, verTodosBancos:false, retenciones:[] };
 
 /* ---------- utilidades ---------- */
 /* Un importe puede venir en formato argentino (1.070.182,50) o inglés
@@ -511,7 +525,7 @@ async function elegir(id, nombre){
   render();
 }
 function cambiarCliente(){ ST.cliente=null; ST.deuda=[]; render(); }
-function empezarDeNuevo(){ ST.cliente=null; ST.deuda=[]; ST.cheques=[chequeVacio()]; ST.hecho=null; ST.texto=""; ST.fileName=""; ST.leidos=0; ST.error=null; ST.liq=null; ST.otrosFirmantes=[]; ST.fecha=HOY; render(); }
+function empezarDeNuevo(){ ST.cliente=null; ST.deuda=[]; ST.cheques=[chequeVacio()]; ST.hecho=null; ST.texto=""; ST.fileName=""; ST.leidos=0; ST.error=null; ST.liq=null; ST.otrosFirmantes=[]; ST.fecha=HOY; ST.retenciones=[]; render(); }
 
 /* ---------- cheques ---------- */
 function chequeVacio(){ return {numero:"",cuit:"",banco:"",importe:"",vence:hoyMas(30),firmante:"",auto:false}; }
@@ -522,15 +536,41 @@ function setChq(i,campo,v){ ST.cheques[i][campo]=v; ST.cheques[i].auto=false; re
 
 const totalCheques = () => ST.cheques.reduce((a,c)=>a+num(c.importe),0);
 const totalDeuda = () => ST.deuda.reduce((a,d)=>a+d.amount_residual,0);
+/* Una fila en blanco no es un error: es una fila que todavía no se usó. Sirve
+   para poder cargar SÓLO una retención sin tener que borrar la fila del cheque. */
+const chequeVacioDeVerdad = c => !String(c.numero).trim() && !cuitLimpio(c.cuit) && num(c.importe)<=0;
+const chequesReales = () => ST.cheques.filter(c=>!chequeVacioDeVerdad(c));
+
 function erroresDe(c){
   const e=[];
+  if(chequeVacioDeVerdad(c)) return e;
   if(!String(c.numero).trim()) e.push("numero");
   if(!cuitOk(c.cuit)) e.push("cuit");
   if(num(c.importe)<=0) e.push("importe");
   if(!c.vence) e.push("vence");
   return e;
 }
-const todoOk = () => !!ST.cliente && ST.cheques.length>0 && ST.cheques.every(c=>erroresDe(c).length===0);
+
+/* ---------- retenciones ---------- */
+function retencionVacia(){ return {tax:"", importe:"", cert:""}; }
+function addRet(){ ST.retenciones.push(retencionVacia()); render(); }
+function delRet(i){ ST.retenciones.splice(i,1); render(); }
+function setRet(i,campo,v){ ST.retenciones[i][campo]=v; repintarPreview(); }
+const retVaciaDeVerdad = r => !r.tax && num(r.importe)<=0 && !String(r.cert).trim();
+const retencionesReales = () => ST.retenciones.filter(r=>!retVaciaDeVerdad(r));
+function erroresRet(r){
+  const e=[];
+  if(retVaciaDeVerdad(r)) return e;
+  if(!r.tax) e.push("tax");
+  if(num(r.importe)<=0) e.push("importe");
+  return e;                       // el nº de certificado NO es obligatorio
+}
+const totalRetenciones = () => retencionesReales().reduce((a,r)=>a+num(r.importe),0);
+
+const todoOk = () => !!ST.cliente
+  && (chequesReales().length>0 || retencionesReales().length>0)
+  && ST.cheques.every(c=>erroresDe(c).length===0)
+  && ST.retenciones.every(r=>erroresRet(r).length===0);
 
 /* ---------- render ---------- */
 function render(){
@@ -609,12 +649,38 @@ function card2(){
     '<div class="tscroll"><table><thead><tr><th>Número</th><th>CUIT emisor</th><th>Banco</th><th>Importe</th><th>Vence</th><th></th></tr></thead>'+
     '<tbody>'+filas+'</tbody></table></div></div>'+
     (ST.bancosError?'<div class="aviso a-warn">No se pudo cargar la lista de bancos. Podés escribir el nombre igual.</div>':'')+
+    bloqueRetenciones()+
     '<div class="actions"><button class="btn ghost" onclick="addCheque()">+ Agregar otro cheque</button>'+
     '<span class="hint" style="margin:0">Banco: '+
       (ST.verTodosBancos
         ? 'están los <b>'+ST.bancos.length+'</b> del sistema. <a href="#" onclick="alternarBancos();return false;">Mostrar sólo los '+(ST.usados||0)+' que se usan</a>'
         : 'sólo los <b>'+(ST.usados||0)+'</b> que aparecen en los cheques de EyG, del más usado al menos. <a href="#" onclick="alternarBancos();return false;">Ver los '+ST.bancos.length+' del sistema</a>')+
     '</span></div></div>';
+}
+
+/* Las retenciones que el cliente descontó del pago. Son opcionales a propósito:
+   si todavía no llegó el certificado se carga el cheque igual y después se
+   vuelve a entrar a cargar sólo la retención. */
+function bloqueRetenciones(){
+  const filas = ST.retenciones.map(function(r,i){
+    const e=erroresRet(r), cl=k=>e.includes(k)?' class="err"':'';
+    return '<tr class="chq">'+
+      '<td style="min-width:170px"><select'+cl("tax")+' onchange="setRet('+i+',\'tax\',this.value);render()">'+
+        '<option value="">Elegí el impuesto…</option>'+
+        RETENCIONES.map(t=>'<option value="'+t.id+'"'+(String(r.tax)===String(t.id)?' selected':'')+'>'+esc(t.nombre)+'</option>').join("")+
+      '</select></td>'+
+      '<td style="min-width:130px"><input'+cl("importe")+' value="'+esc(r.importe)+'" placeholder="Importe" inputmode="decimal" oninput="setRet('+i+',\'importe\',this.value)"></td>'+
+      '<td style="min-width:140px"><input value="'+esc(r.cert)+'" placeholder="Nº certificado (opcional)" oninput="setRet('+i+',\'cert\',this.value)"></td>'+
+      '<td><button class="del" onclick="delRet('+i+')" title="Quitar">✕</button></td></tr>';
+  }).join("");
+  const tabla = ST.retenciones.length
+    ? '<div class="tscroll"><table><thead><tr><th>Impuesto</th><th>Importe</th><th>Nº de certificado</th><th></th></tr></thead><tbody>'+filas+'</tbody></table></div>'
+    : '';
+  return '<div style="margin-top:18px"><label>Retenciones que hizo el cliente</label>'+tabla+
+    '<div class="actions" style="margin-top:'+(ST.retenciones.length?'10px':'0')+'">'+
+      '<button class="btn ghost" onclick="addRet()">+ Agregar retención</button>'+
+      '<span class="hint" style="margin:0">Si todavía no llegó el certificado, <b>no cargues nada</b>: generá el recibo con el cheque y volvé cuando llegue. El nº de certificado se puede dejar vacío.</span>'+
+    '</div></div>';
 }
 
 function card3(){
@@ -625,34 +691,49 @@ function card3(){
 function repintarPreview(){ const p=document.getElementById("pv"); if(p) p.innerHTML=previewHtml(); }
 
 function previewHtml(){
-  const tc=totalCheques(), td=totalDeuda(), dif=tc-td;
-  const errs = ST.cheques.filter(c=>erroresDe(c).length).length;
+  const chq=chequesReales(), rets=retencionesReales();
+  const tc=totalCheques(), tr=totalRetenciones(), cancela=tc+tr;
+  const td=totalDeuda(), dif=cancela-td;
+  const errs = ST.cheques.filter(c=>erroresDe(c).length).length + ST.retenciones.filter(r=>erroresRet(r).length).length;
+  const soloRet = !chq.length && rets.length>0;
+
   let aviso="";
   if(!ST.cliente) aviso='<div class="aviso a-warn">Elegí el cliente arriba para poder generar.</div>';
-  else if(errs) aviso='<div class="aviso a-bad">Faltan datos en '+errs+' cheque'+(errs>1?"s":"")+'. Los campos incompletos están en rojo.</div>';
-  else if(tc>0 && Math.abs(dif)<1) aviso='<div class="aviso a-ok">Los cheques cubren exactamente la deuda.</div>';
-  else if(tc>td && td>0) aviso='<div class="aviso a-warn">Superan la deuda en <b>'+money(dif)+'</b>. Se imputan a las facturas más viejas y el resto queda a favor.</div>';
-  else if(tc>0 && td>0) aviso='<div class="aviso a-warn">Alcanza para <b>'+money(tc)+'</b> de los <b>'+money(td)+'</b> que debe. Se imputa a las más viejas primero.</div>';
-  else if(tc>0) aviso='<div class="aviso a-warn">Este cliente no tiene deuda registrada: quedan como saldo a favor.</div>';
+  else if(errs) aviso='<div class="aviso a-bad">Faltan datos en '+errs+' fila'+(errs>1?"s":"")+'. Los campos incompletos están en rojo.</div>';
+  else if(soloRet) aviso='<div class="aviso a-ok">Vas a cargar <b>sólo la retención</b>: un recibo sin cheque, por '+money(tr)+'. Es lo que corresponde cuando llega el certificado de un pago ya cargado.</div>';
+  else if(cancela>0 && Math.abs(dif)<1) aviso='<div class="aviso a-ok">Cubre exactamente la deuda.</div>';
+  else if(cancela>td && td>0) aviso='<div class="aviso a-warn">Supera la deuda en <b>'+money(dif)+'</b>. Se imputa a las facturas más viejas y el resto queda a favor.</div>';
+  else if(cancela>0 && td>0) aviso='<div class="aviso a-warn">Cancela <b>'+money(cancela)+'</b> de los <b>'+money(td)+'</b> que debe: le van a quedar <b>'+money(-dif)+'</b>.'+
+      (!rets.length?' Si esa diferencia es una retención, cargala arriba — o generá igual y volvé cuando llegue el certificado.':'')+'</div>';
+  else if(cancela>0) aviso='<div class="aviso a-warn">Este cliente no tiene deuda registrada: queda como saldo a favor.</div>';
 
   const tiles='<div class="pv-tiles">'+
-    '<div class="pv-tile"><div class="l">Cheques</div><div class="v">'+ST.cheques.length+'</div></div>'+
+    '<div class="pv-tile"><div class="l">Cheques</div><div class="v">'+money(tc)+'</div></div>'+
+    (tr>0?'<div class="pv-tile"><div class="l">Retenciones</div><div class="v">'+money(tr)+'</div></div>':'')+
     '<div class="pv-tile"><div class="l">Deuda del cliente</div><div class="v">'+money(td)+'</div></div>'+
-    '<div class="pv-tile'+(errs?' bad':'')+'"><div class="l">Diferencia</div><div class="v">'+money(Math.abs(dif))+'</div></div>'+
-    '<div class="pv-tile tot"><div class="l">Total a cargar</div><div class="v">'+money(tc)+'</div></div></div>';
+    '<div class="pv-tile'+(errs?' bad':'')+'"><div class="l">'+(dif<0?"Le queda debiendo":"Diferencia")+'</div><div class="v">'+money(Math.abs(dif))+'</div></div>'+
+    '<div class="pv-tile tot"><div class="l">Cancela</div><div class="v">'+money(cancela)+'</div></div></div>';
 
-  const listos = ST.cheques.filter(c=>erroresDe(c).length===0);
+  const listos = chq.filter(c=>erroresDe(c).length===0);
   const detalle = listos.length
     ? '<div class="tscroll"><table><thead><tr><th>Nº</th><th>Emisor</th><th>Banco</th><th class="r">Importe</th><th>Vence</th></tr></thead><tbody>'+
       listos.map(c=>'<tr><td>'+esc(c.numero)+'</td><td class="muted">'+esc(fmtCuit(c.cuit))+'</td><td class="muted">'+esc(c.banco||"—")+'</td><td class="r">'+money2(num(c.importe))+'</td><td>'+fechaCorta(c.vence)+'</td></tr>').join("")+
-      '</tbody></table></div>' : '<div class="vacio">Cargá al menos un cheque completo.</div>';
+      '</tbody></table></div>'
+    : (soloRet ? '' : '<div class="vacio">Cargá al menos un cheque completo, o una retención.</div>');
+
+  const detRet = rets.length && !erroresRet(rets[0]).length
+    ? '<div class="tscroll" style="margin-top:10px"><table><thead><tr><th>Retención</th><th>Certificado</th><th class="r">Importe</th></tr></thead><tbody>'+
+      rets.map(function(r){ const t=RETENCIONES.find(x=>String(x.id)===String(r.tax));
+        return '<tr><td>'+esc(t?t.nombre:"—")+'</td><td class="muted">'+esc(String(r.cert).trim()||"— sin certificado")+'</td><td class="r">'+money2(num(r.importe))+'</td></tr>'; }).join("")+
+      '</tbody></table></div>' : '';
 
   const facturas = ST.deuda.length
     ? '<div class="hint" style="margin-top:14px"><b>Se imputa a:</b> '+ST.deuda.slice(0,4).map(d=>esc(d.name)).join(" · ")+(ST.deuda.length>4?' y '+(ST.deuda.length-4)+' más':'')+'</div>' : "";
 
-  return tiles+aviso+detalle+facturas+
+  const cuantos = listos.length || (soloRet?1:0);
+  return tiles+aviso+detalle+detRet+facturas+
     '<div class="actions"><button class="btn big" onclick="generar()"'+(todoOk()&&!ST.guardando?"":" disabled")+'>'+
-    (ST.guardando?'<span class="spinner"></span>Generando…':'Generar '+listos.length+' recibo'+(listos.length!==1?"s":"")+' en Odoo')+'</button>'+
+    (ST.guardando?'<span class="spinner"></span>Generando…':'Generar '+cuantos+' recibo'+(cuantos!==1?"s":"")+' en Odoo')+'</button>'+
     '<button class="btn ghost" onclick="empezarDeNuevo()">Empezar de nuevo</button></div>';
 }
 
@@ -661,7 +742,8 @@ function cardHecho(){
   return '<div class="card"><h3>✅ Listo</h3><div class="cap">Los recibos quedaron cargados en Odoo.</div>'+
     '<div class="pv-tiles">'+
       '<div class="pv-tile"><div class="l">Recibos creados</div><div class="v">'+h.creados+'</div></div>'+
-      '<div class="pv-tile tot"><div class="l">Total</div><div class="v">'+money(h.total)+'</div></div></div>'+
+      '<div class="pv-tile tot"><div class="l">Cancela</div><div class="v">'+money(h.total)+'</div></div></div>'+
+    (h.reten?'<div class="aviso a-ok">Incluye '+money(h.reten)+' de retenciones.</div>':'')+
     (h.imputados?'<div class="aviso a-ok">Imputados a las facturas de '+esc(h.cliente)+'.</div>':'<div class="aviso a-warn">Los recibos se crearon, pero la imputación no se completó. Revisalos en Odoo y aplicalos a mano.</div>')+
     (h.fallos.length?'<div class="aviso a-bad">No se pudieron cargar '+h.fallos.length+': '+h.fallos.map(f=>esc(f.n)).join(", ")+'<br><span class="muted">'+esc(h.fallos[0].e)+'</span></div>':"")+
     '<div class="actions"><button class="btn" onclick="empezarDeNuevo()">Cargar más cheques</button>'+
@@ -674,7 +756,20 @@ async function generar(){
   ST.guardando=true; repintarPreview();
   const creados=[], fallos=[];
   let prox = await proximoRecibo();
-  for(const c of ST.cheques){
+  const chq = chequesReales(), rets = retencionesReales();
+
+  /* Las retenciones son líneas del recibo. Si hay cheques, van todas en el
+     primero; si no hay ninguno, se hace un recibo de sólo retención (importe 0,
+     diario Efectivo, método Manual) igual a los que ya existen en Odoo. */
+  const lineasRet = () => rets.map(r=>[0,0,{
+    tax_id: Number(r.tax),
+    amount: num(r.importe),
+    base_amount: 0,
+    name: String(r.cert||"").trim() || false      // el certificado puede faltar
+  }]);
+
+  for(let i=0;i<chq.length;i++){
+    const c = chq[i];
     const vals={
       journal_id:J_CHEQUES, payment_type:"inbound", partner_type:"customer",
       partner_id:ST.cliente.id, amount:num(c.importe), date:ST.fecha||HOY,
@@ -688,16 +783,32 @@ async function generar(){
     };
     const bid = bancoIdPorNombre(c.banco);
     if(bid) vals.l10n_latam_check_bank_id = bid;
+    if(i===0 && rets.length) vals.l10n_ar_withholding_line_ids = lineasRet();
     try{
       const id = await R("account.payment","create",[vals]);
       await R("account.payment","action_post",[[id]]);
       creados.push(id); prox++;
     }catch(e){ fallos.push({n:c.numero, e:String(e.message||e).slice(0,140)}); }
   }
+
+  if(!chq.length && rets.length){
+    try{
+      const id = await R("account.payment","create",[{
+        journal_id:J_EFECTIVO, payment_type:"inbound", partner_type:"customer",
+        partner_id:ST.cliente.id, amount:0, date:ST.fecha||HOY,
+        payment_method_line_id:PML_MANUAL,
+        l10n_latam_document_type_id:DOCTYPE,
+        l10n_latam_document_number:POS+"-"+String(prox).padStart(8,"0"),
+        l10n_ar_withholding_line_ids: lineasRet()
+      }]);
+      await R("account.payment","action_post",[[id]]);
+      creados.push(id);
+    }catch(e){ fallos.push({n:"retención", e:String(e.message||e).slice(0,140)}); }
+  }
   let imputados=false;
   if(creados.length && ST.deuda.length){ try{ await imputar(creados); imputados=true; }catch(e){} }
   ST.guardando=false;
-  ST.hecho={creados:creados.length, total:totalCheques(), fallos:fallos, imputados:imputados, cliente:ST.cliente.name};
+  ST.hecho={creados:creados.length, total:totalCheques()+totalRetenciones(), reten:totalRetenciones(), fallos:fallos, imputados:imputados, cliente:ST.cliente.name};
   render();
 }
 
