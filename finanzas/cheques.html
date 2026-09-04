@@ -9,10 +9,11 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="../assets/core.js?v=57"></script>
 <style>
-  /* Mismo sistema visual que "Cargar crédito bancario" (finanzas/creditos-bancarios.html):
-     tarjetas numeradas por paso, grid de campos, tiles de vista previa. */
+  /* Mismo sistema visual que "Cargar crédito bancario" (finanzas/creditos-bancarios.html). */
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
     --agua:#E2F1EF; --coral:#EC8B5E; --ink:#0E1F1D; --gris:#5F716E; --gris2:#8A9A97;
@@ -37,14 +38,22 @@
   .card h3{font-size:14px;font-weight:800;color:var(--ink);margin-bottom:3px}
   .card .cap{font-size:12px;color:var(--gris);margin-bottom:15px}
   .step{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--teal);color:#fff;font-size:12px;font-weight:800;margin-right:8px}
-  .step.off{background:var(--line);color:var(--gris2)}
+
+  .drop{border:2px dashed var(--teal-med);border-radius:14px;padding:30px 20px;text-align:center;cursor:pointer;transition:background .12s,border-color .12s;background:#F7FCFB}
+  .drop:hover,.drop.over{background:var(--agua);border-color:var(--teal)}
+  .drop .big{font-size:34px;margin-bottom:8px}
+  .drop .t{font-size:15px;font-weight:800;color:var(--teal-deep)}
+  .drop .s{font-size:12.5px;color:var(--gris);margin-top:4px}
+  .drop input{display:none}
 
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
   label{display:block;font-size:11.5px;font-weight:700;color:var(--gris);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px}
   .req::after{content:" *";color:var(--err)}
   input,select,textarea{font-family:inherit;font-size:14px;width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--ink);background:var(--surface);outline:none}
-  input:focus,select:focus{border-color:var(--teal-med);box-shadow:0 0 0 2px rgba(4,135,130,.13)}
+  input:focus,select:focus,textarea:focus{border-color:var(--teal-med);box-shadow:0 0 0 2px rgba(4,135,130,.13)}
+  input.auto{background:#F4FBFA;border-color:#BDE4E0}
   input.err{background:var(--errbg);border-color:var(--err)}
+  textarea{min-height:110px;resize:vertical;font-size:12px;line-height:1.5;font-family:ui-monospace,Menlo,Consolas,monospace}
   .hint{font-size:11px;color:var(--gris2);margin-top:4px;line-height:1.4}
   .btn{font-family:inherit;font-size:14px;font-weight:700;border:0;border-radius:10px;padding:11px 20px;cursor:pointer;background:var(--teal);color:#fff}
   .btn:hover{background:var(--teal-deep)}
@@ -61,14 +70,12 @@
   .pv-tile.tot .l{color:var(--aqua)} .pv-tile.tot .v{color:#fff}
   .pv-tile.bad{background:var(--errbg);border-color:#E7BDBC}
 
-  /* buscador de cliente */
   .busca{position:relative}
   .sug{position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 28px rgba(6,65,62,.14);margin-top:4px;max-height:290px;overflow-y:auto;z-index:20}
   .sug div{padding:10px 13px;font-size:13.5px;cursor:pointer;border-bottom:1px solid #F2F7F6}
   .sug div:last-child{border-bottom:0}
   .sug div:hover{background:var(--agua)}
   .sug .cu{font-size:11.5px;color:var(--gris2);font-weight:600}
-
   .elegido{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--agua);border-radius:10px;padding:12px 15px}
   .elegido .nm{font-size:15px;font-weight:800;color:var(--teal-deep)}
   .elegido .x{margin-left:auto;background:none;border:0;font-size:17px;color:var(--gris);cursor:pointer;font-family:inherit}
@@ -86,6 +93,8 @@
 
   .aviso{font-size:12.5px;border-radius:9px;padding:10px 13px;margin-top:12px;line-height:1.55}
   .a-ok{background:var(--okbg);color:var(--ok)} .a-warn{background:var(--warnbg);color:var(--warn)} .a-bad{background:var(--errbg);color:var(--err)}
+  .raw{margin-top:14px}
+  .raw summary{font-size:12px;color:var(--gris);cursor:pointer;font-weight:700}
 
   .spinner{display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:gir .7s linear infinite;vertical-align:-2px;margin-right:6px}
   .spinner.dark{border-color:var(--agua);border-top-color:var(--teal)}
@@ -111,6 +120,8 @@
 <datalist id="listaBancos"></datalist>
 
 <script>
+if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+
 const R=(m,me,a,k)=>EYG.rpc(m,me,a,k);
 const money=EYG.money, esc=EYG.esc;
 const HOY=EYG.argToday();
@@ -121,12 +132,12 @@ const PML_NUEVO = 9;       // método "Nuevo Cheque de Terceros"
 const DOCTYPE   = 147;     // tipo de comprobante "RECIBOS X"
 const POS       = "0001";  // punto de venta de los recibos
 
-const ST = { cliente:null, deuda:[], cheques:[], bancos:[], bancosError:false, guardando:false, hecho:null };
+const ST = { cliente:null, deuda:[], cheques:[], bancos:[], bancosError:false,
+             fileName:"", extracting:false, error:null, texto:"", leidos:0,
+             guardando:false, hecho:null };
 
 /* ---------- utilidades ---------- */
 const num = v => Number(String(v==null?"":v).replace(/[^\d,.-]/g,"").replace(/\./g,"").replace(",","."))||0;
-/* El CUIT se guarda SIEMPRE sin guiones: hoy conviven los dos formatos y eso rompe
-   cualquier búsqueda por emisor. */
 const cuitLimpio = v => String(v||"").replace(/\D/g,"");
 const cuitOk = v => cuitLimpio(v).length===11;
 const fmtCuit = v => { const c=cuitLimpio(v); return c.length===11 ? c.slice(0,2)+"-"+c.slice(2,10)+"-"+c.slice(10) : v; };
@@ -134,19 +145,127 @@ const money2 = n => "$"+Number(n||0).toLocaleString("es-AR",{minimumFractionDigi
 const hoyMas = d => { const t=new Date(HOY+"T00:00:00"); t.setDate(t.getDate()+d); return t.toISOString().slice(0,10); };
 const fechaCorta = f => { if(!f) return "—"; const p=String(f).slice(0,10).split("-"); return p[2]+"/"+p[1]+"/"+p[0].slice(2); };
 
-/* ---------- arranque ---------- */
-async function init(){
-  /* Los bancos van a un <datalist>: son 85 y en un desplegable no se encuentran.
-     Así Federico escribe "mac" y aparece Macro. Si la lista falla se avisa, no
-     se queda en silencio: el banco es justamente el dato que hoy casi nunca se carga. */
+/* =========================================================================
+   LECTURA DE ARCHIVOS  (mismo motor que "Cargar crédito bancario")
+   ========================================================================= */
+async function pdfToText(arrayBuffer){
+  if(!window.pdfjsLib) throw new Error("El lector de PDF no cargó (revisá la conexión).");
+  const pdf = await pdfjsLib.getDocument({data:arrayBuffer}).promise;
+  const out=[];
+  for(let pg=1; pg<=pdf.numPages; pg++){
+    const page = await pdf.getPage(pg);
+    const tc = await page.getTextContent();
+    const items = tc.items.map(it=>({x:it.transform[4], y:it.transform[5], s:it.str}))
+                          .filter(it=>String(it.s).trim()!=="");
+    items.sort((a,b)=> (b.y - a.y) || (a.x - b.x));
+    let cur=[], cy=null;
+    for(const it of items){
+      if(cy===null || (cy - it.y) <= 3){ cur.push(it); if(cy===null) cy=it.y; }
+      else { out.push(cur.sort((a,b)=>a.x-b.x).map(p=>p.s).join(" ")); cur=[it]; cy=it.y; }
+    }
+    if(cur.length) out.push(cur.sort((a,b)=>a.x-b.x).map(p=>p.s).join(" "));
+  }
+  return out.map(l=>l.replace(/\s+/g," ").trim()).join("\n");
+}
+function sheetFlatten(wb){ const out=[]; wb.SheetNames.forEach(nm=>{ XLSX.utils.sheet_to_json(wb.Sheets[nm],{header:1,raw:false,defval:""}).forEach(r=>out.push((r||[]).join("  "))); }); return out.join("\n"); }
+
+async function onFile(file){
+  if(!file) return;
+  ST.fileName=file.name; ST.extracting=true; ST.error=null; render();
   try{
-    ST.bancos = await R("res.bank","search_read",[[],["id","name"]],{limit:500,order:"name"});
-  }catch(e){ ST.bancos=[]; ST.bancosError=true; }
-  const dl=document.getElementById("listaBancos");
-  dl.innerHTML = ST.bancos.map(b=>'<option value="'+esc(nombreBanco(b.name))+'">').join("");
+    const buf = await file.arrayBuffer();
+    let text="";
+    if(/\.pdf$/i.test(file.name) || file.type==="application/pdf") text = await pdfToText(buf);
+    else if(/\.(xlsx|xls|csv)$/i.test(file.name)){ if(!window.XLSX) throw new Error("El lector de Excel no cargó."); text = sheetFlatten(XLSX.read(buf,{type:"array"})); }
+    else if(/\.(txt|text)$/i.test(file.name) || /^text\//.test(file.type||"")) text = new TextDecoder().decode(buf);
+    else throw new Error("Formato no reconocido. Subí PDF, Excel o texto — o pegá el contenido abajo.");
+    aplicarTexto(text);
+  }catch(e){
+    ST.extracting=false; ST.error="No pude leer el archivo: "+(e.message||e); render();
+  }
+}
+function onDrop(e){ e.preventDefault(); const el=document.getElementById("drop"); if(el)el.classList.remove("over"); const fl=e.dataTransfer&&e.dataTransfer.files; if(fl&&fl[0]) onFile(fl[0]); }
+function onOver(e){ e.preventDefault(); const el=document.getElementById("drop"); if(el)el.classList.add("over"); }
+function onLeave(e){ const el=document.getElementById("drop"); if(el)el.classList.remove("over"); }
+function pegar(){ const t=document.getElementById("pegado"); if(t && t.value.trim()) aplicarTexto(t.value); }
+
+function aplicarTexto(text){
+  ST.texto = text;
+  const hallados = parseCheques(text);
+  ST.extracting=false;
+  ST.leidos = hallados.length;
+  if(hallados.length){
+    /* Los leídos se marcan con `auto` para que se vean en celeste, igual que en
+       préstamos: lo que salió del archivo vs lo que se completa a mano. */
+    ST.cheques = hallados.map(c=>Object.assign(chequeVacio(), c, {auto:true}));
+  }else{
+    ST.error = "Leí el archivo pero no reconocí ningún cheque. Revisá el texto de abajo y cargalos a mano.";
+    if(!ST.cheques.length) ST.cheques=[chequeVacio()];
+  }
   render();
 }
-/* Los nombres vienen como "Banco Macro S.A. - MACRO": se corta el código de after. */
+
+/* Detecta cheques línea por línea. Una línea cuenta como cheque si tiene, en
+   cualquier orden: un importe y (un CUIT de 11 dígitos o un número de cheque).
+   Cada dato se busca con su propio patrón, así sirve para planillas de distintos
+   formatos sin depender del orden de las columnas. */
+function parseCheques(texto){
+  const out=[];
+  const lineas = String(texto||"").split(/\r?\n/);
+  for(const L of lineas){
+    const linea = L.replace(/\s+/g," ").trim();
+    if(linea.length<8) continue;
+    if(/^(n|nro|numero|número|cheque|banco|cuit|importe|total|fecha)\b/i.test(linea) && !/\d{4}/.test(linea)) continue;
+
+    // CUIT: 11 dígitos, con o sin guiones
+    const mCuit = linea.match(/\b(\d{2}[-\s]?\d{8}[-\s]?\d)\b/);
+    // fecha dd/mm/aaaa, dd-mm-aa, aaaa-mm-dd
+    const mFecha = linea.match(/\b(\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}|\d{4}-\d{2}-\d{2})\b/);
+    // importe: con separador de miles y/o decimales, o precedido de $
+    const importes = (linea.match(/\$?\s?\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\$\s?\d+(?:,\d{1,2})?|\b\d+,\d{2}\b/g)||[]);
+    // número de cheque: 6 a 12 dígitos que no sean el CUIT ni parte de la fecha
+    let resto = linea;
+    if(mCuit) resto = resto.replace(mCuit[0],"");
+    if(mFecha) resto = resto.replace(mFecha[0],"");
+    importes.forEach(i=>{ resto = resto.replace(i,""); });
+    const mNum = resto.match(/\b(\d{6,12})\b/);
+
+    if(!importes.length) continue;
+    if(!mCuit && !mNum) continue;
+
+    const monto = Math.max.apply(null, importes.map(num));
+    if(monto<=0) continue;
+
+    out.push({
+      numero: mNum ? mNum[1] : "",
+      cuit:   mCuit ? fmtCuit(mCuit[1]) : "",
+      banco:  detectarBanco(linea),
+      importe: String(monto),
+      vence:  mFecha ? normFecha(mFecha[1]) : hoyMas(30)
+    });
+  }
+  return out;
+}
+function normFecha(f){
+  const s=String(f).trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const p=s.split(/[\/-]/);
+  if(p.length!==3) return hoyMas(30);
+  let [d,m,a]=p;
+  if(a.length===2) a="20"+a;
+  d=d.padStart(2,"0"); m=m.padStart(2,"0");
+  return a+"-"+m+"-"+d;
+}
+function detectarBanco(linea){
+  const t=String(linea).toLowerCase();
+  for(const b of ST.bancos){
+    const nom=nombreBanco(b.name).toLowerCase().replace(/^banco\s+(de\s+)?/,"").split(/[\s.]/)[0];
+    if(nom.length>=4 && t.indexOf(nom)>=0) return nombreBanco(b.name);
+  }
+  return "";
+}
+
+/* ---------- bancos ---------- */
 function nombreBanco(n){ return String(n||"").split(" - ")[0].trim(); }
 function bancoIdPorNombre(txt){
   const t=String(txt||"").trim().toLowerCase(); if(!t) return null;
@@ -155,7 +274,16 @@ function bancoIdPorNombre(txt){
   return b?b.id:null;
 }
 
-/* ---------- paso 1: cliente ---------- */
+/* ---------- arranque ---------- */
+async function init(){
+  try{ ST.bancos = await R("res.bank","search_read",[[],["id","name"]],{limit:500,order:"name"}); }
+  catch(e){ ST.bancos=[]; ST.bancosError=true; }
+  document.getElementById("listaBancos").innerHTML = ST.bancos.map(b=>'<option value="'+esc(nombreBanco(b.name))+'">').join("");
+  ST.cheques=[chequeVacio()];
+  render();
+}
+
+/* ---------- cliente ---------- */
 let buscaT=null;
 function onBusca(v){
   clearTimeout(buscaT);
@@ -164,38 +292,32 @@ function onBusca(v){
   if(q.length<3){ if(box) box.innerHTML=""; return; }
   buscaT=setTimeout(async function(){
     let res=[];
-    try{
-      res = await R("res.partner","search_read",
-        [[["customer_rank",">",0],"|",["name","ilike",q],["vat","ilike",q.replace(/\D/g,"")]],["id","name","vat"]],
-        {limit:12});
-    }catch(e){}
+    try{ res = await R("res.partner","search_read",
+      [[["customer_rank",">",0],"|",["name","ilike",q],["vat","ilike",q.replace(/\D/g,"")]],["id","name","vat"]],{limit:12}); }catch(e){}
     if(!box) return;
     box.innerHTML = res.length
       ? res.map(p=>'<div onclick="elegir('+p.id+',\''+esc(String(p.name).replace(/'/g,"\\'"))+'\')">'+esc(p.name)+(p.vat?'<div class="cu">'+esc(p.vat)+'</div>':'')+'</div>').join("")
       : '<div class="muted" style="cursor:default">Sin resultados</div>';
   }, 260);
 }
-
 async function elegir(id, nombre){
-  ST.cliente={id:id,name:nombre}; ST.hecho=null;
-  render();
+  ST.cliente={id:id,name:nombre}; ST.hecho=null; render();
   try{
     ST.deuda = await R("account.move","search_read",
       [[["partner_id","=",id],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["payment_state","in",["not_paid","partial"]]],
-       ["name","invoice_date","invoice_date_due","amount_total","amount_residual"]],
-      {limit:200, order:"invoice_date_due"});
+       ["name","invoice_date","invoice_date_due","amount_total","amount_residual"]],{limit:200, order:"invoice_date_due"});
   }catch(e){ ST.deuda=[]; }
-  if(!ST.cheques.length) ST.cheques.push(chequeVacio());
   render();
 }
-function cambiarCliente(){ ST.cliente=null; ST.deuda=[]; ST.cheques=[]; ST.hecho=null; render(); }
+function cambiarCliente(){ ST.cliente=null; ST.deuda=[]; render(); }
+function empezarDeNuevo(){ ST.cliente=null; ST.deuda=[]; ST.cheques=[chequeVacio()]; ST.hecho=null; ST.texto=""; ST.fileName=""; ST.leidos=0; ST.error=null; render(); }
 
-/* ---------- paso 2: cheques ---------- */
-function chequeVacio(){ return {numero:"",cuit:"",banco:"",importe:"",vence:hoyMas(30)}; }
+/* ---------- cheques ---------- */
+function chequeVacio(){ return {numero:"",cuit:"",banco:"",importe:"",vence:hoyMas(30),auto:false}; }
 function addCheque(){ ST.cheques.push(chequeVacio()); render();
   setTimeout(function(){ const f=document.querySelectorAll(".chq input"); if(f.length) f[(ST.cheques.length-1)*5].focus(); },30); }
 function delCheque(i){ ST.cheques.splice(i,1); if(!ST.cheques.length) ST.cheques.push(chequeVacio()); render(); }
-function setChq(i,campo,v){ ST.cheques[i][campo]=v; repintarPreview(); }
+function setChq(i,campo,v){ ST.cheques[i][campo]=v; ST.cheques[i].auto=false; repintarPreview(); }
 
 const totalCheques = () => ST.cheques.reduce((a,c)=>a+num(c.importe),0);
 const totalDeuda = () => ST.deuda.reduce((a,d)=>a+d.amount_residual,0);
@@ -207,51 +329,61 @@ function erroresDe(c){
   if(!c.vence) e.push("vence");
   return e;
 }
-const todoOk = () => ST.cheques.length>0 && ST.cheques.every(c=>erroresDe(c).length===0);
+const todoOk = () => !!ST.cliente && ST.cheques.length>0 && ST.cheques.every(c=>erroresDe(c).length===0);
 
 /* ---------- render ---------- */
 function render(){
   const app=document.getElementById("app");
   if(ST.hecho){ app.innerHTML = cardHecho(); return; }
-  app.innerHTML = card1() + (ST.cliente ? card2()+card3() : "");
+  app.innerHTML = card1() + card2() + card3();
 }
 
 function card1(){
-  if(!ST.cliente){
-    return '<div class="card"><h3><span class="step">1</span>¿De qué cliente son los cheques?</h3>'+
-      '<div class="cap">Buscá por nombre o CUIT. Después vas a ver su deuda y podés cargar todos los cheques juntos.</div>'+
-      '<div class="busca"><input id="q" placeholder="Nombre del cliente o CUIT…" oninput="onBusca(this.value)" autocomplete="off"><div class="sug" id="sug"></div></div>'+
-      '</div>';
-  }
-  return '<div class="card"><h3><span class="step">1</span>Cliente</h3>'+
-    '<div class="elegido"><div><div class="nm">'+esc(ST.cliente.name)+'</div>'+
-      '<div class="hint" style="margin-top:2px">'+ST.deuda.length+' comprobantes pendientes · debe '+money(totalDeuda())+'</div></div>'+
-      '<button class="x" onclick="cambiarCliente()" title="Cambiar de cliente">✕</button></div></div>';
+  const cuerpo = ST.extracting
+    ? '<div class="big">⏳</div><div class="t">Leyendo '+esc(ST.fileName)+'…</div><div class="s"><span class="spinner dark"></span>buscando los cheques</div>'
+    : '<div class="big">🧾⬆️</div><div class="t">Arrastrá la planilla acá o hacé clic para elegirla</div><div class="s">PDF · Excel (.xlsx/.csv) · texto</div>';
+  return '<div class="card"><h3><span class="step">1</span>Subir la planilla de cheques</h3>'+
+    '<div class="cap">Leo número, CUIT del emisor, banco, importe y vencimiento. Si no tenés archivo, saltealo y cargalos a mano abajo.</div>'+
+    '<div id="drop" class="drop" ondragover="onOver(event)" ondragleave="onLeave(event)" ondrop="onDrop(event)" onclick="document.getElementById(\'file\').click()">'+
+      cuerpo+'<input id="file" type="file" accept=".pdf,.xlsx,.xls,.csv,.txt" onchange="onFile(this.files[0])"></div>'+
+    (ST.error?'<div class="aviso a-bad">'+esc(ST.error)+'</div>':'')+
+    (ST.leidos?'<div class="aviso a-ok">Reconocí <b>'+ST.leidos+'</b> cheque'+(ST.leidos>1?"s":"")+' en '+esc(ST.fileName)+'. Revisalos abajo: los que salieron del archivo están en celeste.</div>':'')+
+    '<details class="raw"><summary>Pegar el detalle a mano</summary>'+
+      '<textarea id="pegado" placeholder="Pegá acá el listado de cheques (uno por línea)…" style="margin-top:8px"></textarea>'+
+      '<div class="actions"><button class="btn ghost" onclick="pegar()">Leer lo pegado</button></div></details>'+
+    (ST.texto?'<details class="raw"><summary>Ver el texto leído del archivo</summary><textarea readonly style="margin-top:8px">'+esc(ST.texto.slice(0,4000))+'</textarea></details>':'')+
+    '</div>';
 }
 
 function card2(){
   const filas = ST.cheques.map(function(c,i){
-    const e=erroresDe(c), cl=k=>e.includes(k)?' class="err"':'';
+    const e=erroresDe(c), cl=k=>e.includes(k)?' class="err"':(c.auto?' class="auto"':'');
     return '<tr class="chq">'+
       '<td style="min-width:110px"><input'+cl("numero")+' value="'+esc(c.numero)+'" placeholder="Nº" oninput="setChq('+i+',\'numero\',this.value)"></td>'+
       '<td style="min-width:130px"><input'+cl("cuit")+' value="'+esc(c.cuit)+'" placeholder="CUIT emisor" oninput="setChq('+i+',\'cuit\',this.value)" onblur="this.value=fmtCuit(this.value);setChq('+i+',\'cuit\',this.value)"></td>'+
-      '<td style="min-width:170px"><input list="listaBancos" value="'+esc(c.banco)+'" placeholder="Escribí el banco…" oninput="setChq('+i+',\'banco\',this.value)"></td>'+
+      '<td style="min-width:170px"><input list="listaBancos"'+(c.auto?' class="auto"':'')+' value="'+esc(c.banco)+'" placeholder="Escribí el banco…" oninput="setChq('+i+',\'banco\',this.value)"></td>'+
       '<td style="min-width:120px"><input'+cl("importe")+' value="'+esc(c.importe)+'" placeholder="Importe" inputmode="decimal" oninput="setChq('+i+',\'importe\',this.value)"></td>'+
       '<td style="min-width:135px"><input'+cl("vence")+' type="date" value="'+esc(c.vence)+'" onchange="setChq('+i+',\'vence\',this.value)"></td>'+
       '<td><button class="del" onclick="delCheque('+i+')" title="Quitar">✕</button></td></tr>';
   }).join("");
-  return '<div class="card"><h3><span class="step">2</span>Los cheques</h3>'+
-    '<div class="cap">Cargá todos los que trajo el cliente. El CUIT se guarda sin guiones y el banco queda registrado — hoy se completa en 7 de cada 100 cheques.</div>'+
+  const cli = ST.cliente
+    ? '<div class="elegido"><div><div class="nm">'+esc(ST.cliente.name)+'</div>'+
+      '<div class="hint" style="margin-top:2px">'+ST.deuda.length+' comprobantes pendientes · debe '+money(totalDeuda())+'</div></div>'+
+      '<button class="x" onclick="cambiarCliente()" title="Cambiar de cliente">✕</button></div>'
+    : '<div class="busca"><input id="q" placeholder="Nombre del cliente o CUIT…" oninput="onBusca(this.value)" autocomplete="off"><div class="sug" id="sug"></div></div>';
+  return '<div class="card"><h3><span class="step">2</span>Cliente y cheques</h3>'+
+    '<div class="cap">Lo que salió del archivo va en celeste; lo que completes a mano, en blanco. Revisá y corregí si hace falta.</div>'+
+    '<label class="req">Cliente que entregó los cheques</label>'+cli+
+    '<div style="margin-top:16px"><label class="req">Cheques</label>'+
     '<div class="tscroll"><table><thead><tr><th>Número</th><th>CUIT emisor</th><th>Banco</th><th>Importe</th><th>Vence</th><th></th></tr></thead>'+
-    '<tbody>'+filas+'</tbody></table></div>'+
-    (ST.bancosError?'<div class="aviso a-warn">No se pudo cargar la lista de bancos. Podés escribir el nombre igual, pero revisá que esté bien.</div>':'')+
+    '<tbody>'+filas+'</tbody></table></div></div>'+
+    (ST.bancosError?'<div class="aviso a-warn">No se pudo cargar la lista de bancos. Podés escribir el nombre igual.</div>':'')+
     '<div class="actions"><button class="btn ghost" onclick="addCheque()">+ Agregar otro cheque</button>'+
-    '<span class="hint" style="margin:0">'+ST.bancos.length+' bancos disponibles: escribí las primeras letras</span></div>'+
-    '</div>';
+    '<span class="hint" style="margin:0">'+ST.bancos.length+' bancos: escribí las primeras letras</span></div></div>';
 }
 
 function card3(){
-  return '<div class="card" id="cardPv"><h3><span class="step">3</span>Vista previa</h3>'+
+  return '<div class="card"><h3><span class="step">3</span>Vista previa del comprobante</h3>'+
     '<div class="cap">Así queda en Odoo. Revisá antes de generar.</div>'+
     '<div id="pv">'+previewHtml()+'</div></div>';
 }
@@ -261,45 +393,43 @@ function previewHtml(){
   const tc=totalCheques(), td=totalDeuda(), dif=tc-td;
   const errs = ST.cheques.filter(c=>erroresDe(c).length).length;
   let aviso="";
-  if(errs) aviso='<div class="aviso a-bad">Faltan datos en '+errs+' cheque'+(errs>1?"s":"")+'. Los campos incompletos están marcados en rojo.</div>';
+  if(!ST.cliente) aviso='<div class="aviso a-warn">Elegí el cliente arriba para poder generar.</div>';
+  else if(errs) aviso='<div class="aviso a-bad">Faltan datos en '+errs+' cheque'+(errs>1?"s":"")+'. Los campos incompletos están en rojo.</div>';
   else if(tc>0 && Math.abs(dif)<1) aviso='<div class="aviso a-ok">Los cheques cubren exactamente la deuda.</div>';
-  else if(tc>td && td>0) aviso='<div class="aviso a-warn">Los cheques superan la deuda en <b>'+money(dif)+'</b>. Se imputan a las facturas más viejas y el resto queda como saldo a favor.</div>';
+  else if(tc>td && td>0) aviso='<div class="aviso a-warn">Superan la deuda en <b>'+money(dif)+'</b>. Se imputan a las facturas más viejas y el resto queda a favor.</div>';
   else if(tc>0 && td>0) aviso='<div class="aviso a-warn">Alcanza para <b>'+money(tc)+'</b> de los <b>'+money(td)+'</b> que debe. Se imputa a las más viejas primero.</div>';
-  else if(tc>0) aviso='<div class="aviso a-warn">Este cliente no tiene deuda registrada: los cheques quedan como saldo a favor.</div>';
+  else if(tc>0) aviso='<div class="aviso a-warn">Este cliente no tiene deuda registrada: quedan como saldo a favor.</div>';
 
   const tiles='<div class="pv-tiles">'+
     '<div class="pv-tile"><div class="l">Cheques</div><div class="v">'+ST.cheques.length+'</div></div>'+
     '<div class="pv-tile"><div class="l">Deuda del cliente</div><div class="v">'+money(td)+'</div></div>'+
     '<div class="pv-tile'+(errs?' bad':'')+'"><div class="l">Diferencia</div><div class="v">'+money(Math.abs(dif))+'</div></div>'+
-    '<div class="pv-tile tot"><div class="l">Total a cargar</div><div class="v">'+money(tc)+'</div></div>'+
-    '</div>';
+    '<div class="pv-tile tot"><div class="l">Total a cargar</div><div class="v">'+money(tc)+'</div></div></div>';
 
-  const detalle = ST.cheques.some(c=>erroresDe(c).length===0)
+  const listos = ST.cheques.filter(c=>erroresDe(c).length===0);
+  const detalle = listos.length
     ? '<div class="tscroll"><table><thead><tr><th>Nº</th><th>Emisor</th><th>Banco</th><th class="r">Importe</th><th>Vence</th></tr></thead><tbody>'+
-      ST.cheques.filter(c=>erroresDe(c).length===0).map(c=>'<tr><td>'+esc(c.numero)+'</td><td class="muted">'+esc(fmtCuit(c.cuit))+'</td><td class="muted">'+esc(c.banco||"—")+'</td><td class="r">'+money2(num(c.importe))+'</td><td>'+fechaCorta(c.vence)+'</td></tr>').join("")+
+      listos.map(c=>'<tr><td>'+esc(c.numero)+'</td><td class="muted">'+esc(fmtCuit(c.cuit))+'</td><td class="muted">'+esc(c.banco||"—")+'</td><td class="r">'+money2(num(c.importe))+'</td><td>'+fechaCorta(c.vence)+'</td></tr>').join("")+
       '</tbody></table></div>' : '<div class="vacio">Cargá al menos un cheque completo.</div>';
 
   const facturas = ST.deuda.length
-    ? '<div class="hint" style="margin-top:14px"><b>Se imputa a:</b> '+ST.deuda.slice(0,4).map(d=>esc(d.name)).join(" · ")+(ST.deuda.length>4?' y '+(ST.deuda.length-4)+' más':'')+'</div>'
-    : "";
+    ? '<div class="hint" style="margin-top:14px"><b>Se imputa a:</b> '+ST.deuda.slice(0,4).map(d=>esc(d.name)).join(" · ")+(ST.deuda.length>4?' y '+(ST.deuda.length-4)+' más':'')+'</div>' : "";
 
   return tiles+aviso+detalle+facturas+
-    '<div class="actions"><button class="btn big" id="btnGo" onclick="generar()"'+(todoOk()&&!ST.guardando?"":" disabled")+'>'+
-    (ST.guardando?'<span class="spinner"></span>Generando…':'Generar '+ST.cheques.length+' recibo'+(ST.cheques.length>1?"s":"")+' en Odoo')+'</button>'+
-    '<button class="btn ghost" onclick="cambiarCliente()">Cancelar</button></div>';
+    '<div class="actions"><button class="btn big" onclick="generar()"'+(todoOk()&&!ST.guardando?"":" disabled")+'>'+
+    (ST.guardando?'<span class="spinner"></span>Generando…':'Generar '+listos.length+' recibo'+(listos.length!==1?"s":"")+' en Odoo')+'</button>'+
+    '<button class="btn ghost" onclick="empezarDeNuevo()">Empezar de nuevo</button></div>';
 }
 
 function cardHecho(){
   const h=ST.hecho;
-  return '<div class="card"><h3>✅ Listo</h3>'+
-    '<div class="cap">Los recibos quedaron cargados en Odoo.</div>'+
+  return '<div class="card"><h3>✅ Listo</h3><div class="cap">Los recibos quedaron cargados en Odoo.</div>'+
     '<div class="pv-tiles">'+
       '<div class="pv-tile"><div class="l">Recibos creados</div><div class="v">'+h.creados+'</div></div>'+
-      '<div class="pv-tile tot"><div class="l">Total</div><div class="v">'+money(h.total)+'</div></div>'+
-    '</div>'+
-    (h.imputados?'<div class="aviso a-ok">Imputados a las facturas de '+esc(h.cliente)+'.</div>':'<div class="aviso a-warn">Los recibos se crearon, pero la imputación a las facturas no se completó. Revisalos en Odoo y aplicalos a mano.</div>')+
+      '<div class="pv-tile tot"><div class="l">Total</div><div class="v">'+money(h.total)+'</div></div></div>'+
+    (h.imputados?'<div class="aviso a-ok">Imputados a las facturas de '+esc(h.cliente)+'.</div>':'<div class="aviso a-warn">Los recibos se crearon, pero la imputación no se completó. Revisalos en Odoo y aplicalos a mano.</div>')+
     (h.fallos.length?'<div class="aviso a-bad">No se pudieron cargar '+h.fallos.length+': '+h.fallos.map(f=>esc(f.n)).join(", ")+'<br><span class="muted">'+esc(h.fallos[0].e)+'</span></div>':"")+
-    '<div class="actions"><button class="btn" onclick="cambiarCliente()">Cargar más cheques</button>'+
+    '<div class="actions"><button class="btn" onclick="empezarDeNuevo()">Cargar más cheques</button>'+
     '<button class="btn ghost" onclick="window.open(\'https://drogueriaeyg.odoo.com/odoo/action-account.action_account_payments\',\'_blank\')">Ver en Odoo</button></div></div>';
 }
 
@@ -309,8 +439,7 @@ async function generar(){
   ST.guardando=true; repintarPreview();
   const creados=[], fallos=[];
   let prox = await proximoRecibo();
-  for(let i=0;i<ST.cheques.length;i++){
-    const c=ST.cheques[i];
+  for(const c of ST.cheques){
     const vals={
       journal_id:J_CHEQUES, payment_type:"inbound", partner_type:"customer",
       partner_id:ST.cliente.id, amount:num(c.importe), date:HOY,
@@ -330,9 +459,7 @@ async function generar(){
     }catch(e){ fallos.push({n:c.numero, e:String(e.message||e).slice(0,140)}); }
   }
   let imputados=false;
-  if(creados.length && ST.deuda.length){
-    try{ await imputar(creados); imputados=true; }catch(e){ imputados=false; }
-  }
+  if(creados.length && ST.deuda.length){ try{ await imputar(creados); imputados=true; }catch(e){} }
   ST.guardando=false;
   ST.hecho={creados:creados.length, total:totalCheques(), fallos:fallos, imputados:imputados, cliente:ST.cliente.name};
   render();
@@ -350,9 +477,7 @@ async function proximoRecibo(){
   return 1;
 }
 
-/* Imputa los cheques a las facturas pendientes, de la más vieja a la más nueva.
-   Se concilian las líneas de la cuenta a cobrar: las del pago contra las de las
-   facturas. Odoo resuelve los parciales solo. */
+/* Imputa los cheques a las facturas pendientes, de la más vieja a la más nueva. */
 async function imputar(pagoIds){
   const lp = await R("account.move.line","search_read",
     [[["payment_id","in",pagoIds],["account_id.account_type","=","asset_receivable"]],["id"]],{limit:200});
@@ -362,7 +487,7 @@ async function imputar(pagoIds){
   if(todas.length>1) await R("account.move.line","reconcile",[todas]);
 }
 
-/* Módulo EN PRUEBAS: sólo la huella del dueño mientras se prueba con Federico. */
+/* Módulo EN PRUEBAS: sólo la huella del dueño, super-admins o concesión por persona. */
 EYG.guard(["finanzas","direccion","admin"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(function(){ init(); });
 </script>
 </body>
