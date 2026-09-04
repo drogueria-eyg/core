@@ -422,6 +422,15 @@ window.EYG = (function(){
       desc:"Qué es cada medicamento, para qué sirve, cómo se administra y en qué presentaciones está autorizado — con la fuente y la fecha de cada dato. Y cuáles de esas presentaciones tenemos.",
       roles:["inventario","maestro","comercial","lider","finanzas"], ready:true,
       path:()=>"inventario/vademecum.html"},
+    /* Ficha de producto e Ingreso de mercadería son DOS PANTALLAS DE LO MISMO:
+       comparten assets/producto.js (buscador + ficha completa). Al escanear en
+       el ingreso un código que no existe, se abre la ficha ahí mismo. */
+    {key:"producto", dept:"deposito", cat:"Depósito", ico:"🔎", titulo:"Ficha de producto",
+      desc:"Buscá cualquier producto por nombre, código o código de barras y vas a ver TODO lo que se sabe de él, editable en el momento — con su foto. Si no existe, se crea; y si está en el registro oficial del Ministerio, viene casi entero cargado.",
+      roles:["inventario","maestro","finanzas"], ready:true, path:()=>"inventario/producto.html"},
+    {key:"ingreso", dept:"deposito", cat:"Depósito", ico:"📥", titulo:"Ingreso de mercadería",
+      desc:"Recibí lo que llega: escaneás la caja, cargás lote y vencimiento, y confirmás. Los códigos de barras que falten se van cargando en el momento, sobre la marcha.",
+      roles:["inventario","maestro"], ready:true, path:()=>"inventario/ingreso.html"},
     {key:"nombres",   dept:"deposito", cat:"Depósito", ico:"🏷️", titulo:"Maestro de productos", desc:"Ordená el dato maestro de cada producto: nombre, unidades, embalaje y subcategoría. Detecta errores y completa lo que falta, con un clic.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/nombres.html"},
     {key:"deposito-control", dept:"deposito", cat:"Depósito", ico:"🩺", titulo:"Control de Depósito", desc:"Saneá el depósito: contá y ajustá el stock físico, corregí la valuación torcida, completá costos faltantes y limpiá archivados y basura. Deja el inventario fiel a la realidad.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/control.html"},
     {key:"oportunidades", dept:"compras", cat:"Compras", ico:"💡", titulo:"Oportunidades y Ofertas", desc:"Cuando un costo baja, el sistema detecta una oportunidad de oferta. Confirmala (precio, stock, vigencia) o armá combos, y van a la tarjeta de los comerciales.", roles:["inventario"], ready:true, path:()=>"inventario/oportunidades.html"},
