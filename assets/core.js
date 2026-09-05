@@ -34,10 +34,37 @@ window.EYG = (function(){
     return new Promise(res=>_rpcQ.push(()=>res(_rpcRun(fn))));
   }
 
-  /* ---- Odoo (edge function odoo-rpc) ---- */
+  /* ---- Quién está escribiendo (para que Odoo lo firme con su nombre) ----
+     Odoo le atribuye TODO lo que entra por la API al usuario de las credenciales
+     del conector. Por eso, hasta acá, cada nota que el Core dejaba en Odoo salía
+     firmada siempre por la misma persona, la hubiera escrito quien la hubiera
+     escrito. El arreglo es que el navegador se identifique: mandamos el token de
+     la sesión de Supabase y odoo-rpc, del otro lado, cruza ese email contra el
+     usuario de Odoo y firma la nota a nombre de quien la escribió. Sin sesión,
+     firma Droguería EyG.
+     El token se cachea un minuto: getSession() lee del almacenamiento local, pero
+     una pantalla dispara decenas de consultas y no hace falta releerlo en cada una.
+     REGLA: todo wrapper de rpc de un módulo tiene que mandar estos headers
+     (EYG.rpcHead()); si no, la nota vuelve a salir sin nombre.
+
+     ---- Odoo (edge function odoo-rpc) ---- */
+  let _tok = { v:null, at:0 };
+  async function rpcHead(){
+    const h = { "Content-Type":"application/json" };
+    try{
+      if(!_tok.v || Date.now()-_tok.at > 60000){
+        const s = await session();
+        _tok = { v:(s && s.access_token) || null, at:Date.now() };
+      }
+      if(_tok.v) h.Authorization = "Bearer " + _tok.v;
+    }catch(e){ /* sin sesión: la nota queda a nombre de Droguería EyG */ }
+    return h;
+  }
+
   async function rpc(model,method,args=[],kwargs={}){
+    const head = await rpcHead();
     for(let i=0;i<4;i++){ try{
-      const r = await gate(()=>fetch(RPC_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model,method,args,kwargs})}));
+      const r = await gate(()=>fetch(RPC_URL,{method:"POST",headers:head,body:JSON.stringify({model,method,args,kwargs})}));
       const j = await r.json(); if(j.error) throw new Error(typeof j.error==="string"?j.error:JSON.stringify(j.error));
       return j.result ?? j;
     }catch(e){ if(i===3) throw e; await new Promise(res=>setTimeout(res,900*(i+1))); } }
@@ -1772,7 +1799,7 @@ window.EYG = (function(){
     return { baseline, meta, meses, nUsados:nums.length };
   }
 
-  return { supa, rpc, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
+  return { supa, rpc, rpcHead, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
