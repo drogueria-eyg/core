@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
-<link rel="stylesheet" href="../assets/producto.css?v=2">
+<link rel="stylesheet" href="../assets/producto.css?v=3">
 </head>
 <body>
 <div id="cont"><div class="cargando"><div class="spinner"></div>Cargando…</div></div>
@@ -41,9 +41,14 @@ let PERFIL = null;
    abrirse y queda acá para que el siguiente repintado no la cierre de nuevo. */
 /* `linea` = la pantalla de UN producto (la que abre el escáner). `abiertos` =
    qué bloques de la ficha están desplegados ahí adentro. */
+/* `tab` = qué se está mirando en la lista: lo que falta recibir o lo que YA se
+   recibió. Las hechas son 2.553 desde diciembre de 2024, así que no se traen
+   todas de golpe: se piden de a 50 y hay buscador contra Odoo. */
+const PAGINA = 50;
 const ST = { vista:"lista", pend:[], rec:null, cargando:true,
              foco:null, desconocido:null, guardando:false, editando:new Set(),
-             linea:null, abiertos:new Set(), extra:null };
+             linea:null, abiertos:new Set(), extra:null,
+             tab:"pend", hechas:[], q:"", nHechas:null, hayMas:false, buscando:false };
 
 const esc = s => EYG.esc(s);
 const rpc = (m,me,a,k)=>EYG.rpc(m,me,a,Object.assign({context:{lang:"es_AR"}},k||{}));
@@ -90,43 +95,123 @@ function fechaDeOdoo(s){ return s ? String(s).slice(0,10) : ""; }
 async function cargarPendientes(){
   ST.cargando = true; pintar();
   try{
-    const ps = await rpc("stock.picking","search_read",
-      [[["picking_type_id","=",TIPO_RECIBIDOS],["state","not in",["done","cancel"]]],
-       ["id","name","partner_id","state","scheduled_date","origin","move_ids"]],
-      {order:"scheduled_date desc", limit:100});
+    const [ps, n] = await Promise.all([
+      rpc("stock.picking","search_read",
+        [[["picking_type_id","=",TIPO_RECIBIDOS],["state","not in",["done","cancel"]]],
+         ["id","name","partner_id","state","scheduled_date","origin","move_ids"]],
+        {order:"scheduled_date desc", limit:100}),
+      rpc("stock.picking","search_count",
+        [[["picking_type_id","=",TIPO_RECIBIDOS],["state","=","done"]]]),
+    ]);
     ST.pend = ps || [];
+    ST.nHechas = n;
   }catch(e){ ST.pend = []; toast(e.message, true); }
   ST.cargando = false; pintar();
 }
 
-function vistaLista(){
-  if(ST.cargando) return `<div class="cargando"><div class="spinner"></div>Buscando recepciones pendientes…</div>`;
-  const n = ST.pend.length;
-  const lista = n ? ST.pend.map(p=>`<div class="ritem" onclick="abrirRecepcion(${p.id})">
+/* ---- las que YA se recibieron ----
+   Son 2.553 y arrancan en diciembre de 2024: no entran en una pantalla ni
+   conviene traerlas. Se piden de a 50, y el buscador va contra Odoo porque lo
+   que se busca casi nunca está en las 50 que se trajeron. */
+async function cargarHechas(mas){
+  ST.buscando = true;
+  if(!mas) ST.hechas = [];
+  pintar();
+  const q = ST.q.trim();
+  /* Lista = Y de todo lo de arriba; el grupo "|" de abajo = O entre los cuatro
+     campos. Se busca por número de recepción, proveedor, orden de compra y
+     —la que de verdad se usa— por PRODUCTO: "¿cuándo entró esto y con qué
+     lote?" es la pregunta que se hace en el depósito. */
+  const dom = [["picking_type_id","=",TIPO_RECIBIDOS],["state","=","done"]];
+  if(q) dom.push("|","|","|",
+    ["name","ilike",q], ["partner_id","ilike",q],
+    ["origin","ilike",q], ["move_ids.product_id","ilike",q]);
+  try{
+    const filas = await rpc("stock.picking","search_read",
+      [dom, ["id","name","partner_id","state","scheduled_date","date_done","origin","move_ids"]],
+      {order:"date_done desc", limit:PAGINA, offset: mas ? ST.hechas.length : 0});
+    ST.hechas = mas ? ST.hechas.concat(filas||[]) : (filas||[]);
+    ST.hayMas = (filas||[]).length === PAGINA;
+  }catch(e){ toast(e.message, true); ST.hayMas = false; }
+  ST.buscando = false; pintar();
+}
+
+function verTab(t){
+  ST.tab = t; pintar();
+  if(t === "hechas" && !ST.hechas.length && !ST.buscando) cargarHechas();
+}
+const buscarHechasDeb = EYG.buscador(function(v){ ST.q = v; cargarHechas(); }, 420);
+
+function filaRecepcion(p, hecha){
+  const cuando = hecha ? String(p.date_done||"").slice(0,10) : String(p.scheduled_date||"").slice(0,10);
+  return `<div class="ritem" onclick="abrirRecepcion(${p.id})">
       <div class="mid">
         <div class="nm">${esc(p.name)}</div>
         <div class="sub">
           <span>${esc(p.partner_id?p.partner_id[1]:"sin proveedor")}</span>
           ${p.origin?`<span class="cod">${esc(p.origin)}</span>`:""}
-          <span>${esc(String(p.scheduled_date||"").slice(0,10))}</span>
+          <span>${hecha?"recibida el ":""}${esc(cuando)}</span>
           <span>${(p.move_ids||[]).length} producto(s)</span>
         </div>
       </div>
-      <span class="pill ${p.state==="assigned"?"list":"esp"}">${p.state==="assigned"?"lista para recibir":esc(p.state)}</span>
-      <span class="go">Recibir →</span>
-    </div>`).join("")
-    : `<div class="vacio">No hay recepciones pendientes. Cuando Compras confirme una orden, aparece acá.</div>`;
+      ${hecha ? `<span class="pill stock">recibida</span><span class="go">Ver →</span>`
+              : `<span class="pill ${p.state==="assigned"?"list":"esp"}">${p.state==="assigned"?"lista para recibir":esc(p.state)}</span>
+                 <span class="go">Recibir →</span>`}
+    </div>`;
+}
 
+function vistaLista(){
+  if(ST.cargando) return `<div class="cargando"><div class="spinner"></div>Buscando recepciones…</div>`;
+  const tabs = `<div class="tabs">
+      <button class="tab ${ST.tab==="pend"?"on":""}" onclick="verTab('pend')">
+        Por recibir <span class="n">${ST.pend.length}</span></button>
+      <button class="tab ${ST.tab==="hechas"?"on":""}" onclick="verTab('hechas')">
+        Ya recibidas <span class="n">${ST.nHechas==null?"…":ST.nHechas.toLocaleString("es-AR")}</span></button>
+    </div>`;
+
+  if(ST.tab === "hechas"){
+    const cuerpo = ST.buscando && !ST.hechas.length
+      ? `<div class="cargando"><div class="spinner"></div>Buscando…</div>`
+      : (ST.hechas.length
+          ? `<div class="rlist">${ST.hechas.map(p=>filaRecepcion(p,true)).join("")}</div>
+             <div class="masbtn">${ST.hayMas
+               ? `<button class="btn sec" onclick="cargarHechas(true)" ${ST.buscando?"disabled":""}>
+                    ${ST.buscando?"Buscando…":"Ver 50 más"}</button>`
+               : `<span class="quieto">Eso es todo lo que hay para esta búsqueda.</span>`}</div>`
+          : `<div class="vacio">No encontré ninguna recepción con «${esc(ST.q)}».<br>
+               Probá con el número (WH/IN/…), el proveedor, la orden de compra o el nombre de un producto.</div>`);
+    return `<div class="intro">
+        Todo lo que <b>ya entró al depósito</b>, desde la primera recepción (diciembre de 2024).
+        Se abre igual que una pendiente, pero de <b>sólo lectura</b>: se ve lo que entró de cada producto,
+        con su lote y su vencimiento. Y aunque la recepción esté cerrada, desde adentro se le puede
+        seguir cargando al producto la <b>foto</b>, el <b>código de barras</b> o lo que le falte.
+      </div>
+      ${tabs}
+      <div class="busca">
+        <div class="buscarow">
+          <input id="qh" type="search" autocomplete="off" value="${esc(ST.q)}"
+                 placeholder="Número, proveedor, orden de compra… o el nombre de un producto"
+                 oninput="buscarHechasDeb(this.value)">
+          ${ST.q?`<button class="btn sec" onclick="ST.q='';cargarHechas()">Limpiar</button>`:""}
+        </div>
+        <div class="buscahint">Buscar por <b>producto</b> responde la pregunta del depósito: cuándo entró y con qué lote.</div>
+      </div>
+      ${cuerpo}`;
+  }
+
+  const n = ST.pend.length;
   return `<div class="intro">
       Las órdenes de compra confirmadas que <b>todavía no entraron al depósito</b>. Abrí una, escaneá las cajas,
       cargá <b>lote y vencimiento</b>, y confirmala: recién ahí suma stock en Odoo.
     </div>
+    ${tabs}
     <div class="kpis">
-      <div class="kpi" title="Recepciones confirmadas por Compras que todavía no se recibieron"><div class="n">${n}</div><div class="l">Pendientes</div></div>
+      <div class="kpi" title="Recepciones confirmadas por Compras que todavía no se recibieron"><div class="n">${n}</div><div class="l">Por recibir</div></div>
       <div class="kpi" title="Productos distintos esperando entrar"><div class="n">${ST.pend.reduce((a,p)=>a+(p.move_ids||[]).length,0)}</div><div class="l">Productos</div></div>
     </div>
     <div style="margin-bottom:12px"><button class="btn sec" onclick="cargarPendientes()">🔄 Actualizar</button></div>
-    <div class="rlist">${lista}</div>`;
+    ${n ? `<div class="rlist">${ST.pend.map(p=>filaRecepcion(p,false)).join("")}</div>`
+        : `<div class="vacio">No hay recepciones pendientes. Cuando Compras confirme una orden, aparece acá.</div>`}`;
 }
 
 /* ===================== ABRIR UNA RECEPCIÓN ===================== */
@@ -163,8 +248,14 @@ async function abrirRecepcion(pid){
     ]);
     const porTmpl = {}; tpls.forEach(t=>porTmpl[t.id]=t);
 
+    /* Una recepción ya confirmada se abre para MIRAR: no se le puede cambiar
+       lo que entró (eso ya movió stock en Odoo). Lo que sí se sigue pudiendo
+       hacer desde adentro es completarle datos al producto — foto, código de
+       barras, categoría — que es para lo que Martina las quiere ver. */
+    const hecha = pk.state === "done";
+
     ST.rec = {
-      pk,
+      pk, hecha,
       moves: moves.map(m=>{
         const pp = porProd[m.product_id[0]] || {};
         const tid = pp.product_tmpl_id ? pp.product_tmpl_id[0] : null;
@@ -189,8 +280,11 @@ async function abrirRecepcion(pid){
              está el botón "Vino todo", que es un clic.
              Si ya había un lote cargado (avance guardado antes), eso SÍ se
              respeta y vuelve tal cual. */
+          /* En una recepción YA HECHA no se arranca de cero: se muestra lo que
+             realmente entró, tal cual quedó grabado. La regla de arrancar en
+             cero es para lo que todavía se está recibiendo. */
           parts: mias.length ? mias.map(l=>{
-            const cargada = !!(l.lot_id || l.lot_name);
+            const cargada = hecha || !!(l.lot_id || l.lot_name);
             return { id:l.id, lote:l.lot_name || (l.lot_id?l.lot_id[1]:"") || "",
                      cant: cargada ? (l.quantity||0) : 0,
                      vto: cargada ? fechaDeOdoo(l.expiration_date) : "" };
@@ -371,6 +465,7 @@ function completa(m){
 }
 
 function setPart(moveId, i, campo, valor){
+  if(ST.rec && ST.rec.hecha) return;            /* cerrada: no se toca lo que entró */
   const m = ST.rec.moves.find(x=>x.id===moveId); if(!m) return;
   m.parts[i][campo] = valor;
   /* Mientras se tipea NO se repinta la pantalla: se actualizan sólo la cabecera
@@ -440,10 +535,14 @@ function cabeceraLinea(m, pos){
    atención y hace que salte a la vista lo que TODAVÍA falta. Se vuelve a abrir
    con "Editar". Sin esto todas las líneas se ven iguales y uno se pierde. */
 function resumenLinea(m){
+  const hecha = ST.rec && ST.rec.hecha;
   const det = m.parts.filter(p=>(parseFloat(String(p.cant).replace(",","."))||0)>0)
     .map(p=>`<b>${esc(p.lote||"—")}</b> × ${p.cant}${p.vto?` (vence ${esc(p.vto)})`:""}`).join(" · ");
+  /* Una línea de una recepción hecha puede haber quedado en cero: se pidió y
+     no vino. Decirlo es el dato — un renglón vacío no se entiende. */
+  if(!det) return `<div class="resumen nada2">No entró nada de este producto</div>`;
   return `<div class="resumen">✓ ${det}
-    <button class="editar" onclick="editarLinea(${m.id})">Editar</button></div>`;
+    ${hecha ? "" : `<button class="editar" onclick="editarLinea(${m.id})">Editar</button>`}</div>`;
 }
 
 function estadoLinea(m){
@@ -512,6 +611,22 @@ async function cargarExtra(m){
 
 /* ---- 1. lo que vino ---- */
 function bloqueCarga(m){
+  /* Recepción ya cerrada: se muestra lo que entró, sin campos. Cambiarlo acá
+     no tendría efecto (el stock ya se movió) y ofrecerlo sería mentir. */
+  if(ST.rec && ST.rec.hecha){
+    const det = m.parts.filter(p=>(parseFloat(String(p.cant).replace(",","."))||0)>0);
+    return `<div class="carga hecha">
+      <div class="ct">📥 Lo que entró de este producto</div>
+      <div class="parts">
+        ${det.length ? det.map(p=>`<div class="entro">
+            <div class="e1"><span class="el">Cantidad</span><b>${p.cant}</b></div>
+            ${m.pideLote?`<div class="e1"><span class="el">${m.tracking==="serial"?"N° de serie":"Lote"}</span><b class="mono">${esc(p.lote||"—")}</b></div>`:""}
+            ${m.vence?`<div class="e1"><span class="el">Vence</span><b>${esc(p.vto||"—")}</b></div>`:""}
+          </div>`).join("")
+          : `<div class="nada">No entró nada de este producto: se había pedido ${m.demanda} y quedó en cero.</div>`}
+      </div>
+    </div>`;
+  }
   return `<div class="carga">
     <div class="ct">📥 ¿Qué vino de este producto?</div>
     <div class="parts">
@@ -741,10 +856,12 @@ function vistaProducto(){
     ${bloques}
     <div id="extra">${bloqueExtra()}</div>
     <div class="barra" id="barra">
-      <div class="info">${completa(m)?"✓ Esta línea está lista":
-        (recibidoDe(m)>0?"Falta el lote o el vencimiento":"Todavía no cargaste nada de este producto")}</div>
-      ${prox?`<button class="btn sec" onclick="abrirProducto(${prox.id})">Siguiente sin cargar →</button>`:""}
-      <button class="btn ok" onclick="listoYVolver()">Listo, volver a la lista</button>
+      <div class="info">${r.hecha ? "Recepción ya cerrada — lo que le cargues al producto sí se guarda"
+        : (completa(m)?"✓ Esta línea está lista":
+          (recibidoDe(m)>0?"Falta el lote o el vencimiento":"Todavía no cargaste nada de este producto"))}</div>
+      ${!r.hecha && prox?`<button class="btn sec" onclick="abrirProducto(${prox.id})">Siguiente sin cargar →</button>`:""}
+      <button class="btn ok" onclick="${r.hecha?"volverALista()":"listoYVolver()"}">
+        ${r.hecha?"Volver a la lista":"Listo, volver a la lista"}</button>
     </div>`;
 }
 
@@ -761,7 +878,9 @@ function vistaRecepcion(){
 
   const lineas = r.moves.map((m,idx)=>{
     const est = estadoLinea(m);
-    const plegada = est==="lista" && !ST.editando.has(m.id);
+    /* En una recepción ya hecha TODAS las líneas van plegadas: es un registro
+       de lo que entró, no un formulario. */
+    const plegada = r.hecha || (est==="lista" && !ST.editando.has(m.id));
     const cuerpo = plegada ? resumenLinea(m) : `<div class="parts">
         ${m.parts.map((p,i)=>partHTML(m,p,i)).join("")}
         <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
@@ -776,31 +895,46 @@ function vistaRecepcion(){
     </div>`;
   }).join("");
 
-  return `<button class="volver" onclick="volver()">← Volver a las recepciones</button>
-    <div class="rhead">
-      <h2>${esc(pk.name)}</h2>
+  const cabecera = `<button class="volver" onclick="volver()">← Volver a las recepciones</button>
+    <div class="rhead${r.hecha?" hecha":""}">
+      <h2>${esc(pk.name)} ${r.hecha?`<span class="pill stock">recibida</span>`:""}</h2>
       <div class="linea">
         <span><b>${esc(pk.partner_id?pk.partner_id[1]:"sin proveedor")}</b></span>
         ${pk.origin?`<span class="cod">${esc(pk.origin)}</span>`:""}
-        <span>${esc(String(pk.scheduled_date||"").slice(0,10))}</span>
+        <span>${r.hecha?"recibida el ":"prevista para el "}${esc(String((r.hecha?pk.date_done:pk.scheduled_date)||"").slice(0,16))}</span>
         <a href="${EYGP.ODOO_BASE}/odoo/inventory/${pk.id}" target="_blank" rel="noopener">Ver en Odoo ↗</a>
       </div>
-      <div class="prog" id="prog">${contenidoProg(listas,total,pct)}</div>
-    </div>
-    <div class="scan">
-      <div class="lbl">📷 Escaneá la caja</div>
+      ${r.hecha?"":`<div class="prog" id="prog">${contenidoProg(listas,total,pct)}</div>`}
+    </div>`;
+
+  const escaneo = `<div class="scan">
+      <div class="lbl">📷 ${r.hecha?"Buscá un producto de esta recepción":"Escaneá la caja"}</div>
       <input id="scan" autocomplete="off" placeholder="Disparale la pistola, o tipeá el código y Enter" onkeydown="scanKey(event)">
-      <div class="hint">Si el código no está en ningún producto, te dejo pegárselo a una línea de esta recepción — así se completa el catálogo solo.</div>
-    </div>
-    ${panelDesconocido()}
-    <div id="avisofotos">${avisoFotos()}</div>
-    <div class="nota">Cargá <b>lote y vencimiento</b> como figuran en la caja. Si un producto vino en <b>varios lotes</b>,
-      agregá una fila por lote. Las líneas que completes se pliegan solas en verde, para que se vea lo que falta.
-      Recién al <b>confirmar</b> suma stock en Odoo.<br>
-      Y si a un producto le falta la <b>foto</b> o el <b>código de barras</b>, este es el momento de cargarlos:
-      lo tenés en la mano. Quedan en la ficha del producto, no en esta recepción.</div>
-    ${lineas}
-    <div class="barra" id="barra">${contenidoBarra(listas)}</div>`;
+      <div class="hint">${r.hecha
+        ? "Abre la pantalla del producto que leyó. Lo que entró no se puede cambiar desde acá, pero al producto sí se le puede completar lo que le falte."
+        : "Si el código no está en ningún producto, te dejo pegárselo a una línea de esta recepción — así se completa el catálogo solo."}</div>
+    </div>`;
+
+  /* La recepción cerrada no ofrece guardar ni confirmar: no hay nada que
+     guardar. Lo único que queda abajo es el resumen de lo que entró. */
+  const pie = r.hecha
+    ? `<div class="barra"><div class="info">${total} producto(s) · ${
+        r.moves.reduce((a,m)=>a+recibidoDe(m),0).toLocaleString("es-AR")} unidades ingresadas</div>
+        <a class="btn sec" href="${EYGP.ODOO_BASE}/odoo/inventory/${pk.id}" target="_blank" rel="noopener">Ver el movimiento en Odoo ↗</a></div>`
+    : `<div class="barra" id="barra">${contenidoBarra(listas)}</div>`;
+
+  const nota = r.hecha
+    ? `<div class="nota">Esta recepción <b>ya entró al depósito</b>: lo que ves es lo que se cargó, con su lote y su
+        vencimiento, y no se puede cambiar desde acá (ya movió stock en Odoo). Lo que sí podés hacer es
+        <b>abrir cualquier producto</b> y completarle la foto, el código de barras o lo que le falte.</div>`
+    : `<div class="nota">Cargá <b>lote y vencimiento</b> como figuran en la caja. Si un producto vino en <b>varios lotes</b>,
+        agregá una fila por lote. Las líneas que completes se pliegan solas en verde, para que se vea lo que falta.
+        Recién al <b>confirmar</b> suma stock en Odoo.<br>
+        Y si a un producto le falta la <b>foto</b> o el <b>código de barras</b>, este es el momento de cargarlos:
+        lo tenés en la mano. Quedan en la ficha del producto, no en esta recepción.</div>`;
+
+  return cabecera + escaneo + panelDesconocido() +
+    `<div id="avisofotos">${avisoFotos()}</div>` + nota + lineas + pie;
 }
 
 /* Una partida = un lote. El botón de quitar está SIEMPRE, aunque sea la única:
@@ -886,6 +1020,10 @@ function pintarBarra(){
    No valida nada: se puede dejar a medias y seguir mañana. */
 async function guardarAvance(silencioso){
   if(ST.guardando) return;
+  /* Candado: una recepción cerrada ya movió stock en Odoo. Ni un botón que
+     quedó colgado ni un Enter perdido tienen que poder reescribirle las
+     líneas de lo que entró. */
+  if(ST.rec && ST.rec.hecha) return;
   ST.guardando = true; pintarBarra();
   const r = ST.rec;
   try{
@@ -928,6 +1066,7 @@ async function guardarAvance(silencioso){
 
 async function confirmarRecepcion(){
   const r = ST.rec;
+  if(r.hecha) return toast("Esta recepción ya fue confirmada.", true);
   const incompletas = r.moves.filter(m=>recibidoDe(m)>0 && !completa(m));
   if(incompletas.length){
     toast("Faltan lote o vencimiento en "+incompletas.length+" línea(s).", true);
