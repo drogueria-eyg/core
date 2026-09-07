@@ -587,7 +587,15 @@ window.EYG = (function(){
   function rail(perfil){
     if(typeof document==="undefined" || !perfil) return;
     const admin = esSuper(perfil._h) || perfil.rol==="admin" || perfil.rol==="direccion";
-    if(!admin) return;                                 // accesos especiales: sin cambios
+    /* Concesiones por persona: a quien tiene un módulo suelto (modulos_extra) hay
+       que DARLE CÓMO LLEGAR. Sin esto el permiso existía pero no había ningún
+       enlace: el comercial entra directo a su panel (index.html lo redirige) y el
+       menú sólo se dibujaba para admin/dirección, así que el módulo concedido era
+       invisible en la práctica. Pasó al habilitarle Cobranzas a una comercial que
+       cubre a Cobranzas por unos días. El menú muestra sólo lo que puedeVer()
+       aprueba, así que sigue sin poder ver nada que no se le haya concedido. */
+    const concedidos = (perfil.modulos_extra||[]).length > 0;
+    if(!admin && !concedidos) return;                  // accesos especiales: sin cambios
     /* Módulos "kiosco" (pantalla completa, chrome propio) se bajan del riel con
        <body data-eyg-rail="no">. Sin esto, el rail se lleva el body ANTES de que
        el módulo arme su pantalla, y ésta queda fuera de la vista: el admin ve
