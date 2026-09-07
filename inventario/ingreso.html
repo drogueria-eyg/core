@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
-<link rel="stylesheet" href="../assets/producto.css?v=4">
+<link rel="stylesheet" href="../assets/producto.css?v=5">
 </head>
 <body>
 <div id="cont"><div class="cargando"><div class="spinner"></div>Cargando…</div></div>
@@ -452,29 +452,83 @@ async function resolverCodigo(cod){
       toast("✓ "+suya.nombre.slice(0,44));
       return;
     }
-    ST.desconocido = null; ST.foco = null; pintar();
-    toast("«"+String(p.name).slice(0,40)+"» existe, pero NO está en esta recepción.", true);
+    /* El código es de OTRO producto del catálogo. Decirlo y quedarse callado
+       no le sirve a nadie: la persona tiene la caja en la mano y la línea
+       delante. Pasa de verdad — el laboratorio le cambia el código a un
+       producto y Alfabeta lo carga como una ficha nueva (IBUPROFENO KLONAL NF
+       vs KLONAL FORTE), o directamente mandaron otra cosa. Las dos salidas se
+       ofrecen abajo, con el nombre del otro producto a la vista. */
+    ST.desconocido = {cod: cod, otro: p};
+    ST.foco = null; pintar();
     return;
   }
   /* 3) no existe en ningún lado: es la oportunidad de completar el catálogo. */
-  ST.desconocido = cod; ST.foco = null; pintar();
+  ST.desconocido = {cod: cod, otro: null}; ST.foco = null; pintar();
 }
 
+/* EL PANEL DEL CÓDIGO QUE NO CIERRA
+   Dos situaciones distintas, y hasta ahora sólo se atendía la primera:
+
+   a) El código no existe en ningún producto. Es la oportunidad de completar el
+      catálogo (faltan 478 códigos de los 711 productos con stock).
+
+   b) EL CÓDIGO ES DE OTRO PRODUCTO. Pasa de verdad: el laboratorio le cambia el
+      envase a un producto y Alfabeta lo carga como ficha nueva. La caja de
+      IBUPROFENO KLONAL FORTE trae 7795360009307, que en el catálogo es
+      IBUPROFENO KLONAL NF (archivado), mientras que la orden pide el 168.
+      Antes esto terminaba en un aviso y nada más: "existe pero no está en esta
+      recepción", con la línea a la vista y sin ninguna salida.
+
+   Ahora se muestra DE QUIÉN es el código y se ofrecen las dos salidas reales:
+   pasárselo a una línea de esta recepción (si es el mismo producto con código
+   nuevo), o darse cuenta de que mandaron otra cosa. Esa decisión la toma quien
+   tiene la caja en la mano; el módulo sólo tiene que ponerle los datos delante. */
 function panelDesconocido(){
-  const cod = ST.desconocido;
-  if(!cod) return "";
+  const d = ST.desconocido;
+  if(!d) return "";
+  const cod = d.cod, otro = d.otro;
+  const stock = otro ? (otro.qty_available||0) : 0;
+
+  const cabeza = otro
+    ? `<h3>⚠️ Ese código es de OTRO producto</h3>
+       <div class="cd">${esc(cod)}</div>
+       <div class="duenio">
+         <div class="q">Hoy ese código está cargado en:</div>
+         <div class="n">${esc(otro.name)}</div>
+         <div class="e">
+           ${otro.active===false?'<span class="pill off">archivado</span>':'<span class="pill stock">activo</span>'}
+           ${stock>0?`<span class="pill stock">${stock.toLocaleString("es-AR")} en depósito</span>`:'<span class="pill off">sin stock</span>'}
+           ${otro.default_code?`<span class="cod">${esc(otro.default_code)}</span>`:""}
+         </div>
+       </div>
+       <div class="expl">
+         Puede ser <b>el mismo producto con el código cambiado</b> (el laboratorio renueva el envase y
+         Alfabeta lo carga como ficha nueva) — o puede ser que <b>te hayan mandado otra cosa</b>.
+         Miralo en la caja: si el nombre y la presentación no coinciden con la línea del pedido,
+         no lo recibas y avisale a Compras.
+       </div>
+       <div class="expl"><b>Si es el mismo producto</b>, tocá abajo la línea que corresponde: el código
+         se le pasa a ese producto y se le saca al otro — en Odoo un código de barras no puede estar
+         en dos productos a la vez.</div>`
+    : `<h3>⚠️ Este código no está en ningún producto</h3>
+       <div class="cd">${esc(cod)}</div>
+       <div class="expl">
+         Si la caja que tenés en la mano es uno de los productos de esta recepción, <b>tocalo acá abajo</b>:
+         le queda pegado el código y la próxima vez se escanea solo. Así es como se completan
+         los <b>478 productos con stock que hoy no tienen código de barras</b>.
+       </div>`;
+
+  /* Se listan TODAS las líneas, no sólo las que no tienen código. La de Klonal
+     Forte YA tenía uno (el viejo) y por eso no aparecía: la única línea que
+     hacía falta era justo la que el panel escondía. */
+  const opciones = ST.rec.moves.map(m=>`<div class="opt" onclick="pegarCodigo(${m.id})">
+      <span class="nm">${esc(m.nombre)}</span>
+      ${m.barcode?`<span class="cod">⌗ ${esc(m.barcode)}</span>`:'<span class="pill sin">sin código</span>'}
+      <span class="go">Es este →</span></div>`).join("");
+
   return `<div class="desc">
-    <h3>⚠️ Este código no está en ningún producto</h3>
-    <div class="cd">${esc(cod)}</div>
-    <div style="font-size:12.5px;color:var(--gris);line-height:1.55;margin-bottom:6px">
-      Si la caja que tenés en la mano es uno de los productos de esta recepción, <b>tocalo acá abajo</b>:
-      le queda pegado el código y la próxima vez se escanea solo. Así es como se completan
-      los <b>478 productos con stock que hoy no tienen código de barras</b>.
-    </div>
-    ${ST.rec.moves.filter(m=>!m.barcode).map(m=>`<div class="opt" onclick="pegarCodigo(${m.id})">
-        <span class="nm">${esc(m.nombre)}</span><span class="go">Es este →</span></div>`).join("")}
-    ${ST.rec.moves.filter(m=>m.barcode).length?`<div style="font-size:11.5px;color:var(--gris2);margin-top:9px">
-      Los otros productos de esta recepción ya tienen su código cargado y no figuran acá.</div>`:""}
+    ${cabeza}
+    ${opciones}
     <div style="margin-top:12px;display:flex;gap:9px;flex-wrap:wrap">
       <a class="btn sec" href="producto.html" target="_blank" rel="noopener">Abrir la Ficha de producto ↗</a>
       <button class="btn sec" onclick="ST.desconocido=null;pintar()">Cancelar</button>
@@ -484,18 +538,36 @@ function panelDesconocido(){
 
 async function pegarCodigo(moveId){
   const m = ST.rec.moves.find(x=>x.id===moveId);
-  const cod = ST.desconocido;
-  if(!m || !cod) return;
-  if(!confirm(`¿Guardar el código ${cod} en «${m.nombre}»?\n\nQueda cargado en la ficha del producto para siempre.`)) return;
+  const d = ST.desconocido;
+  if(!m || !d) return;
+  const cod = d.cod, otro = d.otro;
+
+  /* La confirmación dice TODO lo que va a pasar: a quién se le saca el código,
+     cuál se pisa y en qué producto queda. Mover un código de barras entre
+     fichas del catálogo no es un detalle. */
+  const msg = [`¿Guardar el código ${cod} en «${m.nombre}»?`];
+  if(m.barcode) msg.push(`Ese producto hoy tiene el código ${m.barcode}, que se REEMPLAZA.`);
+  if(otro){
+    let l = `Además se le SACA a «${otro.name}»`;
+    if(otro.active !== false) l += " — ojo, ese producto está activo";
+    if((otro.qty_available||0) > 0) l += ` y tiene ${otro.qty_available} en depósito`;
+    msg.push(l + ".");
+  }
+  msg.push("Queda cargado en la ficha del producto para siempre.");
+  if(!confirm(msg.join("\n\n"))) return;
+
   try{
+    /* Primero se libera el código del otro producto: en Odoo el código de
+       barras es único, así que si no se lo saca, la escritura falla con un
+       error de restricción que nadie entiende. */
+    if(otro) await rpc("product.template","write",[[otro.id],{barcode:false}]);
     await rpc("product.template","write",[[m.tmplId],{barcode:cod}]);
     m.barcode = cod;
     if(m.t) m.t.barcode = cod;
     ST.desconocido = null;
     abrirProducto(m.id);                    /* igual que si lo hubiera reconocido */
-    toast("Código guardado en el producto ✓");
+    toast(otro ? "Código movido a este producto ✓" : "Código guardado en el producto ✓");
   }catch(e){
-    /* El código de barras es único en Odoo: si ya lo tiene otro producto, avisa. */
     toast("No se pudo guardar: "+e.message, true);
   }
 }
