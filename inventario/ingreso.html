@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
-<link rel="stylesheet" href="../assets/producto.css?v=3">
+<link rel="stylesheet" href="../assets/producto.css?v=4">
 </head>
 <body>
 <div id="cont"><div class="cargando"><div class="spinner"></div>Cargando…</div></div>
@@ -92,21 +92,40 @@ function fechaAOdoo(d){ return d ? (d+" 03:00:00") : false; }
 function fechaDeOdoo(s){ return s ? String(s).slice(0,10) : ""; }
 
 /* ===================== LISTA DE RECEPCIONES ===================== */
+const CAMPOS_PICK = ["id","name","partner_id","state","scheduled_date","date_done",
+                     "origin","move_ids","return_id","backorder_id"];
+
+/* El mismo buscador para las dos pestañas: número de recepción, proveedor o
+   cliente, documento de origen (la orden de compra o el remito devuelto) y
+   PRODUCTO. Lo de producto sólo se puede resolver del lado de Odoo, así que
+   las dos listas buscan igual y no hay que explicar dos comportamientos. */
+function dominioBusca(base, q){
+  const dom = base.slice();
+  q = String(q||"").trim();
+  if(q) dom.push("|","|","|",
+    ["name","ilike",q], ["partner_id","ilike",q],
+    ["origin","ilike",q], ["move_ids.product_id","ilike",q]);
+  return dom;
+}
+
 async function cargarPendientes(){
   ST.cargando = true; pintar();
   try{
     const [ps, n] = await Promise.all([
       rpc("stock.picking","search_read",
-        [[["picking_type_id","=",TIPO_RECIBIDOS],["state","not in",["done","cancel"]]],
-         ["id","name","partner_id","state","scheduled_date","origin","move_ids"]],
+        [dominioBusca([["picking_type_id","=",TIPO_RECIBIDOS],["state","not in",["done","cancel"]]], ST.q),
+         CAMPOS_PICK],
         {order:"scheduled_date desc", limit:100}),
-      rpc("stock.picking","search_count",
-        [[["picking_type_id","=",TIPO_RECIBIDOS],["state","=","done"]]]),
+      ST.nHechas == null
+        ? rpc("stock.picking","search_count",[[["picking_type_id","=",TIPO_RECIBIDOS],["state","=","done"]]])
+        : Promise.resolve(ST.nHechas),
     ]);
     ST.pend = ps || [];
     ST.nHechas = n;
   }catch(e){ ST.pend = []; toast(e.message, true); }
   ST.cargando = false; pintar();
+  /* El "1 de 2" llega un instante después: la lista no espera por él. */
+  await marcarPartes(ST.pend); pintar();
 }
 
 /* ---- las que YA se recibieron ----
@@ -117,101 +136,164 @@ async function cargarHechas(mas){
   ST.buscando = true;
   if(!mas) ST.hechas = [];
   pintar();
-  const q = ST.q.trim();
-  /* Lista = Y de todo lo de arriba; el grupo "|" de abajo = O entre los cuatro
-     campos. Se busca por número de recepción, proveedor, orden de compra y
-     —la que de verdad se usa— por PRODUCTO: "¿cuándo entró esto y con qué
-     lote?" es la pregunta que se hace en el depósito. */
-  const dom = [["picking_type_id","=",TIPO_RECIBIDOS],["state","=","done"]];
-  if(q) dom.push("|","|","|",
-    ["name","ilike",q], ["partner_id","ilike",q],
-    ["origin","ilike",q], ["move_ids.product_id","ilike",q]);
+  const dom = dominioBusca([["picking_type_id","=",TIPO_RECIBIDOS],["state","=","done"]], ST.q);
+  let nuevas = [];
   try{
-    const filas = await rpc("stock.picking","search_read",
-      [dom, ["id","name","partner_id","state","scheduled_date","date_done","origin","move_ids"]],
-      {order:"date_done desc", limit:PAGINA, offset: mas ? ST.hechas.length : 0});
-    ST.hechas = mas ? ST.hechas.concat(filas||[]) : (filas||[]);
-    ST.hayMas = (filas||[]).length === PAGINA;
+    nuevas = await rpc("stock.picking","search_read",[dom, CAMPOS_PICK],
+      {order:"date_done desc", limit:PAGINA, offset: mas ? ST.hechas.length : 0}) || [];
+    ST.hechas = mas ? ST.hechas.concat(nuevas) : nuevas;
+    ST.hayMas = nuevas.length === PAGINA;
   }catch(e){ toast(e.message, true); ST.hayMas = false; }
   ST.buscando = false; pintar();
+  await marcarPartes(nuevas); pintar();
 }
 
 function verTab(t){
   ST.tab = t; pintar();
   if(t === "hechas" && !ST.hechas.length && !ST.buscando) cargarHechas();
 }
-const buscarHechasDeb = EYG.buscador(function(v){ ST.q = v; cargarHechas(); }, 420);
+/* Buscar recarga la pestaña que se esté mirando. Va contra Odoo en las dos
+   (no filtra lo ya traído) porque lo que se busca —sobre todo un producto—
+   casi nunca está entre las filas que se bajaron. */
+function correrBusqueda(){ return ST.tab === "hechas" ? cargarHechas() : cargarPendientes(); }
+const buscarDeb = EYG.buscador(function(v){ ST.q = v; correrBusqueda(); }, 420);
+function limpiarBusca(){ ST.q = ""; correrBusqueda(); }
+
+/* ¿Es una devolución de un cliente, o una compra a un proveedor?
+   No es lo mismo y hoy se mezclaban: de las 2.953 recepciones, 956 son
+   devoluciones. Odoo lo marca en `return_id` (945), y las 11 más viejas sólo
+   lo tienen en el texto del origen — se miran las dos cosas. */
+function esDevolucion(p){
+  return !!p.return_id || /^Devoluci[oó]n de/i.test(String(p.origin||""));
+}
+
+/* Un pedido puede entrar en dos veces: si falta mercadería, Odoo deja el resto
+   pendiente en una recepción nueva (`backorder_id`). Todas comparten el mismo
+   documento de origen, así que agrupando por ahí se puede decir "1 de 2".
+   Sin esto aparecen dos WH/IN distintos de la misma orden y no se entiende. */
+function parteDe(p){ return p.parte || ""; }
 
 function filaRecepcion(p, hecha){
+  const dev = esDevolucion(p);
   const cuando = hecha ? String(p.date_done||"").slice(0,10) : String(p.scheduled_date||"").slice(0,10);
-  return `<div class="ritem" onclick="abrirRecepcion(${p.id})">
+  const quien = p.partner_id ? p.partner_id[1] : (dev ? "cliente sin identificar" : "sin proveedor");
+  const parte = parteDe(p);
+  const varias = parte && !/^1\/1$/.test(parte);
+  /* La devolución trae el remito que se le había mandado al cliente; la compra,
+     la orden de compra. En los dos casos es LA referencia para encontrarla. */
+  const ref = dev ? String(p.origin||"").replace(/^Devoluci[oó]n de\s*/i,"") : (p.origin||"");
+  return `<div class="ritem ${hecha?"hecha":"porrecibir"}${dev?" dev":""}" onclick="abrirRecepcion(${p.id})">
       <div class="mid">
-        <div class="nm">${esc(p.name)}</div>
+        <div class="prov">${esc(quien)}</div>
         <div class="sub">
-          <span>${esc(p.partner_id?p.partner_id[1]:"sin proveedor")}</span>
-          ${p.origin?`<span class="cod">${esc(p.origin)}</span>`:""}
-          <span>${hecha?"recibida el ":""}${esc(cuando)}</span>
+          <span class="cod">${esc(p.name)}</span>
+          ${ref?`<span class="cod">${esc(ref)}</span>`:""}
+          ${parte?`<span class="parte${varias?" varias":""}" title="${varias
+            ? "Este pedido entró en varias veces: ésta es la parte "+parte
+            : "El pedido entró completo en una sola recepción"}">${parte}</span>`:""}
           <span>${(p.move_ids||[]).length} producto(s)</span>
+          <span>${hecha?"recibida el ":""}${esc(cuando)}</span>
         </div>
       </div>
+      <span class="tipo ${dev?"dev":"compra"}">${dev?"devolución":"compra"}</span>
       ${hecha ? `<span class="pill stock">recibida</span><span class="go">Ver →</span>`
               : `<span class="pill ${p.state==="assigned"?"list":"esp"}">${p.state==="assigned"?"lista para recibir":esc(p.state)}</span>
                  <span class="go">Recibir →</span>`}
     </div>`;
 }
 
+/* Marca cada fila con su "parte i/n". Es UNA consulta para toda la página:
+   se piden todas las recepciones que comparten documento de origen con alguna
+   de las filas que se están mostrando, y se cuentan en orden de creación. */
+async function marcarPartes(filas){
+  const orgs = [...new Set((filas||[]).map(f=>f.origin).filter(Boolean))];
+  if(!orgs.length) return;
+  try{
+    const todos = await rpc("stock.picking","search_read",
+      [[["picking_type_id","=",TIPO_RECIBIDOS],["origin","in",orgs]], ["id","origin"]],
+      {order:"id", limit:1000});
+    const por = {};
+    (todos||[]).forEach(p=>{ (por[p.origin] = por[p.origin] || []).push(p.id); });
+    filas.forEach(f=>{
+      const g = por[f.origin];
+      if(g && g.length) f.parte = (g.indexOf(f.id)+1) + "/" + g.length;
+    });
+  }catch(e){ /* sin esto la lista se ve igual, sólo sin el "1 de 2" */ }
+}
+
 function vistaLista(){
   if(ST.cargando) return `<div class="cargando"><div class="spinner"></div>Buscando recepciones…</div>`;
+  const hechas = ST.tab === "hechas";
+  const filas  = hechas ? ST.hechas : ST.pend;
+
   const tabs = `<div class="tabs">
-      <button class="tab ${ST.tab==="pend"?"on":""}" onclick="verTab('pend')">
+      <button class="tab ${hechas?"":"on"}" onclick="verTab('pend')">
         Por recibir <span class="n">${ST.pend.length}</span></button>
-      <button class="tab ${ST.tab==="hechas"?"on":""}" onclick="verTab('hechas')">
+      <button class="tab ${hechas?"on":""}" onclick="verTab('hechas')">
         Ya recibidas <span class="n">${ST.nHechas==null?"…":ST.nHechas.toLocaleString("es-AR")}</span></button>
     </div>`;
 
-  if(ST.tab === "hechas"){
-    const cuerpo = ST.buscando && !ST.hechas.length
-      ? `<div class="cargando"><div class="spinner"></div>Buscando…</div>`
-      : (ST.hechas.length
-          ? `<div class="rlist">${ST.hechas.map(p=>filaRecepcion(p,true)).join("")}</div>
-             <div class="masbtn">${ST.hayMas
-               ? `<button class="btn sec" onclick="cargarHechas(true)" ${ST.buscando?"disabled":""}>
-                    ${ST.buscando?"Buscando…":"Ver 50 más"}</button>`
-               : `<span class="quieto">Eso es todo lo que hay para esta búsqueda.</span>`}</div>`
-          : `<div class="vacio">No encontré ninguna recepción con «${esc(ST.q)}».<br>
-               Probá con el número (WH/IN/…), el proveedor, la orden de compra o el nombre de un producto.</div>`);
-    return `<div class="intro">
-        Todo lo que <b>ya entró al depósito</b>, desde la primera recepción (diciembre de 2024).
-        Se abre igual que una pendiente, pero de <b>sólo lectura</b>: se ve lo que entró de cada producto,
-        con su lote y su vencimiento. Y aunque la recepción esté cerrada, desde adentro se le puede
-        seguir cargando al producto la <b>foto</b>, el <b>código de barras</b> o lo que le falte.
+  /* Un solo buscador para las dos pestañas. La referencia con la que se busca
+     en el depósito es el PROVEEDOR — por eso va primero en el texto de ayuda y
+     es lo más grande de cada fila. */
+  const buscador = `<div class="busca">
+      <div class="buscarow">
+        <input id="qh" type="search" autocomplete="off" value="${esc(ST.q)}"
+               placeholder="Proveedor, número de recepción, orden de compra… o un producto"
+               oninput="buscarDeb(this.value)">
+        ${ST.q?`<button class="btn sec" onclick="limpiarBusca()">Limpiar</button>`:""}
       </div>
-      ${tabs}
-      <div class="busca">
-        <div class="buscarow">
-          <input id="qh" type="search" autocomplete="off" value="${esc(ST.q)}"
-                 placeholder="Número, proveedor, orden de compra… o el nombre de un producto"
-                 oninput="buscarHechasDeb(this.value)">
-          ${ST.q?`<button class="btn sec" onclick="ST.q='';cargarHechas()">Limpiar</button>`:""}
-        </div>
-        <div class="buscahint">Buscar por <b>producto</b> responde la pregunta del depósito: cuándo entró y con qué lote.</div>
-      </div>
-      ${cuerpo}`;
+      <div class="buscahint">También busca por <b>producto</b>: escribí el nombre y te muestra en qué
+        recepciones entró.${ST.buscando?" <b>Buscando…</b>":""}</div>
+    </div>`;
+
+  /* Las devoluciones de clientes se separan de las compras. Son un tercio de
+     todo (956 de 2.953) y no tienen nada que ver: una trae mercadería nueva de
+     un proveedor, la otra vuelve de una farmacia. Mezcladas, la lista es un
+     revoltijo; separadas, se encuentra. */
+  const compras = filas.filter(p=>!esDevolucion(p));
+  const devol   = filas.filter(esDevolucion);
+  const grupo = (tit, arr, ico) => arr.length ? `<div class="seccion">
+      <div class="sechead">${ico} ${tit} <span class="cnt">${arr.length}</span></div>
+      <div class="rlist">${arr.map(p=>filaRecepcion(p,hechas)).join("")}</div>
+    </div>` : "";
+
+  let cuerpo;
+  if(ST.buscando && !filas.length){
+    cuerpo = `<div class="cargando"><div class="spinner"></div>Buscando…</div>`;
+  }else if(!filas.length){
+    cuerpo = ST.q
+      ? `<div class="vacio">No encontré ninguna recepción con «${esc(ST.q)}».<br>
+           Probá con el proveedor, el número (WH/IN/…), la orden de compra o el nombre de un producto.</div>`
+      : (hechas ? `<div class="vacio">No hay recepciones confirmadas.</div>`
+                : `<div class="vacio">No hay recepciones pendientes. Cuando Compras confirme una orden, aparece acá.</div>`);
+  }else{
+    cuerpo = grupo(hechas?"Compras recibidas":"Compras a proveedores", compras, "🛒") +
+             grupo(hechas?"Devoluciones recibidas":"Devoluciones de clientes", devol, "↩️") +
+             (hechas ? `<div class="masbtn">${ST.hayMas
+                 ? `<button class="btn sec" onclick="cargarHechas(true)" ${ST.buscando?"disabled":""}>
+                      ${ST.buscando?"Buscando…":"Ver 50 más"}</button>`
+                 : `<span class="quieto">Eso es todo lo que hay para esta búsqueda.</span>`}</div>` : "");
   }
 
-  const n = ST.pend.length;
-  return `<div class="intro">
-      Las órdenes de compra confirmadas que <b>todavía no entraron al depósito</b>. Abrí una, escaneá las cajas,
-      cargá <b>lote y vencimiento</b>, y confirmala: recién ahí suma stock en Odoo.
-    </div>
-    ${tabs}
-    <div class="kpis">
-      <div class="kpi" title="Recepciones confirmadas por Compras que todavía no se recibieron"><div class="n">${n}</div><div class="l">Por recibir</div></div>
-      <div class="kpi" title="Productos distintos esperando entrar"><div class="n">${ST.pend.reduce((a,p)=>a+(p.move_ids||[]).length,0)}</div><div class="l">Productos</div></div>
-    </div>
-    <div style="margin-bottom:12px"><button class="btn sec" onclick="cargarPendientes()">🔄 Actualizar</button></div>
-    ${n ? `<div class="rlist">${ST.pend.map(p=>filaRecepcion(p,false)).join("")}</div>`
-        : `<div class="vacio">No hay recepciones pendientes. Cuando Compras confirme una orden, aparece acá.</div>`}`;
+  const intro = hechas
+    ? `<div class="intro">Todo lo que <b>ya entró al depósito</b>, desde la primera recepción (diciembre de 2024).
+        Se abre de <b>sólo lectura</b>: se ve lo que entró de cada producto con su lote y su vencimiento.
+        Aun así, desde adentro se le puede seguir cargando al producto la <b>foto</b>, el <b>código de barras</b>
+        o lo que le falte.</div>`
+    : `<div class="intro">Las órdenes de compra confirmadas que <b>todavía no entraron al depósito</b>.
+        Abrí una, escaneá las cajas, cargá <b>lote y vencimiento</b>, y confirmala: recién ahí suma stock en Odoo.</div>`;
+
+  const kpis = hechas ? "" : `<div class="kpis">
+      <div class="kpi" title="Recepciones confirmadas por Compras que todavía no se recibieron"><div class="n">${ST.pend.length}</div><div class="l">Por recibir</div></div>
+      <div class="kpi" title="Compras a proveedores esperando entrar"><div class="n">${compras.length}</div><div class="l">Compras</div></div>
+      <div class="kpi" title="Mercadería que vuelve de un cliente"><div class="n">${devol.length}</div><div class="l">Devoluciones</div></div>
+      <div class="kpi" title="Productos distintos esperando entrar"><div class="n">${filas.reduce((a,p)=>a+(p.move_ids||[]).length,0)}</div><div class="l">Productos</div></div>
+    </div>`;
+
+  return intro + tabs + buscador + kpis +
+    (hechas ? "" : `<div style="margin-bottom:12px"><button class="btn sec" onclick="cargarPendientes()">🔄 Actualizar</button></div>`) +
+    cuerpo;
 }
 
 /* ===================== ABRIR UNA RECEPCIÓN ===================== */
@@ -767,7 +849,7 @@ function bloqueExtra(){
         <span class="quieto">${s.product_code?"cód. "+esc(s.product_code)+" · ":""}${
           s.price?EYG.money(s.price):"sin precio"}${s.min_qty?" · mín "+s.min_qty:""}</span></div>`).join("")
     : `<div class="nada">Sin proveedores cargados. Se agregan desde la Ficha de producto.</div>`;
-  return `<div class="sub">
+  return `<div class="subtabla">
       <div class="sh">Embalaje — la caja real (mínimo de compra)</div>
       <div class="row">
         <div class="fld auto" style="flex:0 0 150px"><label title="Cómo se llama el bulto que manda el proveedor: caja, pack, bulto…">Nombre <span class="q">?</span></label>
@@ -777,7 +859,7 @@ function bloqueExtra(){
         <button class="btn mini" onclick="guardarEmb()">Guardar</button>
       </div>
     </div>
-    <div class="sub">
+    <div class="subtabla">
       <div class="sh">Proveedores <span class="quieto" style="margin-left:auto">se editan en la Ficha de producto</span></div>
       ${prov}
     </div>`;
