@@ -190,9 +190,33 @@ window.EYGP = (function(){
      ======================================================================== */
   const CAT = {};
   let _catProm = null;
+  /* Son OCHO consultas a Odoo, y cada llamada al conector cuesta ~1,3 s de piso
+     traiga 1 KB o 100 KB: sin caché, abrir un producto arrancaba con 2,6 s de
+     cola que además demoraban a las demás consultas (el núcleo deja 4 en vuelo).
+     Estas listas cambian de vez en cuando, no cada minuto: se guardan 4 horas
+     en la cache compartida (Supabase), así que el primero del turno las paga y
+     el resto del depósito las lee de ahí.
+     Si alguien acaba de crear una categoría y no la ve: abrir la pantalla con
+     ?nocache=1 al final de la dirección. */
+  const TTL_CAT = 4*3600;
+  function sinCache(){
+    try{ return /[?&]nocache/.test(location.search); }catch(e){ return false; }
+  }
   function catalogos(){
     if(_catProm) return _catProm;
     _catProm = (async function(){
+      if(!sinCache()){
+        try{
+          const guardado = await EYG.cacheOdoo("producto_catalogos", TTL_CAT, leerCatalogos);
+          if(guardado && guardado.categ){ Object.assign(CAT, guardado); return CAT; }
+        }catch(e){ /* si la cache falla se va a Odoo, como siempre */ }
+      }
+      Object.assign(CAT, await leerCatalogos());
+      return CAT;
+    })();
+    return _catProm;
+  }
+  async function leerCatalogos(){
       const [categ,uom,taxs,taxc,pub,tag,user,acc] = await Promise.all([
         rpc("product.category","search_read",[[],["id","complete_name"]],{order:"complete_name"}),
         rpc("uom.uom","search_read",[[],["id","name"]],{order:"name"}),
@@ -209,17 +233,18 @@ window.EYGP = (function(){
         rpc("res.users","search_read",[[["active","=",true],["share","=",false]],["id","name"]],{order:"name"}),
         rpc("account.account","search_read",[[],["id","code","name"]],{order:"code",limit:600}),
       ]);
-      CAT.categ = categ.map(r=>[r.id, r.complete_name]);
-      CAT.uom   = uom.map(r=>[r.id, r.name]);
-      CAT.taxs  = taxs.map(r=>[r.id, r.name]);
-      CAT.taxc  = taxc.map(r=>[r.id, r.name]);
-      CAT.pub   = pub.map(r=>[r.id, r.display_name]);
-      CAT.tag   = tag.map(r=>[r.id, r.name]);
-      CAT.user  = user.map(r=>[r.id, r.name]);
-      CAT.acc   = acc.map(r=>[r.id, r.code+" "+r.name]);
-      return CAT;
-    })();
-    return _catProm;
+      /* Se devuelve un objeto NUEVO (no CAT) porque esto es lo que se guarda en
+         la cache: tiene que ser JSON puro, sin estado del navegador. */
+      return {
+        categ: categ.map(r=>[r.id, r.complete_name]),
+        uom:   uom.map(r=>[r.id, r.name]),
+        taxs:  taxs.map(r=>[r.id, r.name]),
+        taxc:  taxc.map(r=>[r.id, r.name]),
+        pub:   pub.map(r=>[r.id, r.display_name]),
+        tag:   tag.map(r=>[r.id, r.name]),
+        user:  user.map(r=>[r.id, r.name]),
+        acc:   acc.map(r=>[r.id, r.code+" "+r.name]),
+      };
   }
   function nombreDe(cat, id){
     const l = (CAT[cat]||[]).find(x=>x[0]===id);
@@ -460,7 +485,13 @@ window.EYGP = (function(){
         break;
       }
       case "m2o": {
-        const ops = [["","—"]].concat(CAT[def.cat]||[]);
+        /* Si los desplegables todavía no llegaron (se piden sin bloquear la
+           pantalla), la lista está vacía y el campo mostraría «—» aunque el
+           producto SÍ tenga categoría: parecería que le falta un dato que
+           tiene. Mientras tanto se ofrece el valor que ya vino con la ficha. */
+        let lista = CAT[def.cat] || [];
+        if(!lista.length && Array.isArray(t[def.f]) && t[def.f][0]) lista = [[t[def.f][0], t[def.f][1]]];
+        const ops = [["","—"]].concat(lista);
         ctrl = `<select class="sel${falta?" falta":""}" id="${id}" ${onch}>${ops.map(o=>
           `<option value="${o[0]}" ${String(o[0])===String(v)?"selected":""}>${EYG.esc(o[1])}</option>`).join("")}</select>`;
         break;
