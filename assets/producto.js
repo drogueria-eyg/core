@@ -386,6 +386,102 @@ window.EYGP = (function(){
   }
 
   /* ========================================================================
+     4bis. DIBUJAR UN CAMPO — el formulario, una sola vez
+     ------------------------------------------------------------------------
+     Esto vivía en inventario/producto.html. Se movió acá cuando el Ingreso de
+     mercadería tuvo que mostrar la ficha completa del producto que se está
+     recibiendo: son las MISMAS reglas (qué control le toca a cada tipo, qué se
+     considera vacío, cómo se lee lo que quedó en el control). Copiarlas era
+     garantizar que en un tiempo un módulo pida categoría y el otro no.
+
+     `onch` es el nombre de la función del módulo que guarda: la Ficha usa
+     `guardarCampo`, el alta usa `altaSet`, el Ingreso usa `guardarCampoIng`.
+     `pref` permite tener dos formularios en pantalla sin que choquen los id.
+     ======================================================================== */
+  function valorDe(t, def){
+    const v = t[def.f];
+    if(def.tipo === "m2o")  return (v && Array.isArray(v)) ? v[0] : "";
+    if(def.tipo === "m2m")  return v || [];
+    if(def.tipo === "bool") return !!v;
+    if(v === false || v == null) return "";
+    return v;
+  }
+  function vacioCampo(t, def){
+    const v = valorDe(t, def);
+    if(def.tipo === "bool") return false;              /* un "no" no es un faltante */
+    if(def.tipo === "m2m")  return !v.length;
+    return v === "" || v === 0;
+  }
+  function leerControl(def, el){
+    switch(def.tipo){
+      case "bool": return el.checked;
+      case "m2m":  return [...el.selectedOptions].map(o=>parseInt(o.value,10));
+      default:     return el.value;
+    }
+  }
+
+  /* Los que el depósito necesita SÍ O SÍ para que el producto funcione río
+     abajo: sin categoría no hay precio, sin categoría web no aparece en el
+     portal, sin peso no se cotiza el envío, sin código no se escanea. Se
+     cuentan aparte de "todos los campos vacíos" porque hay campos que están
+     vacíos siempre (descripción de venta, volumen) y un contador que marca 12
+     faltantes en todos los productos no lo mira nadie. */
+  const CLAVE = ["barcode","categ_id","public_categ_ids","x_laboratorio","x_unidad",
+                 "weight","standard_price"];
+  function faltanClave(t){
+    return CLAVE.map(campoDef).filter(d => d && vacioCampo(t, d));
+  }
+
+  function campoHTML(def, t, opts){
+    opts = opts || {};
+    const v = valorDe(t, def);
+    const id = (opts.pref || "c_") + def.f;
+    const ancho = def.ancho ? " " + def.ancho : "";
+    const falta = opts.marcarVacios && def.tipo !== "ro" && vacioCampo(t, def);
+    const lbl = `<label for="${id}" title="${EYG.esc(def.ayuda||"")}">${EYG.esc(def.lbl)} <span class="q">?</span></label>`;
+    const onch = `onchange="${opts.onch || "guardarCampo"}('${def.f}',this)"`;
+    let ctrl = "";
+
+    switch(def.tipo){
+      case "ro":
+        ctrl = `<div class="ro${v===""?" vacio2":""}">${v===""?"—":EYG.esc(Array.isArray(t[def.f])?t[def.f][1]:v)}${
+          def.f==="die_code" && t.is_die_canceled ? ' <span class="pill sin" style="margin-left:7px">anulado</span>' : ""}</div>`;
+        break;
+      case "bool":
+        ctrl = `<label class="chk"><input type="checkbox" id="${id}" ${v?"checked":""} ${onch}> ${v?"Sí":"No"}</label>`;
+        break;
+      case "text":
+        ctrl = `<textarea class="ta${falta?" falta":""}" id="${id}" ${onch}>${EYG.esc(v)}</textarea>`;
+        break;
+      case "sel": {
+        const ops = [["","—"]].concat(def.opts);
+        ctrl = `<select class="sel${falta?" falta":""}" id="${id}" ${onch}>${ops.map(o=>
+          `<option value="${EYG.esc(o[0])}" ${String(o[0])===String(v)?"selected":""}>${EYG.esc(o[1])}</option>`).join("")}</select>`;
+        break;
+      }
+      case "m2o": {
+        const ops = [["","—"]].concat(CAT[def.cat]||[]);
+        ctrl = `<select class="sel${falta?" falta":""}" id="${id}" ${onch}>${ops.map(o=>
+          `<option value="${o[0]}" ${String(o[0])===String(v)?"selected":""}>${EYG.esc(o[1])}</option>`).join("")}</select>`;
+        break;
+      }
+      case "m2m": {
+        const sel = new Set((v||[]).map(Number));
+        ctrl = `<select class="sel${falta?" falta":""}" multiple id="${id}" ${onch}>${(CAT[def.cat]||[]).map(o=>
+          `<option value="${o[0]}" ${sel.has(o[0])?"selected":""}>${EYG.esc(o[1])}</option>`).join("")}</select>`;
+        break;
+      }
+      case "num": case "money":
+        ctrl = `<input class="in${falta?" falta":""}" type="number" step="any" id="${id}" value="${v===""?"":v}" ${onch}>`;
+        break;
+      default:
+        ctrl = `<input class="in${falta?" falta":""}" type="text" id="${id}" value="${EYG.esc(v)}" ${onch}
+                  ${def.escanea?'inputmode="numeric" placeholder="Escaneá o tipeá el código"':""}>`;
+    }
+    return `<div class="fld${ancho}">${lbl}${ctrl}</div>`;
+  }
+
+  /* ========================================================================
      5. ESCRIBIR
      ======================================================================== */
   function aOdoo(def, v){
@@ -566,8 +662,9 @@ window.EYGP = (function(){
   }
 
   return {
-    BLOQUES, CAMPOS_LEER, UNIDADES, CAT, CAMPO_LBL, FUENTE_LBL, ODOO_BASE,
+    BLOQUES, CAMPOS_LEER, UNIDADES, CAT, CAMPO_LBL, FUENTE_LBL, ODOO_BASE, CLAVE,
     catalogos, nombreDe, campoDef, esCodigo,
+    valorDe, vacioCampo, leerControl, campoHTML, faltanClave,
     buscarCatalogo, porCodigo, buscarRegistro, desdeRegistro,
     leer, guardar, crear, aOdoo,
     guardarEmbalaje, buscarProveedor, guardarProveedor, agregarProveedor, quitarProveedor,

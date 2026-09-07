@@ -8,14 +8,14 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
-<link rel="stylesheet" href="../assets/producto.css?v=1">
+<link rel="stylesheet" href="../assets/producto.css?v=2">
 </head>
 <body>
 <div id="cont"><div class="cargando"><div class="spinner"></div>Cargando…</div></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js?v=60"></script>
-<script src="../assets/producto.js?v=1"></script>
+<script src="../assets/producto.js?v=2"></script>
 <script>
 /* ===== Ingreso de mercadería =====
    Lo que hasta ahora se hacía en Odoo, hecho para el depósito: escanear la caja,
@@ -26,6 +26,11 @@
    donde el catálogo se completa solo, con el trabajo que ya se hace — hoy
    faltan 478 códigos de barras de los 711 productos con stock.
 
+   Lo mismo con la FOTO: el único momento en que alguien tiene la caja en la
+   mano es cuando la recibe. Si el producto no tiene foto, se saca acá y queda
+   en su ficha de Odoo (image_1920) para siempre — la misma que usan la web,
+   Cargar venta y el asistente de WhatsApp.
+
    El buscador y la ficha de producto NO están duplicados acá: salen de
    assets/producto.js, la misma pieza que usa la Ficha de producto. */
 
@@ -34,8 +39,11 @@ let PERFIL = null;
 /* `editando` = las líneas YA completas que se dejaron abiertas a mano. Una línea
    completa se pliega sola en un renglón verde; si se toca "Editar" vuelve a
    abrirse y queda acá para que el siguiente repintado no la cierre de nuevo. */
+/* `linea` = la pantalla de UN producto (la que abre el escáner). `abiertos` =
+   qué bloques de la ficha están desplegados ahí adentro. */
 const ST = { vista:"lista", pend:[], rec:null, cargando:true,
-             foco:null, desconocido:null, guardando:false, editando:new Set() };
+             foco:null, desconocido:null, guardando:false, editando:new Set(),
+             linea:null, abiertos:new Set(), extra:null };
 
 const esc = s => EYG.esc(s);
 const rpc = (m,me,a,k)=>EYG.rpc(m,me,a,Object.assign({context:{lang:"es_AR"}},k||{}));
@@ -47,11 +55,28 @@ function toast(msg, mal){
   clearTimeout(tToast); tToast = setTimeout(()=>t.classList.remove("show"), mal?4500:2400);
 }
 function pintar(){
-  document.getElementById("cont").innerHTML = ST.vista==="recepcion" ? vistaRecepcion() : vistaLista();
+  const c = document.getElementById("cont");
+  if(ST.vista === "producto")      c.innerHTML = vistaProducto();
+  else if(ST.vista === "recepcion") c.innerHTML = vistaRecepcion();
+  else                              c.innerHTML = vistaLista();
   if(ST.vista==="recepcion"){
     const i = document.getElementById("scan"); if(i) i.focus();
     if(ST.foco){ const n = document.getElementById("ln_"+ST.foco); if(n) n.scrollIntoView({block:"center",behavior:"smooth"}); }
   }
+}
+/* Al ENTRAR a la pantalla de un producto el cursor va directo a lo que hay que
+   cargar: el lote si lo pide, si no la cantidad. Es a lo que se viene.
+   Ojo: esto se llama sólo al entrar, NO en cada repintado. Si estuviera dentro
+   de pintar(), al tocar "+ Otro lote" el cursor se volvería solo al primer
+   campo y el lote nuevo quedaría sin escribir.
+   El campo de escaneo queda arriba para saltar a otro producto sin volver. */
+function focoDeCarga(){
+  const m = lineaActual(); if(!m) return;
+  setTimeout(function(){
+    const i = document.getElementById(m.pideLote ? "lote_"+m.id+"_0" : "cant_"+m.id+"_0");
+    if(i && !i.value) { i.focus(); if(i.select) i.select(); }
+    else { const s = document.getElementById("scan"); if(s) s.focus(); }
+  }, 90);
 }
 
 /* ============ FECHAS ============
@@ -116,23 +141,41 @@ async function abrirRecepcion(pid){
     const mls = await rpc("stock.move.line","search_read",
       [[["picking_id","=",pid]],["id","product_id","lot_name","lot_id","quantity","expiration_date","move_id"]]);
 
-    /* El seguimiento y el vencimiento son del PRODUCTO: definen si esta línea
-       pide número de lote y fecha. Es el campo que estaba mal en el camisolín. */
+    /* La FICHA ENTERA de cada producto, de una sola vez.
+       Antes se leían cuatro campos sueltos de product.product. Ahora se lee el
+       product.template completo (los mismos CAMPOS_LEER de la Ficha) porque la
+       pantalla de carga muestra todo el producto y avisa qué datos le faltan
+       (categoría, categoría web, laboratorio, peso…). Son 8-30 productos por
+       recepción: UNA consulta, no una por línea.
+       `image_128` va en la misma lectura: son los mismos bytes que el navegador
+       bajaba igual para la miniatura, y de paso dice quién no tiene foto.
+       El seguimiento y el vencimiento son del producto: definen si la línea
+       pide lote y fecha. Es el campo que estaba mal en el camisolín. */
     const pids = [...new Set(moves.map(m=>m.product_id[0]))];
     const prods = pids.length ? await rpc("product.product","read",
-      [pids,["id","product_tmpl_id","tracking","use_expiration_date","barcode","default_code"]]) : [];
+      [pids,["id","product_tmpl_id"]]) : [];
     const porProd = {}; prods.forEach(p=>porProd[p.id]=p);
+    const tids = [...new Set(prods.map(p=>p.product_tmpl_id[0]))];
+    const [tpls] = await Promise.all([
+      tids.length ? rpc("product.template","read",
+        [tids, EYGP.CAMPOS_LEER.concat(["image_128"])]) : Promise.resolve([]),
+      EYGP.catalogos(),        /* los desplegables de la ficha, una sola vez */
+    ]);
+    const porTmpl = {}; tpls.forEach(t=>porTmpl[t.id]=t);
 
     ST.rec = {
       pk,
       moves: moves.map(m=>{
-        const p = porProd[m.product_id[0]] || {};
+        const pp = porProd[m.product_id[0]] || {};
+        const tid = pp.product_tmpl_id ? pp.product_tmpl_id[0] : null;
+        const p = porTmpl[tid] || {};
         const mias = mls.filter(l=>l.move_id && l.move_id[0]===m.id);
         const pideLote = p.tracking==="lot" || p.tracking==="serial";
         return {
           id:m.id, prodId:m.product_id[0], nombre:m.product_id[1],
-          tmplId: p.product_tmpl_id ? p.product_tmpl_id[0] : null,
+          tmplId: tid, t: p,                    /* t = la ficha completa del producto */
           barcode: p.barcode || "", codigo: p.default_code || "",
+          foto: p.image_128 || "",              /* "" = este producto no tiene foto */
           demanda: m.product_uom_qty || 0, uomId: m.product_uom ? m.product_uom[0] : 1,
           locId: m.location_id?m.location_id[0]:false, locDest: m.location_dest_id?m.location_dest_id[0]:false,
           tracking: p.tracking||"none", pideLote, vence: !!p.use_expiration_date,
@@ -174,11 +217,15 @@ function scanKey(ev){
 
 async function resolverCodigo(cod){
   const r = ST.rec;
-  /* 1) ¿es un producto de ESTA recepción? */
+  /* 1) ¿es un producto de ESTA recepción?
+     Se abre DERECHO su pantalla de carga. Es lo que pidió el depósito: con una
+     orden de 10 productos, buscar la línea a mano entre diez iguales es lo que
+     hace lento el trabajo. Se dispara la pistola y aparece ese producto, con
+     el cursor en el lote. */
   const linea = r.moves.find(m => (m.barcode && m.barcode===cod) || (m.codigo && m.codigo===cod));
   if(linea){
-    ST.foco = linea.id; ST.desconocido = null; pintar();
-    setTimeout(()=>{ const i=document.getElementById("lote_"+linea.id+"_0"); if(i) i.focus(); }, 320);
+    ST.desconocido = null;
+    abrirProducto(linea.id);
     toast("✓ "+linea.nombre.slice(0,44));
     return;
   }
@@ -225,14 +272,92 @@ async function pegarCodigo(moveId){
   try{
     await rpc("product.template","write",[[m.tmplId],{barcode:cod}]);
     m.barcode = cod;
-    ST.desconocido = null; ST.foco = m.id;
-    pintar();
+    if(m.t) m.t.barcode = cod;
+    ST.desconocido = null;
+    abrirProducto(m.id);                    /* igual que si lo hubiera reconocido */
     toast("Código guardado en el producto ✓");
-    setTimeout(()=>{ const i=document.getElementById("lote_"+m.id+"_0"); if(i) i.focus(); }, 320);
   }catch(e){
     /* El código de barras es único en Odoo: si ya lo tiene otro producto, avisa. */
     toast("No se pudo guardar: "+e.message, true);
   }
+}
+
+/* ===================== LA FOTO =====================
+   El único momento en que alguien tiene el producto en la mano es cuando lo
+   recibe. Si no tiene foto, se saca acá: se achica en el navegador y va a
+   `image_1920` del product.template — el mismo campo y la misma función que
+   usa la Ficha de producto (EYGP.subirImagen). No se inventa otro lugar.
+
+   El <input type=file> vive colgado del BODY y no del HTML de la pantalla:
+   si estuviera adentro de #cont, un repintado mientras la cámara está abierta
+   se lleva el elemento puesto y la foto elegida nunca llega. */
+let INPFOTO = null, FOTO_MOVE = null;
+
+function pedirFoto(moveId){
+  const m = ST.rec && ST.rec.moves.find(x=>x.id===moveId); if(!m) return;
+  if(!m.tmplId) return toast("No encuentro la ficha de este producto en Odoo.", true);
+  if(m.foto && !confirm(`«${m.nombre}»\n\nYa tiene foto. ¿Sacar una nueva y reemplazarla?`)) return;
+  FOTO_MOVE = moveId;
+  if(!INPFOTO){
+    INPFOTO = document.createElement("input");
+    INPFOTO.type = "file"; INPFOTO.accept = "image/*";
+    /* En la tablet del depósito abre la cámara de atrás directo, que es el caso
+       real. En una PC no se pone `capture` para que se pueda elegir el archivo
+       que mandó el laboratorio. */
+    if(window.matchMedia && window.matchMedia("(pointer:coarse)").matches) INPFOTO.capture = "environment";
+    INPFOTO.style.display = "none";
+    INPFOTO.addEventListener("change", function(){
+      const f = this.files && this.files[0];
+      this.value = "";               /* sin esto, elegir DOS VECES la misma foto no dispara nada */
+      if(f) subirFoto(FOTO_MOVE, f);
+    });
+    document.body.appendChild(INPFOTO);
+  }
+  INPFOTO.click();
+}
+
+async function subirFoto(moveId, file){
+  const m = ST.rec && ST.rec.moves.find(x=>x.id===moveId); if(!m) return;
+  if(!/^image\//.test(file.type||"")) return toast("Eso no es una imagen.", true);
+  toast("Subiendo la foto…");
+  try{
+    const b64 = await EYGP.subirImagen(m.tmplId, file);   /* achica a 1200px y escribe image_1920 */
+    m.foto = b64;
+    /* Se repinta SÓLO la cabecera de esa línea — la miniatura y el cartelito de
+       "sacar la foto" están las dos ahí. Repintar la pantalla entera tiraría el
+       campo que se esté cargando en otra línea (la misma trampa que setPart). */
+    const cab = document.getElementById("cab_"+m.id);
+    const pos = ST.rec.moves.findIndex(x=>x.id===m.id) + 1;
+    if(cab) cab.outerHTML = cabeceraLinea(m, pos);
+    pintarAvisoFotos();
+    toast("Foto guardada en el producto ✓");
+  }catch(e){ toast("No se pudo guardar la foto: "+e.message, true); }
+}
+
+/* La miniatura ES el botón: se toca la caja gris y se saca la foto. Cuando no
+   hay foto queda con borde punteado y la cámara marcada, para que se vea que
+   falta algo y que se puede hacer algo al respecto desde acá. */
+function fotoHTML(m, tam){
+  const dentro = m.foto
+    ? `<img src="data:image/png;base64,${m.foto}" alt="">`
+    : `<span class="ph">${tam==="grande"?"📦<br><b>Sacar la foto</b>":"📦"}</span>`;
+  return `<button class="thfoto${tam==="grande"?" grande":""}${m.foto?"":" sinfoto"}"
+      id="foto_${m.id}" onclick="event.stopPropagation();pedirFoto(${m.id})"
+      title="${m.foto?"Cambiar la foto de este producto":"Este producto no tiene foto: sacale una con la caja en la mano"}">
+      ${dentro}<span class="cam">📷</span></button>`;
+}
+
+function sinFoto(){ return ST.rec ? ST.rec.moves.filter(m=>!m.foto).length : 0; }
+function avisoFotos(){
+  const n = sinFoto();
+  if(!n) return "";
+  return `<div class="aviso">📷 <b>${n}</b> producto(s) de esta recepción <b>no tienen foto</b>.
+    Tocá el recuadro gris de la izquierda y sacale una: queda en la ficha del producto,
+    y con eso la ven la web, Cargar venta y el asistente de WhatsApp.</div>`;
+}
+function pintarAvisoFotos(){
+  const c = document.getElementById("avisofotos");
+  if(c) c.innerHTML = avisoFotos();
 }
 
 /* ===================== LAS LÍNEAS ===================== */
@@ -285,17 +410,20 @@ function quitarPart(moveId, i){
   pintar();
 }
 
+/* La cabecera entera es el acceso a la pantalla del producto: en una tablet no
+   se puede pedir puntería para un enlace de 12 píxeles. */
 function cabeceraLinea(m, pos){
   const rec = recibidoDe(m);
   const clase = rec===0 ? "" : (Math.abs(rec-m.demanda)<0.001 ? "ok" : "dif");
-  return `<div class="lnh" id="cab_${m.id}">
+  const faltan = faltantesDe(m).length;
+  return `<div class="lnh" id="cab_${m.id}" onclick="abrirProducto(${m.id})" title="Abrir este producto">
     <div class="npos">${pos}</div>
-    <img class="th" loading="lazy" src="${m.tmplId?EYGP.urlImagen(m.tmplId,128):""}" alt=""
-         onerror="this.outerHTML='<div class=&quot;th ph&quot;>📦</div>'">
+    ${fotoHTML(m)}
     <div class="mid">
       <div class="nm">${esc(m.nombre)}</div>
       <div class="sub">
         ${m.barcode?`<span class="cod">⌗ ${esc(m.barcode)}</span>`:`<span class="pill sin">sin código de barras</span>`}
+        ${faltan?`<span class="pill sin">le faltan ${faltan} dato(s)</span>`:""}
         ${m.pideLote?`<span>${m.tracking==="serial"?"por número de serie":"por lote"}</span>`:`<span>sin seguimiento</span>`}
         ${m.vence?`<span>con vencimiento</span>`:""}
       </div>
@@ -304,6 +432,7 @@ function cabeceraLinea(m, pos){
       <div class="g">${rec.toLocaleString("es-AR")} / ${m.demanda.toLocaleString("es-AR")}</div>
       <div class="p">recibido / pedido</div>
     </div>
+    <span class="go">Abrir →</span>
   </div>`;
 }
 
@@ -320,6 +449,308 @@ function resumenLinea(m){
 function estadoLinea(m){
   if(completa(m)) return "lista";
   return recibidoDe(m) > 0 ? "pend" : "";
+}
+
+/* ===================== LA PANTALLA DE UN PRODUCTO =====================
+   Es la pantalla en la que se pasa el día el depósito: se dispara la pistola y
+   aparece ESTE producto, con el cursor en el lote. Tiene tres partes, en este
+   orden, porque ese es el orden en que se hacen las cosas:
+
+     1. LO QUE VINO — lote, vencimiento y cantidad, en grande. Es a lo que se
+        vino. Todo lo demás está abajo.
+     2. QUÉ LE FALTA AL PRODUCTO — categoría, categoría web, laboratorio, peso,
+        foto… lo que impide que después funcione (sin categoría no hay precio;
+        sin categoría web no aparece en el portal). Se completa acá, con el
+        producto en la mano, que es el único momento en que alguien lo tiene.
+     3. LA FICHA COMPLETA — los mismos bloques de la Ficha de producto, con el
+        mismo formulario (EYGP.campoHTML). No hay una segunda versión de la
+        ficha: es la misma pieza. */
+
+function lineaActual(){ return ST.rec ? ST.rec.moves.find(m=>m.id===ST.linea) : null; }
+
+function abrirProducto(moveId){
+  const m = ST.rec && ST.rec.moves.find(x=>x.id===moveId); if(!m) return;
+  ST.linea = moveId; ST.vista = "producto"; ST.extra = null;
+  /* Se abren solos los bloques que hay que mirar: los dos de siempre y,
+     además, CUALQUIERA que tenga un dato importante sin cargar. Si están todos
+     cerrados, "completá lo que falte" es una frase que nadie va a obedecer:
+     hay que tener el campo delante. */
+  ST.abiertos = new Set(["identidad","clasificacion"]);
+  if(m.t) EYGP.faltanClave(m.t).forEach(function(d){
+    const b = EYGP.BLOQUES.find(b=>b.campos.some(c=>c.f===d.f));
+    if(b) ST.abiertos.add(b.key);
+  });
+  pintar();
+  focoDeCarga();
+  cargarExtra(m);                 /* embalaje y proveedores, sin frenar la pantalla */
+}
+/* Al volver, la línea que se estaba cargando queda resaltada y centrada: si no,
+   en una lista de 20 uno no sabe dónde estaba parado. */
+function volverALista(){ ST.foco = ST.linea; ST.linea = null; ST.vista = "recepcion"; pintar(); }
+
+/* Embalaje (la caja real) y proveedores viven en otras dos tablas de Odoo. No
+   se leen al abrir la recepción — serían dos consultas más por 30 productos que
+   quizá nadie mire — sino al entrar a la pantalla del producto. */
+async function cargarExtra(m){
+  if(!m.tmplId) return;
+  try{
+    const [packs, sellers] = await Promise.all([
+      m.t && m.t.product_variant_id
+        ? rpc("product.packaging","search_read",
+              [[["product_id","=",m.t.product_variant_id[0]]],["id","name","qty"]])
+        : Promise.resolve([]),
+      rpc("product.supplierinfo","search_read",
+          [[["product_tmpl_id","=",m.tmplId]],["id","partner_id","product_code","price","min_qty"]],
+          {order:"sequence"}),
+    ]);
+    if(ST.linea !== m.id) return;                 /* ya se fue a otro producto */
+    ST.extra = {packs: packs||[], sellers: sellers||[]};
+    const n = document.getElementById("extra");
+    if(n) n.innerHTML = bloqueExtra();
+  }catch(e){ /* la pantalla sirve igual sin esto */ }
+}
+
+/* ---- 1. lo que vino ---- */
+function bloqueCarga(m){
+  return `<div class="carga">
+    <div class="ct">📥 ¿Qué vino de este producto?</div>
+    <div class="parts">
+      ${m.parts.map((p,i)=>partHTML(m,p,i)).join("")}
+      <div class="acc">
+        ${m.pideLote?`<button class="addp" onclick="agregarPart(${m.id})">+ Otro lote de este producto</button>`:""}
+        <button class="addp" onclick="vinoTodo(${m.id})">Vino todo (${m.demanda})</button>
+        <button class="addp" style="color:var(--gris)" onclick="noVino(${m.id})">No vino nada</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ---- 1bis. el código de barras, a mano ----
+   El caso más común del depósito: la caja tiene el código impreso pero el
+   producto no lo tiene cargado (hoy pasa en 478 de los 711 productos con
+   stock). Se puede disparar la pistola parado en este campo o tipearlo del
+   envase. Se comprueba ANTES que no lo tenga otro producto: el código de
+   barras es único en Odoo y, si choca, el error que devuelve no se entiende. */
+function bloqueGtin(m){
+  if(m.barcode) return "";
+  return `<div class="gtin" id="gtinbox_${m.id}">
+    <div class="gt">⌗ Este producto todavía no tiene código de barras</div>
+    <div class="grow">
+      <input class="in mono" id="gtin_${m.id}" inputmode="numeric" autocomplete="off"
+             placeholder="Disparale la pistola al envase, o tipeá el número"
+             onkeydown="gtinKey(event,${m.id})">
+      <button class="btn" onclick="guardarGtin(${m.id})">Guardar el código</button>
+    </div>
+    <div class="gh">Queda pegado a la ficha del producto: la próxima vez que llegue, se escanea solo.</div>
+  </div>`;
+}
+function gtinKey(ev, moveId){ if(ev.key === "Enter"){ ev.preventDefault(); guardarGtin(moveId); } }
+
+async function guardarGtin(moveId){
+  const m = ST.rec && ST.rec.moves.find(x=>x.id===moveId); if(!m) return;
+  const el = document.getElementById("gtin_"+moveId); if(!el) return;
+  const cod = String(el.value||"").trim();
+  if(!cod) return toast("Escribí o escaneá el código.", true);
+  /* Un GTIN real tiene 8, 12, 13 o 14 dígitos. Si viene otra cosa puede ser un
+     código interno del proveedor: se deja pasar, pero avisando. */
+  if(!/^[0-9]{6,20}$/.test(cod) &&
+     !confirm(`«${cod}» no parece un código de barras (los GTIN son 8, 12, 13 o 14 números).\n\n¿Guardarlo igual?`)) return;
+  el.disabled = true;
+  try{
+    const otro = await EYGP.porCodigo(cod);
+    if(otro && otro.id !== m.tmplId){
+      toast("Ese código ya es de «"+String(otro.name).slice(0,40)+"». No se guardó.", true);
+      return;
+    }
+    await EYGP.guardar(m.tmplId, "barcode", cod);
+    m.barcode = cod;
+    if(m.t) m.t.barcode = cod;
+    toast("Código de barras guardado ✓");
+    pintar();
+  }catch(e){ toast("No se pudo guardar: "+e.message, true); }
+  finally{ el.disabled = false; }
+}
+
+/* ---- 2. qué le falta al producto ---- */
+function faltantesDe(m){
+  const f = m.t ? EYGP.faltanClave(m.t).map(d=>({f:d.f, lbl:d.lbl})) : [];
+  if(!m.foto) f.unshift({f:"__foto", lbl:"Foto"});
+  return f;
+}
+function bloqueFaltan(m){
+  const f = faltantesDe(m);
+  if(!f.length) return `<div class="nota">✓ Este producto tiene todos los datos importantes cargados.</div>`;
+  return `<div class="aviso">
+    <b>Le faltan ${f.length} dato(s) importantes:</b> ${f.map(x=>esc(x.lbl)).join(" · ")}.<br>
+    <span style="font-size:12px">Sin categoría el motor no le calcula precio; sin categoría web no aparece en el portal;
+    sin peso no se cotiza el envío. Está todo abajo para completarlo ahora, con el producto en la mano.</span>
+    <div class="chips">${f.map(x=>x.f==="__foto"
+      ? `<button class="chip" onclick="pedirFoto(${m.id})">📷 Sacar la foto</button>`
+      : `<button class="chip" onclick="irACampo('${x.f}')">${esc(x.lbl)} →</button>`).join("")}</div>
+  </div>`;
+}
+/* Llevar al campo y dejarlo marcado: en una ficha larga, "falta la categoría"
+   sin decir dónde está no sirve de nada. */
+function irACampo(campo){
+  const m = lineaActual();
+  /* El código de barras tiene su propio recuadro arriba, con el botón de
+     guardar al lado: el atajo lleva a ESE, no al campo del formulario. */
+  if(campo === "barcode" && m && !m.barcode){
+    const g = document.getElementById("gtin_"+m.id);
+    if(g){ g.scrollIntoView({block:"center",behavior:"smooth"}); g.focus();
+           g.classList.add("senalado"); setTimeout(()=>g.classList.remove("senalado"), 1800); return; }
+  }
+  for(const b of EYGP.BLOQUES){
+    if(b.campos.some(c=>c.f===campo)){ ST.abiertos.add(b.key); break; }
+  }
+  pintar();
+  setTimeout(function(){
+    const el = document.getElementById("ing_"+campo);
+    if(!el) return;
+    el.scrollIntoView({block:"center", behavior:"smooth"});
+    el.focus();
+    el.classList.add("senalado");
+    setTimeout(()=>el.classList.remove("senalado"), 1800);
+  }, 120);
+}
+
+/* ---- 3. la ficha completa, con el formulario compartido ---- */
+function toggleBlk(k){ if(ST.abiertos.has(k)) ST.abiertos.delete(k); else ST.abiertos.add(k); pintar(); }
+
+async function guardarCampoIng(campo, el){
+  const m = lineaActual(); if(!m || !m.t) return;
+  const def = EYGP.campoDef(campo);
+  const valor = EYGP.leerControl(def, el);
+  el.disabled = true;
+  try{
+    const guardado = await EYGP.guardar(m.tmplId, campo, valor);
+    /* Se refleja lo que quedó en Odoo, no lo que se tipeó. */
+    if(def.tipo === "m2o")      m.t[campo] = guardado ? [guardado, EYGP.nombreDe(def.cat, guardado)] : false;
+    else if(def.tipo === "m2m") m.t[campo] = valor;
+    else                        m.t[campo] = guardado;
+    /* Estos dos cambian cómo se recibe: si se prende "tiene vencimiento" o se
+       pasa a "por lotes", la carga de arriba tiene que pedir esos campos YA. */
+    if(campo === "tracking" || campo === "use_expiration_date"){
+      m.pideLote = m.t.tracking === "lot" || m.t.tracking === "serial";
+      m.vence    = !!m.t.use_expiration_date;
+    }
+    if(campo === "barcode") m.barcode = guardado || "";
+    toast("Guardado ✓");
+    pintar();                     /* el contador de faltantes y las etiquetas cambian */
+  }catch(e){
+    toast(e.message, true);
+    pintar();                     /* deja a la vista el valor real de Odoo */
+  }finally{ el.disabled = false; }
+}
+
+function bloqueExtra(){
+  const e = ST.extra;
+  if(!e) return `<div class="cargando" style="padding:14px">Buscando el embalaje y los proveedores…</div>`;
+  const p = e.packs[0] || null;
+  const prov = e.sellers.length
+    ? e.sellers.map(s=>`<div class="row"><div class="nm">${esc(s.partner_id?s.partner_id[1]:"—")}</div>
+        <span class="quieto">${s.product_code?"cód. "+esc(s.product_code)+" · ":""}${
+          s.price?EYG.money(s.price):"sin precio"}${s.min_qty?" · mín "+s.min_qty:""}</span></div>`).join("")
+    : `<div class="nada">Sin proveedores cargados. Se agregan desde la Ficha de producto.</div>`;
+  return `<div class="sub">
+      <div class="sh">Embalaje — la caja real (mínimo de compra)</div>
+      <div class="row">
+        <div class="fld auto" style="flex:0 0 150px"><label title="Cómo se llama el bulto que manda el proveedor: caja, pack, bulto…">Nombre <span class="q">?</span></label>
+          <input class="in" id="emb_n" value="${esc(p?p.name:"Caja")}"></div>
+        <div class="fld auto" style="flex:0 0 140px"><label title="Cuántas unidades trae. Es el mínimo que se le puede comprar al proveedor.">Unidades por caja <span class="q">?</span></label>
+          <input class="in num" id="emb_q" type="number" step="any" value="${p?p.qty:""}"></div>
+        <button class="btn mini" onclick="guardarEmb()">Guardar</button>
+      </div>
+    </div>
+    <div class="sub">
+      <div class="sh">Proveedores <span class="quieto" style="margin-left:auto">se editan en la Ficha de producto</span></div>
+      ${prov}
+    </div>`;
+}
+async function guardarEmb(){
+  const m = lineaActual(); if(!m || !ST.extra) return;
+  const n = document.getElementById("emb_n").value.trim();
+  const q = document.getElementById("emb_q").value;
+  const p = ST.extra.packs[0] || null;
+  try{
+    const varId = m.t && m.t.product_variant_id ? m.t.product_variant_id[0] : null;
+    const id = await EYGP.guardarEmbalaje(varId, p?p.id:null, q, n);
+    const qq = parseFloat(String(q).replace(",",".")) || 0;
+    ST.extra.packs = (id && qq>0) ? [{id, name:n||"Caja", qty:qq}] : [];
+    toast("Embalaje guardado ✓");
+    const el = document.getElementById("extra"); if(el) el.innerHTML = bloqueExtra();
+  }catch(e){ toast(e.message, true); }
+}
+
+function vistaProducto(){
+  const m = lineaActual();
+  if(!m) return vistaRecepcion();
+  const r = ST.rec;
+  const pos = r.moves.findIndex(x=>x.id===m.id) + 1;
+  const listas = r.moves.filter(completa).length;
+  const stock = m.t ? (m.t.qty_available||0) : 0;
+  const prox  = r.moves.find(x=>x.id!==m.id && recibidoDe(x)<=0);
+
+  const bloques = EYGP.BLOQUES.map(b=>{
+    const abierto = ST.abiertos.has(b.key);
+    const faltan = m.t ? b.campos.filter(c=>c.tipo!=="ro" && EYGP.vacioCampo(m.t,c)).length : 0;
+    return `<div class="blk ${abierto?"open":""}">
+      <div class="blkh" onclick="toggleBlk('${b.key}')">
+        <span class="chev">▶</span><span>${b.ico}</span><span class="tit">${esc(b.tit)}</span>
+        ${faltan?`<span class="marca falta">${faltan} sin completar</span>`:`<span class="marca info">completo</span>`}
+      </div>
+      ${abierto?`<div class="blkb">
+        ${b.nota?`<div class="nota">${b.nota}</div>`:""}
+        <div class="grid">${b.campos.map(c=>EYGP.campoHTML(c, m.t||{},
+          {onch:"guardarCampoIng", pref:"ing_", marcarVacios:true})).join("")}</div>
+      </div>`:""}
+    </div>`;
+  }).join("");
+
+  return `<div class="pnav">
+      <button class="volver" onclick="volverALista()">← Todas las líneas (${listas} de ${r.moves.length} listas)</button>
+      <span class="quieto">Producto ${pos} de ${r.moves.length} · ${esc(r.pk.name)}</span>
+    </div>
+    <div class="scan">
+      <div class="lbl">📷 Escaneá el próximo producto</div>
+      <input id="scan" autocomplete="off" placeholder="Disparale la pistola y salta a ese producto" onkeydown="scanKey(event)">
+      <div class="hint">No hace falta volver a la lista: cada disparo abre la pantalla del producto que leyó.</div>
+    </div>
+    ${panelDesconocido()}
+    <div class="phead">
+      ${fotoHTML(m, "grande")}
+      <div class="fmeta">
+        <h2>${esc(m.nombre)}</h2>
+        <div class="linea">
+          <span class="cod">${esc(m.codigo||"sin código interno")}</span>
+          ${m.barcode?`<span class="cod">⌗ ${esc(m.barcode)}</span>`:`<span class="pill sin">sin código de barras</span>`}
+          ${m.t && m.t.categ_id?`<span>${esc(m.t.categ_id[1])}</span>`:`<span class="pill sin">sin categoría</span>`}
+          <span class="pill ${stock>0?"stock":"off"}">${stock.toLocaleString("es-AR")} en depósito</span>
+        </div>
+        <div class="linea chica">
+          <span>${m.pideLote?(m.tracking==="serial"?"Por número de serie":"Por lote"):"Sin seguimiento"}</span>
+          <span>${m.vence?"Con vencimiento":"Sin vencimiento"}</span>
+          ${m.tmplId?`<a href="${EYGP.ODOO_BASE}/odoo/inventory/product/${m.tmplId}" target="_blank" rel="noopener">Abrir en Odoo ↗</a>`:""}
+        </div>
+      </div>
+    </div>
+    ${bloqueCarga(m)}
+    ${bloqueGtin(m)}
+    ${bloqueFaltan(m)}
+    <div class="sechead">La ficha completa del producto <span class="cnt">se guarda solo</span></div>
+    ${bloques}
+    <div id="extra">${bloqueExtra()}</div>
+    <div class="barra" id="barra">
+      <div class="info">${completa(m)?"✓ Esta línea está lista":
+        (recibidoDe(m)>0?"Falta el lote o el vencimiento":"Todavía no cargaste nada de este producto")}</div>
+      ${prox?`<button class="btn sec" onclick="abrirProducto(${prox.id})">Siguiente sin cargar →</button>`:""}
+      <button class="btn ok" onclick="listoYVolver()">Listo, volver a la lista</button>
+    </div>`;
+}
+
+async function listoYVolver(){
+  try{ await guardarAvance(true); toast("Avance guardado ✓"); }catch(e){ return; }
+  volverALista();
 }
 
 function vistaRecepcion(){
@@ -362,9 +793,12 @@ function vistaRecepcion(){
       <div class="hint">Si el código no está en ningún producto, te dejo pegárselo a una línea de esta recepción — así se completa el catálogo solo.</div>
     </div>
     ${panelDesconocido()}
+    <div id="avisofotos">${avisoFotos()}</div>
     <div class="nota">Cargá <b>lote y vencimiento</b> como figuran en la caja. Si un producto vino en <b>varios lotes</b>,
       agregá una fila por lote. Las líneas que completes se pliegan solas en verde, para que se vea lo que falta.
-      Recién al <b>confirmar</b> suma stock en Odoo.</div>
+      Recién al <b>confirmar</b> suma stock en Odoo.<br>
+      Y si a un producto le falta la <b>foto</b> o el <b>código de barras</b>, este es el momento de cargarlos:
+      lo tenés en la mano. Quedan en la ficha del producto, no en esta recepción.</div>
     ${lineas}
     <div class="barra" id="barra">${contenidoBarra(listas)}</div>`;
 }
@@ -376,16 +810,19 @@ function partHTML(m, p, i){
   const cant = parseFloat(String(p.cant).replace(",","."))||0;
   const faltaLote = m.pideLote && cant>0 && !String(p.lote).trim();
   const faltaVto  = m.vence   && cant>0 && !p.vto;
+  /* Los anchos salen de producto.css (.fld.lote / .fld.vto / .fld.cant) y NO
+     de un style= acá: un estilo puesto a mano le gana a la regla de tablet, y
+     los campos quedaban chicos justo en la pantalla donde más importan. */
   return `<div class="part">
-    ${m.pideLote?`<div class="fld auto" style="flex:0 0 178px">
+    ${m.pideLote?`<div class="fld lote">
       <label>${m.tracking==="serial"?"N° de serie":"Lote"}</label>
       <input class="in mono${faltaLote?" falta":""}" id="lote_${m.id}_${i}" value="${esc(p.lote)}"
              placeholder="como figura en la caja" oninput="setPart(${m.id},${i},'lote',this.value)"></div>`:""}
-    ${m.vence?`<div class="fld auto" style="flex:0 0 158px"><label>Vence</label>
-      <input class="in${faltaVto?" falta":""}" type="date" value="${esc(p.vto)}"
+    ${m.vence?`<div class="fld vto"><label>Vence</label>
+      <input class="in${faltaVto?" falta":""}" type="date" id="vto_${m.id}_${i}" value="${esc(p.vto)}"
              oninput="setPart(${m.id},${i},'vto',this.value)"></div>`:""}
-    <div class="fld auto" style="flex:0 0 100px"><label>Cantidad</label>
-      <input class="in num" type="number" step="any" value="${p.cant}"
+    <div class="fld cant"><label>Cantidad</label>
+      <input class="in num" type="number" step="any" inputmode="decimal" id="cant_${m.id}_${i}" value="${p.cant}"
              oninput="setPart(${m.id},${i},'cant',this.value)"></div>
     <button class="btn mini peli" onclick="quitarPart(${m.id},${i})"
             title="${m.parts.length>1?"Borrar este lote de la carga":"Vaciar esta partida"}">${m.parts.length>1?"Quitar lote":"Vaciar"}</button>
@@ -428,7 +865,17 @@ function contenidoBarra(listas){
 function pintarBarra(){
   const r = ST.rec; if(!r) return;
   const listas = r.moves.filter(completa).length, total = r.moves.length;
-  const b = document.getElementById("barra"); if(b) b.innerHTML = contenidoBarra(listas);
+  const b = document.getElementById("barra");
+  /* En la pantalla de UN producto la barra dice otra cosa (el estado de esa
+     línea): si se pisara con la de la recepción, al tipear la cantidad
+     aparecerían de golpe los botones de confirmar toda la recepción. */
+  if(b && ST.vista !== "producto") b.innerHTML = contenidoBarra(listas);
+  if(b && ST.vista === "producto"){
+    const m = lineaActual();
+    const i = b.querySelector(".info");
+    if(m && i) i.textContent = completa(m) ? "✓ Esta línea está lista"
+      : (recibidoDe(m)>0 ? "Falta el lote o el vencimiento" : "Todavía no cargaste nada de este producto");
+  }
   const p = document.getElementById("prog");
   if(p) p.innerHTML = contenidoProg(listas, total, total?Math.round(listas*100/total):0);
 }
