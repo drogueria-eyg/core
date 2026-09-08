@@ -15,7 +15,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js?v=60"></script>
-<script src="../assets/producto.js?v=3"></script>
+<script src="../assets/producto.js?v=4"></script>
 <script>
 /* ===== Ingreso de mercadería =====
    Lo que hasta ahora se hacía en Odoo, hecho para el depósito: escanear la caja,
@@ -1266,6 +1266,27 @@ async function guardarAvance(silencioso){
   }finally{ ST.guardando = false; pintarBarra(); }
 }
 
+/* Vuelve a leer de Odoo las líneas de movimiento y devuelve los ids de las
+   líneas que quedaron con cantidad pero SIN lote (o sin vencimiento). No
+   alcanza con que la pantalla lo muestre: lo que Odoo valida es lo que Odoo
+   tiene grabado, y son dos cosas distintas. */
+async function revisarEnOdoo(){
+  const r = ST.rec;
+  const mls = await rpc("stock.move.line","search_read",
+    [[["picking_id","=",r.pk.id]],["id","move_id","lot_name","lot_id","quantity","expiration_date"]]);
+  const porMove = {};
+  (mls||[]).forEach(l=>{ if(l.move_id) (porMove[l.move_id[0]] = porMove[l.move_id[0]] || []).push(l); });
+  const mal = [];
+  r.moves.forEach(function(m){
+    if(recibidoDe(m) <= 0) return;                       /* no vino nada: no se valida */
+    const ls = (porMove[m.id] || []).filter(l=>(l.quantity||0) > 0);
+    if(!ls.length){ mal.push(m.id); return; }
+    if(m.pideLote && ls.some(l=>!l.lot_name && !l.lot_id)) mal.push(m.id);
+    else if(m.vence && ls.some(l=>!l.expiration_date))    mal.push(m.id);
+  });
+  return mal;
+}
+
 async function confirmarRecepcion(){
   const r = ST.rec;
   if(r.hecha) return toast("Esta recepción ya fue confirmada.", true);
@@ -1283,9 +1304,31 @@ async function confirmarRecepcion(){
   if(sinNada.length) msg += `\n${sinNada.length} línea(s) sin nada cargado: Odoo va a ofrecer dejarlas pendientes.`;
   if(!confirm(msg)) return;
 
-  ST.guardando = true; pintarBarra();
+  /* PRIMERO se guarda, y RECIÉN DESPUÉS se pone el candado.
+     Al revés estaba el bug: `confirmarRecepcion` ponía ST.guardando=true y
+     después llamaba a guardarAvance, que empieza con `if(ST.guardando) return`
+     — salía en silencio SIN GUARDAR NADA y se validaba en Odoo lo que hubiera
+     quedado de antes. Pasó de verdad con el ingreso de PROVEEDOR T (P02202):
+     Odoo rechazó la confirmación pidiendo el lote de los 25 productos, que
+     estaban cargados en la pantalla pero nunca se escribieron. El caso
+     silencioso era peor: guardar 100, corregir a 80 y confirmar → entraban 100. */
   try{
     await guardarAvance(true);
+  }catch(e){ return; }          /* si no se pudo guardar, NO se confirma */
+
+  ST.guardando = true; pintarBarra();
+  try{
+    /* Y no se confía en que la escritura pasó: se RELEE de Odoo y se comprueba
+       que cada línea con cantidad tenga su lote. Es la comprobación que hubiera
+       evitado el susto de PROVEEDOR T. */
+    const falta = await revisarEnOdoo();
+    if(falta.length){
+      ST.guardando = false; pintarBarra();
+      toast("No se guardó el lote de "+falta.length+" producto(s). Revisalos y volvé a confirmar.", true);
+      const n = document.getElementById("ln_"+falta[0]);
+      if(n) n.scrollIntoView({block:"center", behavior:"smooth"});
+      return;
+    }
 
     /* En Odoo 17 una línea solo se da por recibida si queda `picked`. */
     const conAlgo = r.moves.filter(m=>recibidoDe(m) > 0).map(m=>m.id);
@@ -1310,49 +1353,27 @@ async function confirmarRecepcion(){
     cargarPendientes();
   }catch(e){
     ST.guardando = false; pintarBarra();
-    toast("No se pudo confirmar: "+e.message, true);
+    toast(traducirError(e.message), true);
   }
 }
 
-/* ===================== arranque ===================== */
-/* ══ AVISAR A LOS COMERCIALES LO QUE ENTRÓ ═══════════════════════════════════
-   Normalmente esto sale solo: un aviso por hora, de 8 a 18, que es cuando
-   trabaja Depósito. Junta todo lo que se validó desde el aviso anterior y manda
-   UN mensaje por comercial — no uno por ingreso, que con 8 ingresos por día
-   serían más de 60 WhatsApps diarios desde el número de la empresa.
-   Este botón es para cuando alguien carga mercadería fuera de ese horario y no
-   quiere esperar al día siguiente. Solo lo ve Dirección, y el permiso NO está
-   acá: lo verifica wsp-responder contra core_users, porque esconder un botón no
-   es un control. */
-function botonAvisar(perfil){
-  if(!perfil || (perfil.rol!=="admin" && perfil.rol!=="direccion")) return;
-  /* VA EN EL ENCABEZADO, NO FLOTANDO. Flotando tapaba contenido, no se parecía
-     a nada del Core y competía por atención con el trabajo real de la pantalla,
-     que es cargar el ingreso. Acá arriba, con el botón teal de la casa
-     (.btn-teal), queda donde uno busca una acción de la pantalla y se lee como
-     parte del módulo. Si por algo no existe el encabezado, no se dibuja: mejor
-     sin botón que un botón suelto en cualquier lado. */
-  const bar=document.querySelector(".mbar"); if(!bar) return;
-  const b=document.createElement("button");
-  b.className="btn-teal";
-  b.id="btnAvisar";
-  b.style.cssText="margin-left:auto;display:inline-flex;align-items:center;gap:7px;white-space:nowrap";
-  b.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Avisar lo que entró';
-  b.title="Le manda a los comerciales, por WhatsApp, todo lo que se validó y todavía no se avisó. Normalmente sale solo cada hora, de 8 a 18.";
-  b.onclick=async()=>{
-    if(!confirm("¿Avisarles a los comerciales por WhatsApp lo que entró?\n\nVa un mensaje a cada uno con los productos, cantidades, lote y vencimiento.\nSolo lo que todavía no se avisó.")) return;
-    const antes=b.innerHTML; b.disabled=true; b.textContent="Avisando…";
-    try{
-      const {data,error}=await EYG.supa().functions.invoke("wsp-responder",{body:{accion:"ingresos"}});
-      if(error||!data||!data.ok) throw new Error((data&&data.error)||(error&&error.message)||"no pude");
-      if(data.nada_nuevo || data.sin_ingresos) alert("No hay ingresos nuevos para avisar: ya se avisó todo lo validado.");
-      else alert("Listo: "+(data.productos||0)+" productos de "+(data.ingresos||0)+" ingreso(s), avisados a "+((data.enviados||[]).filter(x=>x.ok).length)+" comercial(es).");
-    }catch(e){ alert("No pude avisar: "+e.message); }
-    b.disabled=false; b.innerHTML=antes;
-  };
-  bar.appendChild(b);
+/* Odoo contesta con un párrafo que lista los 25 productos completos, uno atrás
+   del otro: un muro rojo que tapa media pantalla y no dice qué hacer. Se lo
+   traduce a la frase corta. */
+function traducirError(msg){
+  const m = String(msg||"");
+  if(/lote\/de serie|lote\/serie|lot\/serial/i.test(m)){
+    /* cuántos productos nombra: los cuenta por los códigos entre corchetes */
+    const n = (m.match(/\[[A-Z0-9]+\]/g) || []).length;
+    return "Faltan los números de lote" + (n ? " de "+n+" producto(s)" : "") +
+           ". Cargalos y volvé a confirmar.";
+  }
+  if(/expiration|vencimiento/i.test(m)) return "Falta la fecha de vencimiento de algún producto.";
+  if(/reserved|reserva/i.test(m))       return "Odoo no pudo reservar la mercadería. Probá actualizar la recepción.";
+  return "No se pudo confirmar: " + m.slice(0, 200);
 }
 
+/* ===================== arranque ===================== */
 EYG.guard(["inventario","maestro","direccion","finanzas","admin"])
   .then(function(perfil){
     PERFIL = perfil;
@@ -1360,7 +1381,6 @@ EYG.guard(["inventario","maestro","direccion","finanzas","admin"])
       '<div id="cont"><div class="cargando"><div class="spinner"></div>Cargando…</div></div>',
       "Ingreso de mercadería");
     cargarPendientes();
-    botonAvisar(perfil);
   });
 </script>
 </body>
