@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
-<link rel="stylesheet" href="../assets/producto.css?v=6">
+<link rel="stylesheet" href="../assets/producto.css?v=7">
 </head>
 <body>
 <div id="cont"><div class="cargando"><div class="spinner"></div>Cargando…</div></div>
@@ -47,7 +47,7 @@ let PERFIL = null;
 const PAGINA = 50;
 const ST = { vista:"lista", pend:[], rec:null, cargando:true,
              foco:null, desconocido:null, guardando:false, editando:new Set(),
-             linea:null, abiertos:new Set(), extra:null,
+             linea:null, abiertos:new Set(), extra:null, vade:null,
              tab:"pend", hechas:[], q:"", nHechas:null, hayMas:false, buscando:false };
 
 const esc = s => EYG.esc(s);
@@ -920,9 +920,114 @@ function bloqueGtin(m){
              placeholder="Disparale la pistola al envase, o tipeá el número"
              onkeydown="gtinKey(event,${m.id})">
       <button class="btn" onclick="guardarGtin(${m.id})">Guardar el código</button>
+      <button class="btn sec" onclick="buscarEnVademecum(${m.id})">🔎 Buscarlo en el vademécum</button>
     </div>
-    <div class="gh">Queda pegado a la ficha del producto: la próxima vez que llegue, se escanea solo.</div>
+    <div class="gh">Queda pegado a la ficha del producto: la próxima vez que llegue, se escanea solo.
+      Lo más rápido es escanear la caja; el buscador es para cuando no la tenés a mano.</div>
+    <div id="vade_${m.id}">${vadeCandidatos(m)}</div>
   </div>`;
+}
+
+/* ===== BUSCAR EL CÓDIGO EN EL VADEMÉCUM =====
+   Sólo LEE (las mismas dos consultas que usa el módulo Vademécum: buscar y
+   ficha). No escribe una coma allá: lo único que se guarda es el código de
+   barras en NUESTRO producto de Odoo.
+
+   Y sólo corre cuando se aprieta el botón. Si buscara solo al abrir cada
+   producto, cada apertura pagaría consultas de más — y la pantalla del
+   ingreso se abre todo el día. */
+function vadeCandidatos(m){
+  const v = ST.vade;
+  if(!v || v.moveId !== m.id) return "";
+  if(v.cargando) return `<div class="cargando" style="padding:14px">Buscando en el vademécum…</div>`;
+  if(v.error)    return `<div class="gh">No pude consultar el vademécum: ${esc(v.error)}</div>`;
+  if(!v.lista.length) return `<div class="gh">El vademécum no tiene el código de este producto.
+      Hay que escanear la caja.</div>`;
+  return `<div class="vlist">
+    <div class="vt">Estos son los códigos que el vademécum tiene para este medicamento.
+      <b>Mirá el envase</b> y elegí el que dice la caja:</div>
+    ${v.lista.map(c=>`<div class="opt" onclick="usarGtin(${m.id},'${esc(c.gtin)}')">
+      <span class="nm">${esc(c.nombre)}<br><span class="quieto">${esc(c.laboratorio||"")}</span></span>
+      ${c.envase?`<span class="env">${esc(c.envase)}</span>`:""}
+      <span class="cod">${esc(c.gtin)}</span>
+      <span class="go">Es este →</span></div>`).join("")}
+  </div>`;
+}
+
+/* Palabras que en NUESTROS nombres describen el envase o la venta, no la
+   droga. Si entran en la búsqueda, el vademécum no encuentra nada. */
+const NO_DROGA = ["frasco","ampolla","comprimido","comprimidos","jarabe","solucion","solución",
+  "inyectable","iny","caja","precio","unidad","unidades","gotas","crema","suspension","suspensión",
+  "polvo","tira","tiras","blister","jeringa","prellenada","susp","fco","amp","sobre","sobres",
+  "capsulas","cápsulas","gramos","envase","kit","pack","estuche"];
+function drogaDelNombre(nombre, cuantas){
+  const limpio = String(nombre||"").replace(/^\[[^\]]*\]\s*/,"").split(" - ")[0];
+  const pal = limpio.split(/[^A-Za-zÁÉÍÓÚÑáéíóúñ]+/).filter(function(w){
+    return w.length >= 4 && NO_DROGA.indexOf(w.toLowerCase()) < 0;
+  });
+  return pal.slice(0, cuantas || 2).join(" ");
+}
+async function buscarVade(sb, q){
+  if(!q) return [];
+  const {data} = await sb.rpc("vademecum_buscar", {q: q, limite: 12});
+  return (data && data.registros) || [];
+}
+
+async function buscarEnVademecum(moveId){
+  const m = ST.rec && ST.rec.moves.find(x=>x.id===moveId); if(!m) return;
+  ST.vade = {moveId: moveId, cargando: true, lista: [], error: null};
+  const caja = document.getElementById("vade_"+moveId);
+  if(caja) caja.innerHTML = vadeCandidatos(m);
+  try{
+    const sb = EYG.supa();
+    /* EL TÉRMINO: sólo la DROGA. Medido contra el vademécum real:
+         "HIDROCORTISONA 100 mg frasco ampolla" → 0 resultados
+         "HIDROCORTISONA"                       → 8
+       Las concentraciones y el envase son nuestros, allá no existen. Se sacan
+       los números, las unidades y las palabras de presentación, y quedan las
+       dos primeras palabras de verdad ("AMPICILINA SULBACTAM"). */
+    const q = drogaDelNombre(m.nombre, 2);
+    let regs = await buscarVade(sb, q);
+    /* Si con dos palabras no hay nada, se prueba con la primera sola. */
+    if(!regs.length){
+      const q1 = drogaDelNombre(m.nombre, 1);
+      if(q1 && q1 !== q) regs = await buscarVade(sb, q1);
+    }
+    /* Si sabemos el laboratorio, los suyos van primero: el mismo medicamento
+       lo hacen diez laboratorios y cada uno tiene su código. */
+    const lab = String((m.t && m.t.x_laboratorio) || "").toUpperCase().split(" ")[0];
+    if(lab.length > 3){
+      const suyos = regs.filter(x=>String(x.laboratorio||"").toUpperCase().indexOf(lab) >= 0);
+      if(suyos.length) regs = suyos;
+    }
+    /* Se piden los códigos de los 4 primeros, en paralelo (no en fila). */
+    const fichas = await Promise.all(regs.slice(0,4).map(function(x){
+      return sb.rpc("vademecum_ficha_registro", {p_id: Number(String(x.clave).slice(2))})
+        .then(function(f){ return {reg:x, f:(f && f.data) || null}; })
+        .catch(function(){ return {reg:x, f:null}; });
+    }));
+    const lista = [], vistos = {};
+    fichas.forEach(function(o){
+      ((o.f && o.f.presentaciones) || []).forEach(function(p){
+        if(!p.gtin || vistos[p.gtin]) return;
+        vistos[p.gtin] = 1;
+        lista.push({gtin:p.gtin, envase:p.presentacion, nombre:o.reg.nombre, laboratorio:o.reg.laboratorio});
+      });
+    });
+    ST.vade = {moveId: moveId, cargando: false, lista: lista.slice(0,10), error: null};
+  }catch(e){
+    ST.vade = {moveId: moveId, cargando: false, lista: [], error: e.message};
+  }
+  const c2 = document.getElementById("vade_"+moveId);
+  if(c2) c2.innerHTML = vadeCandidatos(m);
+}
+
+/* Elegir un candidato = escribirlo en el campo y guardarlo por el camino de
+   siempre, que ya comprueba que no sea de otro producto. */
+function usarGtin(moveId, cod){
+  const el = document.getElementById("gtin_"+moveId);
+  if(el) el.value = cod;
+  guardarGtin(moveId);
 }
 function gtinKey(ev, moveId){ if(ev.key === "Enter"){ ev.preventDefault(); guardarGtin(moveId); } }
 
