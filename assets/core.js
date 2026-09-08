@@ -468,6 +468,11 @@ window.EYG = (function(){
       roles:["inventario","maestro"], ready:true, path:()=>"inventario/ingreso.html"},
     {key:"nombres",   dept:"deposito", cat:"Depósito", ico:"🏷️", titulo:"Maestro de productos", desc:"Ordená el dato maestro de cada producto: nombre, unidades, embalaje y subcategoría. Detecta errores y completa lo que falta, con un clic.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/nombres.html"},
     {key:"deposito-control", dept:"deposito", cat:"Depósito", ico:"🩺", titulo:"Control de Depósito", desc:"Saneá el depósito: contá y ajustá el stock físico, corregí la valuación torcida, completá costos faltantes y limpiá archivados y basura. Deja el inventario fiel a la realidad.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/control.html"},
+    /* AlfaBeta le escribe el PVP a TODA ficha que lleve `alfabeta_code`, sin mirar
+       categoría ni nombre. Los productos nuestros que quedaron con ese código
+       (casi siempre por haberse creado duplicando la ficha del vademécum) reciben
+       el PVP como precio de venta. Acá se sueltan. Los éticos NO se tocan. */
+    {key:"alfabeta", dept:"deposito", cat:"Depósito", ico:"🧲", titulo:"Enganches de AlfaBeta", desc:"Productos nuestros que quedaron atados a AlfaBeta y reciben su PVP como precio de venta. Soltalos de a uno o en tanda: se les corta el enganche y se les pone el código interno de la casa.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/alfabeta.html"},
     {key:"oportunidades", dept:"compras", cat:"Compras", ico:"💡", titulo:"Oportunidades y Ofertas", desc:"Cuando un costo baja, el sistema detecta una oportunidad de oferta. Confirmala (precio, stock, vigencia) o armá combos, y van a la tarjeta de los comerciales.", roles:["inventario"], ready:true, path:()=>"inventario/oportunidades.html"},
     {key:"pendientes", dept:"compras", cat:"Compras", ico:"📋", titulo:"Pendientes de reposición", desc:"Lo que los clientes pidieron y no había stock: qué reponer y para quién. Los comerciales cargan el faltante al vender; dirección y compras lo gestionan hasta reponerlo.", roles:["direccion","finanzas","inventario","comercial","lider","admin","maestro"], ready:true, path:()=>"inventario/pendientes.html"},
     /* EN PRUEBAS: CRM de contactos (existentes + por conquistar). Oculto para todo
