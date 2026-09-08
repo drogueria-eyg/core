@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
-<link rel="stylesheet" href="../assets/producto.css?v=5">
+<link rel="stylesheet" href="../assets/producto.css?v=6">
 </head>
 <body>
 <div id="cont"><div class="cargando"><div class="spinner"></div>Cargando…</div></div>
@@ -436,11 +436,17 @@ async function resolverCodigo(cod){
     toast("✓ "+linea.nombre.slice(0,44));
     return;
   }
-  /* 2) Si acá no apareció, se le pregunta a Odoo — que busca además por el
-     GTIN de Alfabeta y por el código interno con prefijo. */
+  /* 2) Si acá no apareció, se pregunta a los dos lados a la vez: a Odoo (por
+     si el código es de otro producto nuestro) y al VADEMÉCUM, que sabe de qué
+     medicamento es ese código según ANMAT — nombre comercial, laboratorio y,
+     lo que más importa, EL ENVASE de ese código exacto. Con eso la decisión
+     deja de ser a ciegas: se compara lo que dice la caja con lo que pide la
+     línea del pedido. */
   toast("Buscando el código…");
-  let p = null;
-  try{ p = await EYGP.porCodigo(cod); }catch(e){}
+  const [p, anmat] = await Promise.all([
+    EYGP.porCodigo(cod).catch(function(){ return null; }),
+    anmatPorCodigo(cod),
+  ]);
   if(p){
     /* RED DE SEGURIDAD: si Odoo lo reconoció y ese producto SÍ es una línea de
        esta recepción, se abre igual. Nunca más "existe pero no está acá"
@@ -458,12 +464,50 @@ async function resolverCodigo(cod){
        producto y Alfabeta lo carga como una ficha nueva (IBUPROFENO KLONAL NF
        vs KLONAL FORTE), o directamente mandaron otra cosa. Las dos salidas se
        ofrecen abajo, con el nombre del otro producto a la vista. */
-    ST.desconocido = {cod: cod, otro: p};
+    ST.desconocido = {cod: cod, otro: p, anmat: anmat};
     ST.foco = null; pintar();
     return;
   }
-  /* 3) no existe en ningún lado: es la oportunidad de completar el catálogo. */
-  ST.desconocido = {cod: cod, otro: null}; ST.foco = null; pintar();
+  /* 3) no existe en ningún producto nuestro. Con lo que dice ANMAT del código
+     ya alcanza para decidir a qué línea pegárselo. */
+  ST.desconocido = {cod: cod, otro: null, anmat: anmat}; ST.foco = null; pintar();
+}
+
+/* ===== QUÉ DICE ANMAT DE ESE CÓDIGO =====
+   El vademécum ya sabe buscar por código de barras (y tolera el cero de
+   adelante del GTIN-14). Devuelve el nombre comercial, el laboratorio y —lo
+   que de verdad decide— EL ENVASE de ese código: "10 mg a.x 100 x 2 ml" no es
+   lo mismo que "3 ampolla por 2 ml", aunque sean el mismo medicamento. Elegir
+   mal la presentación es el error que costó el día del cruce KLONAL. */
+async function anmatPorCodigo(cod){
+  try{
+    const {data} = await EYG.supa().rpc("vademecum_buscar", {q: String(cod).trim(), limite: 3});
+    const regs = (data && data.registros) || [];
+    if(!regs.length) return null;
+    const r = regs[0];
+    return {
+      nombre: r.nombre, laboratorio: r.laboratorio, envase: r.envase,
+      forma: r.forma, concentracion: r.concentracion,
+      droga: (r.composicion || []).map(function(c){ return c.nombre; }).filter(Boolean).join(" + "),
+      varios: regs.length > 1,
+    };
+  }catch(e){ return null; }   /* sin vademécum el panel sirve igual */
+}
+
+/* Con lo que dice ANMAT se puede SUGERIR a qué línea de la recepción
+   corresponde: se comparan las palabras del medicamento y de la droga con el
+   nombre de cada línea. Es una sugerencia, no una decisión: la confirma quien
+   tiene la caja. */
+function puntajeAnmat(m, anmat){
+  if(!anmat) return 0;
+  const norm = function(s){ return String(s||"").toUpperCase().normalize("NFD")
+    .replace(/[̀-ͯ]/g,"").replace(/[^A-Z0-9 ]/g," ").replace(/\s+/g," ").trim(); };
+  const linea = norm(m.nombre);
+  let p = 0;
+  norm(anmat.droga).split(" ").forEach(function(w){ if(w.length>4 && linea.indexOf(w)>=0) p += 10; });
+  norm(anmat.nombre).split(" ").forEach(function(w){ if(w.length>4 && linea.indexOf(w)>=0) p += 6; });
+  norm(anmat.laboratorio).split(" ").forEach(function(w){ if(w.length>4 && linea.indexOf(w)>=0) p += 4; });
+  return p;
 }
 
 /* EL PANEL DEL CÓDIGO QUE NO CIERRA
@@ -518,16 +562,41 @@ function panelDesconocido(){
          los <b>478 productos con stock que hoy no tienen código de barras</b>.
        </div>`;
 
-  /* Se listan TODAS las líneas, no sólo las que no tienen código. La de Klonal
-     Forte YA tenía uno (el viejo) y por eso no aparecía: la única línea que
-     hacía falta era justo la que el panel escondía. */
-  const opciones = ST.rec.moves.map(m=>`<div class="opt" onclick="pegarCodigo(${m.id})">
+  /* LO QUE DICE ANMAT DE ESE CÓDIGO. Es el dato que convierte la decisión en
+     una comparación: "la caja dice AMPIGEN SB de Fabra, 100 frasco ampolla por
+     1 g" contra lo que pide la línea del pedido. */
+  const a = d.anmat;
+  const ficha = a ? `<div class="anmat">
+      <div class="q">Según ANMAT, ese código es:</div>
+      <div class="n">${esc(a.nombre)}</div>
+      <div class="e">
+        ${a.envase?`<span class="env">${esc(a.envase)}</span>`:""}
+        ${a.laboratorio?`<span>${esc(a.laboratorio)}</span>`:""}
+        ${a.forma?`<span>${esc(a.forma)}</span>`:""}
+      </div>
+      ${a.droga?`<div class="dr">${esc(a.droga)}${a.concentracion?" · "+esc(a.concentracion):""}</div>`:""}
+      ${a.varios?`<div class="dr">⚠ Ese código figura en más de un registro: mirá bien el envase.</div>`:""}
+    </div>` : "";
+
+  /* Se listan TODAS las líneas, no sólo las que no tienen código (la de Klonal
+     Forte YA tenía uno y por eso no aparecía: era justo la que hacía falta).
+     Y se ordenan por PARECIDO con lo que dice ANMAT, así la más probable queda
+     arriba y marcada — pero la elige la persona, no el sistema. */
+  const orden = ST.rec.moves.map(function(m){ return {m:m, p: puntajeAnmat(m, a)}; })
+    .sort(function(x,y){ return y.p - x.p; });
+  const mejor = orden.length && orden[0].p >= 10 ? orden[0].m.id : null;
+  const opciones = orden.map(function(o){
+    const m = o.m;
+    return `<div class="opt${m.id===mejor?" sugerida":""}" onclick="pegarCodigo(${m.id})">
       <span class="nm">${esc(m.nombre)}</span>
+      ${m.id===mejor?'<span class="pill list">coincide con ANMAT</span>':""}
       ${m.barcode?`<span class="cod">⌗ ${esc(m.barcode)}</span>`:'<span class="pill sin">sin código</span>'}
-      <span class="go">Es este →</span></div>`).join("");
+      <span class="go">Es este →</span></div>`;
+  }).join("");
 
   return `<div class="desc">
     ${cabeza}
+    ${ficha}
     ${opciones}
     <div style="margin-top:12px;display:flex;gap:9px;flex-wrap:wrap">
       <a class="btn sec" href="producto.html" target="_blank" rel="noopener">Abrir la Ficha de producto ↗</a>
