@@ -35,7 +35,13 @@ function rango(mes){
   // por vencida una factura cuyo plazo aún no llegó). Fijarlo así hace que el número sea reproducible.
   const hoy=(EYG&&EYG.argToday)?EYG.argToday():new Date().toISOString().slice(0,10);
   const topeVenc=(hoy<fin)?hoy:fin;
-  return { ini, fin, finH:fin+" 23:59:59", d100:menos(100), d190:menos(190), dias:ult, topeVenc };
+  // CONSTANCIA: mide los contactos de UN día. Si ese día cae sábado o domingo nadie trabaja y las
+  // seis quedarían en cero, así que se toma el último día HÁBIL. Ver la misma regla en panel.html.
+  const corte=(hoy<fin)?hoy:fin;
+  const dc=new Date(corte+"T12:00:00");
+  while(dc.getDay()===0||dc.getDay()===6) dc.setDate(dc.getDate()-1);
+  const diaConstancia=dc.getFullYear()+"-"+String(dc.getMonth()+1).padStart(2,"0")+"-"+String(dc.getDate()).padStart(2,"0");
+  return { ini, fin, finH:fin+" 23:59:59", d100:menos(100), d190:menos(190), dias:ult, topeVenc, diaConstancia };
 }
 const pctFicha=c=>{ const has={name:!!c.name,tel:!!(c.phone||c.mobile),email:!!c.email,street:!!c.street,zip:!!c.zip,city:!!c.city,
   state:!!(c.state_id&&c.state_id[0]),idtype:!!(c.l10n_latam_identification_type_id&&c.l10n_latam_identification_type_id[0]),
@@ -110,7 +116,7 @@ async function gamificacion(uid,r,ofertasMes){
     rpc("sale.order","search_read",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",r.d190],["date_order","<=",r.finH]]],{fields:["partner_id","date_order"],limit:0}).catch(()=>[]),
     rpc("res.partner","search_count",[[["user_id","=",uid],["type","=","contact"],["parent_id","=",false],["create_date",">=",r.ini],["create_date","<=",r.finH]]]).catch(()=>0),
     recv([]), recv([["date_maturity","<=",r.topeVenc]]),
-    ids.length?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",r.fin+" 00:00:00"],["date","<=",r.finH],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id"],limit:0}).catch(()=>[]):[],
+    ids.length?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",r.diaConstancia+" 00:00:00"],["date","<=",r.diaConstancia+" 23:59:59"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id"],limit:0}).catch(()=>[]):[],
     uPartner?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","=",uPartner],["date",">=",r.ini+" 00:00:00"],["date","<=",r.finH],["body","like","EyGOFENV"]]],{fields:["date"],limit:0}).catch(()=>[]):[],
   ]);
   // cobro
@@ -137,9 +143,11 @@ async function gamificacion(uid,r,ofertasMes){
       ofVendidas+=g.map(x=>x.order_partner_id&&x.order_partner_id[0]).filter(p=>p&&idset.has(p)).length;
     }catch(e){}
   }
+  const corte=(((EYG&&EYG.argToday)?EYG.argToday():r.fin)<r.fin)?((EYG&&EYG.argToday)?EYG.argToday():r.fin):r.fin;
   return { cartera:cart.length, fichas, cobradoMes, objetivoCobro, promPed, promCli, actPed, actCli,
     porCobrar, vencido, ofEnviadas:(ofEnv||[]).length, ofVendidas, nuevos,
-    contactosUltDia:new Set((waMsgs||[]).map(m=>m.res_id)).size };
+    contactosUltDia:new Set((waMsgs||[]).map(m=>m.res_id)).size,
+    diaConstancia:r.diaConstancia, findeCorregido:r.diaConstancia!==corte };
 }
 
 /* ===== nivel y salud, a partir de los datos crudos (función pura) ===== */
@@ -155,7 +163,7 @@ function nivelDe(g,perfil){
     {ic:"📤",lab:"Ofertas enviadas",max:OF_PTS_ENV,pts:OF_PTS_ENV*Math.min(g.ofEnviadas/OF_META_ENV,1),det:g.ofEnviadas+" de "+OF_META_ENV},
     {ic:"🎁",lab:"Ofertas vendidas",max:OF_PTS_VEN,pts:OF_PTS_VEN*Math.min(g.ofVendidas/OF_META_VEN,1),det:g.ofVendidas+" clientes de "+OF_META_VEN},
     {ic:"🆕",lab:"Clientes nuevos",max:NUEVOS_PTS,pts:NUEVOS_PTS*Math.min(g.nuevos/NUEVOS_META,1),det:g.nuevos+" de "+NUEVOS_META},
-    {ic:"🔥",lab:"Constancia (10 contactos/día)",max:CONST_PTS,pts:CONST_PTS*Math.min(g.contactosUltDia/CONST_META,1),det:g.contactosUltDia+" contactos el último día del mes"},
+    {ic:"🔥",lab:"Constancia (10 contactos/día)",max:CONST_PTS,pts:CONST_PTS*Math.min(g.contactosUltDia/CONST_META,1),det:g.contactosUltDia+" contactos el "+(g.diaConstancia||"último día")+(g.findeCorregido?" (último día hábil: sábados y domingos no descuentan)":"")},
   ];
   const pts=items.reduce((s,i)=>s+i.pts,0);
   const idx=pts<40?0:pts<60?1:pts<80?2:pts<95?3:4;

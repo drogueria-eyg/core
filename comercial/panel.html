@@ -1103,9 +1103,10 @@ function nivel(){
   P.push({ic:"🎁",lab:"Ofertas vendidas",max:OF_PTS_VEN,pts:OF_PTS_VEN*rVen,det:ven+" de "+OF_META_VEN+" colocadas"});
   const rN=Math.min(ST.nuevos/3,1);
   P.push({ic:"🆕",lab:"Clientes nuevos (meta 3)",max:20,pts:20*rN,det:ST.nuevos+" este mes"});
-  const actHoy=ST.contactadosHoy.size+ofHoy();   // contactos distintos + ofertas compartidas hoy
-  const rCo=Math.min(actHoy/10,1);
-  P.push({ic:"🔥",lab:"Constancia (10 contactos/día)",max:5,pts:5*rCo,det:actHoy+" hoy"});
+  const co=constanciaHoy();
+  const rCo=Math.min(co.n/10,1);
+  P.push({ic:"🔥",lab:"Constancia (10 contactos/día)",max:5,pts:5*rCo,
+    det: co.finde ? (co.n+" · el fin de semana no descuenta"+(co.propio?" (y hoy trabajaste)":"")) : (co.n+" hoy")});
   const pts=P.reduce((s,p)=>s+p.pts,0);
   const idx=pts<40?0:pts<60?1:pts<80?2:pts<95?3:4; // Bronce<40 · Plata40 · Oro60 · Platino80 · Diamante95
   return {lv:idx+1, idx, pts, mult:NIV[idx].m, nombre:NIV[idx].n, emoji:NIV[idx].e, params:P, perfil:sp.nom, base:b};
@@ -1133,7 +1134,7 @@ function ayudaHTML(){
       <li><b>Ofertas enviadas</b> (${OF_PTS_ENV} pts): compartir ofertas por WhatsApp, meta ${OF_META_ENV}/mes.</li>
       <li><b>Ofertas vendidas</b> (${OF_PTS_VEN} pts): clientes que compraron esas ofertas, meta ${OF_META_VEN} (puntúa fuerte).</li>
       <li><b>Clientes nuevos</b> (20 pts): meta ${OBJ.mensualNuevos}/mes.</li>
-      <li><b>Constancia</b> (5 pts): ${OBJ.diarioContactos} contactos trabajados por día.</li>
+      <li><b>Constancia</b> (5 pts): ${OBJ.diarioContactos} contactos trabajados por día. <b>Sábados y domingos no descuentan</b> — esos días se mantiene lo del último día hábil. Si igual trabajás el fin de semana y hacés más, cuenta lo tuyo.</li>
     </ul>
     <h4>💵 Comisión</h4>
     <p>Se calcula sobre <b>tu facturado neto</b>: una tasa hasta tu meta y una más alta por lo que la supera (escalera), multiplicada por tu nivel, menos el recorte de salud si tu cuenta no está sana.</p>
@@ -2028,6 +2029,7 @@ function render(){
   const dHoy=ST.contactadosHoy.size+ofH, dObj=OBJ.diarioContactos;
   const msgHoy=envH.total+ofH, msgSem=envS+ofS;
   const pDia=Math.min(100,Math.round(dHoy/dObj*100)), pNue=Math.min(100,Math.round(ST.nuevos/OBJ.mensualNuevos*100)), pFac=Math.min(100,Math.round((ST.ventaSem||0)/OBJ.semanalFact*100));
+  const _dw=new Date(hoyStr.slice(0,10)+"T12:00:00").getDay(), esFinde=(_dw===0||_dw===6);   // sáb/dom: la meta diaria no corre
   const externo=esExterno();
   const nv=nivel(); const completas=ST.contactos.filter(c=>completar(c).pct>=100).length; const incompletas=ST.contactos.length-completas;
   const cBase=comisionBase(ST.ventaMes), cTot=externo?cBase:cBase*nv.mult, desg=comisionDesglose(ST.ventaMes);
@@ -2051,7 +2053,7 @@ function render(){
     </div>
     ${MODO_LIDER?'<div id="ldchartbox"></div><div id="ldTeam"></div>':`<div class="secrow"><h2 class="sec">🎯 Tus objetivos</h2></div>
     <div class="goals">
-      <div class="goal ${pDia>=100?'done':''}"><span class="chk">✅</span>${ring(pDia,dHoy,dObj,'var(--teal)')}<div><div class="gt">Hoy · contactos</div><div class="gn">${dHoy}/${dObj}</div><div class="gs">${dHoy>=dObj?'¡Meta cumplida! 🎉':(dObj-dHoy)+' para tu meta'}${msgHoy?` · 📤 ${msgHoy} msg`:''}</div></div></div>
+      <div class="goal ${pDia>=100||esFinde?'done':''}"><span class="chk">${esFinde?'☕':'✅'}</span>${ring(esFinde?100:pDia,dHoy,dObj,esFinde?'var(--gris2)':'var(--teal)')}<div><div class="gt">Hoy · contactos</div><div class="gn">${dHoy}/${dObj}</div><div class="gs">${esFinde?'Fin de semana · no descuenta':(dHoy>=dObj?'¡Meta cumplida! 🎉':(dObj-dHoy)+' para tu meta')}${msgHoy?` · 📤 ${msgHoy} msg`:''}</div></div></div>
       <div class="goal ${pNue>=100?'done':''}"><span class="chk">✅</span>${ring(pNue,ST.nuevos,OBJ.mensualNuevos,'var(--coral)')}<div><div class="gt">Mes · nuevos</div><div class="gn">${ST.nuevos}/${OBJ.mensualNuevos}</div><div class="gs">clientes nuevos</div></div></div>
       <div class="goal ${pFac>=100?'done':''}"><span class="chk">✅</span>${ring(pFac,pFac+'%','','var(--gold)')}<div><div class="gt">Semana · ventas</div><div class="gn">${money(ST.ventaSem)}</div><div class="gs">meta ${money(OBJ.semanalFact)} · con IVA</div></div></div>
     </div>
@@ -2061,7 +2063,7 @@ function render(){
       <div class="kpi">
         <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">☀️</span><div class="kmeta"><div class="kl">Hoy</div><div class="kv">${ST.diag.ventasHoy>0?money(ST.diag.ventasHoy):ST.diag.pedHoy+' ped.'}</div><div class="ks">${ST.diag.pedHoy} pedidos · ${dHoy}/${dObj} contactos</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
-          <div class="prow"><div class="pl"><span>Contactos trabajados hoy · meta ${dObj}</span><b>${dHoy}/${dObj}</b></div><div class="pbar"><i style="width:${Math.min(100,pDia)}%;background:var(--teal)"></i></div></div>
+          <div class="prow"><div class="pl"><span>Contactos trabajados hoy · meta ${dObj}${esFinde?' <b style="color:var(--gris2)">· fin de semana, no descuenta</b>':''}</span><b>${dHoy}/${dObj}</b></div><div class="pbar"><i style="width:${esFinde?100:Math.min(100,pDia)}%;background:${esFinde?'var(--gris2)':'var(--teal)'}"></i></div></div>
           <div class="drow"><span>📤 Mensajes enviados hoy</span><b>${msgHoy} <span style="font-weight:600;color:var(--gris2);font-size:11px">${envH.nuevo} nuevos · ${envH.seg} seguim.${ofH?` · ${ofH} oferta${ofH===1?'':'s'}`:''}</span></b></div>
           <div class="drow"><span>📤 Mensajes esta semana</span><b>${msgSem}</b></div>
           <div class="drow"><span>🛒 Tus ventas de hoy (con IVA)</span><b>${money(ST.diag.ventasHoy)}</b></div>
@@ -2756,6 +2758,23 @@ function ofPuntos(){ return Math.min((ST.ofEnviadas||0)/OF_META_ENV,1)*OF_PTS_EN
 /* Ofertas compartidas hoy / en la semana ([EyGOFENV] en el partner propio). Cuentan como
    actividad de contacto del día (se suman a la meta de "contactos") y como mensajes enviados. */
 function ofHoy(){ const _t=hoyStr.slice(0,10); return (ST.ofMsgs||[]).filter(m=>m.date===_t).length; }
+/* CONSTANCIA — sábados y domingos NO descuentan.
+   Se sigue mostrando "contactos de hoy" (que es lo que la comercial entiende), pero si hoy es fin de
+   semana se toma el MEJOR entre hoy y el último día hábil: quien descansa no pierde los 5 puntos, y
+   quien igual trabaja el sábado (como Claudia) se los lleva por lo que hizo. */
+function ultimoHabil(fecha){
+  const d=new Date(fecha+"T12:00:00");
+  do{ d.setDate(d.getDate()-1); }while(d.getDay()===0||d.getDay()===6);
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+}
+function constanciaHoy(){
+  const t=hoyStr.slice(0,10);
+  const cuenta=f=>new Set((ST.msgs||[]).filter(m=>m.date===f).map(m=>m.res_id)).size + (ST.ofMsgs||[]).filter(m=>m.date===f).length;
+  const hoy=cuenta(t), dow=new Date(t+"T12:00:00").getDay();
+  if(dow!==0 && dow!==6) return {n:hoy, finde:false, propio:true};
+  const ref=cuenta(ultimoHabil(t));
+  return { n:Math.max(hoy,ref), finde:true, propio:hoy>=ref && hoy>0 };
+}
 function ofSem(){ return (ST.ofMsgs||[]).filter(m=>m.date>=inicioSem).length; }
 
 /* Texto para compartir por WhatsApp. Formato de WhatsApp: *negrita*, ~tachado~.
