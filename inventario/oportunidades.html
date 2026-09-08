@@ -12,6 +12,16 @@
   .intro{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:15px 18px;box-shadow:var(--shadow);margin-bottom:16px;font-size:13.5px;color:var(--gris);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
   .intro b{color:var(--ink)}
   .intro .grow{flex:1;min-width:200px}
+  /* ===== buscador: mismo formato que el resto del Core (.toolbar + .search + lupa) ===== */
+  .toolbar{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-bottom:14px}
+  .search{flex:1;min-width:220px;display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:9px 12px;box-shadow:var(--shadow)}
+  .search:focus-within{border-color:var(--teal)}
+  .search svg{width:17px;height:17px;color:var(--gris2);flex-shrink:0}
+  .search input{border:0;background:none;outline:none;font-family:inherit;font-size:14px;width:100%;color:var(--ink)}
+  .search .clr{cursor:pointer;color:var(--gris2);font-size:15px;font-weight:800;line-height:1;padding:0 3px}
+  .search .clr:hover{color:var(--ink)}
+  .qhit{font-size:12.5px;font-weight:700;color:var(--teal-deep);background:var(--agua);border-radius:20px;padding:7px 13px;white-space:nowrap}
+  .qhit.cero{color:#b0322f;background:#fbe4e3}
   .btn{background:var(--teal);color:#fff;border:none;border-radius:10px;padding:9px 15px;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;white-space:nowrap}
   .btn:hover{background:var(--teal-deep)} .btn.ghost{background:#fff;border:1px solid var(--line);color:var(--gris)} .btn.ghost:hover{border-color:var(--teal-med)}
   .btn.warn{background:#fff;border:1px solid #f0b8b5;color:#b0322f} .btn.sm{padding:6px 11px;font-size:12px;border-radius:8px}
@@ -147,9 +157,36 @@ async function setParam(k,v){ return EYG.rpc("ir.config_parameter","set_param",[
 let COLAPSA={}; try{ COLAPSA=JSON.parse(localStorage.getItem("eyg_opo_colapsa")||"{}")||{}; }catch(e){ COLAPSA={}; }
 window.toggleSec=k=>{ COLAPSA[k]=!COLAPSA[k]; try{ localStorage.setItem("eyg_opo_colapsa",JSON.stringify(COLAPSA)); }catch(e){} render(); };
 function sec(k,titulo,count,body,extraBtns){
-  const open=!COLAPSA[k];
+  /* con una búsqueda en curso las secciones se abren solas: si no, el resultado
+     queda escondido detrás de una sección plegada y parece que no encontró nada */
+  const open = Q.trim() ? true : !COLAPSA[k];
   return `<div class="secw"><h2 class="sec" onclick="toggleSec('${k}')"><span class="caret">${open?'▾':'▸'}</span> ${titulo} <span class="n">${count}</span>${extraBtns?`<span class="secbtns" onclick="event.stopPropagation()">${extraBtns}</span>`:''}</h2>${open?`<div class="secbody">${body}</div>`:''}</div>`;
 }
+/* ============ BUSCADOR (patrón del Core: .search + EYG.buscador) ============
+   Un solo campo arriba que filtra LAS TRES secciones a la vez: oportunidades por
+   costo, oportunidades por stock y las ofertas/descuentos ya creados (incluidos
+   combos y descuentos por categoría). Filtra en memoria, sin ir a Odoo.
+   Las palabras van en cualquier orden y sin acentos: "bengue pomo" entra igual. */
+let Q="";
+const norm=s=>String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+function hay(){
+  const q=Q.trim(); if(!q) return true;
+  const txt=norm(Array.prototype.slice.call(arguments).filter(Boolean).join(" "));
+  return norm(q).split(/\s+/).filter(Boolean).every(p=>txt.indexOf(p)>=0);
+}
+/* una oportunidad (por costo o por stock): nombre, código, categoría y el motivo */
+const qOpo=o=>hay(o.nombre,o.sku,o.cat,o.motivoTxt);
+/* una oferta/combo del panel: título, nota, categoría y cada producto que la compone */
+const qOferta=o=>hay(o.titulo,o.nota,o._cat,(o.items||[]).map(i=>(i.nombre||"")+" "+(i.sku||"")).join(" "));
+/* un descuento por regla del motor: el producto o la categoría a la que apunta */
+const qRegla=o=>hay(o.targetName,o._sku,o._cat,o.tipo==='c'?'categoria subcategoria':'producto');
+window.onBuscar=EYG.buscador(v=>{ Q=v; render(); });
+window.limpiarBusq=()=>{ Q=""; render(); const i=document.getElementById("q"); if(i) i.focus(); };
+/* contador del encabezado de cada sección: "3 de 12" cuando hay búsqueda */
+const cnt=(n,total)=>(Q.trim()&&n!==total)?(n+" de "+total):String(total);
+/* cartel de vacío: distingue "no hay nada" de "no encontré lo que buscás" */
+const vacio=txt=>'<div class="empty">'+(Q.trim()?'Ningún resultado para <b>«'+esc(Q.trim())+'»</b> en esta sección.':txt)+'</div>';
+
 /* ---- badge de categoría (no invasivo) ---- */
 const catCorta=c=>String(c||"").replace(/^ALL \/ /,"").split(" / ").pop().replace(/^HOSPITALARIOS$/,"Hospitalarios")||"";
 const catBadge=c=>c?`<span class="catb">${esc(catCorta(c))}</span>`:"";
@@ -256,9 +293,10 @@ async function cargar(){
         const byT={}; its.forEach(i=>{ byT[i.product_tmpl_id[0]]=Math.round(i.fixed_price); });
         // éticos: PVP (list_price) para mostrar el descuento contra el PVP, no contra la escalera
         // + stock real (qty_available) para marcar "Agotada" cuando el producto quedó en cero
-        const tps=await EYG.rpc("product.template","read",[prodOf.map(o=>o.target),["list_price","categ_id","qty_available"]],LANG);
-        const pvpT={}, catT={}; tps.forEach(t=>{ STOCK_T[t.id]=t.qty_available||0; catT[t.id]=(t.categ_id&&t.categ_id[1])||""; if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) pvpT[t.id]=Math.round(t.list_price||0); });
-        prodOf.forEach(o=>{ o._precio=byT[o.target]; o._pvp=pvpT[o.target]||0; o._cat=catT[o.target]||""; });
+        // default_code = el código: hace falta para poder BUSCAR el descuento por SKU
+        const tps=await EYG.rpc("product.template","read",[prodOf.map(o=>o.target),["list_price","categ_id","qty_available","default_code"]],LANG);
+        const pvpT={}, catT={}, skuT={}; tps.forEach(t=>{ STOCK_T[t.id]=t.qty_available||0; catT[t.id]=(t.categ_id&&t.categ_id[1])||""; skuT[t.id]=t.default_code||""; if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) pvpT[t.id]=Math.round(t.list_price||0); });
+        prodOf.forEach(o=>{ o._precio=byT[o.target]; o._pvp=pvpT[o.target]||0; o._cat=catT[o.target]||""; o._sku=skuT[o.target]||""; });
       }catch(e){}
     }
     // estado de oportunidades por stock (ignorados / archivadas). Las oportunidades se calculan en vivo (refrescarStockOpo).
@@ -308,32 +346,46 @@ function vigente(o){ return (!o.hasta || o.hasta>=hoy()); }
 function render(){
   const cont=document.getElementById("cont");
   OFERTAS.forEach(o=>o._venc=!vigente(o));
-  const combos=OFERTAS.filter(o=>o.tipo==='combo');
-  const singles=OFERTAS.filter(o=>o.tipo!=='combo');   // ofertas de 1 producto viejas (compatibilidad)
-  const rules=rgUserRules();
+  // totales (sin filtrar) y lo que queda después del buscador de arriba
+  const combosT=OFERTAS.filter(o=>o.tipo==='combo');
+  const singlesT=OFERTAS.filter(o=>o.tipo!=='combo');   // ofertas de 1 producto viejas (compatibilidad)
+  const rulesT=rgUserRules();
+  const combos=combosT.filter(qOferta), singles=singlesT.filter(qOferta), rules=rulesT.filter(qRegla);
   const nOf=combos.length+singles.length+rules.length;
+  const nOfT=combosT.length+singlesT.length+rulesT.length;
+  const opos=OPOS.filter(qOpo), arch=ARCH.filter(qOpo);
+  const oStock=OPORT_STOCK.filter(qOpo), oStockArch=(ESTADO.arch||[]).filter(qOpo);
+  const nHit=opos.length+arch.length+oStock.length+oStockArch.length+nOf;
   // --- sección Oportunidades por costo ---
-  const opoCards = OPOS.length ? `<div class="grid">${OPOS.map(cardOpo).join("")}</div>` : '<div class="empty">No hay oportunidades nuevas. Cuando un costo baje '+Math.round(UMBRAL*100)+'% o más, aparece acá.</div>';
-  const costoBody = opoCards + (ARCH.length?`<div class="subsec">📥 Archivadas (${ARCH.length})</div><div class="grid">${ARCH.map(cardArch).join("")}</div>`:'');
+  const opoCards = opos.length ? `<div class="grid">${opos.map(cardOpo).join("")}</div>` : vacio('No hay oportunidades nuevas. Cuando un costo baje '+Math.round(UMBRAL*100)+'% o más, aparece acá.');
+  const costoBody = opoCards + (arch.length?`<div class="subsec">📥 Archivadas (${cnt(arch.length,ARCH.length)})</div><div class="grid">${arch.map(cardArch).join("")}</div>`:'');
   // --- sección Oportunidades por stock ---
   const osCards = stockLoading
     ? '<div class="empty"><div class="spin" style="margin:6px auto 12px"></div>Buscando oportunidades en el stock…</div>'
-    : (OPORT_STOCK.length ? `<div class="grid">${OPORT_STOCK.map(cardOpoStock).join("")}</div>` : '<div class="empty">No hay oportunidades de stock ahora. Se recalculan solas con stock, precios y vencimientos.</div>');
-  const osArch = (ESTADO.arch&&ESTADO.arch.length) ? `<div class="subsec">📥 Archivadas (${ESTADO.arch.length})</div><div class="grid">${ESTADO.arch.map(cardOpoStockArch).join("")}</div>` : "";
+    : (oStock.length ? `<div class="grid">${oStock.map(cardOpoStock).join("")}</div>` : vacio('No hay oportunidades de stock ahora. Se recalculan solas con stock, precios y vencimientos.'));
+  const osArch = oStockArch.length ? `<div class="subsec">📥 Archivadas (${cnt(oStockArch.length,(ESTADO.arch||[]).length)})</div><div class="grid">${oStockArch.map(cardOpoStockArch).join("")}</div>` : "";
   // --- sección Ofertas y descuentos (editor unificado embebido) ---
   const editor = rgDraft ? rgFormHTML() : "";
   const ofGrid = nOf
     ? `<div class="grid">${combos.map(cardOferta).join("")}${singles.map(cardOferta).join("")}${rules.map(rgCard).join("")}</div>`
-    : '<div class="empty">Todavía no hay ofertas ni descuentos. Tocá <b>+ Nueva oferta o descuento</b>.</div>';
+    : vacio('Todavía no hay ofertas ni descuentos. Tocá <b>+ Nueva oferta o descuento</b>.');
   cont.innerHTML=`
     <div class="intro">
       <div class="grow"><b>Oportunidades y ofertas.</b> Acá se detectan oportunidades (por baja de costo o por stock/vencimiento) y se crean <b>todas</b> las ofertas, descuentos y combos. Lo que confirmes va a la tarjeta <b>“Combos y ofertas de la semana”</b> de los comerciales. Si un producto en oferta se queda <b>sin stock</b>, la oferta se apaga sola: queda gris acá (para reponer o eliminarla) y desaparece del panel de los comerciales.</div>
       <button class="btn cfg" onclick="abrirConfig()" title="Configuración del módulo">⚙️</button>
       <button class="btn nueva" onclick="rgNueva('desc')">＋ Nueva oferta o descuento</button>
     </div>
-    ${sec('costo','💡 Oportunidades por costo', OPOS.length, costoBody)}
-    ${sec('stock','📦 Oportunidades por stock', stockLoading?'…':OPORT_STOCK.length, osCards+osArch, `<button class="btn ghost sm" onclick="refrescarStockOpo()" ${stockLoading?'disabled':''}>🔄 Actualizar</button>`)}
-    ${sec('ofertas','🏷️ Ofertas y descuentos', nOf, editor+ofGrid, `<button class="btn sm" onclick="rgNueva('desc')">+ Nueva</button>`)}`;
+    <div class="toolbar">
+      <div class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="q" placeholder="Buscar producto por nombre, código o categoría…" value="${esc(Q)}" oninput="onBuscar(this.value)" title="Busca al mismo tiempo en las oportunidades por costo, las de stock y las ofertas, combos y descuentos ya creados.">
+        ${Q?`<span class="clr" onclick="limpiarBusq()" title="Limpiar la búsqueda">✕</span>`:''}
+      </div>
+      ${Q.trim()?`<span class="qhit ${nHit?'':'cero'}">${nHit} resultado${nHit===1?'':'s'}</span>`:''}
+    </div>
+    ${sec('costo','💡 Oportunidades por costo', cnt(opos.length,OPOS.length), costoBody)}
+    ${sec('stock','📦 Oportunidades por stock', stockLoading?'…':cnt(oStock.length,OPORT_STOCK.length), osCards+osArch, `<button class="btn ghost sm" onclick="refrescarStockOpo()" ${stockLoading?'disabled':''}>🔄 Actualizar</button>`)}
+    ${sec('ofertas','🏷️ Ofertas y descuentos', cnt(nOf,nOfT), editor+ofGrid, `<button class="btn sm" onclick="rgNueva('desc')">+ Nueva</button>`)}`;
 }
 
 function cardOpo(o){
@@ -540,7 +592,7 @@ function rgCard(o){
   const ag = o.tipo==='p' && STOCK_T[o.target]!=null && STOCK_T[o.target]<=0;
   return `<div class="card oferta ${st.c==='ven'?'vencida':''}${ag?' agotada':''}"><span class="tag ${ag?'ag':stC}">${o.tipo==='p'?'Descuento':'Descuento · cat.'}${ag?' · agotada':st.c==='pau'?' · pausado':st.c==='ven'?' · vencido':''}</span>
     <h3>${esc(o.targetName||('#'+o.target))}</h3>
-    <div class="meta">${badge}${o.tipo==='p'?'🔖 producto':'📂 categoría / subcategoría'} · ${esc(como)}</div>
+    <div class="meta">${badge}${o._sku?esc(o._sku)+' · ':''}${o.tipo==='p'?'🔖 producto':'📂 categoría / subcategoría'} · ${esc(como)}</div>
     ${drop}
     <div class="kv"><span>Stock: <b>${o.stock||'—'}</b></span><span>Vigencia: <b>${o.hasta?('hasta '+fmtF(o.hasta)):'sin límite'}</b></span></div>
     ${ag?`<div class="agotnote">⛔ Se terminó el stock — la oferta se apagó sola y los comerciales ya no la ven. Reponé stock para reactivarla, o eliminala con el botón.</div>`:''}
