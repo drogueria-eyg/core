@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Facturación · EyG Core</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/core.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../assets/core.js?v=61"></script>
+<style>
+  :root{
+    --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
+    --agua:#E2F1EF; --coral:#EC8B5E; --ink:#0E1F1D; --gris:#5F716E; --gris2:#8A9A97;
+    --surface:#fff; --bg:#F4F8F7; --line:#DCE8E6; --radius:12px;
+    --shadow:0 1px 2px rgba(6,65,62,.05), 0 6px 24px rgba(6,65,62,.06);
+    --ok:#1F8A5F; --warn:#B7791F; --bad:#C0392B; --info:#5B8DEF;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Archivo',system-ui,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+  .topbar{background:var(--teal-deep);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:13px;position:sticky;top:0;z-index:30}
+  .mono{font-family:Georgia,serif;font-weight:700;font-size:23px;letter-spacing:.5px;line-height:1}
+  .mono .y{color:var(--aqua)}
+  .topbar .tag{font-weight:700;font-size:11px;letter-spacing:2px;text-transform:uppercase;background:rgba(255,255,255,.14);padding:3px 9px;border-radius:20px}
+  .topbar .title{font-weight:700;font-size:15px;margin-left:4px}
+  .topbar .right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .topbar .back{color:#fff;text-decoration:none;font-size:13px;font-weight:600;opacity:.85}
+  .topbar .back:hover{opacity:1}
+  .wrap{max-width:1300px;margin:0 auto;padding:20px 22px 90px}
+
+  .wip{background:#FBF3D9;border:1px solid #EAD9A0;color:#8A6D1A;border-radius:10px;padding:10px 14px;font-size:12.5px;line-height:1.55;margin-bottom:16px;display:flex;gap:9px;align-items:flex-start}
+  .wip b{color:#6B5410}
+
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;border-bottom:1px solid var(--line)}
+  .tab{font-family:inherit;font-size:13.5px;font-weight:700;color:var(--gris);background:none;border:0;border-bottom:2.5px solid transparent;padding:9px 13px 11px;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap}
+  .tab:hover{color:var(--teal-deep)}
+  .tab.on{color:var(--teal-deep);border-bottom-color:var(--teal)}
+  .tab .pill{font-size:9.5px;font-weight:800;background:var(--coral);color:#fff;border-radius:20px;padding:1px 6px;line-height:1.5}
+  .tab .pill.rojo{background:var(--bad)}
+  .tab .pill.gris{background:var(--gris2)}
+
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:11px;margin-bottom:16px}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 15px;box-shadow:var(--shadow);text-align:left;font-family:inherit;cursor:pointer;transition:transform .12s,box-shadow .12s;position:relative;overflow:hidden}
+  .kpi:hover{transform:translateY(-2px);box-shadow:0 4px 8px rgba(6,65,62,.09),0 12px 30px rgba(6,65,62,.10)}
+  .kpi::after{content:"\203A";position:absolute;right:12px;top:12px;color:var(--gris2);font-size:16px;font-weight:800;opacity:.5}
+  .kpi .l{font-size:11px;color:var(--gris);font-weight:700;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:6px}
+  .kpi .n{font-size:23px;font-weight:800;line-height:1.15;margin-top:6px}
+  .kpi .s{font-size:11.5px;color:var(--gris2);font-weight:600;margin-top:3px;line-height:1.45}
+  .kpi.alerta{border-color:#F0C9C4;background:#FFF9F8}
+  .kpi.alerta .n{color:var(--bad)}
+  .kpi.bien .n{color:var(--ok)}
+  .kpi.quieto{cursor:help}
+  .kpi.quieto::after{content:""}
+  .neg{color:var(--bad)}.pos{color:var(--ok)}
+
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 18px;margin-bottom:16px}
+  .panel h3{font-size:14.5px;font-weight:800;color:var(--teal-deep);margin-bottom:3px;display:flex;align-items:center;gap:7px}
+  .panel .sub{font-size:12px;color:var(--gris);margin-bottom:14px;line-height:1.5}
+
+  /* ---- fila de pedido (la cola de trabajo) ---- */
+  .ped{border:1px solid var(--line);border-radius:11px;background:#fff;margin-bottom:9px;overflow:hidden;position:relative}
+  .ped::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--teal-med)}
+  .ped.draft::before{background:var(--info)}
+  .ped.bloq::before{background:var(--bad)}
+  .ped.viejo::before{background:var(--warn)}
+  .pedhead{display:flex;align-items:center;gap:12px;padding:11px 14px 11px 17px;cursor:pointer;flex-wrap:wrap}
+  .pedhead:hover{background:#FAFDFC}
+  .pedhead .nro{font-size:12.5px;font-weight:800;color:var(--teal-deep);min-width:82px}
+  .pedhead .cli{font-size:13px;font-weight:700;flex:1;min-width:180px;line-height:1.35}
+  .pedhead .cli small{display:block;font-size:11px;color:var(--gris2);font-weight:600}
+  .pedhead .mt{font-size:14px;font-weight:800;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .pedhead .mt small{display:block;font-size:10.5px;color:var(--gris2);font-weight:600}
+  .chip{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:800;border-radius:20px;padding:2.5px 8px;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap}
+  .c-ok{background:#E4F4EC;color:var(--ok)} .c-warn{background:#FBF1DC;color:var(--warn)}
+  .c-bad{background:#FBE6E3;color:var(--bad)} .c-info{background:#E8EFFD;color:var(--info)}
+  .c-gris{background:#EEF2F2;color:var(--gris)} .c-teal{background:var(--agua);color:var(--teal-deep)}
+  .avisos{padding:0 14px 11px 17px;display:flex;flex-direction:column;gap:6px}
+  .aviso{background:#FFFBF0;border:1px solid #F0DFB8;border-left:3px solid var(--coral);border-radius:8px;padding:8px 11px;font-size:12.5px;line-height:1.5;color:#5C4A22;white-space:pre-wrap}
+  .aviso.stop{background:#FEF4F3;border-color:#F2CFCA;border-left-color:var(--bad);color:#8A2F27}
+  .aviso .qui{display:block;font-size:10.5px;font-weight:800;color:var(--gris2);text-transform:uppercase;letter-spacing:.3px;margin-bottom:2px}
+  .acc{display:flex;gap:7px;padding:0 14px 12px 17px;flex-wrap:wrap;align-items:center}
+  .btn{font-family:inherit;font-size:12px;font-weight:700;border-radius:8px;padding:7px 13px;border:1px solid var(--line);background:#fff;color:var(--ink);cursor:pointer;white-space:nowrap}
+  .btn:hover{background:#F4F8F7}
+  .btn.pri{background:var(--teal);border-color:var(--teal);color:#fff}
+  .btn.pri:hover{background:var(--teal-deep)}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
+  .btn.sm{font-size:11px;padding:5px 10px}
+  .lnk{font-size:11.5px;color:var(--teal);font-weight:700;text-decoration:none}
+  .lnk:hover{text-decoration:underline}
+
+  .det{border-top:1px solid var(--line);background:#FBFDFD;padding:13px 16px 15px 17px;font-size:12.5px}
+  .det h4{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--gris);font-weight:800;margin:0 0 7px}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:800;padding:8px 9px;border-bottom:1.5px solid var(--line);white-space:nowrap}
+  td{padding:8px 9px;border-bottom:1px solid #EEF4F3;vertical-align:middle}
+  tr:last-child td{border-bottom:0}
+  .r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .tscroll{overflow-x:auto}
+  .muted{color:var(--gris2)}
+  .clk{cursor:pointer}
+  tr.clk:hover td{background:#F6FBFA}
+
+  .filtros{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:13px}
+  .filtros input,.filtros select{font-family:inherit;font-size:12.5px;padding:7px 11px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink)}
+  .filtros input{min-width:220px}
+  .fchip{font-family:inherit;font-size:11.5px;font-weight:700;border:1px solid var(--line);background:#fff;color:var(--gris);border-radius:20px;padding:5px 12px;cursor:pointer}
+  .fchip.on{background:var(--teal-deep);border-color:var(--teal-deep);color:#fff}
+
+  .vacio{text-align:center;padding:36px 20px;color:var(--gris2);font-size:13px;font-weight:600;line-height:1.6}
+  .vacio .big{font-size:30px;display:block;margin-bottom:8px}
+  .errbox{background:#FEF4F3;border:1px solid #F2CFCA;color:#8A2F27;border-radius:10px;padding:13px 16px;font-size:13px;line-height:1.55}
+  .cargando{text-align:center;padding:44px;color:var(--gris2);font-size:13px;font-weight:600}
+
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;font-size:13px;font-weight:600;padding:11px 18px;border-radius:9px;box-shadow:0 8px 30px rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:.2s;z-index:12000;max-width:88vw;text-align:center}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  .ovbg{position:fixed;inset:0;background:rgba(8,30,28,.45);z-index:11000;display:flex;align-items:center;justify-content:center;padding:20px}
+  .ov{background:#fff;border-radius:14px;max-width:520px;width:100%;padding:22px 24px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+  .ov h3{font-size:16px;font-weight:800;color:var(--teal-deep);margin-bottom:9px}
+  .ov p{font-size:13px;line-height:1.6;color:var(--gris);margin-bottom:10px}
+  .ov .dato{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:11px 13px;font-size:12.5px;line-height:1.7;margin-bottom:13px}
+  .ov .dato b{color:var(--ink)}
+  .ov .ovacc{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+  .ov .alerta{background:#FEF4F3;border:1px solid #F2CFCA;color:#8A2F27;border-radius:9px;padding:10px 12px;font-size:12.5px;line-height:1.55;margin-bottom:12px}
+
+  .barras{display:flex;align-items:flex-end;gap:5px;height:130px;padding-top:8px}
+  .barra{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px;min-width:0;cursor:help}
+  .barra .bb{width:100%;border-radius:4px 4px 0 0;background:var(--teal-med);min-height:2px}
+  .barra.hoy .bb{background:var(--coral)}
+  .barra:hover .bb{opacity:.75}
+  .barra .lb{font-size:9px;color:var(--gris2);font-weight:700;white-space:nowrap}
+
+  @media(max-width:760px){
+    .wrap{padding:16px 13px 80px}
+    .pedhead{gap:8px}
+    .pedhead .mt{text-align:left}
+  }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="mono">E<span class="y">y</span>G</span>
+  <span class="tag">Core</span>
+  <span class="title">🧾 Facturación</span>
+  <span class="right">
+    <span id="quien" style="font-size:12px;opacity:.8"></span>
+    <a class="back" href="../index.html">← Inicio</a>
+  </span>
+</div>
+<div class="wrap" id="app"><div class="cargando">Cargando facturación…</div></div>
+
+<script>
+const ODOO="https://drogueriaeyg.odoo.com";
+const esc=EYG.esc, money=EYG.money;
+
+/* ═══════════════════════════════════════════════════════════════════════
+   FACTURACIÓN — el puesto de Vanesa dentro del Core.
+
+   El circuito real, medido sobre Odoo el 8/9/2026:
+     1. La comercial carga el pedido y lo deja en BORRADOR (presupuesto).
+        A veces le deja una nota en el chatter: "Vane, facturar la cipro a
+        $4999", "no facturar estoy esperando la OC", o le adjunta la OC.
+     2. Vanesa lo revisa, lo CONFIRMA y lo FACTURA. De las 870 facturas de
+        los últimos 14 días, 772 las creó ella: unas 55 por día.
+     3. Casi todo se factura el mismo día. Lo que queda pendiente más de
+        una semana es la excepción, y es justo lo que hay que destacar.
+
+   Por eso el módulo se ordena así: la COLA de lo que falta facturar es la
+   pantalla principal, con las notas de las comerciales pegadas al pedido
+   (antes había que abrir el chatter de Odoo uno por uno para verlas), y
+   los botones de Confirmar / Facturar al lado.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Un pedido es "reciente" si tiene 30 días o menos: es el trabajo del momento.
+   Entre 31 y 120 está DEMORADO. Más viejo que eso es el backlog histórico
+   (441 pedidos sin facturar, casi todos de más de 90 días) y va aparte
+   para que no tape la cola del día. */
+const DIAS_COLA=30, DIAS_DEMORA=120;
+
+/* Frases con las que la comercial FRENA la facturación. Si aparece alguna en
+   una nota del pedido, el pedido se marca en rojo y el botón de facturar pide
+   confirmación extra. Es un semáforo, no un candado: se puede facturar igual. */
+const RE_FRENO=/\bno\s+(la\s+|lo\s+|les\s+)?factur|no\s+emitir|\bespera(r|ndo|me)?\b|aguard|todav[ií]a\s+no|falta\s+(la\s+)?oc|sin\s+(la\s+)?oc|no\s+entregar/i;
+/* Marca que deja vender.html cuando la comercial adjunta la orden de compra. */
+const RE_OC=/OC del cliente adjuntada/i;
+
+let PERFIL=null, VISTA="hoy";
+let PEND=[];           // pedidos pendientes (borradores + confirmados sin facturar), <= 120 días
+let AVISOS={};         // res_id -> [notas de las comerciales]
+let EMITIDO=[];        // facturas y notas de crédito del mes
+let PORDIA=[];         // facturado por día del mes
+let ATRAS=null;        // backlog viejo (se carga recién al abrir la pestaña)
+let KPI={};
+let ABIERTO=null, DET={};   // detalle desplegado
+/* rango: "cola" = últimos 30 días (el trabajo del día, lo que se abre por defecto)
+   "demor" = 31 a 120 días · "todo" = los dos juntos. Sin esto la pantalla arrancaba
+   con 700 presupuestos viejos arriba y la venta de hoy enterrada al fondo. */
+let FILTRO={q:"", com:"", tipo:"", solo:"", rango:"cola"};
+let TRABAJANDO={};     // id -> true mientras se confirma / factura
+
+const fnum=n=>Math.round(n||0).toLocaleString("es-AR");
+const soloFecha=s=>String(s||"").slice(0,10);
+const fmtFecha=f=>f?soloFecha(f).split("-").reverse().join("/"):"—";
+const fmtHora=s=>String(s||"").slice(11,16);
+function diasDe(f){ if(!f) return 0; const h=new Date(EYG.argToday()+"T00:00:00"); const d=new Date(soloFecha(f)+"T00:00:00"); return Math.round((h-d)/86400000); }
+function hace(n){ const t=new Date(); t.setDate(t.getDate()-n); return t.toISOString().slice(0,10); }
+function antig(d){ return d<=0?"hoy":d===1?"ayer":"hace "+d+" días"; }
+const limpiar=h=>String(h||"").replace(/<br\s*\/?>/gi,"\n").replace(/<\/p>/gi,"\n").replace(/<[^>]*>/g," ")
+  .replace(/&nbsp;/g," ").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">")
+  .replace(/[ \t]+/g," ").replace(/\n{2,}/g,"\n").trim();
+function toast(msg){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";t.className="toast";document.body.appendChild(t);}t.textContent=msg;t.classList.add("on");clearTimeout(toast._t);toast._t=setTimeout(()=>t.classList.remove("on"),3400);}
+
+/* ══════════════ CARGA ══════════════ */
+const PF=["name","date_order","partner_id","user_id","amount_total","amount_untaxed",
+          "amount_to_invoice","type_id","state","invoice_status","delivery_status","invoice_count","client_order_ref"];
+const MF=["name","invoice_date","partner_id","amount_total","amount_untaxed","state","move_type","journal_id","invoice_origin","invoice_user_id"];
+
+/* Pendiente = presupuesto sin confirmar  O  pedido confirmado con saldo por facturar. */
+function domPendiente(desde,hasta){
+  const f=[];
+  if(desde) f.push(["date_order",">=",desde+" 00:00:00"]);
+  if(hasta) f.push(["date_order","<",hasta+" 00:00:00"]);
+  const base=["|",["state","in",["draft","sent"]],
+              "&",["state","in",["sale","done"]],["invoice_status","=","to invoice"]];
+  return f.length===1?["&",f[0],...base]:base;
+}
+
+async function cargar(){
+  const app=document.getElementById("app");
+  try{
+    const hoy=EYG.argToday(), iniMes=hoy.slice(0,8)+"01";
+    const [pend, viejos, emit, draftInv] = await Promise.all([
+      EYG.rpc("sale.order","search_read",[domPendiente(hace(DIAS_DEMORA),null)],
+        {fields:PF,context:{lang:"es_AR"},limit:0,order:"date_order desc"}),
+      EYG.rpc("sale.order","search_count",[domPendiente(null,hace(DIAS_DEMORA))]),
+      EYG.rpc("account.move","search_read",[[["move_type","in",["out_invoice","out_refund"]],["invoice_date",">=",iniMes]]],
+        {fields:MF,context:{lang:"es_AR"},limit:0,order:"invoice_date desc, id desc"}),
+      EYG.rpc("account.move","search_count",[[["move_type","in",["out_invoice","out_refund"]],["state","=","draft"]]])
+    ]);
+
+    PEND=pend; EMITIDO=emit;
+    KPI.viejos=viejos; KPI.draftInv=draftInv;
+    await cargarAvisos();
+    recalcularDias();
+    calcularKpis(hoy);
+    render();
+  }catch(e){
+    app.innerHTML='<div class="errbox"><b>No pude cargar la facturación.</b><br>'+esc(e.message||e)+'</div>';
+  }
+}
+
+/* Notas de las comerciales sobre los pedidos que siguen pendientes.
+   Una nota se considera "resuelta" sola cuando el pedido se factura: por eso
+   sólo se leen las de los pedidos de esta lista, y desaparecen sin que nadie
+   tenga que marcarlas como leídas. */
+async function cargarAvisos(){
+  AVISOS={};
+  const ids=PEND.map(o=>o.id);
+  if(!ids.length) return;
+  const msgs=await EYG.rpc("mail.message","search_read",
+    [[["model","=","sale.order"],["res_id","in",ids],["message_type","=","comment"]]],
+    {fields:["res_id","date","body","author_id"],limit:0,order:"date desc"});
+  msgs.forEach(m=>{
+    const txt=limpiar(m.body);
+    if(!txt) return;
+    (AVISOS[m.res_id]=AVISOS[m.res_id]||[]).push({
+      id:m.id, txt, fecha:m.date, autor:m.author_id?m.author_id[1]:"—",
+      oc:RE_OC.test(txt), freno:RE_FRENO.test(txt)
+    });
+  });
+}
+
+/* Facturado por día del mes: se arma sumando los comprobantes emitidos, no con
+   un read_group, porque el groupby por día devuelve la fecha ya formateada
+   según el idioma y no se puede ordenar de forma confiable. */
+function recalcularDias(){
+  const dias={};
+  EMITIDO.filter(m=>m.state==="posted").forEach(m=>{
+    const k=soloFecha(m.invoice_date); if(!k) return;
+    dias[k]=dias[k]||{fecha:k,neto:0,total:0,facts:0,nc:0,ncMonto:0};
+    if(m.move_type==="out_refund"){ dias[k].nc++; dias[k].ncMonto+=m.amount_total||0; dias[k].neto-=m.amount_untaxed||0; dias[k].total-=m.amount_total||0; }
+    else { dias[k].facts++; dias[k].neto+=m.amount_untaxed||0; dias[k].total+=m.amount_total||0; }
+  });
+  PORDIA=Object.values(dias).sort((a,b)=>a.fecha.localeCompare(b.fecha));
+}
+
+function calcularKpis(hoy){
+  hoy=hoy||EYG.argToday();
+  const cola=PEND.filter(o=>diasDe(o.date_order)<=DIAS_COLA);
+  const demor=PEND.filter(o=>diasDe(o.date_order)>DIAS_COLA);
+  KPI.cola=cola.length;
+  KPI.colaMonto=cola.reduce((a,o)=>a+montoPend(o),0);
+  KPI.demor=demor.length;
+  KPI.demorMonto=demor.reduce((a,o)=>a+montoPend(o),0);
+  KPI.bloq=PEND.filter(frenado).length;
+  KPI.conAviso=PEND.filter(o=>avisosDe(o).length).length;
+  const d=PORDIA.find(x=>x.fecha===hoy)||{neto:0,total:0,facts:0};
+  KPI.hoyNeto=d.neto; KPI.hoyTotal=d.total; KPI.hoyFacts=d.facts;
+  KPI.mesNeto=PORDIA.reduce((a,x)=>a+x.neto,0);
+  KPI.mesFacts=PORDIA.reduce((a,x)=>a+x.facts,0);
+  KPI.mesNC=PORDIA.reduce((a,x)=>a+x.nc,0);
+  KPI.mesNCMonto=PORDIA.reduce((a,x)=>a+x.ncMonto,0);
+  /* Promedio diario sobre DÍAS CON FACTURACIÓN, no días corridos: si el mes
+     arrancó un jueves o hubo feriados, dividir por días de calendario miente. */
+  const dact=PORDIA.filter(x=>x.facts>0).length;
+  KPI.diasAct=dact;
+  KPI.promDia=dact?KPI.mesNeto/dact:0;
+  KPI.promFacts=dact?KPI.mesFacts/dact:0;
+}
+
+/* Lo que falta facturar de un pedido: si ya está confirmado lo calcula Odoo
+   (amount_to_invoice); si todavía es un presupuesto, es el total. */
+const montoPend=o=>(o.state==="draft"||o.state==="sent")?(o.amount_total||0):(o.amount_to_invoice||o.amount_total||0);
+const esBorrador=o=>o.state==="draft"||o.state==="sent";
+const avisosDe=o=>AVISOS[o.id]||[];
+const frenado=o=>avisosDe(o).some(a=>a.freno);
+const tieneOC=o=>avisosDe(o).some(a=>a.oc);
+const esbo=o=>esBorrador(o)?"Confirmar y facturar":"Facturar";
+
+/* ══════════════ RENDER ══════════════ */
+function render(){
+  document.getElementById("quien").textContent=PERFIL?(PERFIL.nombre||PERFIL.email||""):"";
+  const T=[
+    ["hoy","📊 Mi día",null,null],
+    ["cola","📥 Por facturar",KPI.cola,KPI.bloq?"rojo":null],
+    ["avisos","💬 Avisos de comerciales",KPI.conAviso,KPI.bloq?"rojo":null],
+    ["emitido","🧾 Emitido",KPI.draftInv||null,null],
+    ["atrasados","🕰️ Atrasados",KPI.viejos,"gris"]
+  ];
+  const tabs=T.map(([k,t,n,cl])=>`<button class="tab ${VISTA===k?"on":""}" onclick="irA('${k}')">${t}${n?`<span class="pill ${cl||""}">${fnum(n)}</span>`:""}</button>`).join("");
+  let cuerpo="";
+  if(VISTA==="hoy") cuerpo=vistaHoy();
+  else if(VISTA==="cola") cuerpo=vistaCola();
+  else if(VISTA==="avisos") cuerpo=vistaAvisos();
+  else if(VISTA==="emitido") cuerpo=vistaEmitido();
+  else if(VISTA==="atrasados") cuerpo=vistaAtrasados();
+  document.getElementById("app").innerHTML=`
+    <div class="wip">⚠️ <div><b>Módulo nuevo, en pruebas.</b> Lee los pedidos y las facturas de Odoo en vivo. Los botones <b>Confirmar</b> y <b>Facturar</b> escriben de verdad en Odoo — antes de usarlos en el día a día conviene probar uno acompañada.</div></div>
+    <div class="tabs">${tabs}</div>${cuerpo}`;
+}
+function irA(v){ VISTA=v; ABIERTO=null; render(); if(v==="atrasados"&&ATRAS===null) cargarAtrasados(); }
+function filtrar(campo,val){ FILTRO[campo]=val; if(VISTA!=="cola") VISTA="cola"; render(); }
+/* Salto desde un KPI a la cola ya filtrada. Va con rango explícito porque
+   varios de esos números (frenados, con aviso) cuentan TODO lo pendiente, y si
+   la cola quedara en "últimos 30 días" el usuario vería menos de lo que le
+   prometía la tarjeta que acaba de tocar. */
+function verCola(rango,solo){ FILTRO.rango=rango; FILTRO.solo=solo||""; FILTRO.q=""; FILTRO.com=""; FILTRO.tipo=""; VISTA="cola"; ABIERTO=null; render(); }
+
+/* ---------- Mi día ---------- */
+function vistaHoy(){
+  const cola=PEND.filter(o=>diasDe(o.date_order)<=DIAS_COLA);
+  const k=[
+    {l:"Por facturar",n:KPI.cola,s:money(KPI.colaMonto)+" · últimos "+DIAS_COLA+" días",
+     t:"Pedidos que todavía no se facturaron: presupuestos que dejó la comercial sin confirmar, más pedidos confirmados con saldo por facturar, de los últimos "+DIAS_COLA+" días. Tocá para ver la cola.",
+     v:()=>verCola("cola"),cls:KPI.cola?"":"bien"},
+    {l:"Frenados por la comercial",n:KPI.bloq,s:KPI.bloq?"dicen «no facturar» o «esperando OC»":"ninguno frenado",
+     t:"Pedidos donde la comercial dejó una nota pidiendo NO facturar todavía (falta la orden de compra, está esperando confirmación del cliente). Se pueden facturar igual, pero el módulo avisa primero.",
+     v:()=>verCola("todo","bloq"),cls:KPI.bloq?"alerta":"bien"},
+    {l:"Facturado hoy",n:money(KPI.hoyNeto),s:KPI.hoyFacts+" facturas · "+money(KPI.hoyTotal)+" con IVA",
+     t:"Lo facturado hoy en NETO (sin IVA), ya descontadas las notas de crédito del día. Al lado, el mismo importe con IVA. Tocá para ver los comprobantes uno por uno.",
+     v:()=>irA("emitido"),cls:"bien"},
+    {l:"Facturado del mes",n:money(KPI.mesNeto),s:KPI.mesFacts+" facturas · "+money(KPI.promDia)+"/día",
+     t:"Neto facturado en el mes (sin IVA, descontadas las notas de crédito). El promedio se divide por DÍAS CON FACTURACIÓN ("+KPI.diasAct+" en este mes), no por días de calendario, para que no lo ensucien fines de semana ni feriados.",
+     v:()=>irA("emitido")},
+    {l:"Con aviso de la comercial",n:KPI.conAviso,s:"pedidos con nota en el pedido",
+     t:"Pedidos pendientes donde la comercial escribió una indicación: precio especial según la orden de compra, un descuento a aplicar, o que adjuntó la OC. Antes había que abrirlos uno por uno en Odoo para enterarse.",
+     v:()=>irA("avisos")},
+    {l:"Demorados",n:KPI.demor,s:money(KPI.demorMonto)+" · "+(DIAS_COLA+1)+" a "+DIAS_DEMORA+" días",
+     t:"Pedidos pendientes de facturar de entre "+(DIAS_COLA+1)+" y "+DIAS_DEMORA+" días de antigüedad. Son los que se están escapando y todavía se pueden recuperar.",
+     v:()=>verCola("demor"),cls:KPI.demor?"alerta":""},
+    {l:"Facturas sin emitir",n:KPI.draftInv,s:"borradores en Odoo",
+     t:"Facturas y notas de crédito que quedaron en BORRADOR en Odoo: se crearon pero nunca se validaron, así que no tienen CAE y no cuentan como venta. Hay que emitirlas o borrarlas.",
+     v:()=>irA("emitido"),cls:KPI.draftInv?"alerta":"bien"},
+    {l:"Notas de crédito del mes",n:KPI.mesNC,s:money(KPI.mesNCMonto),
+     t:"Cuántas notas de crédito se emitieron este mes y por cuánto. Ya están descontadas del facturado del mes.",
+     v:()=>irA("emitido")}
+  ];
+  window._kpiAcc=k.map(x=>x.v);
+  const kpis=k.map((x,i)=>`<button class="kpi ${x.cls||""}" title="${esc(x.t)}" onclick="_kpiAcc[${i}]()">
+      <div class="l">${esc(x.l)}</div><div class="n">${typeof x.n==="number"?fnum(x.n):esc(x.n)}</div><div class="s">${esc(x.s)}</div></button>`).join("");
+
+  const max=Math.max(1,...PORDIA.map(d=>d.neto));
+  const hoy=EYG.argToday();
+  const barras=PORDIA.map(d=>{
+    const h=Math.max(2,Math.round(d.neto/max*112));
+    return `<div class="barra ${d.fecha===hoy?"hoy":""}" title="${fmtFecha(d.fecha)} — ${money(d.neto)} netos en ${d.facts} facturas${d.nc?" ("+d.nc+" notas de crédito por "+money(d.ncMonto)+")":""}">
+      <div class="bb" style="height:${h}px"></div><div class="lb">${d.fecha.slice(8,10)}</div></div>`;
+  }).join("");
+
+  /* Primero los que tienen una indicación de la comercial (hay que leerla antes
+     de facturar) y después se completa con los más nuevos, que son la venta del
+     día. Si sólo mostrara los que tienen aviso, casi siempre quedaría vacío. */
+  const conAv=cola.filter(o=>avisosDe(o).length)
+                  .sort((a,b)=>(frenado(b)-frenado(a))||(diasDe(a.date_order)-diasDe(b.date_order)));
+  const resto=cola.filter(o=>!avisosDe(o).length)
+                  .sort((a,b)=>diasDe(a.date_order)-diasDe(b.date_order));
+  const urg=conAv.concat(resto).slice(0,6);
+  return `<div class="kpis">${kpis}</div>
+    <div class="panel">
+      <h3>📈 Facturación del mes, día por día</h3>
+      <div class="sub">Neto facturado por día (sin IVA, descontadas las notas de crédito). El día de hoy va en naranja. Pasá el cursor por una barra para ver el detalle de ese día.</div>
+      ${PORDIA.length?`<div class="barras">${barras}</div>`:'<div class="vacio">Todavía no hay facturación este mes.</div>'}
+    </div>
+    <div class="panel">
+      <h3>⚡ Lo primero de la cola</h3>
+      <div class="sub">Lo que hay que facturar ahora: primero los pedidos con una indicación de la comercial —esos hay que leerlos antes de emitir— y después los más nuevos.${KPI.cola>urg.length?` <a class="lnk" href="#" onclick="verCola('cola');return false">Ver los ${fnum(KPI.cola)} pendientes →</a>`:""}</div>
+      ${urg.length?urg.map(filaPedido).join(""):'<div class="vacio"><span class="big">✅</span>No queda nada por facturar de los últimos '+DIAS_COLA+' días.</div>'}
+    </div>`;
+}
+
+/* ---------- Por facturar ---------- */
+function vistaCola(){
+  const R=FILTRO.rango||"cola";
+  let l=PEND.slice();
+  if(R==="cola") l=l.filter(o=>diasDe(o.date_order)<=DIAS_COLA);
+  else if(R==="demor") l=l.filter(o=>diasDe(o.date_order)>DIAS_COLA);
+  if(FILTRO.solo==="bloq") l=l.filter(frenado);
+  if(FILTRO.solo==="aviso") l=l.filter(o=>avisosDe(o).length);
+  if(FILTRO.solo==="borr") l=l.filter(esBorrador);
+  if(FILTRO.solo==="conf") l=l.filter(o=>!esBorrador(o));
+  if(FILTRO.com) l=l.filter(o=>(o.user_id?o.user_id[1]:"")===FILTRO.com);
+  if(FILTRO.tipo) l=l.filter(o=>String(o.type_id?o.type_id[1]:"")===FILTRO.tipo);
+  if(FILTRO.q){ const q=FILTRO.q.toLowerCase(); l=l.filter(o=>(o.name+" "+(o.partner_id?o.partner_id[1]:"")+" "+(o.client_order_ref||"")).toLowerCase().includes(q)); }
+  /* Primero lo que la comercial pidió frenar (hay que resolverlo sí o sí).
+     Después, en la cola del día lo más NUEVO arriba (es la venta de hoy); en la
+     lista de demorados, al revés, lo más viejo primero (es lo que se escapa). */
+  const viejoPrimero=(R!=="cola");
+  l.sort((a,b)=>(frenado(b)-frenado(a)) ||
+    (viejoPrimero ? diasDe(b.date_order)-diasDe(a.date_order) : diasDe(a.date_order)-diasDe(b.date_order)));
+
+  const enRango=f=>PEND.filter(o=>(R==="cola"?diasDe(o.date_order)<=DIAS_COLA:R==="demor"?diasDe(o.date_order)>DIAS_COLA:true)).filter(f).length;
+  const coms=[...new Set(PEND.map(o=>o.user_id?o.user_id[1]:"").filter(Boolean))].sort();
+  const tipos=[...new Set(PEND.map(o=>o.type_id?o.type_id[1]:"").filter(Boolean))].sort();
+  const chip=(v,t,n,ay)=>`<button class="fchip ${FILTRO.solo===v?"on":""}" title="${esc(ay)}" onclick="filtrar('solo','${FILTRO.solo===v?"":v}')">${t} (${fnum(n)})</button>`;
+  const chipR=(v,t,n,ay)=>`<button class="fchip ${R===v?"on":""}" title="${esc(ay)}" onclick="filtrar('rango','${v}')">${t} (${fnum(n)})</button>`;
+  const total=l.reduce((a,o)=>a+montoPend(o),0);
+
+  return `<div class="panel">
+    <h3>📥 Pedidos por facturar</h3>
+    <div class="sub">Presupuestos que dejaron las comerciales y pedidos confirmados con saldo sin facturar. Arranca en los <b>últimos ${DIAS_COLA} días</b>, que es el trabajo del momento; lo que la comercial pidió frenar va primero y en rojo. Más atrás está lo <b>demorado</b>, y lo de más de ${DIAS_DEMORA} días en la pestaña <b>Atrasados</b>.</div>
+    <div class="filtros">
+      ${chipR("cola","📥 Últimos "+DIAS_COLA+" días",KPI.cola,"El trabajo del momento: pendientes de hasta "+DIAS_COLA+" días.")}
+      ${chipR("demor","🕰️ Demorados",KPI.demor,"Pendientes de entre "+(DIAS_COLA+1)+" y "+DIAS_DEMORA+" días. Son los que se están escapando.")}
+      ${chipR("todo","Todos",PEND.length,"Los dos grupos juntos: todo lo pendiente de hasta "+DIAS_DEMORA+" días.")}
+    </div>
+    <div class="filtros">
+      <input id="q" placeholder="Buscar por pedido, cliente u OC…" value="${esc(FILTRO.q)}" oninput="filtrarQ(this.value)" title="Busca en el número de pedido, el nombre del cliente y la referencia de la orden de compra.">
+      <select onchange="filtrar('com',this.value)" title="Filtrar por la comercial que cargó el pedido."><option value="">Todas las comerciales</option>${coms.map(c=>`<option ${FILTRO.com===c?"selected":""}>${esc(c)}</option>`).join("")}</select>
+      <select onchange="filtrar('tipo',this.value)" title="Tipo de pedido de Odoo. La proforma va al talonario Proforma, sin validez fiscal."><option value="">Todos los tipos</option>${tipos.map(c=>`<option ${FILTRO.tipo===c?"selected":""}>${esc(c)}</option>`).join("")}</select>
+      ${chip("bloq","🛑 Frenados",enRango(frenado),"Sólo los pedidos donde la comercial pidió no facturar todavía.")}
+      ${chip("aviso","💬 Con aviso",enRango(o=>avisosDe(o).length),"Sólo los pedidos que tienen alguna nota de la comercial.")}
+      ${chip("borr","📝 Sin confirmar",enRango(esBorrador),"Presupuestos que todavía no se pasaron a pedido confirmado.")}
+      ${chip("conf","✅ Confirmados",enRango(o=>!esBorrador(o)),"Pedidos ya confirmados a los que les falta la factura.")}
+    </div>
+    <div class="sub" style="margin-bottom:12px"><b>${fnum(l.length)}</b> pedidos · <b>${money(total)}</b> por facturar</div>
+    ${l.length?l.map(filaPedido).join(""):'<div class="vacio"><span class="big">✅</span>No queda nada por facturar con estos filtros.</div>'}
+  </div>`;
+}
+let _qt=null;
+function filtrarQ(v){ FILTRO.q=v; clearTimeout(_qt); _qt=setTimeout(()=>{ render(); const i=document.getElementById("q"); if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);} },260); }
+
+function filaPedido(o){
+  const d=diasDe(o.date_order), borr=esBorrador(o), fr=frenado(o), av=avisosDe(o);
+  const cls=fr?"bloq":(d>DIAS_COLA?"viejo":(borr?"draft":""));
+  const chips=[
+    borr?'<span class="chip c-info" title="Es un presupuesto: todavía no se confirmó como pedido.">📝 sin confirmar</span>'
+        :'<span class="chip c-teal" title="El pedido ya está confirmado; le falta la factura.">✅ confirmado</span>',
+    fr?'<span class="chip c-bad" title="La comercial dejó una nota pidiendo no facturar todavía.">🛑 pidió frenar</span>':"",
+    d>DIAS_COLA?`<span class="chip c-warn" title="Hace ${d} días que está sin facturar.">🕰️ ${d} días</span>`:"",
+    tieneOC(o)?'<span class="chip c-gris" title="La comercial adjuntó la orden de compra del cliente. Está en el detalle.">📎 OC adjunta</span>':"",
+    (o.type_id&&o.type_id[0]===3)?'<span class="chip c-gris" title="Tipo Proforma: al facturar va al talonario Proforma, sin validez fiscal.">proforma</span>':"",
+    (!borr&&o.delivery_status==="pending")?'<span class="chip c-warn" title="El pedido todavía no salió del depósito.">sin entregar</span>':""
+  ].filter(Boolean).join(" ");
+  const notas=av.slice(0,3).map(a=>`<div class="aviso ${a.freno?"stop":""}">
+      <span class="qui">${esc(a.autor)} · ${fmtFecha(a.fecha)} ${fmtHora(a.fecha)}</span>${esc(a.txt.slice(0,400))}</div>`).join("");
+  const mas=av.length>3?`<div class="sub" style="margin:0"><a class="lnk" href="#" onclick="abrir(${o.id});return false">Ver las ${av.length} notas →</a></div>`:"";
+  const trab=TRABAJANDO[o.id];
+  return `<div class="ped ${cls}" id="ped${o.id}">
+    <div class="pedhead" onclick="abrir(${o.id})" title="Tocá para ver los renglones, las notas y los adjuntos del pedido.">
+      <span class="nro">${esc(o.name)}</span>
+      <span class="cli">${esc(o.partner_id?o.partner_id[1]:"—")}
+        <small>${esc(o.user_id?o.user_id[1]:"sin comercial")} · ${fmtFecha(o.date_order)} · ${antig(d)}${o.client_order_ref?" · OC "+esc(o.client_order_ref):""}</small></span>
+      <span>${chips}</span>
+      <span class="mt" title="${borr?"Total del presupuesto.":"Importe que todavía falta facturar de este pedido."}">${money(montoPend(o))}<small>${borr?"total del pedido":"falta facturar"}</small></span>
+    </div>
+    ${av.length?`<div class="avisos">${notas}${mas}</div>`:""}
+    <div class="acc">
+      ${borr?`<button class="btn" ${trab?"disabled":""} title="Pasa el presupuesto a pedido confirmado. No factura nada." onclick="accion(${o.id},'confirmar')">✅ Confirmar pedido</button>`:""}
+      <button class="btn pri" ${trab?"disabled":""} title="${borr?"Confirma el pedido y genera la factura.":"Genera la factura de este pedido."} Vas a poder elegir si se emite o queda en borrador." onclick="accion(${o.id},'facturar')">🧾 ${esbo(o)}</button>
+      <button class="btn sm" onclick="abrir(${o.id})">👁️ Ver detalle</button>
+      <a class="lnk" style="margin-left:4px" target="_blank" href="${ODOO}/odoo/sales/${o.id}">Abrir en Odoo ↗</a>
+      ${trab?'<span class="chip c-warn">trabajando…</span>':""}
+    </div>
+    ${ABIERTO===o.id?detalleHTML(o):""}
+  </div>`;
+}
+
+/* ---------- Detalle del pedido ---------- */
+async function abrir(id){
+  if(ABIERTO===id){ ABIERTO=null; render(); return; }
+  ABIERTO=id; render();
+  if(!DET[id]){
+    try{
+      const [lineas,msgs,adj]=await Promise.all([
+        EYG.rpc("sale.order.line","search_read",[[["order_id","=",id]]],
+          {fields:["name","product_uom_qty","qty_delivered","qty_invoiced","price_unit","discount","price_subtotal","product_id"],context:{lang:"es_AR"},limit:0}),
+        EYG.rpc("mail.message","search_read",[[["model","=","sale.order"],["res_id","=",id],["message_type","=","comment"]]],
+          {fields:["date","body","author_id"],limit:0,order:"date desc"}),
+        EYG.rpc("ir.attachment","search_read",[[["res_model","=","sale.order"],["res_id","=",id]]],
+          {fields:["name","mimetype","create_date"],limit:0,order:"create_date desc"})
+      ]);
+      DET[id]={lineas,msgs:msgs.map(m=>({date:m.date,author_id:m.author_id,txt:limpiar(m.body)})).filter(m=>m.txt),adj};
+    }catch(e){ DET[id]={error:e.message||String(e)}; }
+    render();
+  }
+}
+function detalleHTML(o){
+  const d=DET[o.id];
+  if(!d) return '<div class="det"><span class="muted">Cargando el detalle…</span></div>';
+  if(d.error) return '<div class="det"><span class="neg">No pude leer el detalle: '+esc(d.error)+'</span></div>';
+  const filas=d.lineas.map(l=>`<tr>
+      <td>${esc(String(l.name||"").split("\n")[0])}</td>
+      <td class="r">${fnum(l.product_uom_qty)}</td>
+      <td class="r">${money(l.price_unit)}</td>
+      <td class="r">${l.discount?fnum(l.discount)+"%":"—"}</td>
+      <td class="r">${money(l.price_subtotal)}</td>
+      <td class="r muted">${fnum(l.qty_invoiced)}</td>
+    </tr>`).join("");
+  const msgs=d.msgs.length?d.msgs.map(m=>`<div class="aviso ${RE_FRENO.test(m.txt)?"stop":""}" style="margin-bottom:6px">
+      <span class="qui">${esc(m.author_id?m.author_id[1]:"—")} · ${fmtFecha(m.date)} ${fmtHora(m.date)}</span>${esc(m.txt)}</div>`).join(""):'<span class="muted">Sin notas en el pedido.</span>';
+  const adj=d.adj.length?d.adj.map(a=>`<a class="lnk" style="display:inline-block;margin:0 10px 5px 0" target="_blank" href="${ODOO}/web/content/${a.id}?download=true">📎 ${esc(a.name)}</a>`).join(""):'<span class="muted">Sin archivos adjuntos.</span>';
+  return `<div class="det">
+      <h4>Renglones del pedido</h4>
+      <div class="tscroll"><table><thead><tr><th>Producto</th><th class="r" title="Cantidad pedida">Cant.</th><th class="r" title="Precio unitario sin IVA">Precio</th><th class="r" title="Descuento aplicado en la línea">Desc.</th><th class="r" title="Subtotal sin IVA">Subtotal</th><th class="r" title="Cantidad de esta línea que ya se facturó">Facturado</th></tr></thead><tbody>${filas||'<tr><td colspan="6" class="muted">Sin renglones.</td></tr>'}</tbody></table></div>
+    </div>
+    <div class="det"><h4>Notas de la comercial (el chatter del pedido en Odoo)</h4>${msgs}</div>
+    <div class="det"><h4>Archivos adjuntos (órdenes de compra, comprobantes)</h4>${adj}</div>`;
+}
+
+/* ---------- Avisos ---------- */
+function vistaAvisos(){
+  const items=[];
+  PEND.forEach(o=>avisosDe(o).forEach(a=>items.push({o,a})));
+  items.sort((x,y)=>(y.a.freno-x.a.freno)||String(y.a.fecha).localeCompare(String(x.a.fecha)));
+  return `<div class="panel">
+    <h3>💬 Avisos de las comerciales</h3>
+    <div class="sub">Todo lo que las comerciales escribieron en los pedidos que <b>todavía no se facturaron</b>: precios especiales según la orden de compra, descuentos, pedidos de frenar. Un aviso <b>desaparece solo</b> cuando el pedido queda facturado — no hay que marcarlo como leído.</div>
+    ${items.length?items.map(({o,a})=>`
+      <div class="ped ${a.freno?"bloq":""}">
+        <div class="pedhead" onclick="irPedido(${o.id})" title="Tocá para ir al pedido en la cola.">
+          <span class="nro">${esc(o.name)}</span>
+          <span class="cli">${esc(o.partner_id?o.partner_id[1]:"—")}<small>${esc(a.autor)} · ${fmtFecha(a.fecha)} ${fmtHora(a.fecha)} · pedido de ${antig(diasDe(o.date_order))}</small></span>
+          <span>${a.freno?'<span class="chip c-bad">🛑 pidió frenar</span>':(a.oc?'<span class="chip c-gris">📎 OC adjunta</span>':'<span class="chip c-warn">indicación</span>')}</span>
+          <span class="mt" title="Importe que falta facturar de este pedido.">${money(montoPend(o))}</span>
+        </div>
+        <div class="avisos"><div class="aviso ${a.freno?"stop":""}">${esc(a.txt)}</div></div>
+        <div class="acc">
+          <button class="btn pri" onclick="accion(${o.id},'facturar')">🧾 ${esbo(o)}</button>
+          <button class="btn sm" onclick="irPedido(${o.id})">👁️ Ver el pedido</button>
+          <a class="lnk" style="margin-left:4px" target="_blank" href="${ODOO}/odoo/sales/${o.id}">Abrir en Odoo ↗</a>
+        </div>
+      </div>`).join(""):'<div class="vacio"><span class="big">✅</span>Ninguna comercial dejó avisos sobre pedidos pendientes.</div>'}
+  </div>`;
+}
+/* Al saltar desde un aviso hay que abrir la cola en "todo": el pedido puede ser
+   un demorado y con el rango por defecto no aparecería en la lista. */
+function irPedido(id){ VISTA="cola"; FILTRO={q:"",com:"",tipo:"",solo:"",rango:"todo"}; ABIERTO=null; render(); abrir(id); setTimeout(()=>{const e=document.getElementById("ped"+id); if(e) e.scrollIntoView({behavior:"smooth",block:"center"});},120); }
+
+/* ---------- Emitido ---------- */
+function vistaEmitido(){
+  const hoy=EYG.argToday();
+  const draft=EMITIDO.filter(m=>m.state==="draft");
+  const delDia=EMITIDO.filter(m=>soloFecha(m.invoice_date)===hoy);
+  const fila=m=>`<tr class="clk" onclick="window.open('${ODOO}/odoo/action-account.action_move_out_invoice_type/${m.id}','_blank')">
+      <td><b>${esc(m.name&&m.name!=="/"?m.name:"(borrador)")}</b></td>
+      <td>${fmtFecha(m.invoice_date)}</td>
+      <td>${esc(m.partner_id?m.partner_id[1]:"—")}</td>
+      <td>${m.move_type==="out_refund"?'<span class="chip c-bad">nota de crédito</span>':'<span class="chip c-ok">factura</span>'}</td>
+      <td class="muted">${esc(m.journal_id?m.journal_id[1]:"—")}</td>
+      <td>${m.state==="posted"?'<span class="chip c-ok">emitida</span>':m.state==="draft"?'<span class="chip c-warn">borrador</span>':'<span class="chip c-gris">'+esc(m.state)+'</span>'}</td>
+      <td class="r ${m.move_type==="out_refund"?"neg":""}">${money(m.amount_untaxed)}</td>
+      <td class="r muted">${money(m.amount_total)}</td>
+    </tr>`;
+  const cab=`<thead><tr><th>Comprobante</th><th>Fecha</th><th>Cliente</th><th>Tipo</th><th title="Talonario de Odoo. «Ventas AFIP PdV 005» es el fiscal; «Proforma EYG» no tiene validez fiscal.">Diario</th><th title="Emitida = validada y con CAE. Borrador = creada pero sin validar, no cuenta como venta.">Estado</th><th class="r" title="Importe sin IVA">Neto</th><th class="r" title="Importe con IVA">Con IVA</th></tr></thead>`;
+  const tabla=(l,vacio)=>l.length?`<div class="tscroll"><table>${cab}<tbody>${l.map(fila).join("")}</tbody></table></div>`:`<div class="vacio">${vacio}</div>`;
+  return `${draft.length?`<div class="panel">
+      <h3>⚠️ Facturas en borrador (sin emitir)</h3>
+      <div class="sub">Se crearon pero nunca se validaron: <b>no tienen CAE y no cuentan como venta</b>. Hay que emitirlas o borrarlas. Tocá una fila para abrirla en Odoo.</div>
+      ${tabla(draft,"")}
+    </div>`:""}
+    <div class="panel">
+      <h3>🧾 Emitido hoy</h3>
+      <div class="sub">${fnum(delDia.length)} comprobantes · <b>${money(KPI.hoyNeto)}</b> netos (${money(KPI.hoyTotal)} con IVA). Tocá una fila para abrirla en Odoo.</div>
+      ${tabla(delDia,"Todavía no se facturó nada hoy.")}
+    </div>
+    <div class="panel">
+      <h3>📅 Todo el mes</h3>
+      <div class="sub">${fnum(EMITIDO.length)} comprobantes · <b>${money(KPI.mesNeto)}</b> netos · ${fnum(KPI.mesNC)} notas de crédito por ${money(KPI.mesNCMonto)}.</div>
+      ${tabla(EMITIDO.slice(0,300),"Sin comprobantes este mes.")}
+      ${EMITIDO.length>300?'<div class="sub" style="margin-top:10px">Se muestran los 300 más recientes de '+fnum(EMITIDO.length)+'.</div>':""}
+    </div>`;
+}
+
+/* ---------- Atrasados (el backlog viejo) ---------- */
+async function cargarAtrasados(){
+  ATRAS="cargando"; render();
+  try{
+    ATRAS=await EYG.rpc("sale.order","search_read",[domPendiente(null,hace(DIAS_DEMORA))],
+      {fields:["name","date_order","partner_id","user_id","amount_total","amount_to_invoice","state","type_id","invoice_status","delivery_status"],
+       context:{lang:"es_AR"},limit:0,order:"date_order desc"});
+  }catch(e){ ATRAS={error:e.message||String(e)}; }
+  render();
+}
+function vistaAtrasados(){
+  if(ATRAS==="cargando") return '<div class="cargando">Buscando los pedidos viejos sin facturar…</div>';
+  if(ATRAS&&ATRAS.error) return '<div class="errbox">No pude cargarlos: '+esc(ATRAS.error)+'</div>';
+  if(!ATRAS) return '<div class="cargando">…</div>';
+  const B=[{k:"4 a 12 meses",min:DIAS_DEMORA+1,max:365},{k:"1 a 2 años",min:366,max:730},{k:"más de 2 años",min:731,max:1e9}];
+  const buck=B.map(b=>{ const l=ATRAS.filter(o=>{const d=diasDe(o.date_order);return d>=b.min&&d<=b.max;});
+    return {...b,n:l.length,m:l.reduce((a,o)=>a+montoPend(o),0)}; });
+  const fila=o=>`<tr class="clk" onclick="window.open('${ODOO}/odoo/sales/${o.id}','_blank')">
+      <td><b>${esc(o.name)}</b></td><td>${fmtFecha(o.date_order)}</td>
+      <td>${esc(o.partner_id?o.partner_id[1]:"—")}</td>
+      <td class="muted">${esc(o.user_id?o.user_id[1]:"—")}</td>
+      <td>${esBorrador(o)?'<span class="chip c-info">sin confirmar</span>':'<span class="chip c-teal">confirmado</span>'}</td>
+      <td class="muted">${esc(o.type_id?o.type_id[1]:"—")}</td>
+      <td class="r">${money(montoPend(o))}</td>
+      <td class="r muted">${fnum(diasDe(o.date_order))} días</td></tr>`;
+  return `<div class="panel">
+    <h3>🕰️ Pedidos viejos sin facturar</h3>
+    <div class="sub">Pedidos de más de ${DIAS_DEMORA} días que siguen sin facturarse. Casi ninguno se va a facturar a esta altura: la mayoría son presupuestos que nunca prosperaron o pedidos que se resolvieron por otro lado. <b>Sirve para limpiarlos</b> —cancelarlos o forzarles el estado en Odoo— y que dejen de ensuciar el número de "por facturar". Tocá una fila para abrirla en Odoo.</div>
+    <div class="kpis">${buck.map(b=>`<div class="kpi quieto" title="Pedidos sin facturar con ${esc(b.k)} de antigüedad, y cuánto suman."><div class="l">${esc(b.k)}</div><div class="n">${fnum(b.n)}</div><div class="s">${money(b.m)}</div></div>`).join("")}</div>
+    <div class="tscroll"><table><thead><tr><th>Pedido</th><th>Fecha</th><th>Cliente</th><th>Comercial</th><th>Estado</th><th>Tipo</th><th class="r">Sin facturar</th><th class="r">Antigüedad</th></tr></thead>
+      <tbody>${ATRAS.slice(0,400).map(fila).join("")||'<tr><td colspan="8" class="muted">No hay pedidos viejos pendientes.</td></tr>'}</tbody></table></div>
+    ${ATRAS.length>400?'<div class="sub" style="margin-top:10px">Se muestran los 400 más recientes de '+fnum(ATRAS.length)+'.</div>':""}
+  </div>`;
+}
+
+/* ══════════════ ACCIONES QUE ESCRIBEN EN ODOO ══════════════
+   Los mismos dos pasos que hace Odoo por dentro:
+     confirmar → sale.order.action_confirm  (el presupuesto pasa a pedido)
+     facturar  → asistente sale.advance.payment.inv → create_invoices, que crea
+                 la factura en BORRADOR; y después account.move.action_post, que
+                 la EMITE: ahí se pide el CAE a ARCA/AFIP y ya no se puede
+                 deshacer, sólo anular con una nota de crédito.
+   Por eso "Facturar" siempre pregunta, deja elegir "dejarla en borrador", y si
+   la comercial pidió frenar el pedido lo avisa arriba de todo. */
+function accion(id,tipo){
+  const o=PEND.find(x=>x.id===id); if(!o) return;
+  const fr=frenado(o), borr=esBorrador(o);
+  if(tipo==="confirmar"){
+    confirmarDialogo({
+      titulo:"Confirmar el pedido "+o.name,
+      alerta:fr?"La comercial pidió frenar este pedido. Leé su nota antes de seguir.":"",
+      cuerpo:`<b>${esc(o.partner_id?o.partner_id[1]:"")}</b><br>Total: <b>${money(o.amount_total)}</b><br>Tipo: ${esc(o.type_id?o.type_id[1]:"—")}<br><br>El presupuesto pasa a ser un pedido confirmado. <b>No se factura nada todavía.</b>`,
+      ok:"Confirmar el pedido",
+      run:()=>ejecutar(id,{confirmar:true,facturar:false,emitir:false})
+    });
+    return;
+  }
+  confirmarDialogo({
+    titulo:(borr?"Confirmar y facturar ":"Facturar ")+o.name,
+    alerta:fr?"⚠️ La comercial pidió NO facturar este pedido todavía. Revisá su nota y, si hace falta, avisale antes de emitir.":"",
+    cuerpo:`<b>${esc(o.partner_id?o.partner_id[1]:"")}</b><br>
+      A facturar: <b>${money(montoPend(o))}</b><br>
+      Tipo: ${esc(o.type_id?o.type_id[1]:"—")}${(o.type_id&&o.type_id[0]===3)?" — va al talonario <b>Proforma</b>, sin validez fiscal":""}<br>
+      Comercial: ${esc(o.user_id?o.user_id[1]:"—")}<br><br>
+      ${borr?"Se <b>confirma</b> el pedido y después se genera la factura. ":""}Elegí si querés <b>emitirla</b> (se pide el CAE y queda definitiva) o <b>dejarla en borrador</b> para revisarla antes.`,
+    ok:"🧾 Facturar y emitir",
+    ok2:"Dejarla en borrador",
+    run:()=>ejecutar(id,{confirmar:borr,facturar:true,emitir:true}),
+    run2:()=>ejecutar(id,{confirmar:borr,facturar:true,emitir:false})
+  });
+}
+
+async function ejecutar(id,{confirmar,facturar,emitir}){
+  cerrarDialogo();
+  const o=PEND.find(x=>x.id===id); if(!o) return;
+  TRABAJANDO[id]=true; render();
+  try{
+    if(confirmar){
+      await EYG.rpc("sale.order","action_confirm",[[id]],{context:{lang:"es_AR"}});
+      toast(o.name+" confirmado ✓");
+    }
+    if(facturar){
+      const antes=(await EYG.rpc("sale.order","read",[[id]],{fields:["invoice_ids","invoice_status","amount_to_invoice"]}))[0];
+      if(antes.invoice_status==="invoiced" && !antes.amount_to_invoice)
+        throw new Error("El pedido ya está facturado por completo.");
+      const ctx={active_model:"sale.order",active_ids:[id],active_id:id,lang:"es_AR"};
+      const wid=await EYG.rpc("sale.advance.payment.inv","create",[{advance_payment_method:"delivered"}],{context:ctx});
+      await EYG.rpc("sale.advance.payment.inv","create_invoices",[[wid]],{context:ctx});
+      const desp=(await EYG.rpc("sale.order","read",[[id]],{fields:["invoice_ids"]}))[0];
+      const previas=antes.invoice_ids||[];
+      const nuevas=(desp.invoice_ids||[]).filter(x=>previas.indexOf(x)<0);
+      if(!nuevas.length)
+        throw new Error("Odoo no generó ninguna factura. Revisá el pedido en Odoo: puede no tener nada por facturar.");
+      let etiqueta="en borrador";
+      if(emitir){
+        await EYG.rpc("account.move","action_post",[nuevas],{context:{lang:"es_AR"}});
+        etiqueta="emitida";
+      }
+      const inv=await EYG.rpc("account.move","read",[nuevas],{fields:["name","amount_total","state"],context:{lang:"es_AR"}});
+      const nombres=inv.map(i=>(i.name&&i.name!=="/")?i.name:"borrador").join(", ");
+      const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
+      try{ await EYG.rpc("sale.order","message_post",[[id]],
+        {body:"🧾 Facturado desde EyG Core por "+esc(quien)+": "+esc(nombres)+" ("+etiqueta+")",message_type:"comment"}); }catch(_){}
+      toast("Factura "+nombres+" — "+etiqueta+" ✓");
+    }
+    delete TRABAJANDO[id]; delete DET[id];
+    await refrescarPedido(id);
+  }catch(e){
+    delete TRABAJANDO[id];
+    render();
+    dialogoError(o.name,e.message||String(e));
+  }
+}
+
+/* Después de tocar un pedido se releen SÓLO ese pedido y los comprobantes del
+   mes: así la pantalla queda al día sin volver a bajar los cientos de
+   pendientes. Si el pedido ya no está pendiente, sale de la lista. */
+async function refrescarPedido(id){
+  try{
+    const hoy=EYG.argToday(), iniMes=hoy.slice(0,8)+"01";
+    const [r,emit]=await Promise.all([
+      EYG.rpc("sale.order","read",[[id]],{fields:PF,context:{lang:"es_AR"}}),
+      EYG.rpc("account.move","search_read",[[["move_type","in",["out_invoice","out_refund"]],["invoice_date",">=",iniMes]]],
+        {fields:MF,context:{lang:"es_AR"},limit:0,order:"invoice_date desc, id desc"})
+    ]);
+    const o=r&&r[0];
+    const sigue=o && (o.state==="draft" || o.state==="sent" ||
+                      (["sale","done"].indexOf(o.state)>=0 && o.invoice_status==="to invoice"));
+    const i=PEND.findIndex(x=>x.id===id);
+    if(i>=0){ if(sigue) PEND[i]=o; else { PEND.splice(i,1); delete AVISOS[id]; } }
+    EMITIDO=emit;
+    KPI.draftInv=EMITIDO.filter(m=>m.state==="draft").length;
+    recalcularDias();
+    calcularKpis(hoy);
+  }catch(e){ console.warn("No pude refrescar el pedido",e); }
+  render();
+}
+
+/* ---------- diálogos ---------- */
+let _dlg=null;
+function confirmarDialogo(c){
+  cerrarDialogo();
+  _dlg=document.createElement("div"); _dlg.className="ovbg";
+  _dlg.onclick=e=>{ if(e.target===_dlg) cerrarDialogo(); };
+  _dlg.innerHTML=`<div class="ov">
+    <h3>${esc(c.titulo)}</h3>
+    ${c.alerta?`<div class="alerta">${esc(c.alerta)}</div>`:""}
+    <div class="dato">${c.cuerpo}</div>
+    <div class="ovacc">
+      <button class="btn" onclick="cerrarDialogo()">Cancelar</button>
+      ${c.ok2?`<button class="btn" id="dlg2">${esc(c.ok2)}</button>`:""}
+      <button class="btn pri" id="dlg1">${esc(c.ok)}</button>
+    </div></div>`;
+  document.body.appendChild(_dlg);
+  _dlg.querySelector("#dlg1").onclick=c.run;
+  if(c.ok2) _dlg.querySelector("#dlg2").onclick=c.run2;
+}
+function cerrarDialogo(){ if(_dlg&&_dlg.parentNode) _dlg.parentNode.removeChild(_dlg); _dlg=null; }
+function dialogoError(nombre,msg){
+  cerrarDialogo();
+  _dlg=document.createElement("div"); _dlg.className="ovbg";
+  _dlg.onclick=e=>{ if(e.target===_dlg) cerrarDialogo(); };
+  _dlg.innerHTML=`<div class="ov"><h3>No se pudo completar ${esc(nombre)}</h3>
+    <div class="alerta">${esc(msg)}</div>
+    <p>Revisá el pedido en Odoo antes de reintentar: puede haber quedado confirmado sin factura, o con la factura en borrador.</p>
+    <div class="ovacc"><button class="btn pri" onclick="cerrarDialogo()">Entendido</button></div></div>`;
+  document.body.appendChild(_dlg);
+}
+
+window.irA=irA; window.filtrar=filtrar; window.verCola=verCola; window.filtrarQ=filtrarQ; window.abrir=abrir;
+window.accion=accion; window.irPedido=irPedido; window.cerrarDialogo=cerrarDialogo;
+
+EYG.guard(["finanzas","admin","direccion"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]})
+  .then(perfil=>{ PERFIL=perfil; cargar(); });
+</script>
+</body>
+</html>

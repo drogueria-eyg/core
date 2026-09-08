@@ -401,6 +401,14 @@ window.EYG = (function(){
        costos). NO la ve el comercial: cuando carga una venta, Odoo ya calcula el precio. */
     {key:"precios",   dept:"precios", cat:"Precios y Rentabilidad", ico:"🏷️", titulo:"Costos y Rentabilidad", desc:"Costo, escalera de precios por cantidad y margen por tramo, con salud por color. Para definir y analizar los precios.", roles:["finanzas"], ready:true, path:()=>"comercial/precios.html"},
     {key:"config-precios", dept:"precios", cat:"Precios y Rentabilidad", ico:"⚙️", titulo:"Motor de precios", desc:"Reglas del motor por categoría: recargo, cortes, descuentos, IVA al costo y piso de margen. Las ofertas se crean en Oportunidades y Ofertas.", roles:["finanzas"], ready:true, path:()=>"comercial/config-precios.html"},
+    /* EN PRUEBAS: Facturación (el puesto de Vanesa). La cola de pedidos por facturar
+       con las notas que le dejan las comerciales pegadas al pedido, y los botones de
+       Confirmar / Facturar que escriben en Odoo. Oculto al equipo hasta probarlo con
+       ella: para liberarlo, borrar la línea `pruebas` de acá y el {pruebas:…} del
+       EYG.guard() de finanzas/facturacion.html. */
+    {key:"facturacion", dept:"finanzas", cat:"Administración", ico:"🧾", titulo:"Facturación", desc:"La cola de pedidos por facturar, con lo que te avisó cada comercial a la vista. Confirmá y facturá sin entrar a Odoo, y mirá cómo viene el día y el mes.", roles:["finanzas"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"finanzas/facturacion.html"},
     {key:"cobranzas", dept:"finanzas", cat:"Administración", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","cobranzas"], ready:true, path:()=>"finanzas/cobranzas.html"},
     /* EN PRUEBAS: legajos de clientes (documentación de alta). Lo gestiona Administración
        (Vanesa/Bárbara). Oculto al equipo hasta liberarlo: se le da acceso puntual por persona
