@@ -58,6 +58,17 @@
   .cptab.on{background:var(--teal);color:#fff;border-color:var(--teal)}
   .oflist{display:flex;flex-direction:column;gap:9px}
   .capabar{position:sticky;top:0;z-index:6;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#eef7f6;border-bottom:1px solid var(--line);margin:-14px -14px 12px;padding:10px 14px}
+  .capahead{display:flex;flex-wrap:wrap;gap:9px;padding:12px 16px 13px;background:#eef7f6;border-bottom:1px solid var(--line);border-radius:12px 12px 0 0;cursor:pointer}
+  .capahead:hover{background:#e6f2f1}
+  .capatop{display:flex;align-items:center;gap:9px;width:100%;font-weight:800;font-size:14px}
+  .capasub{font-weight:600;font-size:12px;color:var(--gris2)}
+  .capamets{display:flex;gap:7px;flex-wrap:wrap;width:100%}
+  .capamet{display:inline-flex;align-items:baseline;gap:6px;background:#fff;border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:11.5px;font-weight:700;color:var(--gris);cursor:pointer;line-height:1.5}
+  .capamet b{font-size:14.5px;color:#0E1F1D}
+  .capamet:hover{border-color:#0f7d84}
+  .capamet.warn b{color:#b45309} .capamet.bad b{color:#b0322f}
+  .capamet.on{background:#0f7d84;border-color:#0f7d84;color:#fff}
+  .capamet.on b{color:#fff}
   .capaq{margin-left:auto;height:34px;min-width:200px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit;font-size:13px}
   .capacnt{font-size:12px;color:var(--gris2);font-weight:700;white-space:nowrap}
   .ofrow{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:11px 14px;flex-wrap:wrap}
@@ -137,7 +148,7 @@ let ET={on:false, bands:[], descmax:12, minstep:0, open:false}, ETCRON={num:15, 
 let FIJOS=[], _fijoSel=null, _fijoTimer=null, _fijoIdx=null;   // _fijoIdx: fila que se está editando (se edita EN EL LUGAR)
 // Capa temporal: plegado (arranca cerrada, para no scrollear hasta las categorías), buscador dentro de
 // la capa ya cargada y marca de cambios sin guardar propia (independiente del `dirty` de las reglas).
-let capaOpen=false, capaQ="", dirtyCapa=false;
+let capaOpen=false, capaQ="", capaEstado="", dirtyCapa=false;   // capaEstado: filtro por métrica (activo/pronto/vencido/pausado/sinvto)
 const _norm=s=>String(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
 const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
 
@@ -243,7 +254,7 @@ function render(){
   const cont=document.getElementById("cont");
   // el re-render reconstruye todo #cont: guardamos el scroll para que la pantalla no salte de lugar
   const _sy=window.scrollY||window.pageYOffset||0;
-  const _paint=html=>{ cont.innerHTML=html; window.scrollTo(0,_sy); if(capaQ) capaAplicarFiltro(); };
+  const _paint=html=>{ cont.innerHTML=html; window.scrollTo(0,_sy); if(capaQ||capaEstado) capaAplicarFiltro(); };
   if(TIER!==1){ _paint(renderTabs()+renderTier23()+renderEtModal()); return; }
   if(document.getElementById("et-on")) etLeer();   // preserva lo tipeado en la sección de éticos ante cualquier re-render
   const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA","ETICOS"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
@@ -276,7 +287,7 @@ window.setTier = async t => {
   if(t===TIER) return;
   if((dirty||dirtyCapa) && !confirm("Tenés cambios sin guardar en esta pestaña. ¿Cambiar igual y perderlos?")) return;
   TIER=t; editId=null; editId23=null; _fijoSel=null; _f23Sel=null; _fijoIdx=null; _f23Idx=null; _fijoEdit=null; dirty=false;
-  dirtyCapa=false; capaQ="";
+  dirtyCapa=false; capaQ=""; capaEstado="";
   if(t!==1 && !_loaded23[t]){ const cont=document.getElementById("cont"); if(cont) cont.innerHTML='<div class="empty">Cargando configuración de '+esc(TINFO[t].n)+'…</div>'; await loadTier(t); }
   render(); window.scrollTo(0,0);   // cambiar de pestaña sí vuelve arriba
 };
@@ -317,17 +328,50 @@ function fijoFormHTML(){
 /* ---- Capa temporal: cabecera plegable + barra pegajosa (un solo botón: guarda Y sincroniza) + buscador ----
    Los 3 tiers comparten estos helpers; capaArr() devuelve la capa del tier que se está viendo. ---- */
 function capaArr(){ return TIER===1?FIJOS:(FIJOS23[TIER]||[]); }
-function capaResumen(){
-  const arr=capaArr(), hoy=hoyStr();
-  if(!arr.length) return "vacía";
-  let act=0, off=0;
-  arr.forEach(f=>{ if(f.pausado||(f.hasta&&f.hasta<hoy)) off++; else act++; });
-  return act+" activo"+(act===1?"":"s")+(off?" · "+off+" pausado/vencido"+(off===1?"":"s"):"");
+// Estados de una línea de la capa (una línea puede tener más de uno: activo + vence pronto).
+// Van en data-estado con espacios alrededor, para poder buscar " activo " sin falsos positivos.
+function _enDias(n){ const d=new Date(); d.setDate(d.getDate()+n); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function _capaEst(f){
+  const hoy=hoyStr(), out=[];
+  const vencido=!!(f.hasta&&f.hasta<hoy);
+  if(f.pausado) out.push("pausado");
+  else if(vencido) out.push("vencido");
+  else {
+    out.push("activo");
+    if(!f.hasta) out.push("sinvto");
+    else if(f.hasta<=_enDias(7)) out.push("pronto");
+  }
+  return " "+out.join(" ")+" ";
+}
+function capaStats(){
+  const s={total:0, activo:0, pronto:0, vencido:0, pausado:0, sinvto:0};
+  capaArr().forEach(f=>{ s.total++; const e=_capaEst(f); ["activo","pronto","vencido","pausado","sinvto"].forEach(k=>{ if(e.indexOf(" "+k+" ")>=0) s[k]++; }); });
+  return s;
 }
 function capaHeadHTML(){
-  const sd=dirtyCapa?`<span class="dirty" style="margin-left:8px">sin guardar</span>`:"";
-  return `<div class="grphead" style="background:#eef7f6;border-radius:12px 12px 0 0" onclick="capaToggle()"><span>${capaOpen?"▾":"▸"}</span> 💵 Capa temporal de precios (pisa al motor)${sd} <span class="cnt">${capaResumen()}</span></div>`;
+  const s=capaStats();
+  const sd=dirtyCapa?`<span class="dirty">sin guardar</span>`:"";
+  // Cada métrica abre la capa y la filtra (volver a tocarla quita el filtro).
+  const met=(k,n,lbl,cls,ayuda)=>!n?"":`<span class="capamet ${cls||""}${capaEstado===k?" on":""}" title="${esc(ayuda)}" onclick="capaPill(event,'${k}')"><b>${n}</b> ${esc(lbl)}</span>`;
+  const pills = s.total
+    ? met("activo",s.activo,s.activo===1?"activo":"activos","","Líneas que hoy están pisando al motor.")
+      + met("pronto",s.pronto,"vence"+(s.pronto===1?"":"n")+" en 7 días","warn","Activas con fecha de fin dentro de la semana: al vencer, el producto vuelve solo a la escalera del motor.")
+      + met("vencido",s.vencido,s.vencido===1?"vencido":"vencidos","bad","Pasaron su fecha de fin: ya no se aplican. Conviene quitarlas para dejar la lista limpia.")
+      + met("pausado",s.pausado,s.pausado===1?"pausado":"pausados","","En pausa: no se aplican, pero quedan guardadas para reanudarlas cuando haga falta.")
+      + met("sinvto",s.sinvto,"sin vencimiento","","Activas y sin fecha de fin: se quedan hasta que alguien las saque a mano.")
+    : `<span class="capasub">No hay ningún producto en la capa todavía.</span>`;
+  return `<div class="capahead" onclick="capaToggle()">
+      <div class="capatop"><span>${capaOpen?"▾":"▸"}</span> 💵 Capa temporal de precios <span class="capasub">pisa al motor · ${s.total} producto${s.total===1?"":"s"}</span> ${sd}<span class="capasub" style="margin-left:auto">${capaOpen?"tocá para plegar":"tocá para desplegar"}</span></div>
+      <div class="capamets">${pills}</div>
+    </div>`;
 }
+// Filtro por métrica: abre la capa y deja solo las líneas de ese estado (tocar de nuevo lo quita).
+window.capaPill=(ev,k)=>{
+  if(ev&&ev.stopPropagation) ev.stopPropagation();
+  capaEstado = (capaEstado===k) ? "" : k;
+  capaOpen = true;
+  render();
+};
 function capaBarHTML(){
   const n=capaArr().length;
   const est=dirtyCapa?`<span class="dirty">Cambios sin guardar</span>`:`<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>`;
@@ -340,14 +384,17 @@ function capaAplicarFiltro(){
   const nq=_norm(capaQ), filas=list.querySelectorAll("[data-capa]");
   let vis=0;
   for(let i=0;i<filas.length;i++){
-    const hit=!nq||filas[i].getAttribute("data-capa").indexOf(nq)>=0;
+    const okTexto = !nq || filas[i].getAttribute("data-capa").indexOf(nq)>=0;
+    const okEstado = !capaEstado || (filas[i].getAttribute("data-estado")||"").indexOf(" "+capaEstado+" ")>=0;
+    const hit = okTexto && okEstado;
     filas[i].style.display=hit?"":"none";
     if(hit) vis++;
   }
+  const filtrando = !!(nq||capaEstado);
   const c=document.getElementById("capa-cnt");
-  if(c) c.textContent = nq ? (vis+" de "+filas.length) : (filas.length+" cargado"+(filas.length===1?"":"s"));
+  if(c) c.textContent = filtrando ? (vis+" de "+filas.length) : (filas.length+" cargado"+(filas.length===1?"":"s"));
   const v=document.getElementById("capa-vacio");
-  if(v) v.style.display=(nq&&vis===0)?"":"none";
+  if(v) v.style.display=(filtrando&&vis===0)?"":"none";
 }
 window.capaFiltrar=(q)=>{ capaQ=q||""; capaAplicarFiltro(); };
 // UN SOLO BOTÓN: guarda la capa del tier actual Y dispara el recálculo del motor (no hay que esperar al cron).
@@ -379,7 +426,7 @@ function renderFijos(){
     if(!editando && _fijoSel && f.tmpl===_fijoSel.tmpl) return "";   // se está agregando este mismo: no lo duplicamos
     const venc = f.hasta ? (f.hasta<hoy?`vencido ${f.hasta}`:`hasta ${f.hasta}`) : "sin vencimiento";
     const est = f.pausado?`<span class="badge no">pausado</span>`:(f.hasta&&f.hasta<hoy?`<span class="badge no">vencido</span>`:`<span class="badge own">activo</span>`);
-    return `<div class="ofrow" data-capa="${esc(_norm(f.nombre+" #"+f.tmpl))}">
+    return `<div class="ofrow" data-capa="${esc(_norm(f.nombre+" #"+f.tmpl))}" data-estado="${_capaEst(f)}">
       <div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">#${f.tmpl}</small></div>
         <div class="ofdet">${_fijoDet(f)} · ${venc}</div></div>
       ${est}
@@ -467,7 +514,7 @@ window.fijoAgregar=()=>{
   const ent={tmpl:_fijoSel.tmpl, nombre:_fijoSel.nombre, precio:precio, descmax:dm, tramos:tramos, tope:tope, perforar:perf, hasta:hasta, pausado:false};
   if(_fijoIdx!=null && FIJOS[_fijoIdx]){ ent.pausado=!!FIJOS[_fijoIdx].pausado; FIJOS[_fijoIdx]=ent; }   // editar: queda donde estaba
   else { FIJOS=FIJOS.filter(f=>f.tmpl!==_fijoSel.tmpl); FIJOS.unshift(ent); }
-  _fijoSel=null; _fijoEdit=null; _fijoIdx=null; dirtyCapa=true; capaQ=""; render();
+  _fijoSel=null; _fijoEdit=null; _fijoIdx=null; dirtyCapa=true; capaQ=""; capaEstado=""; render();
 };
 window.fijoPausar=(i)=>{ if(FIJOS[i]){ FIJOS[i].pausado=!FIJOS[i].pausado; dirtyCapa=true; render(); } };
 window.fijoQuitar=(i)=>{ if(!confirm("¿Quitar esto? El producto vuelve a la escalera del motor en la próxima corrida.")) return; FIJOS.splice(i,1); dirtyCapa=true; render(); };
@@ -950,7 +997,7 @@ function renderFijos23(){
     if(!editando && _f23Sel && f.tmpl===_f23Sel.tmpl) return "";
     const venc=f.hasta?(f.hasta<hoy?`vencido ${f.hasta}`:`hasta ${f.hasta}`):"sin vencimiento";
     const est=f.pausado?`<span class="badge no">pausado</span>`:(f.hasta&&f.hasta<hoy?`<span class="badge no">vencido</span>`:`<span class="badge own">activo</span>`);
-    return `<div class="ofrow" data-capa="${esc(_norm(f.nombre+" #"+f.tmpl))}"><div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">#${f.tmpl}</small></div><div class="ofdet">precio único <b>${EYG.money(f.precio)}</b> · ${venc}</div></div>${est}<button class="btn-mini" onclick="f23Editar(${i})">Editar</button><button class="btn-mini" onclick="f23Pausar(${i})">${f.pausado?'Reanudar':'Pausar'}</button><button class="btn-mini del" onclick="f23Quitar(${i})">Quitar</button></div>`;
+    return `<div class="ofrow" data-capa="${esc(_norm(f.nombre+" #"+f.tmpl))}" data-estado="${_capaEst(f)}"><div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">#${f.tmpl}</small></div><div class="ofdet">precio único <b>${EYG.money(f.precio)}</b> · ${venc}</div></div>${est}<button class="btn-mini" onclick="f23Editar(${i})">Editar</button><button class="btn-mini" onclick="f23Pausar(${i})">${f.pausado?'Reanudar':'Pausar'}</button><button class="btn-mini del" onclick="f23Quitar(${i})">Quitar</button></div>`;
   }).join("") || `<div class="ofrow" style="justify-content:center;color:var(--gris)">No hay precios cargados en esta capa.</div>`;
   return `<div class="grp" style="border:2px solid #0f7d84;margin-bottom:14px;overflow:visible">
     ${capaHeadHTML()}
@@ -994,7 +1041,7 @@ window.f23Agregar=()=>{
   const ent={tmpl:_f23Sel.tmpl, nombre:_f23Sel.nombre, precio:precio, hasta:hasta, pausado:false};
   if(_f23Idx!=null && FIJOS23[TIER][_f23Idx]){ ent.pausado=!!FIJOS23[TIER][_f23Idx].pausado; FIJOS23[TIER][_f23Idx]=ent; }   // editar: queda donde estaba
   else { FIJOS23[TIER]=FIJOS23[TIER].filter(f=>f.tmpl!==_f23Sel.tmpl); FIJOS23[TIER].unshift(ent); }
-  _f23Sel=null; _f23Idx=null; dirtyCapa=true; capaQ=""; render();
+  _f23Sel=null; _f23Idx=null; dirtyCapa=true; capaQ=""; capaEstado=""; render();
 };
 window.f23Pausar=(i)=>{ if(FIJOS23[TIER][i]){ FIJOS23[TIER][i].pausado=!FIJOS23[TIER][i].pausado; dirtyCapa=true; render(); } };
 window.f23Quitar=(i)=>{ if(!confirm("¿Quitar esto? El producto vuelve al precio del motor en la próxima corrida.")) return; FIJOS23[TIER].splice(i,1); dirtyCapa=true; render(); };
