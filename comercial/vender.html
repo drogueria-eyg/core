@@ -1063,18 +1063,23 @@ async function cargarCatalogo(){
    pensando "una caja" y Odoo descontaba UNA cofia del depósito (así se fue una sola unidad en el
    remito WH/OUT/28679). Ahora el stepper de esos productos se mueve DE A CAJAS y nunca puede
    quedar una fracción.
-   NO hay campo nuevo: son los DOS datos que Depósito ya carga en el Maestro de productos.
-     1) el tilde "caja cerrada" (queda escrito en el NOMBRE del producto) = este no se abre;
-     2) el "Embalaje (caja real)" (product.packaging.qty) = de a cuántas unidades va.
-   HACEN FALTA LOS DOS. El embalaje solo NO alcanza: los catéteres dicen "Caja x 100 - Precio
-   Unitario" y se venden de a 10, los guantes sin tilde de a 2. Medido sobre los pedidos reales:
-   con el embalaje solo son 573 productos y 12.868 líneas vivas que no dan múltiplo; exigiendo
-   también el tilde son ~148 productos. El tilde es la declaración explícita de Depósito de que
-   ese producto no se fracciona (los psicotrópicos incluso lo dicen: "SE VENDE POR CAJA CERRADA").
-   POR AHORA SIN ÉTICOS (categoría 12): ahí el embalaje todavía no lo consulta nadie (el motor los
-   precia por PVP, por otro camino) y quedaron valores que son el bulto de compra, no el mínimo
-   — sus escaleras arrancan en 1 unidad. Cuando Depósito ordene ese dato, se saca la exclusión y
-   listo (es la lista CAJA_ROOTS, arriba del todo).
+   NO hay campo nuevo, pero OJO: el tilde "caja cerrada" del Maestro NO alcanza para decidir esto,
+   porque significa cosas distintas según el producto. Medido con la plata, que es lo único que no
+   miente:
+     - GUANTES 10894: 1 unidad de Odoo cuesta $4.148 y se factura $5.395 -> esa "unidad" YA ES la
+       caja de guantes. Vender 1 está bien. El "Caja x 10" del nombre es el BULTO (10 cajas).
+     - COFIAS 10487: 1 unidad cuesta $29 -> es UNA cofia suelta, y la caja de 100 es otra cosa.
+   Los dos nombres son estructuralmente iguales ("Precio x X · Caja x N X · caja cerrada"), así que
+   el dato solo no distingue el caso. Por eso acá se exige el criterio ESTRECHO y verificable:
+     1) el producto declara explícitamente que no se fracciona: dice "SE VENDE POR CAJA CERRADA"
+        (psicotrópicos y controlados) o cotiza "Precio x caja" teniendo la unidad más chica (cofias);
+     2) el "Caja x N" del nombre COINCIDE con el Embalaje (caja real) del Maestro — si no coinciden,
+        el embalaje es el bulto de compra y no el mínimo de venta;
+     3) fuera de ÉTICOS (categoría 12), donde el embalaje es siempre el bulto.
+   Hoy da 22 productos: las 2 cofias, los psicotrópicos/controlados y el papel de ECG. Quedan afuera
+   guantes, catéteres, recolectores y sueros gotero, que se venden sueltos de verdad.
+   Ampliarlo requiere que Depósito marque producto por producto dónde la unidad de Odoo es MÁS CHICA
+   que la caja cerrada; ese dato hoy no existe en ningún campo.
    OJO: ST.want, ST.lines y todo lo demás siguen SIEMPRE en UNIDADES — la caja es sólo la forma
    de contar en pantalla. El stock, los precios y Odoo no se enteran. */
 async function cargarCajasCerradas(){
@@ -1084,9 +1089,27 @@ async function cargarCajasCerradas(){
         ["product_id.name","ilike","caja cerrada"]],
        ["id","product_id","qty"]],{limit:5000,context:ES});
     const m={};
-    pks.forEach(k=>{ if(k.product_id) m[k.product_id[0]]={n:Math.round(k.qty), pkgId:k.id}; });
+    pks.forEach(k=>{
+      if(!k.product_id) return;
+      const nom=(k.product_id[1]||"").toLowerCase();
+      // (1) declara explícitamente que no se fracciona
+      const explicito = nom.indexOf("se vende por caja cerrada")>=0;
+      const precioXcaja = nom.indexOf("precio x caja")>=0;
+      if(!explicito && !precioXcaja) return;
+      // (2) el "Caja x N" del nombre tiene que coincidir con el embalaje
+      if(cajaDelNombre(nom)!==Math.round(k.qty)) return;
+      m[k.product_id[0]]={n:Math.round(k.qty), pkgId:k.id};
+    });
     ST.cajas=m;
   }catch(e){ /* si falla, el módulo sigue funcionando por unidad (como antes) */ }
+}
+// el "Caja x N" (o Pack/Bulto/Kit x N) que trae el nombre del Maestro; 0 si no lo dice
+function cajaDelNombre(nom){
+  for(const kw of ["caja x ","pack x ","bulto x ","kit x "]){
+    const i=nom.indexOf(kw);
+    if(i>=0){ const m=nom.slice(i+kw.length).match(/^(\d+)/); if(m) return parseInt(m[1],10); }
+  }
+  return 0;
 }
 // unidades que suma/resta un toque del stepper: la caja si es caja cerrada, si no 1
 function pasoDe(pid){ const c=ST.cajas[pid]; return (c&&c.n>1)?c.n:1; }
