@@ -156,6 +156,8 @@
      en unidades, para que nunca haya duda de qué se está vendiendo */
   .cajanota{font-size:10px;color:var(--gris);font-weight:600;line-height:1.25;margin-top:2px;text-align:right}
   .ministep + .cajanota{text-align:left;margin-top:3px}
+  /* cantidad que no da cajas enteras: sólo puede venir de afuera (presupuesto viejo o carga a mano en Odoo) */
+  .partida{font-size:10px;font-weight:800;color:var(--bad);background:var(--badbg);border:1px solid #f0c4c2;border-radius:7px;padding:3px 7px;line-height:1.2;margin-top:4px;display:inline-block;text-align:left}
   .add .plus{width:100%;background:var(--teal);color:#fff;border:0;border-radius:10px;padding:10px;font-family:inherit;font-weight:800;font-size:14px;cursor:pointer}
   .add .plus:active{transform:scale(.97)}
   /* vencimientos: badge de stock tocable + vto más próximo + popup de lotes */
@@ -1092,6 +1094,15 @@ function cajasTxt(pid,q,conUnidades){
   const c=Math.round(q/n);
   return c+(c===1?" caja":" cajas")+(conUnidades?` · ${Math.round(q)} un`:"");
 }
+// El stepper no deja generar cantidades partidas, pero pueden ENTRAR de afuera: un presupuesto
+// viejo de antes de este cambio, o una línea que alguien cargó a mano en Odoo. En ese caso no
+// alcanza con redondear el número en pantalla (mentiría): se avisa y se arregla al tocar ＋/−.
+function partida(pid,q){ const n=pasoDe(pid); return n>1 && q>0 && (q%n)!==0; }
+function avisoPartida(pid,q){
+  if(!partida(pid,q)) return "";
+  const n=pasoDe(pid);
+  return `<div class="partida" title="Este producto se vende sólo en cajas de ${n}. Tocá ＋ o − para dejarla en cajas enteras.">⚠ cantidad partida: ${Math.round(q)} un no son cajas enteras</div>`;
+}
 
 // Escalera de precios de la lista del cliente por producto: ST.tiers[pid]=[{q,p}] (cantidad→precio).
 // El precio EXACTO lo pone Odoo al agregar la línea (fuente de verdad, se ve en el carrito).
@@ -1353,7 +1364,7 @@ function stepper(pid,q){
     <button onclick="chgQty(${pid},-1)">−</button>
     <input type="number" inputmode="numeric" min="0" value="${val}" onfocus="this.select()" onclick="this.select()" onchange="setQty(${pid},this.value)">
     <button onclick="chgQty(${pid},1)">＋</button>
-  </div>${enCajas?`<div class="cajanota">${val===1?"caja":"cajas"} · ${Math.round(q)} un</div>`:""}`;
+  </div>${enCajas?`<div class="cajanota">${val===1?"caja":"cajas"} · ${Math.round(q)} un</div>`:""}${avisoPartida(pid,q)}`;
 }
 
 /* Imágenes PEREZOSAS: solo se bajan las fotos de las tarjetas que entran en pantalla
@@ -1406,7 +1417,15 @@ function _avisarTope(pid,n){
 // En caja cerrada todo se mueve de a UNA CAJA (paso = unidades por caja), así nunca queda una
 // fracción de caja: es la regla del producto, no una preferencia del vendedor.
 function addProd(pid){ if(dispDe(pid)<=0){ reponerProd(pid); return; }  /* sin stock: no cotiza, va a reposición */ ST.want[pid]=(ST.want[pid]||0)+pasoDe(pid); _avisarTope(pid,ST.want[pid]); refrescarCelda(pid); marcarDirty(); }
-function chgQty(pid,d){ ST.want[pid]=Math.max(0,(ST.want[pid]||0)+d*pasoDe(pid)); if(ST.want[pid]===0) delete ST.want[pid]; else if(d>0) _avisarTope(pid,ST.want[pid]); refrescarCelda(pid); marcarDirty(); }
+// Cuenta EN CAJAS y vuelve a unidades, así una cantidad partida que venga de afuera (un
+// presupuesto viejo, o una línea cargada a mano en Odoo) queda entera apenas la tocan.
+function chgQty(pid,d){
+  const paso=pasoDe(pid);
+  const cajas=Math.max(0, Math.round((ST.want[pid]||0)/paso)+d);
+  ST.want[pid]=cajas*paso;
+  if(ST.want[pid]===0) delete ST.want[pid]; else if(d>0) _avisarTope(pid,ST.want[pid]);
+  refrescarCelda(pid); marcarDirty();
+}
 // v viene del input: en caja cerrada son CAJAS, si no son unidades.
 function setQty(pid,v){ const paso=pasoDe(pid); let n=Math.max(0,Math.floor(+v||0))*paso; if(n===0) delete ST.want[pid]; else { ST.want[pid]=n; _avisarTope(pid,n); } refrescarCelda(pid); marcarDirty(); }
 
@@ -1613,6 +1632,7 @@ function renderCart(){
           <button class="del" onclick="quitar(${pid})" title="Quitar">🗑</button>
         </div>
         ${esCaja(pid)?`<div class="cajanota">${cajasTxt(pid,q,true)}</div>`:""}
+        ${avisoPartida(pid,q)}
         ${esTier2()?`<div class="descstep"><span class="dl">Desc.</span><button onclick="chgDesc(${pid},-1)">−</button><span class="dv">${desc}%</span><button onclick="chgDesc(${pid},1)">＋</button></div>`:""}
       </div>
       <div class="ci-r">
