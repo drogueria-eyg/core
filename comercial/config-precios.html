@@ -57,6 +57,9 @@
   .cptab{background:#eef5f4;border:1px solid var(--line);border-radius:10px 10px 0 0;padding:10px 18px;font-family:inherit;font-size:13.5px;font-weight:700;color:var(--gris);cursor:pointer}
   .cptab.on{background:var(--teal);color:#fff;border-color:var(--teal)}
   .oflist{display:flex;flex-direction:column;gap:9px}
+  .capabar{position:sticky;top:0;z-index:6;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#eef7f6;border-bottom:1px solid var(--line);margin:-14px -14px 12px;padding:10px 14px}
+  .capaq{margin-left:auto;height:34px;min-width:200px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit;font-size:13px}
+  .capacnt{font-size:12px;color:var(--gris2);font-weight:700;white-space:nowrap}
   .ofrow{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:11px 14px;flex-wrap:wrap}
   .ofmain{flex:1;min-width:200px}
   .oftgt{font-weight:800;color:var(--ink);font-size:13.5px}
@@ -132,6 +135,10 @@ let ESCALA={}, escFiltro="todos", editEsc=null, editLab=null;   // clasificació
 let ET={on:false, bands:[], descmax:12, minstep:0, open:false}, ETCRON={num:15, type:"minutes"};
 // Precios de venta FIJOS temporales (manuales, pisan al motor). Guardados en eyg.precios_fijos_flat.
 let FIJOS=[], _fijoSel=null, _fijoTimer=null, _fijoIdx=null;   // _fijoIdx: fila que se está editando (se edita EN EL LUGAR)
+// Capa temporal: plegado (arranca cerrada, para no scrollear hasta las categorías), buscador dentro de
+// la capa ya cargada y marca de cambios sin guardar propia (independiente del `dirty` de las reglas).
+let capaOpen=false, capaQ="", dirtyCapa=false;
+const _norm=s=>String(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
 const hoyStr=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
 
 /* ============ MULTI-TIER: 1 Farmacias (escalera, como hoy) · 2 SAMCOs/clínicas · 3 Instituciones ============ */
@@ -236,7 +243,7 @@ function render(){
   const cont=document.getElementById("cont");
   // el re-render reconstruye todo #cont: guardamos el scroll para que la pantalla no salte de lugar
   const _sy=window.scrollY||window.pageYOffset||0;
-  const _paint=html=>{ cont.innerHTML=html; window.scrollTo(0,_sy); };
+  const _paint=html=>{ cont.innerHTML=html; window.scrollTo(0,_sy); if(capaQ) capaAplicarFiltro(); };
   if(TIER!==1){ _paint(renderTabs()+renderTier23()+renderEtModal()); return; }
   if(document.getElementById("et-on")) etLeer();   // preserva lo tipeado en la sección de éticos ante cualquier re-render
   const tops=[...new Set(CATS.map(c=>c.top))].sort((a,b)=>{const O=["HOSPITALARIOS","FARMACOPEA","DESCARTABLES","PERFUMERIA","EQUIPOS MEDICOS","ORTOPEDIA","ETICOS"];const ia=O.indexOf(a),ib=O.indexOf(b);return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b);});
@@ -267,8 +274,9 @@ function renderTabs(){
 }
 window.setTier = async t => {
   if(t===TIER) return;
-  if(dirty && !confirm("Tenés cambios sin guardar en esta pestaña. ¿Cambiar igual y perderlos?")) return;
+  if((dirty||dirtyCapa) && !confirm("Tenés cambios sin guardar en esta pestaña. ¿Cambiar igual y perderlos?")) return;
   TIER=t; editId=null; editId23=null; _fijoSel=null; _f23Sel=null; _fijoIdx=null; _f23Idx=null; _fijoEdit=null; dirty=false;
+  dirtyCapa=false; capaQ="";
   if(t!==1 && !_loaded23[t]){ const cont=document.getElementById("cont"); if(cont) cont.innerHTML='<div class="empty">Cargando configuración de '+esc(TINFO[t].n)+'…</div>'; await loadTier(t); }
   render(); window.scrollTo(0,0);   // cambiar de pestaña sí vuelve arriba
 };
@@ -306,6 +314,62 @@ function fijoFormHTML(){
       </div>
       <div id="fijo-preview" class="rentbox" style="margin:0 0 12px;display:${_fijoSel?'block':'none'}">${_fijoSel?fijoPreviewHTML():""}</div>`;
 }
+/* ---- Capa temporal: cabecera plegable + barra pegajosa (un solo botón: guarda Y sincroniza) + buscador ----
+   Los 3 tiers comparten estos helpers; capaArr() devuelve la capa del tier que se está viendo. ---- */
+function capaArr(){ return TIER===1?FIJOS:(FIJOS23[TIER]||[]); }
+function capaResumen(){
+  const arr=capaArr(), hoy=hoyStr();
+  if(!arr.length) return "vacía";
+  let act=0, off=0;
+  arr.forEach(f=>{ if(f.pausado||(f.hasta&&f.hasta<hoy)) off++; else act++; });
+  return act+" activo"+(act===1?"":"s")+(off?" · "+off+" pausado/vencido"+(off===1?"":"s"):"");
+}
+function capaHeadHTML(){
+  const sd=dirtyCapa?`<span class="dirty" style="margin-left:8px">sin guardar</span>`:"";
+  return `<div class="grphead" style="background:#eef7f6;border-radius:12px 12px 0 0" onclick="capaToggle()"><span>${capaOpen?"▾":"▸"}</span> 💵 Capa temporal de precios (pisa al motor)${sd} <span class="cnt">${capaResumen()}</span></div>`;
+}
+function capaBarHTML(){
+  const n=capaArr().length;
+  const est=dirtyCapa?`<span class="dirty">Cambios sin guardar</span>`:`<span style="font-size:12.5px;color:var(--gris)">Todo guardado</span>`;
+  return `<div class="capabar"><button class="btn-save" onclick="guardarCapa()">💾 Guardar y sincronizar</button>${est}<input type="text" id="capa-q" class="capaq" placeholder="Buscar producto en la capa…" value="${esc(capaQ)}" oninput="capaFiltrar(this.value)" autocomplete="off"><span class="capacnt" id="capa-cnt">${n} cargado${n===1?"":"s"}</span></div>`;
+}
+window.capaToggle=()=>{ capaOpen=!capaOpen; render(); };
+// El buscador filtra EN EL DOM (no re-renderiza): no pierde el foco ni lo tipeado.
+function capaAplicarFiltro(){
+  const list=document.getElementById("capa-list"); if(!list) return;
+  const nq=_norm(capaQ), filas=list.querySelectorAll("[data-capa]");
+  let vis=0;
+  for(let i=0;i<filas.length;i++){
+    const hit=!nq||filas[i].getAttribute("data-capa").indexOf(nq)>=0;
+    filas[i].style.display=hit?"":"none";
+    if(hit) vis++;
+  }
+  const c=document.getElementById("capa-cnt");
+  if(c) c.textContent = nq ? (vis+" de "+filas.length) : (filas.length+" cargado"+(filas.length===1?"":"s"));
+  const v=document.getElementById("capa-vacio");
+  if(v) v.style.display=(nq&&vis===0)?"":"none";
+}
+window.capaFiltrar=(q)=>{ capaQ=q||""; capaAplicarFiltro(); };
+// UN SOLO BOTÓN: guarda la capa del tier actual Y dispara el recálculo del motor (no hay que esperar al cron).
+window.guardarCapa = async () => {
+  const btns=document.querySelectorAll(".capabar .btn-save, .capafoot .btn-save");
+  for(let i=0;i<btns.length;i++){ btns[i].disabled=true; btns[i].textContent="Guardando…"; }
+  try{
+    if(TIER===1){
+      const flat=FIJOS.map(f=>[f.tmpl,(f.precio||0),((f.descmax||0)/100),(f.tramos||""),(f.tope||""),(f.perforar?"1":"0"),f.hasta||"",f.pausado?"1":"0",String(f.nombre||"").replace(/~/g,"-").replace(/\n/g," ")].join("~")).join("\n");
+      await rpc("ir.config_parameter","set_param",["eyg.precios_fijos_flat",flat]);
+    } else {
+      await rpc("ir.config_parameter","set_param",[TKEYS[TIER].fijos, flat23Fijos()]);
+    }
+    for(let i=0;i<btns.length;i++) btns[i].textContent="Sincronizando precios…";
+    await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
+    dirtyCapa=false; render(); toast("Capa guardada y precios sincronizados ✓");
+  }catch(e){
+    for(let i=0;i<btns.length;i++){ btns[i].disabled=false; btns[i].textContent="💾 Guardar y sincronizar"; }
+    toast("Error: "+(e.message||e));
+  }
+};
+
 function renderFijos(){
   const hoy=hoyStr();
   const editando=(_fijoIdx!=null);
@@ -315,7 +379,7 @@ function renderFijos(){
     if(!editando && _fijoSel && f.tmpl===_fijoSel.tmpl) return "";   // se está agregando este mismo: no lo duplicamos
     const venc = f.hasta ? (f.hasta<hoy?`vencido ${f.hasta}`:`hasta ${f.hasta}`) : "sin vencimiento";
     const est = f.pausado?`<span class="badge no">pausado</span>`:(f.hasta&&f.hasta<hoy?`<span class="badge no">vencido</span>`:`<span class="badge own">activo</span>`);
-    return `<div class="ofrow">
+    return `<div class="ofrow" data-capa="${esc(_norm(f.nombre+" #"+f.tmpl))}">
       <div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">#${f.tmpl}</small></div>
         <div class="ofdet">${_fijoDet(f)} · ${venc}</div></div>
       ${est}
@@ -324,14 +388,15 @@ function renderFijos(){
       <button class="btn-mini del" onclick="fijoQuitar(${i})">Quitar</button>
     </div>`;
   }).join("") || `<div class="ofrow" style="justify-content:center;color:var(--gris)">No hay precios cargados en esta capa.</div>`;
-  return `<div class="grp" style="border:2px solid #0f7d84;margin-bottom:14px">
-    <div class="grphead" style="cursor:default;background:#eef7f6">💵 Capa temporal de precios (pisa al motor)</div>
-    <div style="padding:14px">
+  return `<div class="grp" style="border:2px solid #0f7d84;margin-bottom:14px;overflow:visible">
+    ${capaHeadHTML()}
+    ${!capaOpen?"":`<div style="padding:14px">
+      ${capaBarHTML()}
       <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual y temporal que <b>pisa</b> al motor cuando conseguís una compra muy buena. La <b>cantidad de tramos</b> manda: <b>1</b> = precio único (una sola línea, en todas las listas); <b>N</b> = escalera de N tramos; <b>vacío</b> = los tramos que calcula el motor. Para éticos la escalera arranca del <b>PVP</b>. Podés poner un <b>descuento máximo más profundo</b> que el del motor e incluso <b>perforar el piso</b>. Al <b>pausar/quitar</b>, vuelve solo a la escalera automática.</p>
       ${editando?"":fijoFormHTML()}
-      <div class="oflist">${rows}</div>
-      <div style="margin-top:12px"><button class="btn-save" onclick="guardarFijos()">💾 Guardar capa temporal</button> <span id="fijo-msg" style="font-size:12.5px;color:var(--gris);margin-left:8px"></span></div>
-    </div>
+      <div class="oflist" id="capa-list">${rows}<div class="ofrow" id="capa-vacio" style="display:none;justify-content:center;color:var(--gris)">Ningún producto de la capa coincide con la búsqueda.</div></div>
+      <div class="capafoot" style="margin-top:12px"><button class="btn-save" onclick="guardarCapa()">💾 Guardar y sincronizar</button></div>
+    </div>`}
   </div>`;
 }
 function fijoPreviewHTML(){
@@ -402,16 +467,10 @@ window.fijoAgregar=()=>{
   const ent={tmpl:_fijoSel.tmpl, nombre:_fijoSel.nombre, precio:precio, descmax:dm, tramos:tramos, tope:tope, perforar:perf, hasta:hasta, pausado:false};
   if(_fijoIdx!=null && FIJOS[_fijoIdx]){ ent.pausado=!!FIJOS[_fijoIdx].pausado; FIJOS[_fijoIdx]=ent; }   // editar: queda donde estaba
   else { FIJOS=FIJOS.filter(f=>f.tmpl!==_fijoSel.tmpl); FIJOS.unshift(ent); }
-  _fijoSel=null; _fijoEdit=null; _fijoIdx=null; render();
+  _fijoSel=null; _fijoEdit=null; _fijoIdx=null; dirtyCapa=true; capaQ=""; render();
 };
-window.fijoPausar=(i)=>{ if(FIJOS[i]){ FIJOS[i].pausado=!FIJOS[i].pausado; render(); } };
-window.fijoQuitar=(i)=>{ if(!confirm("¿Quitar esto? El producto vuelve a la escalera del motor en la próxima corrida.")) return; FIJOS.splice(i,1); render(); };
-window.guardarFijos=async ()=>{
-  const flat=FIJOS.map(f=>[f.tmpl, (f.precio||0), ((f.descmax||0)/100), (f.tramos||""), (f.tope||""), (f.perforar?"1":"0"), f.hasta||"", f.pausado?"1":"0", String(f.nombre||"").replace(/~/g,"-").replace(/\n/g," ")].join("~")).join("\n");
-  const m=document.getElementById("fijo-msg"); if(m) m.textContent="Guardando…";
-  try{ await rpc("ir.config_parameter","set_param",["eyg.precios_fijos_flat",flat]); if(m) m.textContent="Guardado ✓ — se aplican en la próxima corrida del motor."; if(typeof toast==="function") toast("Capa temporal guardada ✓"); }
-  catch(e){ if(m) m.textContent="Error: "+(e.message||e); }
-};
+window.fijoPausar=(i)=>{ if(FIJOS[i]){ FIJOS[i].pausado=!FIJOS[i].pausado; dirtyCapa=true; render(); } };
+window.fijoQuitar=(i)=>{ if(!confirm("¿Quitar esto? El producto vuelve a la escalera del motor en la próxima corrida.")) return; FIJOS.splice(i,1); dirtyCapa=true; render(); };
 
 /* =================== AJUSTES DEL MOTOR (modal): General (intervalo) + Escalera de éticos por precio =================== */
 // impacto de una franja: rango de PVP, tope y ~total de compra para llegar al máximo descuento.
@@ -854,7 +913,7 @@ window.guardar23 = async () => {
     await rpc("ir.config_parameter","set_param",[TKEYS[TIER].fijos, flat23Fijos()]);
     if(btn) btn.textContent="Recalculando precios…";
     await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
-    dirty=false; render(); toast("Guardado y precios recalculados ✓");
+    dirty=false; dirtyCapa=false; render(); toast("Guardado y precios recalculados ✓");
   }catch(e){ if(btn){ btn.disabled=false; btn.textContent="💾 Guardar y recalcular"; } toast("Error: "+(e.message||e)); }
 };
 
@@ -891,15 +950,17 @@ function renderFijos23(){
     if(!editando && _f23Sel && f.tmpl===_f23Sel.tmpl) return "";
     const venc=f.hasta?(f.hasta<hoy?`vencido ${f.hasta}`:`hasta ${f.hasta}`):"sin vencimiento";
     const est=f.pausado?`<span class="badge no">pausado</span>`:(f.hasta&&f.hasta<hoy?`<span class="badge no">vencido</span>`:`<span class="badge own">activo</span>`);
-    return `<div class="ofrow"><div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">#${f.tmpl}</small></div><div class="ofdet">precio único <b>${EYG.money(f.precio)}</b> · ${venc}</div></div>${est}<button class="btn-mini" onclick="f23Editar(${i})">Editar</button><button class="btn-mini" onclick="f23Pausar(${i})">${f.pausado?'Reanudar':'Pausar'}</button><button class="btn-mini del" onclick="f23Quitar(${i})">Quitar</button></div>`;
+    return `<div class="ofrow" data-capa="${esc(_norm(f.nombre+" #"+f.tmpl))}"><div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">#${f.tmpl}</small></div><div class="ofdet">precio único <b>${EYG.money(f.precio)}</b> · ${venc}</div></div>${est}<button class="btn-mini" onclick="f23Editar(${i})">Editar</button><button class="btn-mini" onclick="f23Pausar(${i})">${f.pausado?'Reanudar':'Pausar'}</button><button class="btn-mini del" onclick="f23Quitar(${i})">Quitar</button></div>`;
   }).join("") || `<div class="ofrow" style="justify-content:center;color:var(--gris)">No hay precios cargados en esta capa.</div>`;
-  return `<div class="grp" style="border:2px solid #0f7d84;margin-bottom:14px">
-    <div class="grphead" style="cursor:default;background:#eef7f6">💵 Capa temporal de precios (pisa al motor)</div>
-    <div style="padding:14px">
+  return `<div class="grp" style="border:2px solid #0f7d84;margin-bottom:14px;overflow:visible">
+    ${capaHeadHTML()}
+    ${!capaOpen?"":`<div style="padding:14px">
+      ${capaBarHTML()}
       <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual que <b>pisa</b> el precio de esta lista para un producto puntual (por ej. una compra muy buena). Es un <b>precio único</b> final. Al <b>pausar/quitar</b>, el producto vuelve al precio del motor en la próxima corrida.</p>
       ${editando?"":f23FormHTML()}
-      <div class="oflist">${rows}</div>
-    </div></div>`;
+      <div class="oflist" id="capa-list">${rows}<div class="ofrow" id="capa-vacio" style="display:none;justify-content:center;color:var(--gris)">Ningún producto de la capa coincide con la búsqueda.</div></div>
+      <div class="capafoot" style="margin-top:12px"><button class="btn-save" onclick="guardarCapa()">💾 Guardar y sincronizar</button></div>
+    </div>`}</div>`;
 }
 window.f23Buscar=(q)=>{
   clearTimeout(_f23Timer);
@@ -933,10 +994,10 @@ window.f23Agregar=()=>{
   const ent={tmpl:_f23Sel.tmpl, nombre:_f23Sel.nombre, precio:precio, hasta:hasta, pausado:false};
   if(_f23Idx!=null && FIJOS23[TIER][_f23Idx]){ ent.pausado=!!FIJOS23[TIER][_f23Idx].pausado; FIJOS23[TIER][_f23Idx]=ent; }   // editar: queda donde estaba
   else { FIJOS23[TIER]=FIJOS23[TIER].filter(f=>f.tmpl!==_f23Sel.tmpl); FIJOS23[TIER].unshift(ent); }
-  _f23Sel=null; _f23Idx=null; dirty=true; render();
+  _f23Sel=null; _f23Idx=null; dirtyCapa=true; capaQ=""; render();
 };
-window.f23Pausar=(i)=>{ if(FIJOS23[TIER][i]){ FIJOS23[TIER][i].pausado=!FIJOS23[TIER][i].pausado; dirty=true; render(); } };
-window.f23Quitar=(i)=>{ if(!confirm("¿Quitar esto? El producto vuelve al precio del motor en la próxima corrida.")) return; FIJOS23[TIER].splice(i,1); dirty=true; render(); };
+window.f23Pausar=(i)=>{ if(FIJOS23[TIER][i]){ FIJOS23[TIER][i].pausado=!FIJOS23[TIER][i].pausado; dirtyCapa=true; render(); } };
+window.f23Quitar=(i)=>{ if(!confirm("¿Quitar esto? El producto vuelve al precio del motor en la próxima corrida.")) return; FIJOS23[TIER].splice(i,1); dirtyCapa=true; render(); };
 
 EYG.requireAuth(["finanzas"], perfil=>{
   document.body.innerHTML = EYG.layout(perfil, "config-precios", '<div id="cont"></div>', "Motor de precios");
