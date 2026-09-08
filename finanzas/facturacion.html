@@ -123,6 +123,25 @@
   .dcard tbody tr:hover td{background:#F2F9F8}
   .dcard tfoot td{border-top:1.5px solid var(--line);border-bottom:0;font-weight:800;background:#F4F8F7}
   .dcard .prod{font-weight:600;color:var(--ink)}
+  /* ---- margen ----
+     La escala está anclada en los números REALES de la casa (medidos sobre 2.108
+     renglones de los últimos 14 días): mediana 25,9% y ponderado 26,3%; el piso
+     duro de las escalas de precios es 13-15%. No son cortes inventados. */
+  .mrg{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;border-radius:20px;padding:2px 8px;white-space:nowrap}
+  .m-perd{background:#F3D3CF;color:#7B1D16} .m-mal{background:#FBE4E3;color:#B0322F}
+  .m-reg{background:#FBF1DC;color:#9A6B12} .m-bien{background:#E4F5E9;color:#1E7D46}
+  .m-muy{background:#1F8A5F;color:#fff}
+  .mrgleyenda{display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:10.5px;color:var(--gris2);font-weight:600;margin-top:9px}
+
+  /* ---- edición de renglones ---- */
+  .ed{font-family:inherit;font-size:12px;font-weight:700;text-align:right;width:88px;padding:4px 7px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);font-variant-numeric:tabular-nums}
+  .ed:focus{outline:0;border-color:var(--teal-med);box-shadow:0 0 0 2px rgba(10,168,159,.18)}
+  .ed.tocado{border-color:var(--coral);background:#FFFAF5}
+  .ed[disabled]{background:#F4F6F6;color:var(--gris2);cursor:not-allowed}
+  .ed.chico{width:62px}
+  .edbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:#FFF7EE;border-top:1px solid #F0DFB8;padding:9px 12px;font-size:12px;font-weight:600;color:#7A5A20}
+  .edbar.oculta{display:none}
+
   .adjs{display:flex;flex-wrap:wrap;gap:7px}
   .adj{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:#F9FCFB;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;color:var(--teal-deep);text-decoration:none}
   .adj:hover{background:var(--agua);border-color:var(--teal-med)}
@@ -260,7 +279,8 @@ function toast(msg){let t=document.getElementById("toast");if(!t){t=document.cre
 
 /* ══════════════ CARGA ══════════════ */
 const PF=["name","date_order","partner_id","user_id","amount_total","amount_untaxed",
-          "amount_to_invoice","type_id","state","invoice_status","delivery_status","invoice_count","client_order_ref"];
+          "amount_to_invoice","type_id","state","invoice_status","delivery_status","invoice_count","client_order_ref",
+          "margin","margin_percent"];
 const MF=["name","invoice_date","partner_id","amount_total","amount_untaxed","state","move_type","journal_id","invoice_origin","invoice_user_id"];
 
 /* Pendiente = presupuesto sin confirmar  O  pedido confirmado con saldo por facturar. */
@@ -364,6 +384,30 @@ const avisosDe=o=>AVISOS[o.id]||[];
 const frenado=o=>avisosDe(o).some(a=>a.freno);
 const tieneOC=o=>avisosDe(o).some(a=>a.oc);
 const esbo=o=>esBorrador(o)?"Confirmar y facturar":"Facturar";
+
+/* ══════════════ MARGEN ══════════════
+   Vanesa está autorizada a tocar precios, así que tiene que ver en el momento
+   si el margen se le va. Los cortes NO son inventados: se midieron 2.108
+   renglones de los últimos 14 días — mediana 25,9%, ponderado 26,3% — y el piso
+   duro de las escalas del motor de precios es 13-15%.
+   Margen % = margen / neto del renglón (sin IVA), igual que lo calcula Odoo. */
+const MRG=[
+  {bajo:-1e9, t:"Pérdida",       c:"m-perd", d:"Se vende por debajo del costo."},
+  {bajo:0,    t:"Bajo el piso",  c:"m-mal",  d:"Por debajo del piso duro de las escalas de precios (13-15%)."},
+  {bajo:15,   t:"Justo",         c:"m-reg",  d:"Por debajo del margen habitual de la casa (26%)."},
+  {bajo:26,   t:"Bien",          c:"m-bien", d:"En el margen habitual de la casa o mejor."},
+  {bajo:35,   t:"Muy bien",      c:"m-muy",  d:"Entre los mejores márgenes que factura la casa."}
+];
+function mrgNivel(p){ let n=MRG[0]; for(const x of MRG) if(p>=x.bajo) n=x; return n; }
+const pct1=p=>(Math.round(p*10)/10).toLocaleString("es-AR",{minimumFractionDigits:1,maximumFractionDigits:1})+"%";
+/* pct: margen en % ya calculado. base: el neto, para explicar el importe. */
+function chipMrg(pct, monto, extra){
+  const n=mrgNivel(pct);
+  return `<span class="mrg ${n.c}" title="${esc(n.t)} — ${esc(n.d)}${monto!=null?" Deja "+money(monto)+" de margen.":""}${extra?" "+esc(extra):""}">${pct1(pct)}</span>`;
+}
+const leyendaMrg=`<div class="mrgleyenda"><span>Margen:</span>`+
+  MRG.map(n=>`<span class="mrg ${n.c}" title="${esc(n.d)}">${esc(n.t)}</span>`).join("")+
+  `<span>· sobre el neto, sin IVA. La casa factura al 26%.</span></div>`;
 
 /* ══════════════ RENDER ══════════════ */
 function render(){
@@ -517,7 +561,8 @@ function filaPedido(o){
     d>DIAS_COLA?`<span class="chip c-warn" title="Hace ${d} días que está sin facturar.">🕰️ ${d} días</span>`:"",
     tieneOC(o)?'<span class="chip c-gris" title="La comercial adjuntó la orden de compra del cliente. Está en el detalle.">📎 OC adjunta</span>':"",
     (o.type_id&&o.type_id[0]===3)?'<span class="chip c-gris" title="Tipo Proforma: al facturar va al talonario Proforma, sin validez fiscal.">proforma</span>':"",
-    (!borr&&o.delivery_status==="pending")?'<span class="chip c-warn" title="El pedido todavía no salió del depósito.">sin entregar</span>':""
+    (!borr&&o.delivery_status==="pending")?'<span class="chip c-warn" title="El pedido todavía no salió del depósito.">sin entregar</span>':"",
+    o.amount_untaxed?chipMrg((o.margin_percent||0)*100, o.margin, "Margen de todo el pedido; el detalle lo abre renglón por renglón."):""
   ].filter(Boolean).join(" ");
   /* Se muestra UNA sola nota en la fila —la que pide frenar, si hay, si no la
      más reciente— en un renglón. Las demás se cuentan y se leen en el detalle. */
@@ -538,7 +583,7 @@ function filaPedido(o){
       ${borr?`<button class="btn" ${trab?"disabled":""} title="Pasa el presupuesto a pedido confirmado. No factura nada." onclick="accion(${o.id},'confirmar')">✅ Confirmar pedido</button>`:""}
       <button class="btn pri" ${trab?"disabled":""} title="${borr?"Confirma el pedido y genera la factura.":"Genera la factura de este pedido."} Vas a poder elegir si se emite o queda en borrador." onclick="accion(${o.id},'facturar')">🧾 ${esbo(o)}</button>
       <button class="btn sm" onclick="abrir(${o.id})">👁️ Ver detalle</button>
-      <a class="lnk" style="margin-left:4px" target="_blank" href="${ODOO}/odoo/sales/${o.id}">Abrir en Odoo ↗</a>
+      <a class="lnk" style="margin-left:4px" target="_blank" href="${ODOO}/web#id=${o.id}&model=sale.order&view_type=form">Abrir en Odoo ↗</a>
       ${trab?'<span class="chip c-warn">trabajando…</span>':""}
     </div>
     ${ABIERTO===o.id?detalleHTML(o):""}
@@ -553,7 +598,8 @@ async function abrir(id){
     try{
       const [lineas,msgs,adj]=await Promise.all([
         EYG.rpc("sale.order.line","search_read",[[["order_id","=",id]]],
-          {fields:["name","product_uom_qty","qty_delivered","qty_invoiced","price_unit","discount","price_subtotal","product_id"],context:{lang:"es_AR"},limit:0}),
+          {fields:["name","product_uom_qty","qty_delivered","qty_invoiced","price_unit","discount","price_subtotal",
+                   "product_id","purchase_price","margin","margin_percent"],context:{lang:"es_AR"},limit:0}),
         EYG.rpc("mail.message","search_read",[[["model","=","sale.order"],["res_id","=",id],["message_type","=","comment"]]],
           {fields:["date","body","author_id"],limit:0,order:"date desc"}),
         EYG.rpc("ir.attachment","search_read",[[["res_model","=","sale.order"],["res_id","=",id]]],
@@ -570,19 +616,45 @@ function detalleHTML(o){
   if(d.error) return '<div class="detwrap"><span class="neg">No pude leer el detalle: '+esc(d.error)+'</span></div>';
 
   const neto=d.lineas.reduce((a,l)=>a+(l.price_subtotal||0),0);
-  const filas=d.lineas.map(l=>`<tr>
-      <td class="prod">${esc(String(l.name||"").split("\n")[0])}</td>
-      <td class="r">${fnum(l.product_uom_qty)}</td>
-      <td class="r">${money(l.price_unit)}</td>
-      <td class="r">${l.discount?fnum(l.discount)+"%":'<span class="muted">—</span>'}</td>
-      <td class="r">${money(l.price_subtotal)}</td>
-      <td class="r ${l.qty_invoiced>=l.product_uom_qty?"pos":"muted"}">${fnum(l.qty_invoiced)}</td>
+  const netoCosto=d.lineas.reduce((a,l)=>a+(l.purchase_price||0)*(l.product_uom_qty||0),0);
+
+  /* Los renglones ya facturados no se tocan: cambiarles el precio no cambia la
+     factura emitida y sólo desalinea el pedido de lo que se le cobró al cliente. */
+  const trabado=l=>(l.qty_invoiced||0)>0;
+  const inp=(l,campo,val,clase)=>trabado(l)
+    ? `<span class="muted">${campo==="discount"?(val?fnum(val)+"%":"—"):(campo==="price_unit"?money(val):fnum(val))}</span>`
+    : `<input class="ed ${clase||""}" type="number" step="${campo==="product_uom_qty"?"1":"0.01"}" min="0" ${campo==="discount"?'max="100"':""}
+         value="${val}" data-orig="${val}" data-lin="${l.id}" data-campo="${campo}" data-costo="${l.purchase_price||0}"
+         oninput="recalcLinea(${o.id},${l.id})">`;
+
+  const filas=d.lineas.map(l=>`<tr id="lin-${l.id}">
+      <td class="prod">${esc(String(l.name||"").split("\n")[0])}${trabado(l)?' <span class="chip c-gris" title="Este renglón ya se facturó: no se puede editar desde acá.">facturado</span>':""}</td>
+      <td class="r">${inp(l,"product_uom_qty",l.product_uom_qty,"chico")}</td>
+      <td class="r">${inp(l,"price_unit",l.price_unit)}</td>
+      <td class="r">${inp(l,"discount",l.discount,"chico")}</td>
+      <td class="r muted" title="Costo unitario que tiene cargado Odoo. Es la base del margen.">${money(l.purchase_price)}</td>
+      <td class="r" id="sub-${l.id}">${money(l.price_subtotal)}</td>
+      <td class="r" id="mrg-${l.id}">${l.purchase_price>0||l.price_subtotal
+          ? chipMrg((l.margin_percent||0)*100, l.margin)
+          : '<span class="muted" title="Este producto no tiene costo cargado en Odoo, así que el margen no se puede calcular.">sin costo</span>'}</td>
     </tr>`).join("");
+
   const tabla=`<div class="tscroll"><table>
-      <thead><tr><th>Producto</th><th class="r" title="Cantidad pedida">Cant.</th><th class="r" title="Precio unitario sin IVA">Precio</th><th class="r" title="Descuento aplicado en el renglón">Desc.</th><th class="r" title="Subtotal del renglón, sin IVA">Subtotal</th><th class="r" title="Cuánto de este renglón ya se facturó">Facturado</th></tr></thead>
-      <tbody>${filas||'<tr><td colspan="6" class="muted">Sin renglones.</td></tr>'}</tbody>
-      ${d.lineas.length?`<tfoot><tr><td colspan="4">Neto del pedido (sin IVA)</td><td class="r">${money(neto)}</td><td class="r muted">${money(o.amount_total)} c/IVA</td></tr></tfoot>`:""}
-    </table></div>`;
+      <thead><tr><th>Producto</th>
+        <th class="r" title="Cantidad pedida. Se puede editar.">Cant.</th>
+        <th class="r" title="Precio unitario sin IVA. Se puede editar: al cambiarlo se recalcula el margen al instante, antes de guardar.">Precio</th>
+        <th class="r" title="Descuento del renglón, en porcentaje. Se puede editar.">Desc.</th>
+        <th class="r" title="Costo unitario cargado en Odoo. Es la base con la que se calcula el margen.">Costo</th>
+        <th class="r" title="Subtotal del renglón, sin IVA.">Subtotal</th>
+        <th class="r" title="Margen del renglón sobre el neto, sin IVA. El color dice si está dentro de lo que factura la casa.">Margen</th></tr></thead>
+      <tbody>${filas||'<tr><td colspan="7" class="muted">Sin renglones.</td></tr>'}</tbody>
+      ${d.lineas.length?`<tfoot><tr id="pie-${o.id}">
+        <td colspan="5">Neto del pedido (sin IVA)</td>
+        <td class="r" id="pieSub-${o.id}">${money(neto)}</td>
+        <td class="r" id="pieMrg-${o.id}">${netoCosto<neto?chipMrg((neto-netoCosto)/neto*100, neto-netoCosto):'<span class="muted">—</span>'}</td>
+      </tr></tfoot>`:""}
+    </table></div>
+    ${d.lineas.length?leyendaMrg:""}`;
 
   const msgs=d.msgs.length
     ? d.msgs.map(m=>`<div class="aviso ${RE_FRENO.test(m.txt)?"stop":""}">
@@ -593,10 +665,15 @@ function detalleHTML(o){
     ? '<div class="adjs">'+d.adj.map(a=>`<a class="adj" target="_blank" href="${ODOO}/web/content/${a.id}?download=true" title="Descargar ${esc(a.name)}">📎 ${esc(a.name)} <small>${fmtFecha(a.create_date)}</small></a>`).join("")+'</div>'
     : '<span class="muted">Este pedido no tiene archivos adjuntos.</span>';
 
-  return `<div class="detwrap">
+  return `<div class="detwrap" id="det-${o.id}">
     <div class="dcard">
-      <div class="dh">🧾 Qué se factura<span class="n">${fnum(d.lineas.length)} ${d.lineas.length===1?"renglón":"renglones"}</span></div>
+      <div class="dh">🧾 Qué se factura<span class="n">${fnum(d.lineas.length)} ${d.lineas.length===1?"renglón":"renglones"} · editable</span></div>
       ${tabla}
+      <div class="edbar oculta" id="edbar-${o.id}">
+        <span id="edtxt-${o.id}">Hay cambios sin guardar.</span>
+        <button class="btn pri sm" onclick="guardarLineas(${o.id})">💾 Guardar los cambios en Odoo</button>
+        <button class="btn sm" onclick="descartarLineas(${o.id})">Descartar</button>
+      </div>
     </div>
     <div class="dcard">
       <div class="dh">💬 Lo que dejó escrito la comercial<span class="n">${d.msgs.length?fnum(d.msgs.length)+(d.msgs.length===1?" nota":" notas"):"ninguna"}</span></div>
@@ -608,6 +685,118 @@ function detalleHTML(o){
     </div>
   </div>`;
 }
+
+/* ══════════════ EDITAR LOS RENGLONES ══════════════
+   Vanesa está autorizada (acordado con Germán) a corregir cantidad, precio y
+   descuento antes de facturar — es lo que hoy hace entrando a Odoo. Al escribir
+   se recalcula TODO en el navegador (subtotal, margen del renglón y margen del
+   pedido) para que vea el efecto ANTES de guardar; recién con "Guardar" se
+   escribe en Odoo. Los renglones ya facturados no se pueden tocar. */
+
+const _val=el=>{ const v=parseFloat(String(el.value).replace(",",".")); return isNaN(v)?null:v; };
+
+/* Devuelve los inputs de un pedido, con su valor y si cambió respecto del original. */
+function _campos(oid){
+  const cont=document.getElementById("det-"+oid);
+  if(!cont) return [];
+  return [...cont.querySelectorAll("input.ed")].map(el=>({
+    el, lin:Number(el.dataset.lin), campo:el.dataset.campo,
+    costo:parseFloat(el.dataset.costo)||0,
+    val:_val(el), orig:parseFloat(el.dataset.orig)||0
+  }));
+}
+function _deLinea(campos,lin){
+  const o={}; campos.filter(c=>c.lin===lin).forEach(c=>{ o[c.campo]=c.val; o._costo=c.costo; });
+  return o;
+}
+
+function recalcLinea(oid,lin){
+  const campos=_campos(oid);
+  const det=DET[oid]; if(!det) return;
+  let neto=0, costoTot=0, cambios=0;
+
+  det.lineas.forEach(l=>{
+    const edit=_deLinea(campos,l.id);
+    const hayInputs=Object.keys(edit).some(k=>k!=="_costo");
+    const q  = hayInputs && edit.product_uom_qty!=null ? edit.product_uom_qty : (l.product_uom_qty||0);
+    const pu = hayInputs && edit.price_unit!=null      ? edit.price_unit      : (l.price_unit||0);
+    const ds = hayInputs && edit.discount!=null        ? edit.discount        : (l.discount||0);
+    const costoU = l.purchase_price||0;
+    const sub = q*pu*(1-ds/100);
+    const cos = q*costoU;
+    neto+=sub; costoTot+=cos;
+    if(l.id===lin){
+      const cs=document.getElementById("sub-"+l.id); if(cs) cs.textContent=money(sub);
+      const cm=document.getElementById("mrg-"+l.id);
+      if(cm) cm.innerHTML = (costoU>0 && sub)
+        ? chipMrg((sub-cos)/sub*100, sub-cos)
+        : '<span class="muted" title="Este producto no tiene costo cargado en Odoo, así que el margen no se puede calcular.">sin costo</span>';
+    }
+  });
+
+  campos.forEach(c=>{ const dif=c.val!=null && Math.abs(c.val-c.orig)>1e-9; c.el.classList.toggle("tocado",dif); if(dif) cambios++; });
+
+  const ps=document.getElementById("pieSub-"+oid); if(ps) ps.textContent=money(neto);
+  const pm=document.getElementById("pieMrg-"+oid);
+  if(pm) pm.innerHTML = (neto>0 && costoTot>0) ? chipMrg((neto-costoTot)/neto*100, neto-costoTot) : '<span class="muted">—</span>';
+
+  const bar=document.getElementById("edbar-"+oid);
+  if(bar){
+    bar.classList.toggle("oculta", cambios===0);
+    const t=document.getElementById("edtxt-"+oid);
+    if(t) t.textContent = cambios===1 ? "1 cambio sin guardar." : cambios+" cambios sin guardar.";
+  }
+}
+
+function descartarLineas(oid){
+  _campos(oid).forEach(c=>{ c.el.value=c.el.dataset.orig; c.el.classList.remove("tocado"); });
+  const det=DET[oid]; if(det&&det.lineas.length) recalcLinea(oid,det.lineas[0].id);
+}
+
+async function guardarLineas(oid){
+  const o=PEND.find(x=>x.id===oid); if(!o) return;
+  const campos=_campos(oid).filter(c=>c.val!=null && Math.abs(c.val-c.orig)>1e-9);
+  if(!campos.length) return;
+
+  const malos=campos.filter(c=>c.val<0 || (c.campo==="discount"&&c.val>100) || (c.campo==="product_uom_qty"&&c.val===0));
+  if(malos.length){ dialogoError(o.name,"Hay valores que no se pueden guardar: la cantidad no puede ser 0, el precio no puede ser negativo y el descuento va de 0 a 100."); return; }
+
+  /* Se agrupa por renglón: un solo write por línea, no uno por campo. */
+  const porLinea={};
+  campos.forEach(c=>{ (porLinea[c.lin]=porLinea[c.lin]||{})[c.campo]=c.val; });
+  const ETIQ={product_uom_qty:"cantidad", price_unit:"precio", discount:"descuento"};
+  const det=DET[oid];
+  const resumen=campos.map(c=>{
+    const l=det.lineas.find(x=>x.id===c.lin)||{};
+    const nom=String(l.name||"").split("\n")[0].slice(0,40);
+    const f=v=>c.campo==="price_unit"?money(v):(c.campo==="discount"?fnum(v)+"%":fnum(v));
+    return nom+": "+ETIQ[c.campo]+" "+f(c.orig)+" → "+f(c.val);
+  });
+
+  const bar=document.getElementById("edbar-"+oid);
+  const txt=document.getElementById("edtxt-"+oid);
+  if(txt) txt.textContent="Guardando…";
+  if(bar) bar.querySelectorAll("button").forEach(b=>b.disabled=true);
+
+  try{
+    for(const [lin,vals] of Object.entries(porLinea)){
+      await EYG.rpc("sale.order.line","write",[[Number(lin)],vals],{context:{lang:"es_AR"}});
+    }
+    const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
+    try{ await EYG.rpc("sale.order","message_post",[[oid]],
+      {body:"✏️ Renglones corregidos desde EyG Core por "+esc(quien)+":<br>· "+resumen.map(esc).join("<br>· "),message_type:"comment"}); }catch(_){}
+    toast(resumen.length===1?"Cambio guardado ✓":resumen.length+" cambios guardados ✓");
+    delete DET[oid];
+    await refrescarPedido(oid);
+    await abrirForzado(oid);
+  }catch(e){
+    if(bar) bar.querySelectorAll("button").forEach(b=>b.disabled=false);
+    if(txt) txt.textContent="No se pudo guardar.";
+    dialogoError(o.name,e.message||String(e));
+  }
+}
+/* Vuelve a abrir el detalle después de guardar, con los datos ya releídos. */
+async function abrirForzado(id){ ABIERTO=null; await abrir(id); }
 
 /* ---------- Avisos ---------- */
 function vistaAvisos(){
@@ -629,7 +818,7 @@ function vistaAvisos(){
         <div class="acc">
           <button class="btn pri" onclick="accion(${o.id},'facturar')">🧾 ${esbo(o)}</button>
           <button class="btn sm" onclick="irPedido(${o.id})">👁️ Ver el pedido</button>
-          <a class="lnk" style="margin-left:4px" target="_blank" href="${ODOO}/odoo/sales/${o.id}">Abrir en Odoo ↗</a>
+          <a class="lnk" style="margin-left:4px" target="_blank" href="${ODOO}/web#id=${o.id}&model=sale.order&view_type=form">Abrir en Odoo ↗</a>
         </div>
       </div>`).join(""):'<div class="vacio"><span class="big">✅</span>Ninguna comercial dejó avisos sobre pedidos pendientes.</div>'}
   </div>`;
@@ -643,7 +832,7 @@ function vistaEmitido(){
   const hoy=EYG.argToday();
   const draft=EMITIDO.filter(m=>m.state==="draft");
   const delDia=EMITIDO.filter(m=>soloFecha(m.invoice_date)===hoy);
-  const fila=m=>`<tr class="clk" onclick="window.open('${ODOO}/odoo/action-account.action_move_out_invoice_type/${m.id}','_blank')">
+  const fila=m=>`<tr class="clk" onclick="window.open('${ODOO}/web#id=${m.id}&model=account.move&view_type=form','_blank')">
       <td><b>${esc(m.name&&m.name!=="/"?m.name:"(borrador)")}</b></td>
       <td>${fmtFecha(m.invoice_date)}</td>
       <td>${esc(m.partner_id?m.partner_id[1]:"—")}</td>
@@ -690,7 +879,7 @@ function vistaAtrasados(){
   const B=[{k:"4 a 12 meses",min:DIAS_DEMORA+1,max:365},{k:"1 a 2 años",min:366,max:730},{k:"más de 2 años",min:731,max:1e9}];
   const buck=B.map(b=>{ const l=ATRAS.filter(o=>{const d=diasDe(o.date_order);return d>=b.min&&d<=b.max;});
     return {...b,n:l.length,m:l.reduce((a,o)=>a+montoPend(o),0)}; });
-  const fila=o=>`<tr class="clk" onclick="window.open('${ODOO}/odoo/sales/${o.id}','_blank')">
+  const fila=o=>`<tr class="clk" onclick="window.open('${ODOO}/web#id=${o.id}&model=sale.order&view_type=form','_blank')">
       <td><b>${esc(o.name)}</b></td><td>${fmtFecha(o.date_order)}</td>
       <td>${esc(o.partner_id?o.partner_id[1]:"—")}</td>
       <td class="muted">${esc(o.user_id?o.user_id[1]:"—")}</td>
@@ -844,6 +1033,7 @@ function dialogoError(nombre,msg){
 
 window.irA=irA; window.filtrar=filtrar; window.verCola=verCola; window.filtrarQ=filtrarQ; window.abrir=abrir;
 window.accion=accion; window.irPedido=irPedido; window.cerrarDialogo=cerrarDialogo;
+window.recalcLinea=recalcLinea; window.guardarLineas=guardarLineas; window.descartarLineas=descartarLineas;
 
 EYG.guard(["finanzas","admin","direccion"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]})
   .then(perfil=>{ PERFIL=perfil; cargar(); });
