@@ -250,10 +250,21 @@
   .cfoot{border-top:1px solid var(--line);padding:14px 16px}
   .cfoot .row{display:flex;justify-content:space-between;font-size:13.5px;color:var(--gris);margin-bottom:4px}
   .cfoot .row.tot{font-size:20px;font-weight:800;color:var(--ink);margin:8px 0 12px}
-  .cfoot .btns{display:flex;flex-direction:column;gap:9px}
+  .cfoot .btns{display:flex;flex-direction:column;gap:6px}
   /* OC del cliente: el PDF que manda la institución y sobre el que se cotiza.
      Vanesa lo necesita al facturar para corroborar contra el pedido. */
-  .ocbox{border:1px dashed var(--line);border-radius:11px;padding:11px 12px;margin-bottom:12px;background:#FAFDFC}
+  /* PIE COMPACTO. Medido el 3/9/2026 en pantalla de 794 px: el carrito tenía 722 px
+     y el pie se comía 333 (la caja de la OC 128, los botones 107). A la lista le
+     quedaban 339 px = 2 productos a la vista, con pedidos de 60+ renglones. Cada
+     píxel que se le saca al pie es un producto más que la comercial ve sin scrollear.
+     Las explicaciones que estaban en texto fijo pasaron a tooltip. */
+  .ocbox{border:1px dashed var(--line);border-radius:10px;padding:8px 10px;margin-bottom:9px;background:#FAFDFC}
+  .ocbox .oct{display:none}      /* el título ahora va adentro del propio botón */
+  .ocbox .ocnota{display:none}   /* la explicación pasa al title del botón */
+  .ocadd{width:100%}
+  .cfoot .descartar{display:block;width:100%;background:none;border:0;color:var(--gris2);font-family:inherit;
+                    font-size:12px;font-weight:700;padding:2px 0 0;cursor:pointer;text-decoration:underline}
+  .cfoot .descartar:hover{color:var(--bad)}
   .ocbox .oct{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:800;margin-bottom:7px}
   .ocfile{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--surface);margin-bottom:6px}
   .ocfile a{flex:1;min-width:0;color:var(--teal-deep);font-weight:700;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1490,9 +1501,20 @@ function renderCart(){
   const items=document.getElementById("cartItems"), foot=document.getElementById("cartFoot"); if(!items||!foot) return;
   const pids=Object.keys(ST.want).filter(pid=>ST.want[pid]>0);
   if(!pids.length){ items.innerHTML='<div class="cart-empty">Todavía no cargaste productos.<br>Tocá ＋ en el catálogo.</div>'; foot.innerHTML=""; return; }
+  // ORDEN ALFABÉTICO. Venían por número de producto, que para la comercial es azar:
+  // en un pedido de 60+ renglones encontrar uno para corregirle la cantidad era a ojo.
+  // Se ordena por el nombre visible, sin el código entre corchetes y sin acentos.
+  // el nombre se resuelve UNA vez por producto: ordenar 66 renglones llamaria a
+  // buscar en el catalogo miles de veces si no se guarda.
+  const _nom={};
+  const nombreDe = pid => (_nom[pid] !== undefined) ? _nom[pid]
+    : (_nom[pid] = (ST.lines[pid]&&ST.lines[pid].name) || ((ST.prods||[]).find(p=>p.id==pid)||{}).name || "Producto");
+  const clave = pid => nombreDe(pid).replace(/^\[[^\]]*\]\s*/,"").trim().toLowerCase()
+                       .normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  pids.sort((a,b)=>clave(a).localeCompare(clave(b),"es"));
   items.innerHTML = pids.map(pid=>{
     const q=ST.want[pid]; const l=ST.lines[pid];
-    const nombre = (l&&l.name) || (ST.prods.find(p=>p.id==pid)||{}).name || "Producto";
+    const nombre = nombreDe(pid);
     const base = (ST.baseUnit[pid]!=null) ? ST.baseUnit[pid] : (l?l.price_unit:ST.precios[pid]);
     const desc = esTier2() ? (ST.desc[pid]||0) : 0;
     const unit = (base!=null) ? base*(1-desc/100) : (l?l.price_unit:ST.precios[pid]);
@@ -1524,7 +1546,7 @@ function renderCart(){
     ${ocHTML()}
     <div class="btns">
       <button class="btn grn big" onclick="confirmarVenta()" ${ST.syncing?"disabled":""}>✓ Confirmar venta</button>
-      <button class="btn red" onclick="pedirDescartar()">Descartar presupuesto</button>
+      <button class="descartar" onclick="pedirDescartar()" title="Borra el presupuesto entero. Te va a pedir confirmación.">Descartar presupuesto</button>
     </div>`;
 }
 function quitar(pid){ delete ST.want[pid]; refrescarCelda(pid); marcarDirty(); renderCart(); }
@@ -1550,11 +1572,10 @@ function ocHTML(){
         <span style="color:var(--gris2);font-size:11px">${Math.max(1,Math.round((a.file_size||0)/1024))} KB</span>
         <button class="del" title="Quitar" onclick="ocQuitar(${a.id})">🗑</button>
       </div>`).join("")}
-    <button class="ocadd" id="ocbtn" onclick="ocElegir()">${fs.length?"＋ Adjuntar otra":"📎 Adjuntar la OC (PDF)"}</button>
-    <input type="file" id="ocinput" accept="application/pdf,image/*" style="display:none" onchange="ocSubir(this)">
-    <div class="ocnota">${fs.length
+    <button class="ocadd" id="ocbtn" onclick="ocElegir()" title="${fs.length
       ? "Queda adjunta al pedido en Odoo: al facturar se ve como respaldo."
-      : "Subí la orden de compra que mandó el cliente. Queda adjunta al pedido para que se pueda corroborar al facturar."}</div>
+      : "Subí la orden de compra que mandó el cliente. Queda adjunta al pedido para que se pueda corroborar al facturar."}">${fs.length?"＋ Adjuntar otra OC":"📎 Adjuntar la OC del cliente (PDF)"}</button>
+    <input type="file" id="ocinput" accept="application/pdf,image/*" style="display:none" onchange="ocSubir(this)">
   </div>`;
 }
 function ocElegir(){ const i=document.getElementById("ocinput"); if(i){ i.value=""; i.click(); } }
