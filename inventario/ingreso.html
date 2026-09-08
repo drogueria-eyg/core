@@ -1315,6 +1315,37 @@ async function confirmarRecepcion(){
 }
 
 /* ===================== arranque ===================== */
+/* ══ AVISAR A LOS COMERCIALES LO QUE ENTRÓ ═══════════════════════════════════
+   Normalmente esto sale solo: un aviso por hora, de 8 a 18, que es cuando
+   trabaja Depósito. Junta todo lo que se validó desde el aviso anterior y manda
+   UN mensaje por comercial — no uno por ingreso, que con 8 ingresos por día
+   serían más de 60 WhatsApps diarios desde el número de la empresa.
+   Este botón es para cuando alguien carga mercadería fuera de ese horario y no
+   quiere esperar al día siguiente. Solo lo ve Dirección, y el permiso NO está
+   acá: lo verifica wsp-responder contra core_users, porque esconder un botón no
+   es un control. */
+function botonAvisar(perfil){
+  if(!perfil || (perfil.rol!=="admin" && perfil.rol!=="direccion")) return;
+  const b=document.createElement("button");
+  b.className="hb";
+  b.id="btnAvisar";
+  b.style.cssText="position:fixed;right:18px;bottom:18px;z-index:60;font-weight:800;padding:11px 17px;border-radius:999px";
+  b.textContent="AVISAR LO QUE ENTRÓ";
+  b.title="Le manda a los comerciales, por WhatsApp, todo lo que se validó y todavía no se avisó. Normalmente sale solo cada hora de 8 a 18.";
+  b.onclick=async()=>{
+    if(!confirm("¿Avisarles a los comerciales por WhatsApp lo que entró?\n\nVa un mensaje a cada uno con los productos, cantidades, lote y vencimiento.\nSolo lo que todavía no se avisó.")) return;
+    const antes=b.textContent; b.disabled=true; b.textContent="AVISANDO…";
+    try{
+      const {data,error}=await EYG.supa().functions.invoke("wsp-responder",{body:{accion:"ingresos"}});
+      if(error||!data||!data.ok) throw new Error((data&&data.error)||(error&&error.message)||"no pude");
+      if(data.nada_nuevo || data.sin_ingresos) alert("No hay ingresos nuevos para avisar: ya se avisó todo lo validado.");
+      else alert("Listo: "+(data.productos||0)+" productos de "+(data.ingresos||0)+" ingreso(s), avisados a "+((data.enviados||[]).filter(x=>x.ok).length)+" comercial(es).");
+    }catch(e){ alert("No pude avisar: "+e.message); }
+    b.disabled=false; b.textContent=antes;
+  };
+  document.body.appendChild(b);
+}
+
 EYG.guard(["inventario","maestro","direccion","finanzas","admin"])
   .then(function(perfil){
     PERFIL = perfil;
@@ -1322,6 +1353,7 @@ EYG.guard(["inventario","maestro","direccion","finanzas","admin"])
       '<div id="cont"><div class="cargando"><div class="spinner"></div>Cargando…</div></div>',
       "Ingreso de mercadería");
     cargarPendientes();
+    botonAvisar(perfil);
   });
 </script>
 </body>
