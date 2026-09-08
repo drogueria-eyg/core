@@ -61,6 +61,21 @@
   .cargando{text-align:center;padding:50px;color:var(--gris);font-size:14px}
   .log{margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 15px;font-size:12.5px;color:var(--gris);max-height:240px;overflow:auto;display:none}
   .log.on{display:block} .log div{padding:3px 0;border-bottom:1px solid #f0f5f4} .log b{color:var(--ink)}
+
+  /* ---- vista "A decidir": una sección por motivo ---- */
+  .sec{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);
+       overflow:hidden;margin-bottom:14px}
+  .sechead{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--line)}
+  .sechead .ico{font-size:17px}
+  .secname{font-weight:800;color:var(--ink);font-size:14.5px}
+  .seccount{background:#eef6f5;color:var(--teal-deep);font-weight:800;font-size:12px;border-radius:20px;padding:2px 9px}
+  .secbajada{padding:11px 16px;font-size:12.8px;color:var(--gris);line-height:1.6;background:#f7fbfa;
+             border-bottom:1px solid var(--line)}
+  .secbajada b{color:var(--ink)}
+  .sec .lista{padding:10px;background:#eef5f4}
+  .decidido{font-size:12px;font-weight:800;color:var(--ok);background:var(--okbg);border-radius:8px;
+            padding:6px 11px;text-align:center;white-space:nowrap}
+  .pc-act{min-width:190px}
 </style>
 </head>
 <body>
@@ -86,6 +101,7 @@ const LANG = {context:{lang:"es_AR"}};
 const SINFILTRO = {context:{lang:"es_AR", active_test:false}};
 const TARIFAS = [3,16,5];          // (1) Farmacias · (2) SAMCOs · (3) Instituciones
 let DATOS = [], FILTRO = "riesgo", BUSCA = "", PROX = null, HECHOS = [];
+const POSTERGADOS = new Set();   // "dejar así por ahora" — dura lo que dura la pantalla
 
 const $ = s => document.querySelector(s);
 const esc = EYG.esc;
@@ -102,7 +118,7 @@ async function cargar(){
     [["alfabeta_code","!=",0],["active","=",true],
      ["categ_id.complete_name","not like","ETICO"],["categ_id.complete_name","!=","ALL"]],
     ["id","name","default_code","alfabeta_code","categ_id","standard_price","list_price",
-     "barcode","gtins","laboratory","product_variant_id"]
+     "barcode","gtins","laboratory","sale_ok","product_variant_id"]
   ], LANG);
 
   const codigos = [...new Set(prods.map(p => p.alfabeta_code))];
@@ -202,6 +218,28 @@ function riesgo(p){ if(!p.regla && p.pisado) return 2; if(!p.regla) return 1; re
    tenga ventas o compras viejas no molesta: archivar no borra la historia. */
 function esSeguro(p){ return p.regla && p.gemela && !p.gemela.conStock; }
 
+/* Los que NO son "sin riesgo" necesitan que alguien decida, y el motivo cambia
+   la decisión. Son excluyentes y en este orden de gravedad. */
+function motivo(p){
+  if(!p.regla)                             return "precio";     // el precio que se cobra es el de la ficha
+  if(p.gemela && p.gemela.conStock)        return "stock";      // archivarla escondería mercadería
+  if(!p.gemela)                            return "singemela";  // AlfaBeta se va a fabricar la suya
+  return null;
+}
+const GRUPOS = [
+  {k:"precio", ico:"💸", titulo:"Sin precio propio en las tarifas",
+   bajada:"El precio que se cobra <b>es el de la ficha</b>, y ahí es donde escribe AlfaBeta. Soltarlo corta el problema " +
+          "hacia adelante, pero el precio que quedó puesto sigue vivo hasta que alguien le ponga uno de verdad. " +
+          "Por eso está el botón para sacarlo de la venta mientras tanto."},
+  {k:"stock", ico:"📦", titulo:"La ficha del vademécum tiene stock",
+   bajada:"Soltarlo es seguro. Lo que no se puede hacer a ciegas es <b>archivar</b> esa ficha: hay unidades cargadas ahí " +
+          "y esconderla dejaría mercadería fantasma en el depósito. Primero hay que decidir qué pasa con esas unidades."},
+  {k:"singemela", ico:"🆕", titulo:"No tienen ficha en el vademécum",
+   bajada:"Nadie está haciendo de pararrayos. Al soltarlo, la próxima vez que AlfaBeta cambie el precio de ese producto " +
+          "<b>va a crear su propia ficha</b> en el vademécum. Nace limpia, sin stock ni historia, y después se archiva. " +
+          "No es un problema, pero conviene saber que van a aparecer."}
+];
+
 /* ---------- pintado ---------- */
 function pintar(){
   const total    = DATOS.length;
@@ -209,11 +247,13 @@ function pintar(){
   const sinRegla = DATOS.filter(p => !p.regla).length;
   const conAB    = DATOS.filter(p => p.codigoAB).length;
   const seguros  = DATOS.filter(esSeguro).length;
+  const decidir  = DATOS.filter(p => !esSeguro(p) && !p.hecho).length;
 
   const vis = DATOS.filter(p => {
-    if(p.hecho) return true;
+    if(p.hecho) return FILTRO !== "decidir";
     if(FILTRO === "riesgo"  && p.regla) return false;
     if(FILTRO === "seguros" && !esSeguro(p)) return false;
+    if(FILTRO === "decidir" && esSeguro(p)) return false;
     if(FILTRO === "ab"      && !p.codigoAB) return false;
     if(BUSCA){
       const t = (p.name + " " + p.default_code + " " + (p.categ_id ? p.categ_id[1] : "")).toLowerCase();
@@ -251,20 +291,24 @@ function pintar(){
     '<div class="toolbar">' +
       '<div class="pill ' + (FILTRO==="riesgo"?"active":"")  + '" data-f="riesgo">Los expuestos (' + sinRegla + ')</div>' +
       '<div class="pill ' + (FILTRO==="seguros"?"active":"") + '" data-f="seguros">Sin riesgo (' + seguros + ')</div>' +
+      '<div class="pill ' + (FILTRO==="decidir"?"active":"") + '" data-f="decidir">A decidir (' + decidir + ')</div>' +
       '<div class="pill ' + (FILTRO==="ab"?"active":"")      + '" data-f="ab">Con código AB (' + conAB + ')</div>' +
       '<div class="pill ' + (FILTRO==="todos"?"active":"")   + '" data-f="todos">Todos (' + total + ')</div>' +
       '<input type="search" id="q" placeholder="Buscar por nombre, código o categoría..." value="' + esc(BUSCA) + '">' +
     '</div>' +
 
-    '<div class="barra" id="barra">' +
-      '<span class="cnt" id="bcnt"></span>' +
-      '<button class="btn" id="bsoltar">Desenganchar de AlfaBeta</button>' +
-      '<button class="btn ghost" id="barch">Desenganchar y archivar la del vademécum</button>' +
-      '<button class="btn ghost" id="bnada">Deseleccionar</button>' +
-    '</div>' +
+    (FILTRO === "decidir" ? "" :
+      '<div class="barra" id="barra">' +
+        '<span class="cnt" id="bcnt"></span>' +
+        '<button class="btn" id="bsoltar">Desenganchar de AlfaBeta</button>' +
+        '<button class="btn ghost" id="barch">Desenganchar y archivar la del vademécum</button>' +
+        '<button class="btn ghost" id="bnada">Deseleccionar</button>' +
+      '</div>') +
 
-    '<div class="lista">' + (vis.length ? vis.map(tarjeta).join("")
-        : '<div class="vacio">No hay productos con ese filtro.</div>') + '</div>' +
+    (FILTRO === "decidir"
+      ? listaDecidir(vis)
+      : '<div class="lista">' + (vis.length ? vis.map(p => tarjeta(p)).join("")
+          : '<div class="vacio">No hay productos con ese filtro.</div>') + '</div>') +
 
     '<div class="log ' + (HECHOS.length ? "on" : "") + '" id="log">' +
       HECHOS.map(h => "<div>" + h + "</div>").join("") + '</div>';
@@ -272,13 +316,22 @@ function pintar(){
   document.querySelectorAll(".pill").forEach(el => el.onclick = () => { FILTRO = el.dataset.f; pintar(); });
   $("#q").oninput = EYG.debounce(e => { BUSCA = e.target.value.trim().toLowerCase(); pintar(); }, 250);
   document.querySelectorAll(".pcard input[type=checkbox]").forEach(c => c.onchange = marcar);
-  $("#bnada").onclick   = () => { document.querySelectorAll(".pcard input:checked").forEach(c => c.checked = false); marcar(); };
-  $("#bsoltar").onclick = () => correr("soltar");
-  $("#barch").onclick   = () => correr("archivar");
+  if($("#bnada")){
+    $("#bnada").onclick   = () => { document.querySelectorAll(".pcard input:checked").forEach(c => c.checked = false); marcar(); };
+    $("#bsoltar").onclick = () => correr("soltar");
+    $("#barch").onclick   = () => correr("archivar");
+  }
+  // botones de decisión, uno por fila (vista "A decidir")
+  document.querySelectorAll("[data-dec]").forEach(b => b.onclick = () => {
+    const p = DATOS.find(x => x.id === +b.dataset.id);
+    if(p) decidirUno(p, b.dataset.dec);
+  });
   marcar();
 }
 
-function tarjeta(p){
+/* botones: HTML opcional con las decisiones de esa fila. Si viene, la tarjeta no
+   lleva casilla de selección: se decide de a uno, no en tanda. */
+function tarjeta(p, botones){
   const tags = [];
   if(!p.regla && p.pisado) tags.push('<span class="tag bad">hoy se cobra ' + plata(p.list_price) + ' &mdash; el PVP de AlfaBeta</span>');
   else if(!p.regla)        tags.push('<span class="tag warn">sin precio propio en las tarifas</span>');
@@ -290,8 +343,11 @@ function tarjeta(p){
               ' de stock &mdash; resolver esas unidades antes de archivarla</span>');
   if(p.hecho)    tags.push('<span class="tag ok">&#10003; soltado</span>');
 
-  return '<div class="pcard ' + (p.hecho ? "hecho" : "") + '" data-id="' + p.id + '">' +
-    (p.hecho ? '<div style="width:17px"></div>' : '<input type="checkbox" data-id="' + p.id + '">') +
+  if(POSTERGADOS.has(p.id)) tags.push('<span class="tag info">postergado &middot; lo miramos después</span>');
+
+  return '<div class="pcard ' + (p.hecho ? "hecho" : "") + (POSTERGADOS.has(p.id) ? " hecho" : "") +
+         '" data-id="' + p.id + '">' +
+    (botones ? "" : (p.hecho ? '<div style="width:17px"></div>' : '<input type="checkbox" data-id="' + p.id + '">')) +
     '<div class="pc-body">' +
       '<div class="pc-nom">' + esc(p.name) + '</div>' +
       '<div class="pc-meta">' +
@@ -315,10 +371,85 @@ function tarjeta(p){
         : "") +
     '</div>' +
     '<div class="pc-act">' +
+      (botones || "") +
       '<a class="btn ghost" target="_blank" rel="noopener" ' +
          'href="https://drogueriaeyg.odoo.com/odoo/inventory/product/' + p.id + '">Ver en Odoo</a>' +
     '</div>' +
   '</div>';
+}
+
+/* ---------- vista "A decidir": agrupada por motivo, con botones por fila ---------- */
+function listaDecidir(vis){
+  let html = "";
+  for(const g of GRUPOS){
+    const items = vis.filter(p => motivo(p) === g.k);
+    if(!items.length) continue;
+    html += '<div class="sec"><div class="sechead"><span class="ico">' + g.ico + '</span>' +
+            '<span class="secname">' + g.titulo + '</span>' +
+            '<span class="seccount">' + items.length + '</span></div>' +
+            '<div class="secbajada">' + g.bajada + '</div>' +
+            '<div class="lista">' + items.map(p => tarjeta(p, botonesDe(p))).join("") + '</div></div>';
+  }
+  return html || '<div class="vacio">No queda nada por decidir.</div>';
+}
+
+function botonesDe(p){
+  if(p.hecho || POSTERGADOS.has(p.id)) return '<span class="decidido">decidido</span>';
+  const b = [];
+  const m = motivo(p);
+  if(m === "precio"){
+    b.push(btn(p, "pausar", "Soltar y sacar de la venta", ""));
+    b.push(btn(p, "soltar", "Soltar y dejar el precio", "ghost"));
+  }else if(m === "stock"){
+    b.push(btn(p, "soltar",   "Soltar (sin archivar)", ""));
+    b.push(btn(p, "archivar", "Soltar y archivar igual", "ghost"));
+  }else{
+    b.push(btn(p, "soltar", "Soltar", ""));
+  }
+  b.push(btn(p, "postergar", "Dejar así por ahora", "ghost"));
+  return b.join("");
+}
+function btn(p, dec, txt, clase){
+  return '<button class="btn ' + clase + '" data-dec="' + dec + '" data-id="' + p.id + '">' + txt + '</button>';
+}
+
+async function decidirUno(p, dec){
+  if(dec === "postergar"){ POSTERGADOS.add(p.id); pintar(); return; }
+
+  let aviso = "";
+  if(dec === "pausar")
+    aviso = 'Además de soltarlo de AlfaBeta, se destilda "Puede ser vendido".\n'
+          + 'El producto deja de poder cargarse en pedidos nuevos hasta que se le ponga precio.\n'
+          + 'Se revierte con un clic. No se toca el stock ni nada más.\n\n';
+  if(dec === "archivar" && p.gemela && p.gemela.conStock)
+    aviso = 'OJO: la ficha del vademécum tiene ' + p.gemela.hist.stock + ' unidades cargadas.\n'
+          + 'Al archivarla, ese stock deja de verse aunque la mercadería siga en el depósito.\n'
+          + 'Confirmá sólo si ya sabés qué se hace con esas unidades.\n\n';
+  if(!confirm(aviso + '"' + String(p.name).trim().slice(0,60) + '"\n\n¿Confirmás?')) return;
+
+  try{
+    const vals = { alfabeta_code: 0 };
+    let nuevo = null;
+    if(p.codigoAB){ nuevo = String(PROX++); vals.default_code = nuevo; }
+    if(dec === "pausar") vals.sale_ok = false;
+    await EYG.rpc("product.template","write",[[p.id], vals], LANG);
+
+    let extra = "";
+    if(dec === "archivar" && p.gemela && p.gemela.active){
+      await EYG.rpc("product.template","write",[[p.gemela.id], {active:false}], LANG);
+      p.gemela.active = false;
+      extra = " &middot; ficha del vademécum archivada";
+    }
+    if(dec === "pausar"){ p.sale_ok = false; extra = " &middot; sacado de la venta hasta ponerle precio"; }
+    p.hecho = true; p.alfabeta_code = 0;
+    if(nuevo){ p.default_code = nuevo; p.codigoAB = false; }
+    HECHOS.push("<b>" + esc(String(p.name).slice(0,52)) + "</b> &mdash; soltado" +
+                (nuevo ? " &middot; código nuevo <b>" + nuevo + "</b>" : "") + extra);
+  }catch(e){
+    HECHOS.push('<b style="color:var(--bad)">' + esc(String(p.name).slice(0,52)) +
+                "</b> &mdash; NO se pudo: " + esc(e.message || e));
+  }
+  pintar();
 }
 
 function marcar(){
