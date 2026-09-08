@@ -29,8 +29,8 @@ function rango(mes){
   const [y,m]=mes.split("-").map(Number);
   const ult=new Date(y,m,0).getDate();
   const ini=mes+"-01", fin=mes+"-"+String(ult).padStart(2,"0");
-  const menos=(dias)=>{ const d=new Date(y,m-1,ult); d.setDate(d.getDate()-dias);
-    return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); };
+  const fmt=d=>d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+  const menos=(dias)=>{ const d=new Date(y,m-1,ult); d.setDate(d.getDate()-dias); return fmt(d); };
   // Corte del VENCIDO: el último día del mes, o hoy si el mes todavía está corriendo (no se puede dar
   // por vencida una factura cuyo plazo aún no llegó). Fijarlo así hace que el número sea reproducible.
   const hoy=(EYG&&EYG.argToday)?EYG.argToday():new Date().toISOString().slice(0,10);
@@ -40,8 +40,21 @@ function rango(mes){
   const corte=(hoy<fin)?hoy:fin;
   const dc=new Date(corte+"T12:00:00");
   while(dc.getDay()===0||dc.getDay()===6) dc.setDate(dc.getDate()-1);
-  const diaConstancia=dc.getFullYear()+"-"+String(dc.getMonth()+1).padStart(2,"0")+"-"+String(dc.getDate()).padStart(2,"0");
-  return { ini, fin, finH:fin+" 23:59:59", d100:menos(100), d190:menos(190), dias:ult, topeVenc, diaConstancia };
+  const diaConstancia=fmt(dc);
+  // VENCIMIENTOS DE FIN DE SEMANA: los que caen sábado o domingo se pagan el lunes, así que hasta
+  // que ese lunes pase no están vencidos. Son a lo sumo dos fechas (el finde que acabó de pasar).
+  const enGracia=[];
+  for(let i=1;i<=3;i++){
+    const x=new Date(topeVenc+"T12:00:00"); x.setDate(x.getDate()-i);
+    if(x.getDay()!==0 && x.getDay()!==6) continue;
+    const lun=new Date(x); while(lun.getDay()!==1) lun.setDate(lun.getDate()+1);
+    if(fmt(lun)>=topeVenc) enGracia.push(fmt(x));
+  }
+  // PISO DE FACTURACIÓN: qué parte del mes transcurrió en DÍAS HÁBILES (al cerrar el mes da 1).
+  let habTot=0, habPas=0; const corteDia=(hoy<fin)?Number(hoy.slice(8,10)):ult;
+  for(let i=1;i<=ult;i++){ const w=new Date(y,m-1,i).getDay(); if(w===0||w===6) continue; habTot++; if(i<=corteDia) habPas++; }
+  const propHabil=habTot?habPas/habTot:1;
+  return { ini, fin, finH:fin+" 23:59:59", d100:menos(100), d190:menos(190), dias:ult, topeVenc, diaConstancia, enGracia, propHabil };
 }
 const pctFicha=c=>{ const has={name:!!c.name,tel:!!(c.phone||c.mobile),email:!!c.email,street:!!c.street,zip:!!c.zip,city:!!c.city,
   state:!!(c.state_id&&c.state_id[0]),idtype:!!(c.l10n_latam_identification_type_id&&c.l10n_latam_identification_type_id[0]),
@@ -107,7 +120,7 @@ async function gamificacion(uid,r,ofertasMes){
   // DEUDA POR QUIEN VENDIO (no por cartera): la factura impaga se le cuenta a quien generó el pedido.
   // Si el cliente cambia de manos, la deuda vieja no la hereda quien lo recibe. Los SALDOS INICIALES
   // (diarios 32 y 33, la deuda migrada con la que arrancó el sistema) quedan afuera: no son venta de nadie.
-  const recv=extra=>rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["journal_id","not in",SALDOS_INI],...extra,
+  const recv=extra=>rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["journal_id","not in",SALDOS_INI],...((r.enGracia||[]).length?[["date_maturity","not in",r.enGracia]]:[]),...extra,
     "|",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",uid],
         "&",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",GEN],["move_id.invoice_line_ids.sale_line_ids.order_id.partner_id.user_id","=",uid]],
     ["amount_residual:sum"],[]],{lazy:false}).catch(()=>[]);
@@ -180,7 +193,7 @@ function saludDe(g,neto,baseline,prop){
   const salud=Math.max(0,100-pV-pF-pO);
   return { salud, penaltyPt:(100-salud)/100, venc, fichas:g.fichas, factRatio,
     items:[{ic:"🩸",lab:"Vencido de sus ventas",resta:pV,max:45,det:M(g.vencido)+" vencido = "+Math.round(venc*100)+"% de "+M(g.porCobrar)+" por cobrar (solo lo que vendió, sin saldos iniciales)"},
-           {ic:"📉",lab:"Facturado vs su piso",resta:pF,max:30,det:Math.round(factRatio*100)+"% del ritmo esperado"+((prop!=null&&prop<1)?" (piso prorrateado: "+M(esperado)+" al día de hoy)":"")},
+           {ic:"📉",lab:"Facturado vs su piso",resta:pF,max:30,det:Math.round(factRatio*100)+"% del ritmo esperado"+((prop!=null&&prop<1)?" (piso prorrateado por días hábiles: "+M(esperado)+" al día de hoy)":"")},
            {ic:"🗂️",lab:"Fichas completas",resta:pO,max:25,det:Math.round(g.fichas*100)+"% de la cartera"}]};
 }
 
@@ -223,10 +236,8 @@ async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
     if(!externo){
       const g=await gamificacion(s.uid,r,ofertasMes);
       nivel=nivelDe(g,perfil);
-      // si el mes todavía corre, el piso de facturación va prorrateado por el día en que estamos
-      const hoy=(EYG&&EYG.argToday)?EYG.argToday():new Date().toISOString().slice(0,10);
-      const prop=(hoy<r.fin)?(Number(hoy.slice(8,10))/r.dias):1;
-      salud=saludDe(g,neto,md.baseline,prop);
+      // si el mes todavía corre, el piso va prorrateado por los DÍAS HÁBILES transcurridos
+      salud=saludDe(g,neto,md.baseline,r.propHabil);
       tasaAplicada={ base:Math.max(0,rt.base-salud.penaltyPt/100), high:Math.max(0,rt.high-salud.penaltyPt/100) };
       comiFinal=(t1*tasaAplicada.base+t2*tasaAplicada.high)*nivel.mult;
       nivel.crudo=g;

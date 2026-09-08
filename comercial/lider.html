@@ -389,6 +389,15 @@
 const M=EYG.money, esc=EYG.esc;
 const COLORS=["#048782","#EC8B5E","#0AA89F","#E5A93B","#5FC8BF","#B0413E","#6E8B86","#04635F"];
 let COM=[], UIDS=[], DATA=[], TODAY=[], PRODS=[], FICHAS={}, chartTimer=null;
+/* Un vencimiento que cae sábado o domingo se paga el lunes: no cuenta como vencido hasta que ese
+   lunes pasó. Misma regla que en panel.html y liquidacion.js, para que los cuatro den lo mismo. */
+function _vencida(vto, corte){
+  if(!vto) return false;
+  const d=new Date(vto+"T12:00:00"), w=d.getDay();
+  if(w!==0 && w!==6) return vto<corte;
+  while(d.getDay()!==1) d.setDate(d.getDate()+1);
+  return (d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"))<corte;
+}
 let PERFIL=null, LIDER=null;   // LIDER = {uid, name, empId, team:[{uid,name}]}
 /* Período elegido: gobierna TODA la vista Rendimiento (KPIs, gráfico, tabla comparativa y
    desglose de ventas). Fechas ARGENTINAS inclusivas: {preset, desde, hasta, lbl}.
@@ -550,7 +559,7 @@ async function cargarMisVentas(){
       EYG.rpc("sale.order","read_group",[[["user_id","=",u],["state","in",["sale","done"]],["date_order",">=",hoy+" 00:00:00"]],["amount_total:sum"],[]],{lazy:false}).catch(()=>[]),
     ]);
     let deuda=0, venc=0;
-    for(const l of (deu||[])){ const r=l.amount_residual||0; if(r>0){ deuda+=r; if(l.date_maturity && l.date_maturity<hoy) venc+=r; } }
+    for(const l of (deu||[])){ const r=l.amount_residual||0; if(r>0){ deuda+=r; if(_vencida(l.date_maturity,hoy)) venc+=r; } }
     MIO={ fact:((fi[0]&&fi[0].price_total)||0)-((fr[0]&&fr[0].price_total)||0),
           cob:(cobG[0]&&cobG[0].amount)||0, cartera:ids.length, deuda, venc,
           vencPct:deuda>0?Math.round(venc/deuda*100):0, hoy:(hoyG[0]&&hoyG[0].amount_total)||0 };
@@ -1876,7 +1885,7 @@ async function fichaData(uid, name, carteraIn, pfIn){
   for(const r of payG){ const m=mkey(r,"date:month"), amt=r.amount||0; cob3+=amt; if(m===mo) cobradoMes=amt; }
   const objetivoCobro=cob3/3*1.1;
   // Por cobrar / vencido
-  let porCobrar=0,vencido=0; for(const l of ml){const r=l.amount_residual||0; if(r>0){porCobrar+=r; if(l.date_maturity&&l.date_maturity<t)vencido+=r;}}
+  let porCobrar=0,vencido=0; for(const l of ml){const r=l.amount_residual||0; if(r>0){porCobrar+=r; if(_vencida(l.date_maturity,t))vencido+=r;}}
   // Actividad / ticket / pedidos netos del mes (cada fila = un cliente en un mes)
   const bk={}; let sumTot=0,cnt=0, pedM=0,pedN=0;
   for(const r of ordG){ const m=mkey(r,"date_order:month"), n=r.__count||0, amt=r.amount_total||0;

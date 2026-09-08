@@ -958,7 +958,8 @@ async function cargar(){
     // la deuda vieja queda con quien hizo la venta. Los SALDOS INICIALES (diarios 32/33, deuda migrada
     // de antes del sistema) no son venta de nadie y quedan afuera.
     try{
-      const dSal=extra=>[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["journal_id","not in",[32,33]],...extra,
+      const _gr=fechasEnGracia(hoyStr.slice(0,10));   // vencimientos de sáb/dom que se pagan el lunes
+      const dSal=extra=>[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["journal_id","not in",[32,33]],...(_gr.length?[["date_maturity","not in",_gr]]:[]),...extra,
         "|",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",ST.userId],
             "&",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",452],["move_id.invoice_line_ids.sale_line_ids.order_id.partner_id.user_id","=",ST.userId]];
       const [dTot,dVen]=await Promise.all([
@@ -1185,8 +1186,9 @@ function saludCuenta(){
   const sPC=(ST.cc.saludPorCobrar!=null)?ST.cc.saludPorCobrar:ST.cc.porCobrar;
   const sVE=(ST.cc.saludVencido!=null)?ST.cc.saludVencido:ST.cc.vencido;
   const venc=sPC>0?sVE/sPC:0;
-  const d=now.getDate(), dim=new Date(now.getFullYear(),now.getMonth()+1,0).getDate();
-  const esperado=(ST.base?.factBaseline||0)*(d/dim); // piso prorrateado por día del mes (sobre tus pedidos)
+  // piso prorrateado por DÍAS HÁBILES transcurridos: el fin de semana no se trabaja, así que no puede
+  // exigir facturación. Al cerrar el mes la proporción llega a 1 igual que con días calendario.
+  const esperado=(ST.base?.factBaseline||0)*propHabil(hoyStr.slice(0,10));
   const factRatio=esperado>0?(ST.ventaMes||0)/esperado:1;
   const pV=cl((venc-0.10)/0.40,0,1)*45;   // vencido: desde 10%, tope 50%
   const pF=cl((1-factRatio)/0.30,0,1)*30; // facturado < piso (prorrateado)
@@ -2762,10 +2764,33 @@ function ofHoy(){ const _t=hoyStr.slice(0,10); return (ST.ofMsgs||[]).filter(m=>
    Se sigue mostrando "contactos de hoy" (que es lo que la comercial entiende), pero si hoy es fin de
    semana se toma el MEJOR entre hoy y el último día hábil: quien descansa no pierde los 5 puntos, y
    quien igual trabaja el sábado (como Claudia) se los lleva por lo que hizo. */
+const _fmtD=d=>d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
 function ultimoHabil(fecha){
   const d=new Date(fecha+"T12:00:00");
   do{ d.setDate(d.getDate()-1); }while(d.getDay()===0||d.getDay()===6);
-  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+  return _fmtD(d);
+}
+/* VENCIMIENTOS DE FIN DE SEMANA — una factura que vence sábado o domingo se paga el lunes: no está
+   vencida hasta que ese lunes pasó. Devuelve las fechas que todavía NO deben contar como vencidas
+   (son a lo sumo dos: el sábado y el domingo del finde que acaba de pasar). */
+function fechasEnGracia(corte){
+  const out=[];
+  for(let i=1;i<=3;i++){
+    const x=new Date(corte+"T12:00:00"); x.setDate(x.getDate()-i);
+    if(x.getDay()!==0 && x.getDay()!==6) continue;
+    const lun=new Date(x); while(lun.getDay()!==1) lun.setDate(lun.getDate()+1);
+    if(_fmtD(lun)>=corte) out.push(_fmtD(x));
+  }
+  return out;
+}
+/* Qué parte del mes transcurrió contando DÍAS HÁBILES (no calendario): el piso de facturación no
+   puede exigir el fin de semana, en el que no se trabaja. Al cerrar el mes da 1 igual que antes. */
+function propHabil(fecha){
+  const d=new Date(fecha+"T12:00:00"), y=d.getFullYear(), m=d.getMonth(), hasta=d.getDate();
+  const ult=new Date(y,m+1,0).getDate();
+  let tot=0, pas=0;
+  for(let i=1;i<=ult;i++){ const w=new Date(y,m,i).getDay(); if(w===0||w===6) continue; tot++; if(i<=hasta) pas++; }
+  return tot? pas/tot : 1;
 }
 function constanciaHoy(){
   const t=hoyStr.slice(0,10);
