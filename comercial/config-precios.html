@@ -25,7 +25,11 @@
   .row.catrule .nm{font-weight:800;color:var(--teal-deep)}
   .row .nm{font-weight:600;font-size:13.5px;min-width:220px;flex:1}
   .row .nm small{color:var(--gris2);font-weight:400}
+  /* core.css deja .badge en position:absolute (está pensado para las tarjetas del inicio, que
+     tienen la insignia en la esquina). Acá las filas son listas: la insignia tiene que fluir
+     DENTRO de la fila, si no se va a la esquina de la página y se apilan todas juntas. */
   .badge{font-size:11px;font-weight:800;border-radius:20px;padding:2px 9px;white-space:nowrap}
+  .row .badge, .ofrow .badge, .capabar .badge{position:static}
   .badge.own{background:#DDF3E6;color:#0E6B39} .badge.gen{background:var(--teal);color:#fff}
   .badge.inh{background:#eef2f1;color:var(--gris)} .badge.no{background:#f6eceb;color:#9a4b48}
   .sum{font-size:11.5px;color:var(--gris);flex-basis:100%;margin-left:2px}
@@ -145,7 +149,12 @@ let ESCALA={}, escFiltro="todos", editEsc=null, editLab=null;   // clasificació
 // Regla "Escalera de éticos por precio" (el tope de cada ético sale de su PVP) + intervalo del cron del motor.
 let ET={on:false, bands:[], descmax:12, minstep:0, open:false}, ETCRON={num:15, type:"minutes"};
 // Precios de venta FIJOS temporales (manuales, pisan al motor). Guardados en eyg.precios_fijos_flat.
-let FIJOS=[], _fijoSel=null, _fijoTimer=null, _fijoIdx=null;   // _fijoIdx: fila que se está editando (se edita EN EL LUGAR)
+let FIJOS=[], _fijoSel=null, _fijoTimer=null, _fijoIdx=null;
+// La capa se puede aplicar a un PRODUCTO o a un LABORATORIO entero ("lab").
+// Laboratorio = la Marca de la ficha (modelo x_marcas, clave 'M<id>') o, en éticos, la
+// categoría del laboratorio (clave 'C<id>'). Por laboratorio sólo tiene sentido la ESCALERA:
+// un precio único no puede ser el mismo para todos sus productos.
+let _fijoModo="prod";   // _fijoIdx: fila que se está editando (se edita EN EL LUGAR)
 // Capa temporal: plegado (arranca cerrada, para no scrollear hasta las categorías), buscador dentro de
 // la capa ya cargada y marca de cambios sin guardar propia (independiente del `dirty` de las reglas).
 let capaOpen=false, capaQ="", capaEstado="", dirtyCapa=false;   // capaEstado: filtro por métrica (activo/pronto/vencido/pausado/sinvto)
@@ -200,9 +209,13 @@ async function cargar(){
     // precios de venta fijos temporales (manuales)
     const rawFijos=await rpc("ir.config_parameter","get_param",["eyg.precios_fijos_flat"]);
     FIJOS=String(rawFijos||"").split("\n").map(l=>l.trim()).filter(Boolean).map(l=>{
-      const f=l.split("~"), tmpl=parseInt(f[0])||0;   // formato: tmplId~precio~descmax~tramos~tope~perforar~hasta~pausado~nombre
-      return {tmpl, precio:parseFloat(f[1])||0, descmax:(parseFloat(f[2])||0)*100, tramos:parseInt(f[3])||0, tope:parseInt(f[4])||0, perforar:(f[5]==="1"), hasta:(f[6]||"").trim(), pausado:(f[7]==="1"), nombre:(f.slice(8).join("~")||("#"+f[0]))};
-    }).filter(f=>f.tmpl);
+      // formato: clave~precio~descmax~tramos~tope~perforar~hasta~pausado~nombre
+      // clave = número (plantilla) | 'M<id>' (marca) | 'C<id>' (categoría-laboratorio de éticos)
+      const f=l.split("~"), k=(f[0]||"").trim().toUpperCase();
+      const esLab=(k[0]==="M"||k[0]==="C") && !isNaN(parseInt(k.slice(1)));
+      const base={precio:parseFloat(f[1])||0, descmax:(parseFloat(f[2])||0)*100, tramos:parseInt(f[3])||0, tope:parseInt(f[4])||0, perforar:(f[5]==="1"), hasta:(f[6]||"").trim(), pausado:(f[7]==="1"), nombre:(f.slice(8).join("~")||("#"+f[0]))};
+      return esLab ? {...base, lab:k[0], labId:parseInt(k.slice(1)), tmpl:0} : {...base, tmpl:parseInt(f[0])||0};
+    }).filter(f=>f.tmpl||f.lab);
     try{ const cr=await rpc("ir.cron","read",[[92],["interval_number","interval_type"]]); if(cr&&cr[0]){ ETCRON.num=cr[0].interval_number; ETCRON.type=cr[0].interval_type; } }catch(e){}
     render();
     etLoadCounts();   // trae cuántos productos caen en cada franja (explicador de impacto)
@@ -307,15 +320,18 @@ function _fijoDet(f){
 function fijoFormHTML(){
   const pe=_fijoEdit||{};
   const editando=(_fijoIdx!=null);
+  const esLab = _fijoSel ? !!_fijoSel.lab : (_fijoModo==="lab");
+  const chip=(m,txt)=>`<span onclick="fijoModo('${m}')" style="cursor:pointer;font-size:11.5px;font-weight:800;padding:3px 10px;border-radius:999px;border:1px solid ${_fijoModo===m?(m==="lab"?"#7c3aed":"var(--teal-deep)"):"var(--line)"};background:${_fijoModo===m?(m==="lab"?"#ede6fd":"#e7f4f4"):"#fff"};color:${_fijoModo===m?(m==="lab"?"#5b21b6":"var(--teal-deep)"):"var(--gris)"}">${txt}</span>`;
+  const modobar = (_fijoSel||editando) ? "" : `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><span style="font-size:11px;color:var(--gris);font-weight:700">Aplicar a:</span>${chip("prod","Un producto")}${chip("lab","🏭 Un laboratorio entero")}</div>`;
   const sel = _fijoSel
-    ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;padding:6px 0"><span style="color:var(--gris);font-weight:700">Producto:</span> <b style="color:var(--teal-deep);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(_fijoSel.nombre)}">${esc(_fijoSel.nombre)}</b> <small style="color:var(--gris2)">#${_fijoSel.tmpl}${_fijoSel.etico?" · ético (PVP)":""}</small> ${editando?"":`<button class="btn-mini" onclick="fijoLimpiar()">cambiar</button>`}</div>`
-    : `<input type="text" id="fijo-q" placeholder="Buscar producto por nombre o código…" oninput="fijoBuscar(this.value)" autocomplete="off" style="width:100%;height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"><div id="fijo-results" class="ofbusq" style="display:none"></div>`;
+    ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;padding:6px 0"><span style="color:var(--gris);font-weight:700">${esLab?"Laboratorio:":"Producto:"}</span> <b style="color:${esLab?"#5b21b6":"var(--teal-deep)"};max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(_fijoSel.nombre)}">${esc(_fijoSel.nombre)}</b> <small style="color:var(--gris2)">${esLab?((_fijoSel.nprod||0)+" productos"):("#"+_fijoSel.tmpl+(_fijoSel.etico?" · ético (PVP)":""))}</small> ${editando?"":`<button class="btn-mini" onclick="fijoLimpiar()">cambiar</button>`}</div>`
+    : `${modobar}<input type="text" id="fijo-q" placeholder="${_fijoModo==="lab"?"Buscar laboratorio o marca…":"Buscar producto por nombre o código…"}" oninput="${_fijoModo==="lab"?"fijoBuscarLab":"fijoBuscar"}(this.value)" autocomplete="off" style="width:100%;height:38px;border:1px solid ${_fijoModo==="lab"?"#c9b6f7":"var(--line)"};border-radius:8px;padding:0 10px;font-family:inherit"><div id="fijo-results" class="ofbusq" style="display:none"></div>`;
   const cmp=(lbl,inner)=>`<div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">${lbl}</div>${inner}</div>`;
   const inp=(id,val,w,ph)=>`<input type="number" id="${id}" step="1" value="${(val===0||val)?val:''}" ${ph?`placeholder="${ph}"`:''} oninput="fijoPreview()" style="height:38px;width:${w}px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit">`;
   return `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
         <div style="flex:1;min-width:220px;position:relative">${sel}</div>
         ${cmp("Cant. tramos", inp("fijo-tramos", pe.tramos, 78, "motor"))}
-        ${cmp("Precio único", inp("fijo-precio", pe.precio, 118))}
+        ${esLab?"":cmp("Precio único", inp("fijo-precio", pe.precio, 118))}
         ${cmp("Desc. máx. s/PVP", inp("fijo-descmax", pe.descmax, 76)+" %")}
         ${cmp("Tope (cajas)", inp("fijo-tope", pe.tope, 78, "franjas"))}
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:#b0322f;height:38px"><input type="checkbox" id="fijo-perforar" ${pe.perforar?'checked':''} style="width:17px;height:17px;accent-color:#b0322f"> perforar piso</label>
@@ -403,7 +419,7 @@ window.guardarCapa = async () => {
   for(let i=0;i<btns.length;i++){ btns[i].disabled=true; btns[i].textContent="Guardando…"; }
   try{
     if(TIER===1){
-      const flat=FIJOS.map(f=>[f.tmpl,(f.precio||0),((f.descmax||0)/100),(f.tramos||""),(f.tope||""),(f.perforar?"1":"0"),f.hasta||"",f.pausado?"1":"0",String(f.nombre||"").replace(/~/g,"-").replace(/\n/g," ")].join("~")).join("\n");
+      const flat=FIJOS.map(f=>[(f.lab?(f.lab+f.labId):f.tmpl),(f.precio||0),((f.descmax||0)/100),(f.tramos||""),(f.tope||""),(f.perforar?"1":"0"),f.hasta||"",f.pausado?"1":"0",String(f.nombre||"").replace(/~/g,"-").replace(/\n/g," ")].join("~")).join("\n");
       await rpc("ir.config_parameter","set_param",["eyg.precios_fijos_flat",flat]);
     } else {
       await rpc("ir.config_parameter","set_param",[TKEYS[TIER].fijos, flat23Fijos()]);
@@ -426,9 +442,15 @@ function renderFijos(){
     if(!editando && _fijoSel && f.tmpl===_fijoSel.tmpl) return "";   // se está agregando este mismo: no lo duplicamos
     const venc = f.hasta ? (f.hasta<hoy?`vencido ${f.hasta}`:`hasta ${f.hasta}`) : "sin vencimiento";
     const est = f.pausado?`<span class="badge no">pausado</span>`:(f.hasta&&f.hasta<hoy?`<span class="badge no">vencido</span>`:`<span class="badge own">activo</span>`);
-    return `<div class="ofrow" data-capa="${esc(_norm(f.nombre+" #"+f.tmpl))}" data-estado="${_capaEst(f)}">
-      <div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">#${f.tmpl}</small></div>
+    // los de LABORATORIO van sombreados en violeta para distinguirlos de los de un producto suelto
+    const esLab=!!f.lab;
+    const estilo=esLab?' style="background:#f6f2fe;border-left:4px solid #7c3aed"':"";
+    const marca=esLab?`<span class="badge" style="background:#ede6fd;color:#5b21b6;border-color:#c9b6f7">🏭 laboratorio${f.nprod?" · "+f.nprod+" productos":""}</span>`:"";
+    const clave=esLab?`${f.lab==="M"?"marca":"categoría"} #${f.labId}`:`#${f.tmpl}`;
+    return `<div class="ofrow"${estilo} data-capa="${esc(_norm(f.nombre+" "+clave+(esLab?" laboratorio":"")))}" data-estado="${_capaEst(f)}">
+      <div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">${clave}</small></div>
         <div class="ofdet">${_fijoDet(f)} · ${venc}</div></div>
+      ${marca}
       ${est}
       <button class="btn-mini" onclick="fijoEditar(${i})">Editar</button>
       <button class="btn-mini" onclick="fijoPausar(${i})">${f.pausado?'Reanudar':'Pausar'}</button>
@@ -439,7 +461,7 @@ function renderFijos(){
     ${capaHeadHTML()}
     ${!capaOpen?"":`<div style="padding:14px">
       ${capaBarHTML()}
-      <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual y temporal que <b>pisa</b> al motor cuando conseguís una compra muy buena. La <b>cantidad de tramos</b> manda: <b>1</b> = precio único (una sola línea, en todas las listas); <b>N</b> = escalera de N tramos; <b>vacío</b> = los tramos que calcula el motor. Para éticos la escalera arranca del <b>PVP</b>. Podés poner un <b>descuento máximo más profundo</b> que el del motor e incluso <b>perforar el piso</b>. Al <b>pausar/quitar</b>, vuelve solo a la escalera automática.</p>
+      <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual y temporal que <b>pisa</b> al motor cuando conseguís una compra muy buena. Se puede aplicar a <b>un producto</b> o a <b>un laboratorio entero</b> (esas filas van en violeta 🏭; si un producto tiene su propia línea, esa le gana). Por laboratorio va sólo la escalera, no el precio único. La <b>cantidad de tramos</b> manda: <b>1</b> = precio único (una sola línea, en todas las listas); <b>N</b> = escalera de N tramos; <b>vacío</b> = los tramos que calcula el motor. Para éticos la escalera arranca del <b>PVP</b>. Podés poner un <b>descuento máximo más profundo</b> que el del motor e incluso <b>perforar el piso</b>. Al <b>pausar/quitar</b>, vuelve solo a la escalera automática.</p>
       ${editando?"":fijoFormHTML()}
       <div class="oflist" id="capa-list">${rows}<div class="ofrow" id="capa-vacio" style="display:none;justify-content:center;color:var(--gris)">Ningún producto de la capa coincide con la búsqueda.</div></div>
       <div class="capafoot" style="margin-top:12px"><button class="btn-save" onclick="guardarCapa()">💾 Guardar y sincronizar</button></div>
@@ -448,6 +470,16 @@ function renderFijos(){
 }
 function fijoPreviewHTML(){
   if(!_fijoSel) return "";
+  if(_fijoSel.lab){
+    const dm=(parseFloat((document.getElementById("fijo-descmax")||{}).value))||0;
+    const tr=(parseInt((document.getElementById("fijo-tramos")||{}).value))||0;
+    const tp=(parseInt((document.getElementById("fijo-tope")||{}).value))||0;
+    const q=[]; if(tr>1) q.push(`${tr} tramos`); if(dm) q.push(`desc. máx ${Math.round(dm)}%`); if(tp) q.push(`tope ${tp}`);
+    return `Se aplica a los <b>${_fijoSel.nprod||0} productos</b> de <b>${esc(_fijoSel.nombre)}</b>${q.length?" · "+q.join(" · "):""}.<br>
+      La escalera se calcula <b>producto por producto</b> desde su propio costo, así que no hay un precio único que mostrar acá.
+      El <b>piso de margen</b> de cada categoría se respeta salvo que tildes <b>perforar piso</b>.
+      Si un producto ya tiene su propia línea en la capa, <b>esa manda</b> y el laboratorio no lo pisa.`;
+  }
   if(_fijoSel.loading) return "Trayendo costo y precio base…";
   const cost=_fijoSel.cost||0, base=_fijoSel.base||0, iva=_fijoSel.iva||0;
   const tramos=(parseInt((document.getElementById("fijo-tramos")||{}).value))||0;
@@ -483,7 +515,45 @@ window.fijoBuscar=(q)=>{
     }catch(e){}
   }, 300);
 };
-window.fijoEditar=(i)=>{ const f=FIJOS[i]; if(!f) return; _fijoIdx=i; fijoElegir(f.tmpl, f.nombre, {precio:f.precio, descmax:f.descmax, tramos:f.tramos, tope:f.tope, perforar:f.perforar, hasta:f.hasta}); };
+window.fijoModo=(m)=>{ _fijoModo=m; render(); };
+/* Buscador de LABORATORIOS. Dos fuentes, porque en EyG el laboratorio no vive en un solo lado:
+   - la Marca de la ficha del producto (modelo x_marcas) -> clave 'M<id>'
+   - en éticos, la categoría del laboratorio (ALL / ETICOS / Klonal) -> clave 'C<id>'
+   Se muestra cuántos productos con costo cae en cada uno, que además desempata las marcas repetidas. */
+window.fijoBuscarLab=(q)=>{
+  clearTimeout(_fijoTimer);
+  _fijoTimer=setTimeout(async ()=>{
+    const box=document.getElementById("fijo-results"); if(!box) return;
+    q=(q||"").trim();
+    if(q.length<2){ box.style.display="none"; box.innerHTML=""; return; }
+    box.style.display="block"; box.innerHTML=`<div class="ofbitem" style="color:var(--gris)">Buscando…</div>`;
+    try{
+      const [marcas,cats]=await Promise.all([
+        rpc("x_marcas","search_read",[[["x_name","ilike",q]],["id","x_name"]],{limit:6}),
+        rpc("product.category","search_read",[[["id","child_of",12],["name","ilike",q]],["id","complete_name"]],{limit:6,context:{lang:"es_AR"}})
+      ]);
+      const items=[].concat(
+        marcas.map(m=>({tipo:"M", id:m.id, nombre:m.x_name, dom:[["x_costo_motor",">",0],["x_studio_many2one_field_6o_1if0l6ud2","=",m.id]], et:"marca"})),
+        cats.map(c=>({tipo:"C", id:c.id, nombre:String(c.complete_name).replace("ALL / ",""), dom:[["x_costo_motor",">",0],["categ_id","child_of",c.id]], et:"categoría de éticos"}))
+      );
+      if(!items.length){ box.innerHTML=`<div class="ofbitem" style="color:var(--gris)">Sin resultados</div>`; return; }
+      const cnt=await Promise.all(items.map(i=>rpc("product.product","search_count",[i.dom]).catch(()=>0)));
+      items.forEach((i,k)=>i.n=cnt[k]);
+      items.sort((a,b)=>b.n-a.n);
+      box.innerHTML=items.map(i=>`<div class="ofbitem" style="font-size:12.5px;line-height:1.3" onclick='fijoElegirLab(${JSON.stringify(i.tipo)}, ${i.id}, ${JSON.stringify(i.nombre)}, ${i.n})'>🏭 <b>${esc(i.nombre)}</b> <small style="color:var(--gris2);font-size:11px">${i.et} · ${i.n} producto${i.n===1?"":"s"} con costo</small></div>`).join("");
+    }catch(e){ box.innerHTML=`<div class="ofbitem" style="color:#b0322f">No pude buscar: ${esc(e.message)}</div>`; }
+  }, 300);
+};
+window.fijoElegirLab=(tipo,id,nombre,nprod,prefill)=>{
+  _fijoEdit=prefill||null;
+  _fijoModo="lab";
+  _fijoSel={lab:tipo, labId:id, nombre:nombre, nprod:nprod||0, tmpl:0};
+  render();
+};
+window.fijoEditar=(i)=>{ const f=FIJOS[i]; if(!f) return; _fijoIdx=i;
+  if(f.lab) fijoElegirLab(f.lab, f.labId, f.nombre, f.nprod, {descmax:f.descmax, tramos:f.tramos, tope:f.tope, perforar:f.perforar, hasta:f.hasta});
+  else fijoElegir(f.tmpl, f.nombre, {precio:f.precio, descmax:f.descmax, tramos:f.tramos, tope:f.tope, perforar:f.perforar, hasta:f.hasta});
+};
 window.fijoElegir=async (id,nombre,prefill)=>{
   _fijoEdit=prefill||null;
   _fijoSel={tmpl:id, nombre:nombre, loading:true}; render();
@@ -509,15 +579,21 @@ window.fijoAgregar=()=>{
   const tope=parseInt((document.getElementById("fijo-tope")||{}).value)||0;
   const perf=!!(document.getElementById("fijo-perforar")||{}).checked;
   const hasta=(document.getElementById("fijo-hasta")||{}).value||"";
-  if(tramos===1){ if(!(precio>0)){ if(typeof toast==="function") toast("Para precio único (1 tramo), poné el precio"); return; } }
+  const esLab=!!_fijoSel.lab;
+  if(esLab && tramos===1){ if(typeof toast==="function") toast("Por laboratorio no se puede poner un precio único: sería el mismo número para todos sus productos. Usá descuento máximo, tope o cantidad de tramos."); return; }
+  if(!esLab && tramos===1){ if(!(precio>0)){ if(typeof toast==="function") toast("Para precio único (1 tramo), poné el precio"); return; } }
   else if(!(dm>0||tope>0||tramos>1)){ if(typeof toast==="function") toast("Definí descuento máx., tope o cantidad de tramos"); return; }
-  const ent={tmpl:_fijoSel.tmpl, nombre:_fijoSel.nombre, precio:precio, descmax:dm, tramos:tramos, tope:tope, perforar:perf, hasta:hasta, pausado:false};
+  const ent = esLab
+    ? {lab:_fijoSel.lab, labId:_fijoSel.labId, nprod:_fijoSel.nprod, tmpl:0, nombre:_fijoSel.nombre, precio:0, descmax:dm, tramos:tramos, tope:tope, perforar:perf, hasta:hasta, pausado:false}
+    : {tmpl:_fijoSel.tmpl, nombre:_fijoSel.nombre, precio:precio, descmax:dm, tramos:tramos, tope:tope, perforar:perf, hasta:hasta, pausado:false};
   if(_fijoIdx!=null && FIJOS[_fijoIdx]){ ent.pausado=!!FIJOS[_fijoIdx].pausado; FIJOS[_fijoIdx]=ent; }   // editar: queda donde estaba
-  else { FIJOS=FIJOS.filter(f=>f.tmpl!==_fijoSel.tmpl); FIJOS.unshift(ent); }
+  else { FIJOS=FIJOS.filter(f=> esLab ? !(f.lab===ent.lab && f.labId===ent.labId) : f.tmpl!==ent.tmpl); FIJOS.unshift(ent); }
   _fijoSel=null; _fijoEdit=null; _fijoIdx=null; dirtyCapa=true; capaQ=""; capaEstado=""; render();
 };
 window.fijoPausar=(i)=>{ if(FIJOS[i]){ FIJOS[i].pausado=!FIJOS[i].pausado; dirtyCapa=true; render(); } };
-window.fijoQuitar=(i)=>{ if(!confirm("¿Quitar esto? El producto vuelve a la escalera del motor en la próxima corrida.")) return; FIJOS.splice(i,1); dirtyCapa=true; render(); };
+window.fijoQuitar=(i)=>{ const f=FIJOS[i]||{};
+  const msg=f.lab?`¿Quitar la capa de ${f.nombre}? Sus ${f.nprod||""} productos vuelven a la escalera del motor en la próxima corrida.`:"¿Quitar esto? El producto vuelve a la escalera del motor en la próxima corrida.";
+  if(!confirm(msg)) return; FIJOS.splice(i,1); dirtyCapa=true; render(); };
 
 /* =================== AJUSTES DEL MOTOR (modal): General (intervalo) + Escalera de éticos por precio =================== */
 // impacto de una franja: rango de PVP, tope y ~total de compra para llegar al máximo descuento.
