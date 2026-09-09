@@ -154,7 +154,11 @@ let FIJOS=[], _fijoSel=null, _fijoTimer=null, _fijoIdx=null;
 // Laboratorio = la Marca de la ficha (modelo x_marcas, clave 'M<id>') o, en éticos, la
 // categoría del laboratorio (clave 'C<id>'). Por laboratorio sólo tiene sentido la ESCALERA:
 // un precio único no puede ser el mismo para todos sus productos.
-let _fijoModo="prod";   // _fijoIdx: fila que se está editando (se edita EN EL LUGAR)
+// (el buscador es UNO SOLO: devuelve productos y laboratorios juntos, no hay que elegir modo)
+// Simulación de la capa de un LABORATORIO: se traen sus productos una vez y con cada cambio
+// de los campos se recalcula, en el navegador, en qué margen queda cada uno. Sirve para ver
+// ANTES de aplicar si alguno perfora el costo.
+let _labSim={estado:"", filas:[], banda:null, key:""};
 // Capa temporal: plegado (arranca cerrada, para no scrollear hasta las categorías), buscador dentro de
 // la capa ya cargada y marca de cambios sin guardar propia (independiente del `dirty` de las reglas).
 let capaOpen=false, capaQ="", capaEstado="", dirtyCapa=false;   // capaEstado: filtro por métrica (activo/pronto/vencido/pausado/sinvto)
@@ -320,12 +324,10 @@ function _fijoDet(f){
 function fijoFormHTML(){
   const pe=_fijoEdit||{};
   const editando=(_fijoIdx!=null);
-  const esLab = _fijoSel ? !!_fijoSel.lab : (_fijoModo==="lab");
-  const chip=(m,txt)=>`<span onclick="fijoModo('${m}')" style="cursor:pointer;font-size:11.5px;font-weight:800;padding:3px 10px;border-radius:999px;border:1px solid ${_fijoModo===m?(m==="lab"?"#7c3aed":"var(--teal-deep)"):"var(--line)"};background:${_fijoModo===m?(m==="lab"?"#ede6fd":"#e7f4f4"):"#fff"};color:${_fijoModo===m?(m==="lab"?"#5b21b6":"var(--teal-deep)"):"var(--gris)"}">${txt}</span>`;
-  const modobar = (_fijoSel||editando) ? "" : `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><span style="font-size:11px;color:var(--gris);font-weight:700">Aplicar a:</span>${chip("prod","Un producto")}${chip("lab","🏭 Un laboratorio entero")}</div>`;
+  const esLab = !!(_fijoSel && _fijoSel.lab);
   const sel = _fijoSel
     ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;padding:6px 0"><span style="color:var(--gris);font-weight:700">${esLab?"Laboratorio:":"Producto:"}</span> <b style="color:${esLab?"#5b21b6":"var(--teal-deep)"};max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(_fijoSel.nombre)}">${esc(_fijoSel.nombre)}</b> <small style="color:var(--gris2)">${esLab?((_fijoSel.nprod||0)+" productos"):("#"+_fijoSel.tmpl+(_fijoSel.etico?" · ético (PVP)":""))}</small> ${editando?"":`<button class="btn-mini" onclick="fijoLimpiar()">cambiar</button>`}</div>`
-    : `${modobar}<input type="text" id="fijo-q" placeholder="${_fijoModo==="lab"?"Buscar laboratorio o marca…":"Buscar producto por nombre o código…"}" oninput="${_fijoModo==="lab"?"fijoBuscarLab":"fijoBuscar"}(this.value)" autocomplete="off" style="width:100%;height:38px;border:1px solid ${_fijoModo==="lab"?"#c9b6f7":"var(--line)"};border-radius:8px;padding:0 10px;font-family:inherit"><div id="fijo-results" class="ofbusq" style="display:none"></div>`;
+    : `<input type="text" id="fijo-q" placeholder="Buscar un producto o un laboratorio…" oninput="fijoBuscar(this.value)" autocomplete="off" style="width:100%;height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit"><div id="fijo-results" class="ofbusq" style="display:none"></div>`;
   const cmp=(lbl,inner)=>`<div><div style="font-size:10.5px;font-weight:800;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">${lbl}</div>${inner}</div>`;
   const inp=(id,val,w,ph)=>`<input type="number" id="${id}" step="1" value="${(val===0||val)?val:''}" ${ph?`placeholder="${ph}"`:''} oninput="fijoPreview()" style="height:38px;width:${w}px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit">`;
   return `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
@@ -334,7 +336,7 @@ function fijoFormHTML(){
         ${esLab?"":cmp("Precio único", inp("fijo-precio", pe.precio, 118))}
         ${cmp("Desc. máx. s/PVP", inp("fijo-descmax", pe.descmax, 76)+" %")}
         ${cmp("Tope (cajas)", inp("fijo-tope", pe.tope, 78, "franjas"))}
-        <label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:#b0322f;height:38px"><input type="checkbox" id="fijo-perforar" ${pe.perforar?'checked':''} style="width:17px;height:17px;accent-color:#b0322f"> perforar piso</label>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:#b0322f;height:38px"><input type="checkbox" id="fijo-perforar" ${pe.perforar?'checked':''} onchange="fijoPreview()" style="width:17px;height:17px;accent-color:#b0322f"> perforar piso</label>
         ${cmp("Hasta (opc.)", `<input type="date" id="fijo-hasta" value="${pe.hasta||''}" style="height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit">`)}
         <button class="btn-mini cons" onclick="fijoAgregar()">${editando?'✓ Guardar cambios':'＋ Agregar'}</button>
         ${_fijoSel?`<button class="btn-mini" onclick="fijoLimpiar()">Cancelar</button>`:''}
@@ -461,7 +463,7 @@ function renderFijos(){
     ${capaHeadHTML()}
     ${!capaOpen?"":`<div style="padding:14px">
       ${capaBarHTML()}
-      <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual y temporal que <b>pisa</b> al motor cuando conseguís una compra muy buena. Se puede aplicar a <b>un producto</b> o a <b>un laboratorio entero</b> (esas filas van en violeta 🏭; si un producto tiene su propia línea, esa le gana). Por laboratorio va sólo la escalera, no el precio único. La <b>cantidad de tramos</b> manda: <b>1</b> = precio único (una sola línea, en todas las listas); <b>N</b> = escalera de N tramos; <b>vacío</b> = los tramos que calcula el motor. Para éticos la escalera arranca del <b>PVP</b>. Podés poner un <b>descuento máximo más profundo</b> que el del motor e incluso <b>perforar el piso</b>. Al <b>pausar/quitar</b>, vuelve solo a la escalera automática.</p>
+      <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual y temporal que <b>pisa</b> al motor cuando conseguís una compra muy buena. Buscá <b>un producto o un laboratorio</b> en el mismo campo: el buscador te devuelve los dos. Aplicada a un laboratorio alcanza a todos sus productos (esas filas van en <b>violeta 🏭</b>; si un producto tiene su propia línea, esa le gana) y va sólo la escalera, no el precio único. La <b>cantidad de tramos</b> manda: <b>1</b> = precio único (una sola línea, en todas las listas); <b>N</b> = escalera de N tramos; <b>vacío</b> = los tramos que calcula el motor. Para éticos la escalera arranca del <b>PVP</b>. Podés poner un <b>descuento máximo más profundo</b> que el del motor e incluso <b>perforar el piso</b>. Al <b>pausar/quitar</b>, vuelve solo a la escalera automática.</p>
       ${editando?"":fijoFormHTML()}
       <div class="oflist" id="capa-list">${rows}<div class="ofrow" id="capa-vacio" style="display:none;justify-content:center;color:var(--gris)">Ningún producto de la capa coincide con la búsqueda.</div></div>
       <div class="capafoot" style="margin-top:12px"><button class="btn-save" onclick="guardarCapa()">💾 Guardar y sincronizar</button></div>
@@ -474,11 +476,40 @@ function fijoPreviewHTML(){
     const dm=(parseFloat((document.getElementById("fijo-descmax")||{}).value))||0;
     const tr=(parseInt((document.getElementById("fijo-tramos")||{}).value))||0;
     const tp=(parseInt((document.getElementById("fijo-tope")||{}).value))||0;
+    const perf=!!(document.getElementById("fijo-perforar")||{}).checked;
     const q=[]; if(tr>1) q.push(`${tr} tramos`); if(dm) q.push(`desc. máx ${Math.round(dm)}%`); if(tp) q.push(`tope ${tp}`);
-    return `Se aplica a los <b>${_fijoSel.nprod||0} productos</b> de <b>${esc(_fijoSel.nombre)}</b>${q.length?" · "+q.join(" · "):""}.<br>
-      La escalera se calcula <b>producto por producto</b> desde su propio costo, así que no hay un precio único que mostrar acá.
-      El <b>piso de margen</b> de cada categoría se respeta salvo que tildes <b>perforar piso</b>.
-      Si un producto ya tiene su propia línea en la capa, <b>esa manda</b> y el laboratorio no lo pisa.`;
+    const cab=`Se aplica a los <b>${_fijoSel.nprod||0} productos</b> de <b>${esc(_fijoSel.nombre)}</b>${q.length?" · "+q.join(" · "):""}. Si un producto ya tiene su propia línea, <b>esa manda</b>.`;
+    if(_labSim.estado==="cargando") return cab+"<br>Calculando cómo queda cada producto…";
+    if(_labSim.estado==="error") return cab+`<br><span style="color:#b0322f">No pude simular: ${esc(_labSim.msg||"")}</span>`;
+    if(_labSim.estado!=="ok") return cab;
+    // en qué margen queda el ÚLTIMO escalón de cada producto con lo que hay cargado ahora
+    const sinDato=[]; const conM=[];
+    _labSim.filas.forEach(p=>{ const r=ultimoEscalon(p, dm/100, perf);
+      if(r.motivo||r.margen==null) sinDato.push(Object.assign({},p,{motivo:r.motivo||"sin precio"}));
+      else conM.push(Object.assign({},p,r)); });
+    const grupos=LAB_BANDAS.map(b=>Object.assign({},b,{items:conM.filter(x=>b.test(x.margen))}));
+    const pastillas=grupos.filter(g=>g.items.length).map(g=>{
+      const on=(_labSim.banda===g.k);
+      return `<span onclick="fijoBanda('${g.k}')" title="Tocá para ver cuáles son" style="cursor:pointer;display:inline-block;margin:3px 5px 0 0;padding:3px 9px;border-radius:999px;font-size:11.5px;font-weight:800;background:${g.bg};color:${g.col};border:1px solid ${on?g.col:"transparent"}">${g.items.length} ${g.lbl}</span>`;
+    }).join("");
+    const sd=sinDato.length?`<span onclick="fijoBanda('sd')" title="Tocá para ver cuáles son" style="cursor:pointer;display:inline-block;margin:3px 5px 0 0;padding:3px 9px;border-radius:999px;font-size:11.5px;font-weight:800;background:#eef2f1;color:var(--gris);border:1px solid ${_labSim.banda==="sd"?"var(--gris)":"transparent"}">${sinDato.length} sin poder calcular</span>`:"";
+    const neg=grupos.find(g=>g.k==="neg");
+    const negStk=neg?neg.items.filter(x=>x.stock>0).length:0;
+    const alerta=(neg&&neg.items.length)?`<div style="margin-top:7px;padding:7px 10px;border-radius:8px;background:#fbeceb;color:#b0322f;font-weight:800">⚠ ${neg.items.length} producto${neg.items.length===1?"":"s"} quedaría${neg.items.length===1?"":"n"} por debajo del costo${negStk?`, ${negStk} con stock`:" (ninguno con stock)"}. Tocá la pastilla roja para ver cuáles.</div>`:"";
+    let detalle="";
+    if(_labSim.banda){
+      const g=(_labSim.banda==="sd")?{lbl:"sin poder calcular", items:sinDato}:grupos.find(x=>x.k===_labSim.banda);
+      if(g){
+        const orden=g.items.slice().sort((a,b)=>(a.margen==null?1:0)-(b.margen==null?1:0) || (a.margen-b.margen));
+        const filas=orden.slice(0,40).map(x=>`<div style="display:flex;gap:8px;padding:3px 0;border-top:1px solid var(--line);font-size:12px">
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.nombre)}">${esc(x.nombre)}</span>
+          <span style="color:var(--gris2)">${esc(x.sku)}</span>
+          <span style="width:78px;text-align:right;color:${x.stock>0?"var(--gris)":"var(--gris2)"}">${x.stock>0?("stock "+x.stock):"sin stock"}</span>
+          <span style="width:150px;text-align:right">${x.motivo?esc(x.motivo):`${EYG.money(x.precio)} vs costo ${EYG.money(x.costo)} · <b>${x.margen.toFixed(1)}%</b>`}</span></div>`).join("");
+        detalle=`<div style="margin-top:8px"><b>${g.items.length} ${esc(g.lbl)}</b>${g.items.length>40?" (muestro los primeros 40)":""}${filas}</div>`;
+      }
+    }
+    return `${cab}<br><span style="color:var(--gris)">Así queda el <b>último escalón</b> de cada producto, con la regla de su categoría${perf?" y el piso perforado":""}:</span><div style="margin-top:4px">${pastillas}${sd}</div>${alerta}${detalle}`;
   }
   if(_fijoSel.loading) return "Trayendo costo y precio base…";
   const cost=_fijoSel.cost||0, base=_fijoSel.base||0, iva=_fijoSel.iva||0;
@@ -507,48 +538,112 @@ window.fijoBuscar=(q)=>{
     const box=document.getElementById("fijo-results"); if(!box) return;
     q=(q||"").trim();
     if(q.length<2){ box.style.display="none"; box.innerHTML=""; return; }
-    try{
-      const rs=await rpc("product.template","search_read",[["|",["name","ilike",q],["default_code","ilike",q]],["id","name","default_code"]],{limit:8,context:{lang:"es_AR"}});
-      if(!rs.length){ box.style.display="block"; box.innerHTML=`<div class="ofbitem" style="color:var(--gris)">Sin resultados</div>`; return; }
-      box.style.display="block";
-      box.innerHTML=rs.map(r=>`<div class="ofbitem" style="font-size:12.5px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(r.name)}" onclick='fijoElegir(${r.id}, ${JSON.stringify(r.name)})'>${esc(r.name)} <small style="color:var(--gris2);font-size:11px">${esc(r.default_code||"")}</small></div>`).join("");
-    }catch(e){}
-  }, 300);
-};
-window.fijoModo=(m)=>{ _fijoModo=m; render(); };
-/* Buscador de LABORATORIOS. Dos fuentes, porque en EyG el laboratorio no vive en un solo lado:
-   - la Marca de la ficha del producto (modelo x_marcas) -> clave 'M<id>'
-   - en éticos, la categoría del laboratorio (ALL / ETICOS / Klonal) -> clave 'C<id>'
-   Se muestra cuántos productos con costo cae en cada uno, que además desempata las marcas repetidas. */
-window.fijoBuscarLab=(q)=>{
-  clearTimeout(_fijoTimer);
-  _fijoTimer=setTimeout(async ()=>{
-    const box=document.getElementById("fijo-results"); if(!box) return;
-    q=(q||"").trim();
-    if(q.length<2){ box.style.display="none"; box.innerHTML=""; return; }
     box.style.display="block"; box.innerHTML=`<div class="ofbitem" style="color:var(--gris)">Buscando…</div>`;
     try{
-      const [marcas,cats]=await Promise.all([
-        rpc("x_marcas","search_read",[[["x_name","ilike",q]],["id","x_name"]],{limit:6}),
-        rpc("product.category","search_read",[[["id","child_of",12],["name","ilike",q]],["id","complete_name"]],{limit:6,context:{lang:"es_AR"}})
+      /* UN SOLO buscador: trae LABORATORIOS y PRODUCTOS juntos, sin tener que elegir modo.
+         El laboratorio no vive en un solo lado en EyG, así que se mira en dos:
+           - la Marca de la ficha del producto (modelo x_marcas) -> clave 'M<id>'
+           - en éticos, la categoría del laboratorio (ALL / ETICOS / Klonal) -> clave 'C<id>'
+         De cada laboratorio se muestra a cuántos productos con costo alcanza; los que no
+         alcanzan a ninguno no se listan (así se caen solas las marcas repetidas y vacías). */
+      const [marcas,cats,prods]=await Promise.all([
+        rpc("x_marcas","search_read",[[["x_name","ilike",q]],["id","x_name"]],{limit:5}).catch(()=>[]),
+        rpc("product.category","search_read",[[["id","child_of",12],["name","ilike",q]],["id","complete_name"]],{limit:5,context:{lang:"es_AR"}}).catch(()=>[]),
+        rpc("product.template","search_read",[["|",["name","ilike",q],["default_code","ilike",q]],["id","name","default_code"]],{limit:8,context:{lang:"es_AR"}}).catch(()=>[])
       ]);
-      const items=[].concat(
-        marcas.map(m=>({tipo:"M", id:m.id, nombre:m.x_name, dom:[["x_costo_motor",">",0],["x_studio_many2one_field_6o_1if0l6ud2","=",m.id]], et:"marca"})),
-        cats.map(c=>({tipo:"C", id:c.id, nombre:String(c.complete_name).replace("ALL / ",""), dom:[["x_costo_motor",">",0],["categ_id","child_of",c.id]], et:"categoría de éticos"}))
+      const labs=[].concat(
+        marcas.map(m=>({tipo:"M", id:m.id, nombre:m.x_name, dom:[["x_costo_motor",">",0],["x_studio_many2one_field_6o_1if0l6ud2","=",m.id]], et:"la Marca de la ficha"})),
+        cats.map(c=>({tipo:"C", id:c.id, nombre:String(c.complete_name).replace("ALL / ",""), dom:[["x_costo_motor",">",0],["categ_id","child_of",c.id]], et:"la categoría del laboratorio"}))
       );
-      if(!items.length){ box.innerHTML=`<div class="ofbitem" style="color:var(--gris)">Sin resultados</div>`; return; }
-      const cnt=await Promise.all(items.map(i=>rpc("product.product","search_count",[i.dom]).catch(()=>0)));
-      items.forEach((i,k)=>i.n=cnt[k]);
-      items.sort((a,b)=>b.n-a.n);
-      box.innerHTML=items.map(i=>`<div class="ofbitem" style="font-size:12.5px;line-height:1.3" onclick='fijoElegirLab(${JSON.stringify(i.tipo)}, ${i.id}, ${JSON.stringify(i.nombre)}, ${i.n})'>🏭 <b>${esc(i.nombre)}</b> <small style="color:var(--gris2);font-size:11px">${i.et} · ${i.n} producto${i.n===1?"":"s"} con costo</small></div>`).join("");
+      /* Un mismo laboratorio puede aparecer DOS veces y cubrir cosas distintas: p.ej. "BAGO"
+         como Marca son 6 productos (4 hospitalarios: cefazolina, tramadol…) y "ETICOS / Bagó"
+         como categoría son 111 del vademécum. Para poder elegir hay que ver QUÉ cubre cada uno,
+         así que se muestra el reparto por familia y un par de ejemplos. */
+      const grp=await Promise.all(labs.map(i=>rpc("product.product","read_group",[i.dom,["id"],["categ_id"]],{lazy:true}).catch(()=>[])));
+      labs.forEach((i,k)=>{
+        const g=grp[k]||[];
+        i.n=g.reduce((a,x)=>a+(x.categ_id_count||0),0);
+        const F={}; g.forEach(x=>{ const c=(x.categ_id&&byId[x.categ_id[0]]); const t=c?c.top:"otras"; F[t]=(F[t]||0)+(x.categ_id_count||0); });
+        i.fam=Object.keys(F).map(t=>[t,F[t]]).sort((a,b)=>b[1]-a[1]);
+      });
+      const labsOk=labs.filter(i=>i.n>0).sort((a,b)=>b.n-a.n);
+      const ejs=await Promise.all(labsOk.map(i=>rpc("product.product","search_read",[i.dom,["name"]],{limit:2,context:{lang:"es_AR"}}).catch(()=>[])));
+      labsOk.forEach((i,k)=>{ i.ej=(ejs[k]||[]).map(p=>String(p.name||"").split(" (")[0].trim()).join(" · "); });
+      const titulo=t=>`<div style="padding:5px 10px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--gris2);background:#f4f7f7">${t}</div>`;
+      let html="";
+      if(labsOk.length) html+=titulo("Laboratorios")+labsOk.map(i=>{
+        const reparto=i.fam.map(f=>`${esc(f[0].toLowerCase())} ${f[1]}`).join(" · ");
+        return `<div class="ofbitem" style="font-size:12.5px;line-height:1.35;background:#faf8ff;border-left:3px solid #7c3aed" onclick='fijoElegirLab(${JSON.stringify(i.tipo)}, ${i.id}, ${JSON.stringify(i.nombre)}, ${i.n})'>
+          <div>🏭 <b style="color:#5b21b6">${esc(i.nombre)}</b> <small style="color:var(--gris2);font-size:11px">por ${i.et} · <b>${i.n}</b> producto${i.n===1?"":"s"}</small></div>
+          <div style="font-size:11px;color:var(--gris);margin-left:18px">${esc(reparto)}</div>
+          ${i.ej?`<div style="font-size:10.5px;color:var(--gris2);margin-left:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">ej: ${esc(i.ej)}</div>`:""}
+        </div>`;
+      }).join("");
+      if(prods.length) html+=titulo("Productos")+prods.map(r=>`<div class="ofbitem" style="font-size:12.5px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(r.name)}" onclick='fijoElegir(${r.id}, ${JSON.stringify(r.name)})'>${esc(r.name)} <small style="color:var(--gris2);font-size:11px">${esc(r.default_code||"")}</small></div>`).join("");
+      box.innerHTML = html || `<div class="ofbitem" style="color:var(--gris)">Sin resultados</div>`;
     }catch(e){ box.innerHTML=`<div class="ofbitem" style="color:#b0322f">No pude buscar: ${esc(e.message)}</div>`; }
   }, 300);
 };
+/* Regla efectiva de una categoría, igual que la resuelve el motor: los éticos van por
+   laboratorio/escala con base PVP; el resto hereda por categoría con base costo. */
+function reglaMotor(catId){
+  const c=byId[catId];
+  if(c && c.top==="ETICOS"){ const r=resolverEtico(catId); return (r&&r.rule&&r.rule.genera)?Object.assign({},r.rule,{base:"pvp"}):null; }
+  const r=resolver(catId);
+  return (r&&r.rule&&r.rule.genera)?Object.assign({},r.rule,{base:(r.rule.base||"costo")}):null;
+}
+/* La tilde "IVA al costo" que le toca a un producto: la suya si la tiene, si no la de su categoría. */
+function tildeDeProd(p){ const v=String(p.tilde||"").trim().toLowerCase(); if(v==="si") return 1; if(v==="no") return 0; return iva1(p.catId); }
+/* Precio del ÚLTIMO escalón con la misma cuenta que hace el motor:
+   base = costo×(1+recargo)  ·  éticos: base = PVP×(1−desc de la escala)
+   con descuento máximo cargado -> ese descuento (en éticos va SOBRE el PVP)
+   sin descuento cargado -> el motor baja hasta el piso de margen
+   y siempre se clampea al piso, salvo que se tilde "perforar piso". */
+function ultimoEscalon(p, dmFrac, perforar){
+  const r=reglaMotor(p.catId);
+  if(!r) return {motivo:"sin regla de precio"};
+  const costo=(p.costo||0)*(1+(tildeDeProd(p)?(p.ivaCompra||0):0));
+  const pvp=p.pvp||0;
+  if(r.base==="pvp" && !(pvp>0)) return {motivo:"sin PVP"};
+  if(r.base!=="pvp" && !(costo>0)) return {motivo:"sin costo"};
+  const piso=(costo>0 && (r.piso||0)<1) ? costo/(1-(r.piso||0)) : 0;
+  const base=(r.base==="pvp") ? pvp*(1-(r.recargo||0)) : costo*(1+(r.recargo||0));
+  let precio;
+  if(dmFrac>0) precio=(r.base==="pvp") ? pvp*(1-dmFrac) : base*(1-dmFrac);
+  else precio = piso>0 ? piso : base;
+  if(!perforar && piso>0 && precio<piso) precio=piso;
+  return {precio:precio, costo:costo, margen:(precio>0?(precio-costo)/precio*100:null)};
+}
+const LAB_BANDAS=[
+  {k:"neg",  lbl:"bajo el costo", col:"#b0322f", bg:"#fbeceb", test:m=>m<0},
+  {k:"b0",   lbl:"0 a 15%",       col:"#a1560f", bg:"#fdf3e7", test:m=>m>=0&&m<15},
+  {k:"b15",  lbl:"15 a 27%",      col:"#8a6d13", bg:"#fcf8e6", test:m=>m>=15&&m<27},
+  {k:"b27",  lbl:"27 a 40%",      col:"#146b4a", bg:"#e9f6ef", test:m=>m>=27&&m<40},
+  {k:"b40",  lbl:"40% o más",     col:"#0f7d84", bg:"#e6f4f4", test:m=>m>=40},
+];
+/* Trae los productos del laboratorio UNA vez (no en cada tecla). */
+window.fijoCargarLabSim=async (tipo,id)=>{
+  const key=tipo+id;
+  if(_labSim.key===key && _labSim.estado==="ok") return;
+  _labSim={estado:"cargando", filas:[], banda:null, key:key};
+  fijoPreview();
+  try{
+    const dom = tipo==="M"
+      ? [["x_costo_motor",">",0],["x_studio_many2one_field_6o_1if0l6ud2","=",id]]
+      : [["x_costo_motor",">",0],["categ_id","child_of",id]];
+    const rs=await rpc("product.product","search_read",[dom,["default_code","name","categ_id","x_costo_motor","x_iva_compra","x_iva_costo","list_price","qty_available"]],{limit:600,context:{lang:"es_AR"}});
+    _labSim.filas=rs.map(r=>({sku:r.default_code||"", nombre:r.name||"", catId:(r.categ_id?r.categ_id[0]:0),
+      costo:r.x_costo_motor||0, ivaCompra:r.x_iva_compra||0, tilde:r.x_iva_costo||"", pvp:r.list_price||0, stock:r.qty_available||0}));
+    _labSim.estado="ok";
+  }catch(e){ _labSim.estado="error"; _labSim.msg=e.message; }
+  fijoPreview();
+};
+window.fijoBanda=(k)=>{ _labSim.banda=(_labSim.banda===k?null:k); fijoPreview(); };
 window.fijoElegirLab=(tipo,id,nombre,nprod,prefill)=>{
   _fijoEdit=prefill||null;
-  _fijoModo="lab";
   _fijoSel={lab:tipo, labId:id, nombre:nombre, nprod:nprod||0, tmpl:0};
   render();
+  fijoCargarLabSim(tipo,id);
 };
 window.fijoEditar=(i)=>{ const f=FIJOS[i]; if(!f) return; _fijoIdx=i;
   if(f.lab) fijoElegirLab(f.lab, f.labId, f.nombre, f.nprod, {descmax:f.descmax, tramos:f.tramos, tope:f.tope, perforar:f.perforar, hasta:f.hasta});
