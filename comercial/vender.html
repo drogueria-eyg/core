@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=62"></script>
+<script src="../assets/core.js?v=64"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF; --agua:#E2F1EF;
@@ -230,6 +230,19 @@
   .cart .ch h3{font-size:16px;font-weight:800}
   .cart .ch .cnt{margin-left:auto;font-size:12px;font-weight:800;color:#fff;background:var(--teal);border-radius:20px;padding:3px 10px;min-width:24px;text-align:center}
   .cart .ch .sync{margin-left:6px;font-size:11px;color:var(--gris2)}
+  /* AMPLIAR EL PEDIDO. Para revisar antes de confirmar: el carrito toma toda la
+     pantalla y el catálogo se esconde. Es la MISMA ventana (no un emergente), así
+     que no se pierde nada de lo cargado y se vuelve con el mismo botón. */
+  .cart .ch .cmax{flex:none;font-family:inherit;font-size:11.5px;font-weight:800;cursor:pointer;
+                  background:var(--agua);color:var(--teal-deep);border:1px solid #cfe9e6;border-radius:8px;padding:5px 10px;white-space:nowrap}
+  .cart .ch .cmax:hover{filter:brightness(.97)}
+  .sale.cartmax{grid-template-columns:1fr}
+  .sale.cartmax > div:not(.cart):not(.clihdr){display:none}   /* el catálogo se aparta */
+  .cart.max{position:static;max-height:none;grid-column:1/-1}
+  .cart.max .citems{overflow:visible;max-height:none;
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:0}
+  .cart.max .citem{border-right:1px solid var(--line)}
+  .cart.max .cfoot{position:sticky;bottom:0;background:var(--surface);border-top:1px solid var(--line)}
   .citems{overflow:auto;flex:1;min-height:60px}
   .citem{padding:11px 14px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:flex-start}
   .citem .ci-nm{font-size:13px;font-weight:700;line-height:1.2}
@@ -310,6 +323,11 @@
     .cart{position:fixed;left:0;right:0;bottom:0;top:auto;border-radius:20px 20px 0 0;max-height:82vh;z-index:100;transform:translateY(calc(100% - 66px));transition:transform .25s ease;box-shadow:0 -8px 40px rgba(0,0,0,.2)}
     .cart.open{transform:translateY(0)}
     .cart .ch{cursor:pointer}
+    /* En tablet y teléfono el carrito ya es un panel de abajo: ampliado toma la
+       pantalla entera, con los renglones en una sola columna para que se lean. */
+    .cart.max{position:fixed;top:0;bottom:0;max-height:100vh;border-radius:0;transform:translateY(0)}
+    .cart.max .citems{grid-template-columns:1fr;overflow:auto}
+    .cart.max .citem{border-right:0}
     .grid{padding:12px 12px 90px}
     .wrap{padding:14px 12px 30px}
   }
@@ -373,7 +391,7 @@ let ST = {
   // catálogo
   fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, prodCache:{}, taxCache:{}, ofertaPids:new Set(), ofertaTmpls:new Set(), ofertaInfo:{}, ofertaRule:{}, _ofLoaded:false, cargandoCat:false,
   fisico:{}, comprometido:{}, _compTs:0,   // stock físico y comprometido (confirmado sin entregar) por producto → disponible
-  cartOpen:false,
+  cartOpen:false, cartMax:false,   // cartMax = el pedido ampliado a toda la pantalla
   vista:(function(){ try{ return localStorage.getItem("eyg_vender_vista")||"filas"; }catch(e){ return "filas"; } })(),  // "filas" | "grilla"
 };
 
@@ -891,7 +909,7 @@ async function reanudar(orderId){
 }
 
 async function entrarVenta(){
-  ST.view="venta"; ST.fam="HOSPITALARIOS"; ST.qProd=""; ST.cartOpen=false;
+  ST.view="venta"; ST.fam="HOSPITALARIOS"; ST.qProd=""; ST.cartOpen=false; ST.cartMax=false; ST.proforma=false;
   ST.ocFiles=[];
   render();
   if(esTier2()) cargarMaxDescT2();   // tope de descuento comercial según el piso de margen
@@ -1567,7 +1585,7 @@ async function refrescarLineas(){
    ============================================================ */
 function vVenta(){
   const o=ST.order;
-  return `<div class="sale">
+  return `<div class="sale ${ST.cartMax?"cartmax":""}">
     <div class="clihdr">
       <div class="who2">
         <div class="nm">${esc(o.partnerName)}</div>
@@ -1601,10 +1619,13 @@ function vVenta(){
       <div id="gridWrap"></div>
     </div>
 
-    <div class="cart ${ST.cartOpen?"open":""}" id="cartBox">
+    <div class="cart ${ST.cartOpen?"open":""} ${ST.cartMax?"max":""}" id="cartBox">
       <div class="ch" onclick="toggleCart()">
         <h3>🛒 Pedido</h3><span class="cnt" id="cartCnt">${nItems()}</span>
         <span class="sync" id="cartSync"></span>
+        <button class="cmax" id="cartMaxBtn" onclick="toggleCartMax(event)"
+          title="${ST.cartMax?"Volver a la vista normal, con el catálogo al lado.":"Agranda el pedido a toda la pantalla para revisarlo antes de confirmar. El catálogo se esconde; con el mismo botón volvés."}"
+        >${ST.cartMax?"⤡ Reducir":"⛶ Ampliar"}</button>
       </div>
       <div class="citems" id="cartItems"></div>
       <div class="cfoot" id="cartFoot"></div>
@@ -1618,6 +1639,21 @@ window.buscarProd = EYG.buscador(v=>{ ST.qProd=v; marcarFam(); cargarCatalogo();
 function setFam(k){ ST.fam=k; ST.qProd=""; const s=document.getElementById("prodSearch"); if(s) s.value=""; marcarFam(); cargarCatalogo(); }
 function setVista(v){ if(ST.vista===v) return; ST.vista=v; try{ localStorage.setItem("eyg_vender_vista",v); }catch(e){} document.querySelectorAll(".vbtn").forEach(b=>b.classList.toggle("on",b.dataset.v===v)); renderGrid(); }
 function toggleCart(){ ST.cartOpen=!ST.cartOpen; const b=document.getElementById("cartBox"); if(b) b.classList.toggle("open",ST.cartOpen); }
+/* Ampliar / reducir el pedido, en la misma ventana. Se togglean clases en vez de
+   repintar: repintar perdería el foco de la cantidad que se esté editando. */
+function toggleCartMax(e){
+  if(e){ e.stopPropagation(); e.preventDefault(); }
+  ST.cartMax=!ST.cartMax;
+  const s=document.querySelector(".sale"), b=document.getElementById("cartBox"), btn=document.getElementById("cartMaxBtn");
+  if(s) s.classList.toggle("cartmax", ST.cartMax);
+  if(b){ b.classList.toggle("max", ST.cartMax); if(ST.cartMax){ ST.cartOpen=true; b.classList.add("open"); } }
+  if(btn){
+    btn.textContent = ST.cartMax ? "⤡ Reducir" : "⛶ Ampliar";
+    btn.title = ST.cartMax ? "Volver a la vista normal, con el catálogo al lado."
+      : "Agranda el pedido a toda la pantalla para revisarlo antes de confirmar. El catálogo se esconde; con el mismo botón volvés.";
+  }
+  window.scrollTo({top:0,behavior:"smooth"});
+}
 
 function renderCartBadge(){
   const c=document.getElementById("cartCnt"); if(c) c.textContent=nItems();
@@ -1755,22 +1791,38 @@ async function doOcQuitar(id){
 /* ============================================================
    CONFIRMAR / DESCARTAR
    ============================================================ */
+/* El TIPO de pedido de Odoo (sale.order.type). La proforma es el 3: usa el diario
+   "Proforma EYG" y sale con su propio documento, sin numeración de AFIP. Se usa
+   mucho —791 pedidos en los últimos 90 días— y hasta ahora había que marcarlo en
+   Odoo, que las comerciales no pueden tocar. */
+const TIPO_PROFORMA = 3;
 function confirmarVenta(){
   if(!nItems()) return toast("Cargá al menos un producto");
   modal(`<h3>Confirmar venta</h3>
-    <p>Vas a confirmar el pedido de <b>${esc(ST.order.partnerName)}</b> por <b>${money(ST.amount.total)}</b> (${nItems()} producto${nItems()===1?"":"s"}).<br><br>Queda como pedido de venta confirmado en Odoo.</p>
-    <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cancelar</button><button class="btn grn" onclick="doConfirmar()">Sí, confirmar</button></div>`);
+    <p>Vas a confirmar el pedido de <b>${esc(ST.order.partnerName)}</b> por <b>${money(ST.amount.total)}</b> (${nItems()} producto${nItems()===1?"":"s"}).<br><br>Elegí cómo queda en Odoo:</p>
+    <div class="mb" style="flex-direction:column;align-items:stretch;gap:9px">
+      <button class="btn grn" onclick="doConfirmar()" title="Pedido de venta normal.">✓ Sí, confirmar</button>
+      <button class="btn ghost" onclick="doConfirmar(true)" title="Lo confirma igual, pero marcado como Proforma: sale por el talonario Proforma, sin comprobante de AFIP.">🧾 Confirmar como proforma</button>
+      <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
+    </div>`);
 }
-async function doConfirmar(){
+async function doConfirmar(proforma){
   cerrarModal();
   if(ST.dirty||ST.syncing){ await syncOrder(); }
-  document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Confirmando el pedido…</div>';
+  document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Confirmando el pedido'+(proforma?" como proforma":"")+'…</div>';
   // CHEQUEO DURO de disponibilidad (dato fresco): no se confirma si algún producto está comprometido a otros pedidos.
   let faltantes=null;
   try{ faltantes=await chequearDisponibilidad(); }catch(e){ faltantes=null; }   // ante error de red no bloqueamos la venta
   if(faltantes && faltantes.length){ ST.view="venta"; render(); mostrarBloqueoStock(faltantes); return; }
+  // El tipo se escribe ANTES de confirmar. Si esto falla, NO se confirma: es peor
+  // que quede como pedido normal cuando pidieron proforma.
+  if(proforma){
+    try{ await rpc("sale.order","write",[[ST.order.id],{type_id:TIPO_PROFORMA}],{context:ES}); }
+    catch(e){ toast("No pude marcarlo como proforma: "+(e.message||"")); ST.view="venta"; render(); return; }
+  }
   try{
     await rpc("sale.order","action_confirm",[[ST.order.id]],{context:ES});
+    ST.proforma=!!proforma;
     ST.view="success"; render();
   }catch(e){ toast("No pude confirmar: "+(e.message||"")); ST.view="venta"; render(); }
 }
@@ -1817,7 +1869,7 @@ function vSuccess(){
   return `<div class="success">
     <div class="big">✅</div>
     <h2>¡Venta confirmada!</h2>
-    <p>Pedido <b>${esc(ST.order.name||"")}</b> de <b>${esc(ST.order.partnerName)}</b> por <b>${money(ST.amount.total)}</b> quedó confirmado en Odoo.</p>
+    <p>Pedido <b>${esc(ST.order.name||"")}</b> de <b>${esc(ST.order.partnerName)}</b> por <b>${money(ST.amount.total)}</b> quedó confirmado en Odoo${ST.proforma?" <b>como proforma</b>":""}.</p>
     <div class="btns">
       <button class="btn teal big" onclick="abrirPicker()">＋ Cargar otra venta</button>
       <button class="btn ghost" onclick="volverInicio()">Volver al inicio</button>
