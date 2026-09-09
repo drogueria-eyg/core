@@ -123,18 +123,22 @@ const DOCTYPE   = 73;                    // (99) Other vouchers
 const POS       = "00002";               // punto de venta de préstamos
 const ACC = { neto:350, interes:260, sellados:233 };   // Recibos pend. / Interest on loans / Sellados
 const TAX = { exento:57, iva105:63, percep:136 };    // 0% NT / IVA 10,5% / percepción IVA 1,5% (cuenta 337)
-const SELLADO_RATE = 0.002515;           // sellado ≈ 0,2515% del capital (constante en los préstamos vistos).
-                                         // Sirve para ESTIMAR el neto (capital − sellado) cuando no está el extracto.
+const SELLADO_RATE = 0.002515;           // sellado por defecto, para un banco nuevo.
+/* El sellado NO es igual en todos los bancos. Medido sobre los 27 préstamos ya
+   cargados: Santa Fe 0,2515% (13 de 13), Macro y Credicoop 0,25%, y BBVA y
+   Nación NO COBRAN NADA (6 y 1 préstamos, sellado $0). Estimarles 0,2515% a
+   esos dos les inventaba un gasto y achicaba el neto acreditado.
+   Igual es sólo una ESTIMACIÓN: manda el neto del extracto, que se carga a mano. */
 const ODOO = "https://drogueriaeyg.odoo.com";
 
 /* Bancos que dan préstamos → su partner en Odoo (subcuenta "…- Préstamo/PRESTAMOS").
    `det` = palabras para autodetectar el banco desde el texto del archivo. */
 const BANKS = [
-  {k:"santafe",   nom:"Banco Santa Fe", partner:3947, det:[/santa\s*fe/i]},
-  {k:"bbva",      nom:"Banco BBVA",     partner:3782, det:[/bbva/i]},
-  {k:"macro",     nom:"Banco Macro",    partner:2422, det:[/macro/i]},
-  {k:"credicoop", nom:"Banco Credicoop",partner:2188, det:[/credicoop/i]},
-  {k:"nacion",    nom:"Banco Nación",   partner:4046, det:[/naci[oó]n/i]},
+  {k:"santafe",   nom:"Banco Santa Fe", partner:3947, sell:0.002515, det:[/santa\s*fe/i]},
+  {k:"bbva",      nom:"Banco BBVA",     partner:3782, sell:0,        det:[/bbva/i]},
+  {k:"macro",     nom:"Banco Macro",    partner:2422, sell:0.0025,   det:[/macro/i]},
+  {k:"credicoop", nom:"Banco Credicoop",partner:2188, sell:0.0025,   det:[/credicoop/i]},
+  {k:"nacion",    nom:"Banco Nación",   partner:4046, sell:0,        det:[/naci[oó]n/i]},
 ];
 // Bancos agregados a mano en la sesión (opción "+ Agregar otro banco").
 function allBanks(){ return BANKS.concat(ST.customBanks||[]); }
@@ -243,21 +247,79 @@ function buscarTexto(text, patrones){
    ========================================================================= */
 // PDF/texto: una fila válida tiene una fecha y ≥5 importes. Posición (Santa Fe):
 // capital, interés, cargos, comp, punit, IVA, total. Robusto a números US/AR.
+/* Las columnas del cuadro de cuotas cambian según el banco. El Credicoop trae
+   "Nº Cuota | Fecha | Amortización | Ajustes | Intereses | Otros Cargos | Total
+   Cuota" y otros bancos no traen Ajustes. Contando posiciones, el interés del
+   Credicoop se leía en la columna de Ajustes y daba $0. Por eso se lee el
+   ENCABEZADO: se busca cada etiqueta conocida y se ordenan por dónde aparecen. */
+const ETIQUETAS = [
+  {k:"capital", re:/amortizaci[oó]n|capital/i},
+  {k:"ajuste",  re:/ajuste/i},
+  {k:"interes", re:/inter[eé]s/i},
+  {k:"iva",     re:/\biva\b/i},
+  {k:"otros",   re:/otros\s+cargos?/i},
+  {k:"seguro",  re:/seguro/i},
+  {k:"total",   re:/total/i}
+];
+function columnasDelCuadro(lineas){
+  for(const L of lineas){
+    const t=L.replace(/\s+/g," ").trim();
+    if(!/cuota/i.test(t) || !/(vencimiento|fecha)/i.test(t)) continue;
+    if(!/(inter[eé]s|amortizaci[oó]n|capital)/i.test(t)) continue;
+    const desdeFecha = t.search(/vencimiento|fecha/i);
+    const enc=[];
+    for(const e of ETIQUETAS){
+      const m=t.match(e.re);
+      if(m && m.index>desdeFecha) enc.push({k:e.k, i:m.index});
+    }
+    enc.sort((a,b)=>a.i-b.i);
+    if(enc.length>=3 && enc[enc.length-1].k==="total") return enc.map(x=>x.k);
+  }
+  return null;
+}
+
 function parsePdfLoan(text){
+  const lineas = String(text).split(/\r?\n/);
+  const cols = columnasDelCuadro(lineas);
   const rows=[];
-  for(const ln of String(text).split(/\r?\n/)){
+  for(const ln of lineas){
     const dm = ln.match(/\d{1,2}\/\d{1,2}\/\d{2,4}/);
     const nums = (ln.match(/-?\d{1,3}(?:[.,]\d{3})*[.,]\d{2}/g)||[]);
     if(!dm || nums.length<5) continue;
     const v = nums.map(parseNum);
-    rows.push({ rawv:dm[0], capital:v[0], interes:v[1], iva:v[v.length-2], total:v[v.length-1] });
+    let r;
+    if(cols && v.length===cols.length){ r={rawv:dm[0]}; cols.forEach((k,i)=>{ r[k]=v[i]; }); }
+    else r={ rawv:dm[0], capital:v[0], interes:v[1], iva:v[v.length-2], total:v[v.length-1] };
+    rows.push(r);
   }
   const ds=smartDates(rows.map(r=>r.rawv)); rows.forEach((r,i)=>r.venc=ds[i]);
   const seen=new Set();
   const cuotas=rows.filter(r=>{ const k=r.venc+"|"+r.total; if(seen.has(k))return false; seen.add(k); return true; })
                    .sort((a,b)=>String(a.venc).localeCompare(String(b.venc)));
+
+  const suma = k => round2(cuotas.reduce((a,c)=>a+(c[k]||0),0));
+  const extras={};
+  let percepcion=0;
+
+  /* "Otros Cargos" del Credicoop = 12% del interés = IVA 10,5% + percepción
+     1,5% juntos. Se comprueba contra el interés en vez de suponerlo, y se
+     separa cuota por cuota. Si el porcentaje no es uno de esos dos, no se
+     adivina: queda como rubro extra y el módulo pide definir la cuenta. */
+  const totInt=suma("interes"), totOtr=suma("otros");
+  if(totOtr>0.005){
+    const ratio = totInt>0 ? totOtr/totInt : 0;
+    if(Math.abs(ratio-0.12)<0.002){
+      cuotas.forEach(c=>{ const i=round2((c.interes||0)*0.105); c.iva=i; c.percep=round2((c.otros||0)-i); c.otros=0; });
+      percepcion = suma("percep");
+    }else if(Math.abs(ratio-0.105)<0.002){
+      cuotas.forEach(c=>{ c.iva=c.otros; c.otros=0; });
+    }else extras["Otros cargos"]=totOtr;
+  }
+  const aju=suma("ajuste"); if(Math.abs(aju)>0.005) extras["Ajustes"]=aju;
+  const seg=suma("seguro"); if(seg>0.005) extras["Seguro"]=seg;
+
   const nro=(text.match(/N[ÚU]MERO\s+DE\s+PR[ÉE]STAMO\s*[\r\n]*\s*(\d{4,})/i)||[])[1]||null;
-  return finalizeLoan(cuotas, {nro, extras:{}});
+  return finalizeLoan(cuotas, {nro, extras, percepcion});
 }
 // Excel/CSV: mapea columnas por su encabezado (orden y nombres varían entre bancos).
 function parseExcelLoan(wb){
@@ -290,8 +352,10 @@ function finalizeLoan(cuotas, opt){
   const extras=Object.assign({}, opt.extras||{});
   // Un rubro extra ≈ 1,5% del interés = percepción de IVA (impuesto id 136, cuenta 337).
   // Lo separamos de los extras "desconocidos" para poder generar el préstamo.
-  let percepcion=0;
-  for(const k of Object.keys(extras)){
+  // Si el lector ya la separó (Credicoop: "Otros Cargos" = IVA + percepción),
+  // viene en opt.percepcion y no hay que buscarla acá.
+  let percepcion=round2(opt.percepcion||0);
+  if(!percepcion) for(const k of Object.keys(extras)){
     if(Math.abs(extras[k]-round2(interes*0.015)) < Math.max(1, interes*0.0006)){ percepcion=extras[k]; delete extras[k]; break; }
   }
   const extraTot=round2(Object.values(extras).reduce((a,v)=>a+v,0));
@@ -349,7 +413,11 @@ function analizar(){
   // capital), así que se puede dejar estimado y corregir si el extracto difiere.
   let neto, netoEstim=false;
   if(ST.netoManual && parseNum(f.neto)>0){ neto=round2(parseNum(f.neto)); }
-  else { neto = capital>0 ? round2(capital*(1-SELLADO_RATE)) : 0; ST.form.neto = neto?String(neto):""; netoEstim = neto>0; }
+  else {
+    const bk=bankByK(f.banco);
+    const tasa = (bk && bk.sell!==undefined) ? bk.sell : SELLADO_RATE;
+    neto = capital>0 ? round2(capital*(1-tasa)) : 0; ST.form.neto = neto?String(neto):""; netoEstim = neto>0;
+  }
   ST.autodet=ST.autodet||{}; ST.autodet.neto = netoEstim ? "estim" : (ST.netoManual ? "manual" : "");
   const interes=L.interes, iva=L.iva, percepcion=L.percepcion||0, totalCuotas=L.totalCuotas, extras=L.extras||{}, extraTot=L.extraTot||0;
   const sellados=round2(capital-neto);
