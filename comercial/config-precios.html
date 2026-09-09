@@ -770,7 +770,7 @@ function formHTML(c){
       <div class="fld2"><label>Recargo sobre costo</label><div class="inpu"><input type="number" id="f-recargo" step="1" value="${pct(r.recargo)}"><span class="suf">%</span></div><div class="hint">markup neto · 80 = ×1,80</div></div>
       <div class="fld2"><label>Piso de margen</label><div class="inpu"><input type="number" id="f-piso" step="1" value="${pct(r.piso)}"><span class="suf">%</span></div><div class="hint">margen mínimo · el último tramo llega justo acá</div></div>
       <div class="fld2"><label>Cantidad de tramos</label><input type="number" id="f-ncortes" min="1" max="8" value="${nT}"><div class="hint">escalones de precio · las cantidades y la unidad salen del Maestro</div></div>
-      <div class="fld2"><label>IVA al costo</label><label class="chk" style="margin:0"><input type="checkbox" id="f-iva" ${r.ivaCosto?"checked":""}> <span>sumarlo al costo</span></label><div class="hint">Tildar cuando el producto se vende <b>exento</b>: ese IVA no se recupera, es costo. El motor le suma <b>el IVA que dice la factura de compra</b> — no se carga ningún %. Destildado = costo neto (Descartables y Perfumería, que trasladan el IVA al cliente).</div></div>
+      <div class="fld2"><label>IVA al costo</label><label class="chk" style="margin:0"><input type="checkbox" id="f-iva" ${r.ivaCosto?"checked":""}> <span>sumarlo al costo</span></label><div class="hint">Tildar cuando el producto se vende <b>exento</b>: ese IVA no se recupera, es costo. El motor le suma <b>el IVA que dice la factura de compra</b> — no se carga ningún %. Destildado = costo neto (Descartables y Perfumería, que trasladan el IVA al cliente). <b>Vale para las tres listas</b>: SAMCOs e Instituciones heredan lo que se tilde acá.</div></div>
     </div>
     <div class="acts"><button class="cancel" onclick="editId=null;render()">Cancelar</button><button class="ok" onclick="guardarRegla(${c.id})">Aplicar regla</button></div>
   </div>`;
@@ -862,13 +862,19 @@ async function loadTier(t){
 // regla efectiva de una categoría en el tier activo: propia o heredada del ancestro más cercano
 function resolver23(id){ let cur=id,g=0; const R=CFG23[TIER].reglas; while(cur&&g++<20){ if(R[cur]) return {rule:R[cur],fromId:cur,own:(cur===id)}; cur=byId[cur]?byId[cur].pid:null; } const gl=CFG23[TIER].global; return (gl&&gl.genera!==false)?{rule:gl,fromId:null,own:false,global:true}:null; }
 // IVA al costo HEREDADO de Farmacias (tier 1): se lee de CFG (config de tier 1, ya cargada)
-function iva1(id){ let cur=id,g=0; while(cur&&g++<20){ const r=CFG.reglas[cur]; if(r&&r.genera) return r.ivaCosto||0; cur=byId[cur]?byId[cur].pid:null; } return 0; }
+function iva1(id){
+  // eticos: la define la regla general de su escala (A/B)
+  const e=ESCALA[id];
+  if(e&&CFG.escala&&CFG.escala[e]&&CFG.escala[e].ivaCosto!==undefined) return CFG.escala[e].ivaCosto?1:0;
+  let cur=id,g=0;
+  while(cur&&g++<20){ const r=CFG.reglas[cur]; if(r&&r.genera) return r.ivaCosto?1:0; cur=byId[cur]?byId[cur].pid:null; }
+  return 1;   // sin regla en Farmacias -> se vende exento (mismo respaldo que usa el motor)
+}
 function resumen23(r){
   if(!r) return "";
   if(!r.genera) return "NO genera precio";
   const p=["margen "+pct(r.margen)+"%"];
   if(TIER===2) p.push("desc. comercial "+pct(r.descom)+"% (piso duro "+pct(r.pisoduro)+"%)");
-  if(r.iva!==undefined&&r.iva!==null) p.push(r.iva?"IVA al costo (el de la compra)":"sin IVA al costo");
   return p.join(" · ");
 }
 function renderTier23(){
@@ -929,8 +935,9 @@ function formHTML23(c){
   const r=isG ? (CFG23[TIER].global||DEF23[TIER]) : (()=>{const res=resolver23(c.id);return (res&&res.rule)?res.rule:DEF23[TIER];})();
   const idArg=isG?"'G'":c.id;
   const label=isG?"Genera precio (regla general del tier)":"Genera precio para esta categoría";
-  const ivaVal=(r&&r.iva!==undefined&&r.iva!==null)?r.iva:iva1(c.id);
-  const ivaFld=isG?"":`<div class="fld2"><label>IVA al costo</label><label class="chk" style="margin:0"><input type="checkbox" id="g-iva" ${ivaVal?"checked":""}> <span>sumarlo al costo</span></label><div class="hint">se vende exento: el IVA de la compra es costo</div></div>`;
+  // La tilde "IVA al costo" se define UNA sola vez, en Farmacias. Acá sólo se muestra.
+  const ivaVal=iva1(c.id);
+  const ivaFld=isG?"":`<div class="fld2"><label>IVA al costo</label><div class="hint" style="margin-top:7px"><b>${ivaVal?"Tildado":"Destildado"}</b> — se define en <b>(1) Farmacias</b> y esta lista lo hereda siempre.</div></div>`;
   const cols=(t2?3:1)+(isG?0:1);
   return `<div class="form" onclick="event.stopPropagation()">
     <label class="chk"><input type="checkbox" id="g-genera" ${r.genera?"checked":""}> <span>${esc(label)}</span></label>
@@ -954,7 +961,7 @@ window.guardarRegla23 = id => {
   const pisoduro=TIER===2?frac((gv("g-pisoduro")||{}).value):margen;
   const rule={genera,margen,descom,pisoduro};
   if(id==='G'){ CFG23[TIER].global=rule; }
-  else { const ivaEl=document.getElementById("g-iva"); if(ivaEl) rule.iva=(ivaEl.checked?1:0); CFG23[TIER].reglas[id]=rule; }
+  else { CFG23[TIER].reglas[id]=rule; }   // la tilde "IVA al costo" no se guarda acá: la manda Farmacias
   dirty=true; editId23=null; render();
 };
 // texto plano que lee el cron. Línea 0 = regla general del tier (cubre todo). Resto = solo categorías con regla PROPIA.
@@ -963,7 +970,7 @@ window.guardarRegla23 = id => {
 function construirFlat23(){
   const out=[], g=CFG23[TIER].global, R=CFG23[TIER].reglas;
   if(g&&g.genera!==false) out.push(["0", g.margen, (g.descom||0), (g.pisoduro||g.margen)].join("~"));
-  Object.keys(R).forEach(id=>{ const r=R[id]; if(r&&r.genera){ const iva=(r.iva!==undefined&&r.iva!==null)?r.iva:''; out.push([id, r.margen, (r.descom||0), (r.pisoduro||r.margen), iva].join("~")); } });
+  Object.keys(R).forEach(id=>{ const r=R[id]; if(r&&r.genera){ out.push([id, r.margen, (r.descom||0), (r.pisoduro||r.margen)].join("~")); } });   // sin tilde: la hereda de Farmacias
   return out.join("\n");
 }
 window.guardar23 = async () => {
