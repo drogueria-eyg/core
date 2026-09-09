@@ -139,6 +139,7 @@ const BANKS = [
   {k:"macro",     nom:"Banco Macro",    partner:2422, sell:0.0025,   det:[/macro/i]},
   {k:"credicoop", nom:"Banco Credicoop",partner:2188, sell:0.0025,   det:[/credicoop/i]},
   {k:"nacion",    nom:"Banco Nación",   partner:4046, sell:0,        det:[/naci[oó]n/i]},
+  {k:"municipal", nom:"Banco Municipal de Rosario", partner:4236, sell:0.0025, det:[/municipal/i]},
 ];
 // Bancos agregados a mano en la sesión (opción "+ Agregar otro banco").
 function allBanks(){ return BANKS.concat(ST.customBanks||[]); }
@@ -252,28 +253,43 @@ function buscarTexto(text, patrones){
    Cuota" y otros bancos no traen Ajustes. Contando posiciones, el interés del
    Credicoop se leía en la columna de Ajustes y daba $0. Por eso se lee el
    ENCABEZADO: se busca cada etiqueta conocida y se ordenan por dónde aparecen. */
+/* El orden importa: las etiquetas más específicas van primero, porque se busca
+   la primera que coincida y "Saldo Capital" también contiene "Capital".
+   `total` acepta "Total Cuota" (Credicoop) y "Neto / Cuota" (Municipal), que es
+   el importe que se paga en cada cuota. */
 const ETIQUETAS = [
+  {k:"saldo",   re:/saldo\s+(de\s+)?(capital|deuda)/i},
+  {k:"total",   re:/total\s*(de\s*)?cuota|neto\s*\/?\s*cuota|total/i},
   {k:"capital", re:/amortizaci[oó]n|capital/i},
   {k:"ajuste",  re:/ajuste/i},
   {k:"interes", re:/inter[eé]s/i},
   {k:"iva",     re:/\biva\b/i},
-  {k:"otros",   re:/otros\s+cargos?/i},
-  {k:"seguro",  re:/seguro/i},
-  {k:"total",   re:/total/i}
+  {k:"otros",   re:/otros\s+cargos?|impuestos?/i},
+  {k:"gastos",  re:/gastos/i},
+  {k:"seguro",  re:/seguro/i}
 ];
 function columnasDelCuadro(lineas){
   for(const L of lineas){
     const t=L.replace(/\s+/g," ").trim();
-    if(!/cuota/i.test(t) || !/(vencimiento|fecha)/i.test(t)) continue;
+    if(!/cuota/i.test(t) || !/(vencimiento|fecha|vencim)/i.test(t)) continue;
     if(!/(inter[eé]s|amortizaci[oó]n|capital)/i.test(t)) continue;
-    const desdeFecha = t.search(/vencimiento|fecha/i);
-    const enc=[];
-    for(const e of ETIQUETAS){
-      const m=t.match(e.re);
-      if(m && m.index>desdeFecha) enc.push({k:e.k, i:m.index});
+    const desdeFecha = t.search(/vencimiento|fecha|vencim/i);
+    /* Se recorre el encabezado de izquierda a derecha y cada tramo se queda con
+       la primera etiqueta que le calce, así ninguna se cuenta dos veces. */
+    const usadas={}, enc=[];
+    let pos = desdeFecha;
+    while(pos < t.length){
+      let mejor=null;
+      for(const e of ETIQUETAS){
+        if(usadas[e.k]) continue;
+        const m = t.slice(pos).match(e.re);
+        if(m && (mejor===null || m.index<mejor.i)) mejor={k:e.k, i:m.index, largo:m[0].length};
+      }
+      if(!mejor) break;
+      usadas[mejor.k]=true; enc.push(mejor.k);
+      pos += mejor.i + mejor.largo;
     }
-    enc.sort((a,b)=>a.i-b.i);
-    if(enc.length>=3 && enc[enc.length-1].k==="total") return enc.map(x=>x.k);
+    if(enc.length>=3 && enc.indexOf("total")>=0) return enc;
   }
   return null;
 }
@@ -317,9 +333,20 @@ function parsePdfLoan(text){
   }
   const aju=suma("ajuste"); if(Math.abs(aju)>0.005) extras["Ajustes"]=aju;
   const seg=suma("seguro"); if(seg>0.005) extras["Seguro"]=seg;
+  const gas=suma("gastos"); if(gas>0.005) extras["Gastos en las cuotas"]=gas;
 
   const nro=(text.match(/N[ÚU]MERO\s+DE\s+PR[ÉE]STAMO\s*[\r\n]*\s*(\d{4,})/i)||[])[1]||null;
-  return finalizeLoan(cuotas, {nro, extras, percepcion});
+  /* Fecha del préstamo: si el papel la dice, se usa ésa. La estimación
+     "primer vencimiento − 1 mes" falla cuando hay período de gracia (el
+     Municipal liquidó el 7/8 y la primera cuota vence el 15/9). */
+  const mf = text.match(/fecha\s+(?:de\s+)?(?:liq\.?|liquidaci[oó]n|valor|acreditaci[oó]n|otorgamiento)\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+  return finalizeLoan(cuotas, {nro, extras, percepcion, fecha: mf?normFechaCorta(mf[1]):null});
+}
+/* dd/mm/aaaa → aaaa-mm-dd */
+function normFechaCorta(s){
+  const p=String(s).split("/"); if(p.length!==3) return null;
+  let a=p[2]; if(a.length===2) a="20"+a;
+  return a+"-"+p[1].padStart(2,"0")+"-"+p[0].padStart(2,"0");
 }
 // Excel/CSV: mapea columnas por su encabezado (orden y nombres varían entre bancos).
 function parseExcelLoan(wb){
@@ -361,7 +388,10 @@ function finalizeLoan(cuotas, opt){
   const extraTot=round2(Object.values(extras).reduce((a,v)=>a+v,0));
   const cu=cuotas.map(c=>({venc:c.venc, interes:round2(c.interes||0), iva:round2(c.iva||0), total:round2(c.total||0)}));
   return { cuotas:cu, capital, interes, iva, percepcion, totalCuotas, extras, extraTot,
-           nro:opt.nro||null, fecha:menosUnMes(cu[0]&&cu[0].venc) };
+           nro:opt.nro||null,
+           /* la que dice el papel manda; si no la dice, se estima */
+           fecha: opt.fecha || menosUnMes(cu[0]&&cu[0].venc),
+           fechaDelPapel: !!opt.fecha };
 }
 // Vuelca el "loan" leído al formulario (banco, nº, capital, fecha) y analiza.
 function aplicarLoan(loan, text){
@@ -372,7 +402,7 @@ function aplicarLoan(loan, text){
   const nro=loan.nro || buscarTexto(text||"",["N[ÚU]MERO\\s+DE\\s+PR[ÉE]STAMO","NRO\\.?\\s+DE\\s+PR[ÉE]STAMO","N[°º]?\\s+OPERACI[ÓO]N"]);
   if(nro){ ST.form.nro=nro; a.nro=true; }
   if(loan.capital){ ST.form.capital=String(loan.capital); a.capital=true; }
-  if(loan.fecha){ ST.form.fecha=loan.fecha; a.fecha="estim"; }
+  if(loan.fecha){ ST.form.fecha=loan.fecha; a.fecha = loan.fechaDelPapel ? "papel" : "estim"; }
   ST.autodet=a; analizar();     // analizar estima el neto desde el capital
   /* El banco viene elegido en "santafe" por defecto. Si el archivo detecta otro,
      el número que estaba calculado es de OTRA serie y hay que pedirlo de nuevo:
@@ -391,10 +421,12 @@ async function confirmarNetoConBanco(){
   if(ST.netoManual) return;
   const neto=parseNum(ST.form.neto), fecha=ST.form.fecha;
   if(!(neto>0) || !fecha) return;
+  /* Ventana amplia: el banco acredita días después de la fecha del préstamo (el
+     Municipal liquidó el 7/8 y depositó el 11/8) y la fecha puede venir estimada. */
   const corr=(f,n)=>{ const x=new Date(f+"T00:00:00"); x.setDate(x.getDate()+n); return x.toISOString().slice(0,10); };
   try{
     const r = await EYG.rpc("account.move.line","search_read",
-      [[["date",">=",corr(fecha,-4)],["date","<=",corr(fecha,4)],
+      [[["date",">=",corr(fecha,-8)],["date","<=",corr(fecha,8)],
         ["account_id.account_type","=","asset_cash"],
         ["debit",">",neto*0.985],["debit","<",neto*1.015]]],
       {fields:["date","debit","account_id","move_id","name"], limit:6, order:"date"});
