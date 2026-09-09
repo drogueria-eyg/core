@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=64"></script>
+<script src="../assets/core.js?v=65"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF; --agua:#E2F1EF;
@@ -599,19 +599,39 @@ function eliminarDraft(id, ev){
    así que el estado queda igual. La salida es escribir el estado a mano y
    recién ahí borrar. Devuelve null si borró, o el mensaje real del error. */
 async function borrarPresupuesto(id){
+  const detalle = e => (e && e.message) ? e.message : String(e);
+  // 1) el camino normal: un borrador se borra y listo
   try{ await rpc("sale.order","unlink",[[id]]); return null; }
-  catch(e){
+  catch(e1){
+    // 2) las "enviadas" hay que cancelarlas primero
     try{
       await rpc("sale.order","write",[[id],{state:"cancel"}]);
       await rpc("sale.order","unlink",[[id]]);
       return null;
-    }catch(e2){ return (e2 && e2.message) ? e2.message : String(e2); }
+    }catch(e2){
+      // 3) último recurso: el cancelar propio de Odoo, salteando su asistente
+      try{
+        await rpc("sale.order","action_cancel",[[id]],{context:{disable_cancel_warning:true}});
+        await rpc("sale.order","unlink",[[id]]);
+        return null;
+      }catch(e3){ return detalle(e3); }
+    }
   }
+}
+/* Si Odoo lo rechaza, el motivo tiene que quedar A LA VISTA: con un toast de tres
+   segundos, la comercial sólo ve que "no pasa nada" y no hay con qué diagnosticar. */
+function dialogoNoBorra(accion, msg){
+  modal(`<h3>No se pudo ${esc(accion)}</h3>
+    <p style="margin-bottom:8px">Odoo lo rechazó con este motivo:</p>
+    <div style="background:#FEF4F3;border:1px solid #F2CFCA;color:#8A2F27;border-radius:9px;padding:10px 12px;font-size:12.5px;line-height:1.5;word-break:break-word;max-height:220px;overflow:auto">${esc(msg)}</div>
+    <p style="font-size:12.5px;color:var(--gris);margin-top:10px">Si tenés esta pantalla abierta hace rato, puede estar corriendo una versión vieja: tocá <b>Recargar</b> y probá de nuevo. Si sigue igual, pasale este texto a Diego.</p>
+    <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cerrar</button><button class="btn teal" onclick="location.reload()">🔄 Recargar</button></div>`);
 }
 async function doEliminarDraft(id){
   cerrarModal();
+  toast("Eliminando…");
   const err=await borrarPresupuesto(id);
-  if(err){ toast("No pude eliminar: "+err); }             // el motivo real, no un genérico
+  if(err){ dialogoNoBorra("eliminar el presupuesto", err); }   // el motivo real, a la vista
   else { ST.drafts=(ST.drafts||[]).filter(x=>x.id!==id); toast("Presupuesto eliminado"); }
   render();
 }
@@ -1861,7 +1881,8 @@ async function doDescartar(){
   cerrarModal();
   document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Descartando…</div>';
   const err=await borrarPresupuesto(ST.order.id);
-  toast(err ? ("No pude descartar: "+err) : "Presupuesto descartado");
+  if(err){ ST.view="venta"; render(); dialogoNoBorra("descartar el presupuesto", err); return; }
+  toast("Presupuesto descartado");
   ST.order=null; ST.want={}; ST.lines={}; cargar();
 }
 
@@ -2041,7 +2062,38 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
   if(nb){ nb.textContent="← Panel"; nb.href="#"; nb.title="Volver al panel del comercial"; nb.onclick=(e)=>{e.preventDefault();irAlPanel();}; }
   setTopH();
   cargar();
+  setTimeout(chequearVersion, 25000);              // al rato de entrar
+  setInterval(chequearVersion, 30*60*1000);        // y cada media hora
 });
+
+/* ¿QUEDÓ VIEJA ESTA PANTALLA?
+   Las tablets tienen "Cargar venta" abierto días enteros, así que siguen corriendo
+   el JS de la versión que cargaron: un arreglo publicado no les llega hasta que
+   recargan, y desde adentro parece que "el botón no anda" (pasó con el borrado de
+   presupuestos, arreglado el 4/9 y todavía fallando en las tablets el 9/9).
+   Se compara la versión del archivo publicado con la que está corriendo. */
+const VERSION_MODULO = "2026-09-09-c";
+async function chequearVersion(){
+  try{
+    const r = await fetch(location.pathname + "?_v=" + Date.now(), {cache:"no-store"});
+    if(!r.ok) return;
+    const t = await r.text();
+    const m = t.match(/const VERSION_MODULO = "([^"]+)"/);   // con "const" para no matchear esta misma línea
+    if(m && m[1] && m[1] !== VERSION_MODULO) avisarVersionNueva();
+  }catch(e){ /* sin conexión no molestamos */ }
+}
+function avisarVersionNueva(){
+  if(document.getElementById("verNueva")) return;
+  const d=document.createElement("div"); d.id="verNueva";
+  d.style.cssText="position:fixed;left:0;right:0;bottom:0;z-index:9999;background:#04635F;color:#fff;"+
+    "padding:12px 14px;display:flex;align-items:center;gap:12px;font-size:13.5px;font-weight:700;box-shadow:0 -6px 24px rgba(0,0,0,.25)";
+  d.innerHTML='<span style="flex:1;line-height:1.35">Hay una versión nueva de esta pantalla. Actualizá para tenerla.</span>'+
+    '<button id="verNuevaBtn" style="font-family:inherit;font-size:13.5px;font-weight:800;border:0;border-radius:9px;padding:9px 16px;cursor:pointer;background:#fff;color:#04635F">🔄 Actualizar</button>'+
+    '<button id="verNuevaX" style="font-family:inherit;font-size:18px;border:0;background:none;color:#fff;cursor:pointer;padding:0 4px" title="Ahora no">✕</button>';
+  document.body.appendChild(d);
+  d.querySelector("#verNuevaBtn").onclick=()=>location.reload();
+  d.querySelector("#verNuevaX").onclick=()=>d.remove();
+}
 </script>
 </body>
 </html>
