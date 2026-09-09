@@ -233,7 +233,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=68"></script>
+<script src="../assets/core.js?v=69"></script>
 <script>
 /* ===== EyG Core · Contactos: la base única de contactos de EyG =====
    Una sola casa para TODOS los contactos: los que ya son nuestros (con la ficha completa,
@@ -527,19 +527,32 @@ function fmtDiaHora(iso){ if(!iso) return "—"; const p=EYG.argParts(iso); cons
    alta el comercial existe de verdad y lo está trabajando? Tres señales, en orden de
    peso: (1) figura en el PADRÓN oficial de farmacias e instituciones, (2) tiene CUIT y
    teléfono, (3) compró después del alta. Un cliente inventado falla las tres. */
-let fnv={per:"30", solo:"", com:""};
-function nvSet(k,v){ fnv[k]=(fnv[k]===v?"":v); if(k==="per"&&!fnv.per) fnv.per="30"; renderNuevos(); }
+/* Por defecto se muestran las altas que CARGÓ ALGUIEN DE LA CASA. Las del portal son
+   gente que se registra sola —muchas son consumidores finales sin CUIT— y si entran al
+   mismo saco tapan lo que hay que mirar: lo que cargan los comerciales. Tienen su chip. */
+let fnv={per:"30", solo:"", com:"", orig:"casa"};
+function nvSet(k,v){ fnv[k]=(fnv[k]===v?"":v); if(k==="per"&&!fnv.per) fnv.per="30"; if(k==="orig"&&!fnv.orig) fnv.orig="todo"; renderNuevos(); }
 function nvSemaforo(n){
+  if(n.origen==="portal") return {c:"#9AA3A1", t:"Se registró solo en el portal: no lo cargó nadie de la casa, así que no se evalúa acá."};
   const vendio=(n.ventaTot>0||n.nped>0);
   if(n.enPadron && n.vat && vendio) return {c:"#128A5B", t:"Verificado: está en el padrón oficial, tiene CUIT y ya compró."};
   if(!n.enPadron && !n.vat)         return {c:"#B3261E", t:"A revisar: NO figura en el padrón oficial y no tiene CUIT cargado."};
   if(!n.enPadron && !vendio)        return {c:"#B3261E", t:"A revisar: no figura en el padrón oficial y todavía no compró nada."};
   return {c:"#C8860D", t:"Incompleto: le falta alguno de los datos (padrón, CUIT, teléfono) o todavía no compró."};
 }
+const nvDeLaCasa=n=>n.origen!=="portal";
+const nvDelCore =n=>(n.origen==="core"||n.origen==="padron"||n.origen==="manual");
+function nvPorOrigen(l){
+  if(fnv.orig==="casa")   return l.filter(nvDeLaCasa);
+  if(fnv.orig==="core")   return l.filter(nvDelCore);
+  if(fnv.orig==="odoo")   return l.filter(n=>n.origen==="odoo"||n.origen==="administracion");
+  if(fnv.orig==="portal") return l.filter(n=>n.origen==="portal");
+  return l;
+}
 function nvFiltrar(){
   const hoy=EYG.argToday();
   const desde = fnv.per==="hoy" ? hoy : fnv.per==="7" ? EYG.hace(7) : fnv.per==="30" ? EYG.hace(30) : fnv.per==="90" ? EYG.hace(90) : "0000-00-00";
-  let l=NUEVOS.filter(n=>EYG.argParts(n.fecha).date>=desde);
+  let l=nvPorOrigen(NUEVOS).filter(n=>EYG.argParts(n.fecha).date>=desde);
   if(fnv.com) l=l.filter(n=>n.creador===fnv.com);
   if(fnv.solo==="revisar") l=l.filter(n=>nvSemaforo(n).c==="#B3261E");
   if(fnv.solo==="sinventa") l=l.filter(n=>!(n.ventaTot>0||n.nped>0));
@@ -552,9 +565,13 @@ function renderNuevos(){
   const hoy=EYG.argToday(), sem=EYG.hace(7);
   const df=n=>EYG.argParts(n.fecha).date;
   const L=nvFiltrar();
-  const nHoy=NUEVOS.filter(n=>df(n)===hoy).length, nSem=NUEVOS.filter(n=>df(n)>=sem).length;
-  const nRev=NUEVOS.filter(n=>nvSemaforo(n).c==="#B3261E").length;
-  const nVend=NUEVOS.filter(n=>n.ventaTot>0||n.nped>0).length, nFuera=NUEVOS.filter(n=>!n.enPadron).length;
+  const U=nvPorOrigen(NUEVOS);   // los KPIs describen el mismo universo que la lista
+  const nHoy=U.filter(n=>df(n)===hoy).length, nSem=U.filter(n=>df(n)>=sem).length;
+  const nRev=U.filter(n=>nvSemaforo(n).c==="#B3261E").length;
+  const nVend=U.filter(n=>n.ventaTot>0||n.nped>0).length, nFuera=U.filter(n=>!n.enPadron).length;
+  const cCasa=NUEVOS.filter(nvDeLaCasa).length, cCore=NUEVOS.filter(nvDelCore).length,
+        cOdoo=NUEVOS.filter(n=>n.origen==="odoo"||n.origen==="administracion").length,
+        cPort=NUEVOS.filter(n=>n.origen==="portal").length;
   const kpi=(n,l)=>`<div class="kpi" style="cursor:default"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const chip=(k,v,t,ay)=>`<button class="tab ${fnv[k]===v?"on":""}" title="${esc(ay)}" onclick="nvSet('${k}','${v}')">${t}</button>`;
   // quién carga: un chip por persona, con su cuenta (así se ve de un vistazo quién sube mucho de golpe)
@@ -583,7 +600,15 @@ function renderNuevos(){
   tb.innerHTML=`
     <div class="info">📊 <b>Control de altas.</b> Cada contacto nuevo con quién lo cargó, de dónde lo sacó y qué pasó después. El punto de color resume las tres señales: <b>figura en el padrón oficial</b>, <b>tiene CUIT y teléfono</b> y <b>ya compró</b>. Un cliente inventado falla las tres. Tocá una fila para abrir su ficha.</div>
     <div class="kpis">
-      ${kpi(NUEVOS.length,"Altas (total)")}${kpi(nHoy,"Hoy")}${kpi(nSem,"Últimos 7 días")}${kpi(nRev,"A revisar")}${kpi(nFuera,"Fuera del padrón")}${kpi(nVend,"Ya compraron")}
+      ${kpi(U.length,"Altas")}${kpi(nHoy,"Hoy")}${kpi(nSem,"Últimos 7 días")}${kpi(nRev,"A revisar")}${kpi(nFuera,"Fuera del padrón")}${kpi(nVend,"Ya compraron")}
+    </div>
+    <div class="tabs" style="margin-bottom:8px">
+      <span class="muted" style="align-self:center;margin-right:4px">Quién la cargó:</span>
+      ${chip("orig","casa",'Alguien de la casa <span class="cnt">'+cCasa+'</span>',"Todo lo que cargó gente nuestra: los comerciales por el Core y Administración en Odoo. Deja afuera al portal.")}
+      ${chip("orig","core",'Comerciales (Core) <span class="cnt">'+cCore+'</span>',"Las altas hechas desde el panel del comercial y desde Potenciales.")}
+      ${chip("orig","odoo",'Administración (Odoo) <span class="cnt">'+cOdoo+'</span>',"Cargadas directamente en Odoo, casi siempre con el legajo.")}
+      ${chip("orig","portal",'Portal web <span class="cnt">'+cPort+'</span>',"Se registraron solos en el portal: no los cargó nadie de la casa.")}
+      ${chip("orig","todo","Todas","")}
     </div>
     <div class="tabs" style="margin-bottom:10px">
       ${chip("per","hoy","Hoy","Sólo las altas de hoy.")}${chip("per","7","7 días","")}${chip("per","30","30 días","")}${chip("per","90","90 días","")}${chip("per","todo","Todo","Desde que se registran las altas.")}
