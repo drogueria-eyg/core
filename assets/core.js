@@ -385,11 +385,17 @@ window.EYG = (function(){
       desc:"Guías, instructivos e inducción del equipo, ordenados por área. Empezá por el Guion Comercial de ventas.",
       roles:["lider"], ready:true,
       path:()=>"manuales/index.html"},
+    /* Una misma llave, cuatro pantallas según quién entra: gerencia ve el equipo
+       entero (comerciales.html), el líder su panel (lider.html), el comercial su
+       sesión de venta (panel.html) y ADMINISTRACIÓN entra a comerciales.html pero
+       sólo por las comisiones —es quien las paga y las liquida—; adentro esa
+       pantalla le esconde la gestión del equipo y le deja la meta y las tasas en
+       solo lectura (quien paga no define cuánto se paga). */
     {key:"panel", dept:"comercial", cat:"Comercial", ico:"⚡",
-      titulo:p=>(p.rol==="admin"||p.rol==="direccion")?"Panel comerciales":"Mi Panel",
-      desc:p=>(p.rol==="admin"||p.rol==="direccion")?"El equipo: métricas resumidas de cada comercial + acceso a su panel individual y al panel del líder.":(p.rol==="lider"?"Tu panel de líder: el equipo, cumplimiento y alertas.":"Tu sesión de venta: objetivos, comisión, salud y tu cartera a mano."),
-      roles:["comercial","lider"], ready:true,
-      path:p=>{ if(p.rol==="admin"||p.rol==="direccion") return "comercial/comerciales.html"; if(p.rol==="lider") return "comercial/lider.html"; return `comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`; }},
+      titulo:p=>(p.rol==="admin"||p.rol==="direccion")?"Panel comerciales":(p.rol==="finanzas"?"Cálculo de comisiones":"Mi Panel"),
+      desc:p=>(p.rol==="admin"||p.rol==="direccion")?"El equipo: métricas resumidas de cada comercial + acceso a su panel individual y al panel del líder.":(p.rol==="finanzas"?"La comisión de cada comercial mes a mes: el detalle del cálculo para entregar junto con el pago, y el corte para liquidar el mes y dejarlo congelado.":(p.rol==="lider"?"Tu panel de líder: el equipo, cumplimiento y alertas.":"Tu sesión de venta: objetivos, comisión, salud y tu cartera a mano.")),
+      roles:["comercial","lider","finanzas"], ready:true,
+      path:p=>{ if(p.rol==="admin"||p.rol==="direccion"||p.rol==="finanzas") return "comercial/comerciales.html"; if(p.rol==="lider") return "comercial/lider.html"; return `comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`; }},
     /* "Cargar venta" (comercial/vender.html) NO va como módulo suelto del menú:
        se entra desde ADENTRO del panel del comercial (botón "Cargar una venta" en panel.html). */
     {key:"cotizador", dept:"comercial", cat:"Comercial", ico:"🧮", titulo:"Cotizador",

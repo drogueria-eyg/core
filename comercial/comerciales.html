@@ -189,12 +189,15 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=62"></script>
+<script src="../assets/core.js?v=67"></script>
 <script src="../assets/liquidacion.js?v=1"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const MESES=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
 let PERFIL=null;
+/* Sólo German y Diego pueden GUARDAR la meta y las tasas. Administración ve el
+   cálculo y liquida, pero la configuración le queda en solo lectura. */
+let PUEDE_CONFIG=false;
 /* Un vencimiento que cae sábado o domingo se paga el lunes: no cuenta como vencido hasta que ese
    lunes pasó. Misma regla que en panel.html y liquidacion.js, para que los cuatro den lo mismo. */
 function _vencida(vto, corte){
@@ -206,9 +209,17 @@ function _vencida(vto, corte){
 }
 let STATE={ leaders:[], coms:[], resumen:null };
 
-EYG.requireAuth(["admin","direccion"], perfil=>{
+/* `finanzas` entra sólo por las comisiones: es quien las paga y las liquida.
+   No ve la gestión del equipo (asignar comerciales a líderes mueve comisiones) y
+   la meta y las tasas le quedan en solo lectura — quien paga no define cuánto se
+   paga. Sí ve las métricas del equipo, que son la base del cálculo que liquida. */
+EYG.requireAuth(["admin","direccion","finanzas"], perfil=>{
   PERFIL=perfil;
-  const esSuperAdmin = EYG.esSuper(perfil._h);   // sólo German y Diego ven/editan el cálculo de comisiones
+  const esSuperAdmin = EYG.esSuper(perfil._h);   // sólo German y Diego CONFIGURAN meta y tasas
+  const esJefe = esSuperAdmin || perfil.rol==="admin" || perfil.rol==="direccion";
+  const soloComisiones = !esJefe;               // Administración: entra por comisiones y nada más
+  PUEDE_CONFIG = esSuperAdmin;
+  const verComi = esSuperAdmin || soloComisiones;
   const main = `
     <div id="resumen"></div>
     <div class="seccion">🏆 Equipos y líderes <span class="hint">tocá una tarjeta: adentro está su equipo y su panel de venta</span></div>
@@ -216,8 +227,8 @@ EYG.requireAuth(["admin","direccion"], perfil=>{
     <div class="seccion" id="com-sec" style="display:none">👥 Comerciales <span class="hint" id="com-hint"></span></div>
     <div id="ov"></div>
     <div class="gestion">
-      <div class="gt">⚙️ Gestión del equipo</div>
-      <div class="foldrow" id="fold-org">
+      <div class="gt">${soloComisiones?"🧮 Comisiones":"⚙️ Gestión del equipo"}</div>
+      ${esJefe?`<div class="foldrow" id="fold-org">
         <div class="foldhead" onclick="toggleFold('org')">
           <div class="fi">🧭</div>
           <div class="ft"><b>Asignar comerciales a líderes</b><span>Mové un comercial de equipo. Se guarda en Odoo al instante.</span></div>
@@ -242,12 +253,12 @@ EYG.requireAuth(["admin","direccion"], perfil=>{
           <div class="chev" style="margin-left:12px">▾</div>
         </div>
         <div class="foldbody" style="display:none"><div id="arch"></div></div>
-      </div>
-      ${esSuperAdmin?`<div class="foldrow" id="fold-comi">
+      </div>`:''}
+      ${verComi?`<div class="foldrow" id="fold-comi">
         <div class="foldhead" onclick="toggleFold('comi')">
           <div class="fi">🧮</div>
-          <div class="ft"><b>Cálculo de comisiones</b><span>Configurá la meta y las tasas, y seguí las comisiones por mes. Solo vos y Germán.</span></div>
-          <span class="pill" style="background:#E2F1EF;color:#04635F">solo dirección</span>
+          <div class="ft"><b>Cálculo de comisiones</b><span>${esSuperAdmin?"Configurá la meta y las tasas, y seguí las comisiones por mes. Solo vos y Germán.":"La comisión de cada comercial mes a mes. Abrí el detalle para entregarlo con el pago, y liquidá el mes cuando pagues."}</span></div>
+          <span class="pill" style="background:#E2F1EF;color:#04635F">${esSuperAdmin?"solo dirección":"para liquidar"}</span>
           <div class="chev" style="margin-left:12px">▾</div>
         </div>
         <div class="foldbody" style="display:none"><div id="comi"></div></div>
@@ -256,6 +267,9 @@ EYG.requireAuth(["admin","direccion"], perfil=>{
   document.body.innerHTML = EYG.layout(perfil, "panel", main, "Panel comerciales");
   document.body.insertAdjacentHTML("beforeend",'<div class="otoast" id="otoast"></div>');
   cargar();
+  /* Administración entra a esta pantalla POR las comisiones: se la abrimos ya,
+     así no tiene que buscar dónde está lo único que vino a hacer. */
+  if(soloComisiones) setTimeout(()=>toggleFold("comi"), 0);
   cargarConqPill();   // contador de descartados a revisar (sin abrir la sección)
 });
 let otoastT;
@@ -707,8 +721,11 @@ function comiRender(){
       </div>
     </details>
     <div class="comi-actions">
-      <button class="comi-save" id="comi_save" onclick="comiGuardar()">💾 Guardar configuración</button>
-      <button class="comi-reset" onclick="comiResetDef()">Volver a los valores por defecto</button>
+      ${PUEDE_CONFIG?`<button class="comi-save" id="comi_save" onclick="comiGuardar()">💾 Guardar configuración</button>
+      <button class="comi-reset" onclick="comiResetDef()">Volver a los valores por defecto</button>`
+      :`<div style="font-size:12.5px;color:var(--gris);background:#F4F8F7;border:1px solid var(--line);border-radius:10px;padding:10px 12px">
+          🔒 La meta y las tasas las define Gerencia. Acá las ves para entender el cálculo, pero no se modifican desde este acceso.
+        </div>`}
     </div>
     <div id="comi_prev" class="comi-prevwrap"></div>
     <div id="comi_seg" class="comi-prevwrap" style="margin-top:20px"></div>`;
