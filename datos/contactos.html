@@ -479,11 +479,17 @@ async function cargarNuevos(){
     const msgs=await rpc("mail.message","search_read",[[["model","=","res.partner"],["body","like",NUEVO_TAG]]],{fields:["res_id","body","date"],limit:0});
     msgs.sort((a,b)=>(a.date||"").localeCompare(b.date||""));   // el más viejo = la creación
     const creado={};
-    for(const m of msgs){ if(creado[m.res_id]) continue; const b=(m.body||"").replace(/<[^>]+>/g," "); const mm=b.match(/por=([^<\n]+)/); creado[m.res_id]={creador:((mm&&mm[1])||"").trim()||"—", fecha:m.date}; }
+    for(const m of msgs){
+      if(creado[m.res_id]) continue;
+      const b=(m.body||"").replace(/<[^>]+>/g," ");
+      const mm=b.match(/por=(.*?)(?:\s+origen=|$)/);          // el nombre corta en "origen=" si está
+      const om=b.match(/origen=([a-z]+)/i);
+      creado[m.res_id]={creador:((mm&&mm[1])||"").trim()||"—", origen:(om&&om[1]||"").toLowerCase(), fecha:m.date};
+    }
     const ids=Object.keys(creado).map(x=>+x);
     if(!ids.length){ NUEVOS=[]; if(filtro.tab==="nuevos") renderNuevos(); const t=document.getElementById("cntNuevos"); if(t)t.textContent="0"; return; }
     const [parts, contactMsgs, ventas]=await Promise.all([
-      rpc("res.partner","read",[ids],{fields:["id","name","user_id","city","create_date","active",RUBRO_FIELD],context:{lang:"es_AR"}}),
+      rpc("res.partner","read",[ids],{fields:["id","name","user_id","city","create_date","active","vat","phone","mobile","email","street",RUBRO_FIELD],context:{lang:"es_AR"}}),
       rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],"|","|","|",["body","like","[COBRO-CONTACTO]"],["body","like","EyGWA"],["body","like","EyGCRM"],["body","like","[EyGWA]"]]],{fields:["res_id","date","body"],limit:0}),
       rpc("sale.order","read_group",[[["partner_id","in",ids],["state","in",["sale","done"]]],["amount_total:sum"],["partner_id"]],{lazy:false})
     ]);
@@ -494,9 +500,14 @@ async function cargarNuevos(){
     const byId={}; parts.forEach(p=>byId[p.id]=p);
     // Solo cuentan como NUEVOS los que existen y están activos: si un "creado" resultó
     // ser duplicado (se archivó) o se dio de baja, NO es un contacto nuevo → fuera.
+    /* Para el control de altas: el contacto que figura en el PADRÓN oficial (REFAR/REFES)
+       existe de verdad. El cruce ya está hecho sobre DATA por cruzar(); acá se reusa. */
+    const enPad={}; (DATA||[]).forEach(c=>{ if(c.enPadron) enPad[c.id]=true; });
     NUEVOS=ids.filter(id=>byId[id] && byId[id].active!==false).map(id=>{ const p=byId[id], cr=creado[id], v=vt[id]||{}; return {
-      id, nombre:p.name||"(sin nombre)", creador:cr.creador, fecha:p.create_date||cr.fecha,
+      id, nombre:p.name||"(sin nombre)", creador:cr.creador, origen:cr.origen||"", fecha:p.create_date||cr.fecha,
       comercial:p.user_id?p.user_id[1]:"Sin asignar", rubro:p[RUBRO_FIELD]||"",
+      vat:p.vat||"", tel:p.phone||p.mobile||"", email:p.email||"", calle:p.street||"",
+      enPadron:!!enPad[id],
       contactado:cont[id]||null, ventaTot:v.tot||0, nped:v.n||0 };
     }).sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||""));
     const t=document.getElementById("cntNuevos"); if(t) t.textContent=NUEVOS.length;
@@ -505,31 +516,77 @@ async function cargarNuevos(){
 }
 function fmtCuando(iso){ if(!iso) return "—"; const p=EYG.argParts(iso); return p.date===EYG.argToday()?("hoy "+p.hm):(p.date.slice(8,10)+"/"+p.date.slice(5,7)+"/"+p.date.slice(2,4)); }
 function fmtDiaHora(iso){ if(!iso) return "—"; const p=EYG.argParts(iso); const d=p.date===EYG.argToday()?"hoy":(p.date.slice(8,10)+"/"+p.date.slice(5,7)+"/"+p.date.slice(2,4)); return d+" "+p.hm; }
+/* CONTROL DE ALTAS. La pregunta que contesta esta pestaña es: ¿el cliente que dio de
+   alta el comercial existe de verdad y lo está trabajando? Tres señales, en orden de
+   peso: (1) figura en el PADRÓN oficial de farmacias e instituciones, (2) tiene CUIT y
+   teléfono, (3) compró después del alta. Un cliente inventado falla las tres. */
+let fnv={per:"30", solo:"", com:""};
+function nvSet(k,v){ fnv[k]=(fnv[k]===v?"":v); if(k==="per"&&!fnv.per) fnv.per="30"; renderNuevos(); }
+function nvSemaforo(n){
+  const vendio=(n.ventaTot>0||n.nped>0);
+  if(n.enPadron && n.vat && vendio) return {c:"#128A5B", t:"Verificado: está en el padrón oficial, tiene CUIT y ya compró."};
+  if(!n.enPadron && !n.vat)         return {c:"#B3261E", t:"A revisar: NO figura en el padrón oficial y no tiene CUIT cargado."};
+  if(!n.enPadron && !vendio)        return {c:"#B3261E", t:"A revisar: no figura en el padrón oficial y todavía no compró nada."};
+  return {c:"#C8860D", t:"Incompleto: le falta alguno de los datos (padrón, CUIT, teléfono) o todavía no compró."};
+}
+function nvFiltrar(){
+  const hoy=EYG.argToday();
+  const desde = fnv.per==="hoy" ? hoy : fnv.per==="7" ? EYG.hace(7) : fnv.per==="30" ? EYG.hace(30) : fnv.per==="90" ? EYG.hace(90) : "0000-00-00";
+  let l=NUEVOS.filter(n=>EYG.argParts(n.fecha).date>=desde);
+  if(fnv.com) l=l.filter(n=>n.creador===fnv.com);
+  if(fnv.solo==="revisar") l=l.filter(n=>nvSemaforo(n).c==="#B3261E");
+  if(fnv.solo==="sinventa") l=l.filter(n=>!(n.ventaTot>0||n.nped>0));
+  if(fnv.solo==="fuera")    l=l.filter(n=>!n.enPadron);
+  return l;
+}
 function renderNuevos(){
   const tb=document.getElementById("tabbody"); if(!tb) return;
-  const GC="grid-template-columns:2fr 1.1fr .9fr 1.2fr .9fr .9fr";
-  const hoy=EYG.argToday(), ym=hoy.slice(0,7), sem=EYG.hace(7);
+  const GC="grid-template-columns:2.1fr 1.1fr .95fr 1.1fr 1.25fr .95fr .9fr";
+  const hoy=EYG.argToday(), sem=EYG.hace(7);
   const df=n=>EYG.argParts(n.fecha).date;
-  const nHoy=NUEVOS.filter(n=>df(n)===hoy).length, nSem=NUEVOS.filter(n=>df(n)>=sem).length, nMes=NUEVOS.filter(n=>df(n).startsWith(ym)).length;
-  const nCont=NUEVOS.filter(n=>n.contactado).length, nVend=NUEVOS.filter(n=>n.ventaTot>0||n.nped>0).length;
+  const L=nvFiltrar();
+  const nHoy=NUEVOS.filter(n=>df(n)===hoy).length, nSem=NUEVOS.filter(n=>df(n)>=sem).length;
+  const nRev=NUEVOS.filter(n=>nvSemaforo(n).c==="#B3261E").length;
+  const nVend=NUEVOS.filter(n=>n.ventaTot>0||n.nped>0).length, nFuera=NUEVOS.filter(n=>!n.enPadron).length;
   const kpi=(n,l)=>`<div class="kpi" style="cursor:default"><div class="n">${n}</div><div class="l">${l}</div></div>`;
-  const rows=NUEVOS.slice(0,500).map(n=>`<div class="row" onclick="abrir(${n.id})" style="${GC}">
-      <div><div class="cname">${esc(n.nombre)}</div><div style="margin-top:3px">${rubroBadge(n.rubro)}</div></div>
-      <div class="hide-sm"><span class="muted trunc" title="${esc(n.creador)}">${esc(n.creador)}</span></div>
+  const chip=(k,v,t,ay)=>`<button class="tab ${fnv[k]===v?"on":""}" title="${esc(ay)}" onclick="nvSet('${k}','${v}')">${t}</button>`;
+  // quién carga: un chip por persona, con su cuenta (así se ve de un vistazo quién sube mucho de golpe)
+  const porQuien={}; NUEVOS.forEach(n=>{ porQuien[n.creador]=(porQuien[n.creador]||0)+1; });
+  const chipsQuien=Object.keys(porQuien).sort((a,b)=>porQuien[b]-porQuien[a])
+    .map(q=>`<button class="tab ${fnv.com===q?"on":""}" onclick="nvSet('com','${esc(q).replace(/'/g,"&#39;")}')">${esc(q)} <span class="cnt">${porQuien[q]}</span></button>`).join("");
+  const ORIG={padron:{t:"🎯 del padrón",ay:"Salió de la lista oficial de farmacias e instituciones: el establecimiento existe."},
+              manual:{t:"✍️ a mano",ay:"Lo escribió el comercial de cero, sin pasar por el padrón. Es el que más conviene revisar."},
+              administracion:{t:"🗂️ Administración",ay:"Alta cargada desde Legajos, con la documentación."}};
+  const rows=L.slice(0,500).map(n=>{
+    const s=nvSemaforo(n), o=ORIG[n.origen]||{t:"—",ay:"Alta anterior al registro de origen."};
+    const vendio=(n.ventaTot>0||n.nped>0);
+    return `<div class="row" onclick="abrir(${n.id})" style="${GC}">
+      <div><div class="cname"><span title="${esc(s.t)}" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${s.c};margin-right:7px"></span>${esc(n.nombre)}</div><div style="margin-top:3px">${rubroBadge(n.rubro)}</div></div>
+      <div class="hide-sm"><span class="muted trunc" title="${esc(n.creador)}">${esc(n.creador)}</span><div class="cmeta" title="${esc(o.ay)}">${o.t}</div></div>
       <div class="muted">${fmtCuando(n.fecha)}</div>
       <div><span class="muted trunc" title="${esc(n.comercial)}">${esc(n.comercial)}</span></div>
+      <div>${n.enPadron?'<span class="badge ok" title="Figura en el padrón oficial (REFAR/REFES): el establecimiento existe.">✓ en el padrón</span>':'<span class="badge bad" title="NO aparece en el padrón oficial. Puede ser un cliente que no es del rubro salud, o un dato inventado.">✗ fuera del padrón</span>'}
+        <div class="cmeta">${n.vat?"CUIT ✓":'<b style="color:#B3261E">sin CUIT</b>'} · ${n.tel?"tel ✓":"sin tel"}</div></div>
       <div>${n.contactado?`<span class="badge ok" title="${esc(n.contactado.date||'')} (UTC)">✓ ${fmtDiaHora(n.contactado.date)}</span>${n.contactado.por?`<div class="cmeta">por ${esc(n.contactado.por)}</div>`:''}`:`<span class="badge bad">sin contactar</span>`}</div>
-      <div class="num">${n.ventaTot>0?money(n.ventaTot):(n.nped>0?'<span class="badge ok">✓</span>':'<span class="muted">—</span>')}</div>
-    </div>`).join("");
+      <div class="num">${n.ventaTot>0?money(n.ventaTot):(vendio?'<span class="badge ok">✓</span>':'<span class="badge bad">nunca compró</span>')}</div>
+    </div>`;}).join("");
   tb.innerHTML=`
-    <div class="info">📊 Historial de los contactos <b>creados desde acá</b> (pestaña "Potenciales"). Se actualiza solo: quién lo creó, a quién está asignado hoy, si ya lo contactaron (cruza con el trabajo del comercial) y si tuvo ventas.</div>
+    <div class="info">📊 <b>Control de altas.</b> Cada contacto nuevo con quién lo cargó, de dónde lo sacó y qué pasó después. El punto de color resume las tres señales: <b>figura en el padrón oficial</b>, <b>tiene CUIT y teléfono</b> y <b>ya compró</b>. Un cliente inventado falla las tres. Tocá una fila para abrir su ficha.</div>
     <div class="kpis">
-      ${kpi(NUEVOS.length,"Nuevos (total)")}${kpi(nHoy,"Hoy")}${kpi(nSem,"Últimos 7 días")}${kpi(nMes,"Este mes")}${kpi(nCont,"Ya contactados")}${kpi(nVend,"Con ventas")}
+      ${kpi(NUEVOS.length,"Altas (total)")}${kpi(nHoy,"Hoy")}${kpi(nSem,"Últimos 7 días")}${kpi(nRev,"A revisar")}${kpi(nFuera,"Fuera del padrón")}${kpi(nVend,"Ya compraron")}
     </div>
-    ${NUEVOS.length?`<div class="tablecard">
-      <div class="thead" style="${GC}"><div>Contacto</div><div class="hide-sm">Creado por</div><div>Cuándo</div><div>Comercial actual</div><div>Contactado</div><div>Venta</div></div>
-      ${rows}${NUEVOS.length>500?'<div class="empty" style="padding:16px">Mostrando los primeros 500.</div>':''}
-    </div>`:'<div class="tablecard"><div class="empty">Todavía no se crearon contactos nuevos desde el módulo. Andá a "Potenciales" y creá el primero.</div></div>'}`;
+    <div class="tabs" style="margin-bottom:10px">
+      ${chip("per","hoy","Hoy","Sólo las altas de hoy.")}${chip("per","7","7 días","")}${chip("per","30","30 días","")}${chip("per","90","90 días","")}${chip("per","todo","Todo","Desde que se registran las altas.")}
+      <span style="width:10px"></span>
+      ${chip("solo","revisar","⚠️ A revisar","Las que fallan las señales de verdad: fuera del padrón, sin CUIT o sin ninguna compra.")}
+      ${chip("solo","fuera","✗ Fuera del padrón","")}
+      ${chip("solo","sinventa","Sin ninguna compra","")}
+    </div>
+    ${chipsQuien?`<div class="tabs" style="margin-bottom:12px"><span class="muted" style="align-self:center;margin-right:4px">Quién lo cargó:</span>${chipsQuien}</div>`:""}
+    ${L.length?`<div class="tablecard">
+      <div class="thead" style="${GC}"><div>Contacto</div><div class="hide-sm">Cargado por / origen</div><div>Cuándo</div><div>Comercial actual</div><div>¿Existe? (padrón y datos)</div><div>Contactado</div><div>Compras</div></div>
+      ${rows}${L.length>500?'<div class="empty" style="padding:16px">Mostrando las primeras 500.</div>':''}
+    </div>`:`<div class="tablecard"><div class="empty">${NUEVOS.length?"No hay altas con estos filtros.":"Todavía no hay altas registradas. Se registran las que se cargan desde el Core (panel del comercial, Potenciales y Legajos)."}</div></div>`}`;
 }
 
 function comercialesDe(rows){
@@ -2043,7 +2100,7 @@ async function guardarProspecto(idx){
     const newId=await rpc("res.partner","create",[vals],{context:{lang:"es_AR"}});
     // marca de "contacto nuevo" con el creador real (el create_uid de Odoo es el conector, no el usuario del Core)
     const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
-    try{ await rpc("res.partner","message_post",[[newId]],{body:"👤 "+NUEVO_TAG+" por="+quien,message_type:"comment"}); }catch(_){}
+    try{ await rpc("res.partner","message_post",[[newId]],{body:"👤 "+NUEVO_TAG+" por="+quien+" origen=padron",message_type:"comment"}); }catch(_){}
     CREADOS.add(idx); if(UNI&&UNI.est[idx]) UNI.est[idx][6]=newId; _forzarCrear=false;
     toast("✅ Contacto creado en Odoo");
     cerrar(); render(); cargarNuevos();

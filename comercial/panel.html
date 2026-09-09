@@ -747,6 +747,7 @@ async function rpc(model,method,args,kwargs={},intentos=3){
 const OBJ={diarioContactos:10, mensualNuevos:3, semanalFact:10000000}; // semanalFact = objetivo de VENTA NETA semanal (sin IVA, ya descontadas las notas de crédito)
 const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador reversible en el chatter del contacto (misma bóveda que usa la líder en Contactos). La gerencia revisa lo archivado.
 const PPAL_TAG="[ENTREGA-PPAL]"; // marca reversible (chatter) de la dirección de entrega principal → Cargar Venta la usa por defecto
+const NUEVO_TAG="[CONTACTO-NUEVO]"; // constancia del alta: la MISMA marca que leen Contactos·CRM y Legajos
 // ===== Comisión (DESDE AGOSTO 2026): la base es TUS PEDIDOS (lo que vos vendés, sale.order por vendedor),
 //   no lo facturado por cartera. Antes de agosto NO cambia (julio y anteriores quedaron como estaban).
 //   La META = promedio (o mediana) de tus últimos meses cerrados + un %, todo CONFIGURABLE por Dirección
@@ -3378,7 +3379,20 @@ async function guardar(){
   if(!vals.name){ btn.disabled=false; btn.textContent=EDIT.isNew?"Crear contacto":"Guardar ficha"; toast("⚠️ Falta el nombre"); return; }
   try{
     let id=EDIT.id;
-    if(EDIT.isNew){ vals.user_id=ST.userId; id=await rpc("res.partner","create",[vals]); ST.nuevos++; }
+    if(EDIT.isNew){
+      vals.user_id=ST.userId; id=await rpc("res.partner","create",[vals]); ST.nuevos++;
+      /* CONSTANCIA DEL ALTA. En Odoo todo lo que entra por el Core figura creado por el
+         usuario del conector, así que sin esto no queda registro de QUIÉN dio de alta al
+         cliente ni de dónde salió. La nota la firma la persona real (odoo-rpc cruza el
+         email de la sesión), y es lo que lee la pestaña "Nuevos" de Contactos · CRM. */
+      try{
+        const p=window.__perfil||{};
+        const quien=(p.comercial_ref||p.nombre||COMERCIAL||"—");
+        const origen=ST._tomando ? "padron" : "manual";
+        await rpc("res.partner","message_post",[[id]],
+          {body:"👤 "+NUEVO_TAG+" por="+esc(quien)+" origen="+origen, message_type:"comment"});
+      }catch(_){ /* si falla la constancia, el contacto igual se creó */ }
+    }
     else { await rpc("res.partner","write",[[id],vals]); }
     const fresh=(await rpc("res.partner","read",[[id]],{fields:PFIELDS}))[0];
     const i=ST.contactos.findIndex(x=>x.id===id);
