@@ -200,7 +200,12 @@ let ST = { form:{banco:"santafe", fecha:EYG.argToday(), numero:"", capital:"", n
 // cuadro de cuotas queda en una línea, aunque el PDF la guarde en pedazos).
 async function pdfToText(arrayBuffer){
   if(!window.pdfjsLib) throw new Error("El lector de PDF no cargó (revisá la conexión).");
-  const pdf = await pdfjsLib.getDocument({data:arrayBuffer}).promise;
+  /* OJO: pdfjs se APROPIA del buffer (se lo pasa a su worker y lo deja
+     inservible). Si después alguien lo vuelve a usar, revienta con
+     "Cannot perform Construct on a detached ArrayBuffer" — que es justo lo que
+     pasaba al caer al OCR: pdfToText corría primero y le dejaba la nada.
+     Por eso pdfjs se lleva una COPIA y el original queda intacto. */
+  const pdf = await pdfjsLib.getDocument({data:arrayBuffer.slice(0)}).promise;
   const out=[];
   for(let pg=1; pg<=pdf.numPages; pg++){
     const page = await pdf.getPage(pg);
@@ -286,6 +291,7 @@ async function ocrDeImagenes(imagenes){
    siempre** (getOperatorList responde bien, pero la promesa del render nunca
    resuelve). Comprobado en el navegador. */
 function jpegsDelPdf(buf){
+  if(buf.byteLength===0) throw new Error("El archivo quedó vacío al leerlo. Volvé a subirlo.");
   const b = new Uint8Array(buf);
   let txt=""; const CH=32768;
   for(let i=0;i<b.length;i+=CH) txt += String.fromCharCode.apply(null, b.subarray(i,i+CH));
