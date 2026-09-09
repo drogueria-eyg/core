@@ -11,6 +11,10 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- OCR para los PDF escaneados (el del Banco Municipal es una foto).
+     Son ~7 MB entre el motor y el idioma: se bajan la PRIMERA vez que hace
+     falta y quedan en la caché del navegador. Por eso se carga con defer. -->
+<script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script src="../assets/core.js?v=67"></script>
 <style>
   :root{
@@ -109,7 +113,7 @@
   <a class="back" href="egresos.html">← Egresos</a>
 </div>
 <div class="wrap">
-  <div class="wip">🏦 <div><b>Carga de préstamos bancarios en Odoo.</b> Subí el archivo del banco (PDF, Excel o texto) — la herramienta lee capital, cuotas, interés e IVA sola. Revisás, completás lo que falte, y genera el comprobante <b>OC-X</b> en <b>borrador</b> para confirmarlo vos.</div></div>
+  <div class="wip">🏦 <div><b>Carga de préstamos bancarios en Odoo.</b> Subí el archivo del banco (PDF, Excel, texto — o una foto/escaneo) — la herramienta lee capital, cuotas, interés e IVA sola. Revisás, completás lo que falte, y genera el comprobante <b>OC-X</b> en <b>borrador</b> para confirmarlo vos.</div></div>
 
   <div id="app"><div class="card">Cargando…</div></div>
 </div>
@@ -186,7 +190,7 @@ const COLS={ venc:["vencimiento","vto","fecha"], total:["total a pagar","total c
 function matchCol(h){ const n=norm(h); for(const k in COLS){ if(COLS[k].some(a=>n===a||n.includes(a))) return k; } return null; }
 
 let ST = { form:{banco:"santafe", fecha:EYG.argToday(), numero:"", capital:"", neto:"", nro:"", texto:""},
-           loan:null, customBanks:[], _bankHits:[], netoManual:false, depositoBanco:null, fileName:"", extracting:false, autodet:{}, termByCount:{}, parsed:null, error:null, generating:false, result:null };
+           loan:null, customBanks:[], _bankHits:[], netoManual:false, depositoBanco:null, deOCR:false, ocr:null, fileName:"", extracting:false, autodet:{}, termByCount:{}, parsed:null, error:null, generating:false, result:null };
 
 /* =========================================================================
    LECTURA DE ARCHIVOS
@@ -215,20 +219,99 @@ async function pdfToText(arrayBuffer){
 // Excel/CSV → texto plano (para autodetectar banco y para el cuadro "texto leído").
 function sheetFlatten(wb){ const out=[]; wb.SheetNames.forEach(nm=>{ XLSX.utils.sheet_to_json(wb.Sheets[nm],{header:1,raw:false,defval:""}).forEach(r=>out.push((r||[]).join("  "))); }); return out.join("\n"); }
 
+/* =========================================================================
+   OCR — para los PDF escaneados y las fotos del papel
+   -------------------------------------------------------------------------
+   El listado del Banco Municipal viene escaneado: el PDF no tiene una sola
+   letra, es una foto adentro. Cuando pdfToText no encuentra texto, se dibuja
+   cada página en un canvas y se la lee con Tesseract.
+   OJO: lo que sale de una imagen puede tener un dígito mal leído, así que
+   NUNCA se genera a ciegas — ver `filasQueNoCierran`, que hace cerrar cuota
+   por cuota, y el aviso de "salió de una imagen" en la vista previa.
+   ========================================================================= */
+const OCR_IDIOMA = "spa";
+const OCR_LANG_PATH = "https://cdn.jsdelivr.net/npm/@tesseract.js-data";
+
+function pareceEscaneado(texto){
+  const t=String(texto||"").replace(/\s+/g," ").trim();
+  if(t.length<200) return true;                                  // casi sin texto
+  return !/\d{1,2}\/\d{1,2}\/\d{2,4}/.test(t);                   // ni una fecha ⇒ no es un cuadro
+}
+
+function ocrProgreso(txt, pct){
+  ST.ocr = {txt:txt, pct:Math.max(0,Math.min(100,Math.round(pct*100)))};
+  render();
+}
+
+/* Dibuja una página del PDF en un canvas. La escala alta es la diferencia
+   entre leer bien los importes y leer cualquier cosa. */
+async function paginaACanvas(pdf, nro, escala){
+  const page = await pdf.getPage(nro);
+  const vp = page.getViewport({scale:escala});
+  const cv = document.createElement("canvas");
+  cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+  await page.render({canvasContext:cv.getContext("2d",{willReadFrequently:true}), viewport:vp}).promise;
+  return cv;
+}
+
+async function ocrDeImagenes(imagenes){
+  if(!window.Tesseract) throw new Error("El lector de imágenes todavía no cargó. Esperá unos segundos y probá de nuevo.");
+  const trozos=[];
+  const worker = await Tesseract.createWorker(OCR_IDIOMA, 1, {
+    langPath: OCR_LANG_PATH,
+    logger: msj => {
+      if(msj.status==="recognizing text") ocrProgreso("leyendo la imagen", msj.progress);
+      else if(/loading|initializ/i.test(msj.status||"")) ocrProgreso("preparando el lector (la primera vez tarda)", msj.progress||0);
+    }
+  });
+  try{
+    /* Se conserva la separación entre columnas: el lector del cuadro necesita
+       que cada fila salga en una línea con sus números separados. */
+    await worker.setParameters({preserve_interword_spaces:"1"});
+    for(let i=0;i<imagenes.length;i++){
+      ocrProgreso("leyendo "+(imagenes.length>1?("página "+(i+1)+" de "+imagenes.length):"la imagen"), 0);
+      const r = await worker.recognize(imagenes[i]);
+      trozos.push(r.data.text||"");
+    }
+  } finally { await worker.terminate(); }
+  return trozos.join("\n");
+}
+
+async function ocrPdf(buf){
+  if(!window.pdfjsLib) throw new Error("El lector de PDF no cargó.");
+  const pdf = await pdfjsLib.getDocument({data:buf.slice(0)}).promise;
+  const canvases=[];
+  const hasta = Math.min(pdf.numPages, 6);              // más de 6 páginas es otra cosa
+  for(let p=1;p<=hasta;p++){ ocrProgreso("preparando la página "+p, 0); canvases.push(await paginaACanvas(pdf, p, 2.5)); }
+  return await ocrDeImagenes(canvases);
+}
+
 async function onFile(file){
   if(!file) return;
-  ST.fileName=file.name; ST.extracting=true; ST.error=null; ST.result=null; render();
+  ST.fileName=file.name; ST.extracting=true; ST.error=null; ST.result=null; ST.deOCR=false; ST.ocr=null; render();
   try{
     const buf = await file.arrayBuffer();
     let loan, text="";
-    if(/\.pdf$/i.test(file.name) || file.type==="application/pdf"){ text=await pdfToText(buf); loan=parsePdfLoan(text); }
+    const esPdf = /\.pdf$/i.test(file.name) || file.type==="application/pdf";
+    const esImagen = /\.(jpe?g|png|webp|bmp|tiff?)$/i.test(file.name) || /^image\//.test(file.type||"");
+
+    if(esPdf){
+      text = await pdfToText(buf);
+      if(pareceEscaneado(text)){ text = await ocrPdf(buf); ST.deOCR=true; }
+      loan = parsePdfLoan(text);
+    }
+    else if(esImagen){ text = await ocrDeImagenes([file]); ST.deOCR=true; loan = parsePdfLoan(text); }
     else if(/\.(xlsx|xls|csv)$/i.test(file.name)){ if(!window.XLSX) throw new Error("El lector de Excel no cargó."); const wb=XLSX.read(buf,{type:"array"}); loan=parseExcelLoan(wb); text=sheetFlatten(wb); }
     else if(/\.(txt|text)$/i.test(file.name) || /^text\//.test(file.type||"")){ text=new TextDecoder().decode(buf); loan=parsePdfLoan(text); }
-    else throw new Error("Formato no reconocido. Subí PDF, Excel o texto — o pegá el contenido abajo.");
-    ST.form.texto = text; ST.extracting=false;
+    else throw new Error("Formato no reconocido. Subí PDF, Excel, una foto o texto — o pegá el contenido abajo.");
+
+    ST.form.texto = text; ST.extracting=false; ST.ocr=null;
+    if(!loan || !loan.cuotas.length) throw new Error(ST.deOCR
+      ? "Leí la imagen pero no reconocí el cuadro de cuotas. Abrí \"Ver el texto leído\", corregilo y usá \"Volver a analizar\"."
+      : "No reconocí el cuadro de cuotas en el archivo.");
     aplicarLoan(loan, text);    // vuelca los datos al formulario + analiza
   }catch(e){
-    ST.extracting=false; ST.error="No pude leer el archivo: "+(e.message||e); render();
+    ST.extracting=false; ST.ocr=null; ST.error="No pude leer el archivo: "+(e.message||e); render();
   }
 }
 
@@ -335,12 +418,34 @@ function parsePdfLoan(text){
   const seg=suma("seguro"); if(seg>0.005) extras["Seguro"]=seg;
   const gas=suma("gastos"); if(gas>0.005) extras["Gastos en las cuotas"]=gas;
 
+  /* Cada cuota tiene que cerrar sola: lo que se paga es la suma de sus partes.
+     Es la red que caza un dígito mal leído cuando el cuadro salió de una foto,
+     y señala EXACTAMENTE qué fila mirar. */
+  const malas = cols ? filasQueNoCierran(cuotas, cols) : [];
+
   const nro=(text.match(/N[ÚU]MERO\s+DE\s+PR[ÉE]STAMO\s*[\r\n]*\s*(\d{4,})/i)||[])[1]||null;
   /* Fecha del préstamo: si el papel la dice, se usa ésa. La estimación
      "primer vencimiento − 1 mes" falla cuando hay período de gracia (el
      Municipal liquidó el 7/8 y la primera cuota vence el 15/9). */
   const mf = text.match(/fecha\s+(?:de\s+)?(?:liq\.?|liquidaci[oó]n|valor|acreditaci[oó]n|otorgamiento)\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
-  return finalizeLoan(cuotas, {nro, extras, percepcion, fecha: mf?normFechaCorta(mf[1]):null});
+  return finalizeLoan(cuotas, {nro, extras, percepcion, malas, fecha: mf?normFechaCorta(mf[1]):null});
+}
+
+/* Devuelve las cuotas donde las partes no suman el total. `saldo` no cuenta:
+   es lo que queda por amortizar, no plata a pagar. */
+function filasQueNoCierran(cuotas, cols){
+  /* `iva` y `percep` van sí o sí: cuando la columna era "Impuestos"/"Otros
+     Cargos" ya se partió en esas dos y `otros` quedó en cero. Sin ellas la
+     suma daba de menos y marcaba TODAS las cuotas como malas. */
+  const partes = [...new Set(cols.filter(k=>k!=="total" && k!=="saldo").concat(["iva","percep"]))];
+  if(!partes.length) return [];
+  const malas=[];
+  cuotas.forEach(function(c,i){
+    const suma = round2(partes.reduce((a,k)=>a+(c[k]||0),0));
+    if(Math.abs(suma-round2(c.total||0))>0.05)
+      malas.push({n:i+1, venc:c.venc, suma:suma, total:round2(c.total||0)});
+  });
+  return malas;
 }
 /* dd/mm/aaaa → aaaa-mm-dd */
 function normFechaCorta(s){
@@ -391,7 +496,7 @@ function finalizeLoan(cuotas, opt){
            nro:opt.nro||null,
            /* la que dice el papel manda; si no la dice, se estima */
            fecha: opt.fecha || menosUnMes(cu[0]&&cu[0].venc),
-           fechaDelPapel: !!opt.fecha };
+           fechaDelPapel: !!opt.fecha, malas: opt.malas||[] };
 }
 // Vuelca el "loan" leído al formulario (banco, nº, capital, fecha) y analiza.
 function aplicarLoan(loan, text){
@@ -502,7 +607,7 @@ function analizar(){
   const okIdentPDF=Math.abs(round2(capital+interes+iva+percepcion+extraTot)-totalCuotas)<0.05;
 
   ST.parsed = errs.length ? null :
-    { capital, neto, nro:L.nro||f.nro, cuotas:L.cuotas, interes, iva, percepcion, sellados, extras, extraTot, hayExtras,
+    { capital, neto, nro:L.nro||f.nro, cuotas:L.cuotas, interes, iva, percepcion, sellados, extras, extraTot, hayExtras, malas:L.malas||[],
       totalCuotas, totalDoc, ivaTeorico, percepTeorico, okBalance, okIdentPDF, termId };
   if(errs.length) ST.error=errs.join(" ");
   render();
@@ -599,12 +704,12 @@ function render(){
   // Card 1: subir archivo
   let html = `<div class="card">
     <h3><span class="step">1</span>Subir el archivo del banco</h3>
-    <div class="cap">PDF, Excel o texto. Leo capital, N° de préstamo y el cuadro de cuotas automáticamente.</div>
+    <div class="cap">PDF, Excel, texto o una foto del papel. Leo capital, N° de préstamo y el cuadro de cuotas automáticamente.</div>
     <div id="drop" class="drop" ondragover="onOver(event)" ondragleave="onLeave(event)" ondrop="onDrop(event)" onclick="document.getElementById('file').click()">
       ${ST.extracting
-        ? `<div class="big">⏳</div><div class="t">Leyendo ${esc(ST.fileName)}…</div><div class="s"><span class="spinner dark"></span>extrayendo datos</div>`
-        : `<div class="big">📄⬆️</div><div class="t">Arrastrá el archivo acá o hacé clic para elegirlo</div><div class="s">PDF · Excel (.xlsx/.csv) · texto</div>`}
-      <input id="file" type="file" accept=".pdf,.xlsx,.xls,.csv,.txt" onchange="onFile(this.files[0])">
+        ? `<div class="big">${ST.ocr?"👁️":"⏳"}</div><div class="t">Leyendo ${esc(ST.fileName)}…</div><div class="s"><span class="spinner dark"></span>${ST.ocr?esc(ST.ocr.txt)+" · "+ST.ocr.pct+"%":"extrayendo datos"}</div>${ST.ocr?`<div class="hint" style="margin-top:8px">Es un escaneo, así que lo estoy leyendo como imagen. La primera vez baja el lector (~7&nbsp;MB) y tarda un poco más.</div>`:""}`
+        : `<div class="big">📄⬆️</div><div class="t">Arrastrá el archivo acá o hacé clic para elegirlo</div><div class="s">PDF (aunque sea escaneado) · Excel (.xlsx/.csv) · foto · texto</div>`}
+      <input id="file" type="file" accept=".pdf,.xlsx,.xls,.csv,.txt,.jpg,.jpeg,.png,.webp" onchange="onFile(this.files[0])">
     </div>
     ${ST.fileName && !ST.extracting ? `<div style="margin-top:10px"><span class="filechip">📎 ${esc(ST.fileName)}</span></div>`:""}
     <details class="raw"><summary>Ver / editar el texto leído</summary>
@@ -652,6 +757,8 @@ function render(){
         ${Object.entries(p.extras||{}).map(([k,v])=>`<div class="pv-tile" style="border-color:#EAD9A0;background:var(--warnbg)"><div class="l">${esc(k)}</div><div class="v">${money2(v)}</div></div>`).join("")}
         <div class="pv-tile tot"><div class="l">Total (${p.cuotas.length} cuotas)</div><div class="v">${money2(p.totalDoc)}</div></div>
       </div>
+      ${ST.deOCR?`<div class="check ${p.malas.length?'bad':'ok'}"><span class="ic">👁️</span> Esto salió de una <b>imagen</b>, no de un archivo con texto. ${p.malas.length?'<b>Revisá los números marcados abajo.</b>':'Cada cuota cierra sola, así que la lectura pinta bien — igual dale una mirada antes de generar.'}</div>`:""}
+      ${p.malas.length?`<div class="check bad"><span class="ic">✕</span> ${p.malas.length===1?'Una cuota no cierra':`${p.malas.length} cuotas no cierran`}: ${p.malas.slice(0,4).map(x=>`<b>#${x.n}</b> (${x.venc}) suma ${money2(x.suma)} pero dice ${money2(x.total)}`).join(" · ")}${p.malas.length>4?` y ${p.malas.length-4} más`:""}. Corregilo en "Ver el texto leído" y volvé a analizar.</div>`:""}
       ${p.hayExtras?`<div class="check bad"><span class="ic">⚠️</span> Este préstamo trae <b>${esc(Object.keys(p.extras).join(", "))}</b> — falta definir a qué cuenta contable van esos rubros antes de poder generarlo. Avisame cuál es.</div>`:""}
       <div class="check ${p.okBalance?'ok':'bad'}"><span class="ic">${p.okBalance?'✓':'✕'}</span> Débitos = créditos: ${money2(p.totalDoc)} vs ${money2(p.totalCuotas)} ${p.okBalance?'(cuadra)':'(NO cuadra)'}</div>
       <div class="check ${p.okIdentPDF?'ok':'bad'}"><span class="ic">${p.okIdentPDF?'✓':'✕'}</span> Capital + Interés + IVA = suma de cuotas ${p.okIdentPDF?'(el archivo cierra)':'(revisá los números)'}</div>
@@ -662,7 +769,7 @@ function render(){
         <tfoot class="foot"><tr><td colspan="2">Totales</td><td class="r">${money2(p.interes)}</td><td class="r">${money2(p.iva)}</td><td class="r">${money2(p.totalCuotas)}</td></tr></tfoot>
       </table>
       <div class="actions">
-        <button class="btn big" onclick="generar()" ${(!p.okBalance||p.hayExtras||ST.generating)?'disabled':''}>${ST.generating?'<span class="spinner"></span>Generando…':'Generar en Odoo (borrador)'}</button>
+        <button class="btn big" onclick="generar()" ${(!p.okBalance||p.hayExtras||p.malas.length||ST.generating)?'disabled':''}>${ST.generating?'<span class="spinner"></span>Generando…':'Generar en Odoo (borrador)'}</button>
         <span class="hint">Banco: <b>${esc((bankByK(f.banco)||{}).nom||'—')}</b> · N° ${esc(f.numero||'(definí el número)')}</span>
       </div>
     </div>`;
