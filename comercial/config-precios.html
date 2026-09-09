@@ -605,7 +605,8 @@ window.guardarTopeEticos=async ()=>{
 function resumenPvp(r){
   if(!r) return "";
   if(!r.genera) return "NO genera escalera";
-  return "PVP −"+pct(r.recargo)+"% (1ª caja) · piso de margen "+pct(r.piso)+"%";
+  const p="PVP −"+pct(r.recargo)+"% (1ª caja) · piso de margen "+pct(r.piso)+"%";
+  return (r.ivaCosto!==undefined) ? (p+" · "+(r.ivaCosto?"IVA al costo (el de la compra)":"sin IVA al costo")) : p;
 }
 // resuelve la regla de un lab ético: propia (CFG.reglas[id]) o la general de su escala (CFG.escala[A|B])
 function resolverEtico(id){
@@ -629,7 +630,7 @@ function renderEticos(labs){
     const btns=r
       ? `<button class="btn-mini" onclick="editarEscala('${e}')">Editar</button><button class="btn-mini del" onclick="quitarEscala('${e}')">Quitar</button>`
       : `<button class="btn-mini" onclick="editarEscala('${e}')">+ Regla general escala ${e}</button>`;
-    const form=editEsc===e?formPvpHTML(r||{genera:true,cortes:[1,5,10]}, 'fe', `guardarEscala('${e}')`, 'editEsc=null;render()', 'Escala '+e):"";
+    const form=editEsc===e?formPvpHTML(r||{genera:true,cortes:[1,5,10],ivaCosto:1}, 'fe', `guardarEscala('${e}')`, 'editEsc=null;render()', 'Escala '+e, true):"";
     return `<div class="esccard ${e}"><h4><span class="chipesc ${e}">${e}</span> Regla general ${e} <small style="font-weight:600;color:var(--gris2)">${extra}</small> ${badge}</h4><div class="sub">base = PVP de Alfabeta − descuento · piso de margen sobre el costo</div>${sum}${btns}${form}</div>`;
   };
   const cards=`<div class="esccards">${card('A','marcas')}${card('B','genéricos')}</div>`;
@@ -691,13 +692,17 @@ function filaEtico(c){
   return `<div class="row">${chip}<div class="nm" style="flex:1">${esc(sub)} <small>#${c.id}</small></div>${badge}${extra}${form}</div>`;
 }
 // formulario PVP compartido (regla general de escala o regla propia de lab). idp = prefijo de ids ('fe'|'fl').
-function formPvpHTML(r, idp, saveCall, cancelCall, titulo){
+function formPvpHTML(r, idp, saveCall, cancelCall, titulo, conIva){
   r=r||{};
+  // La tilde "IVA al costo" va SOLO en las reglas generales de escala (A/B): los laboratorios
+  // la heredan de su escala, no se define por subcategoría.
+  const ivaFld = conIva ? `<div class="fld2"><label>IVA al costo</label><label class="chk" style="margin:0"><input type="checkbox" id="${idp}-iva" ${r.ivaCosto?"checked":""}> <span>sumarlo al costo</span></label><div class="hint">Tildar si estos productos se venden <b>exentos</b>: ese IVA de compra no se recupera, es costo. El motor suma <b>el que dice la factura</b>, no se carga ningún %. Lo toman todos los laboratorios de la escala.</div></div>` : "";
   return `<div class="form" onclick="event.stopPropagation()">
     <label class="chk"><input type="checkbox" id="${idp}-genera" ${r.genera?"checked":""}> <span>Genera escalera de precios (${esc(titulo||'')})</span></label>
     <div class="grid" style="grid-template-columns:repeat(2,1fr)">
       <div class="fld2"><label>Descuento sobre PVP</label><div class="inpu"><input type="number" id="${idp}-desc" step="1" value="${r.recargo?pct(r.recargo):''}" placeholder="ej: 33"><span class="suf">%</span></div><div class="hint">base = PVP − este % · es el precio de la 1ª caja</div></div>
       <div class="fld2"><label>Piso de margen</label><div class="inpu"><input type="number" id="${idp}-piso" step="1" value="${r.piso?pct(r.piso):''}" placeholder="ej: 9"><span class="suf">%</span></div><div class="hint">margen mínimo sobre costo · el descuento nunca lo perfora</div></div>
+      ${ivaFld}
     </div>
     <div class="hint" style="margin-top:9px">El <b>tope de cajas</b> y el <b>descuento máximo</b> se definen una sola vez en <b>🎯 Escalera de éticos por precio</b> (arriba), para todos los éticos. La cantidad de escalones sale sola del tope.</div>
     <div class="acts"><button class="cancel" onclick="${cancelCall}">Cancelar</button><button class="ok" onclick="${saveCall}">Aplicar</button></div>
@@ -710,7 +715,10 @@ function leerFormPvp(idp){
   // descuento máximo y cantidad de tramos ya NO se configuran por escala/lab: los maneja la regla general
   // "Escalera de éticos por precio" + el piso. El motor deriva los escalones del tope (precio). descMax=0.
   const n=4; const cortes=cortesEven(1,Math.max(n,2),n); const desc=[]; for(let i=0;i<n;i++) desc.push(0);
-  return { genera, base:'pvp', recargo, piso, descMax:0, modo:'auto', unidad:'', cortes, desc, ivaCosto:1 };   // eticos: se venden exentos
+  const out = { genera, base:'pvp', recargo, piso, descMax:0, modo:'auto', unidad:'', cortes, desc };
+  const ivaEl = document.getElementById(idp+"-iva");
+  if(ivaEl) out.ivaCosto = ivaEl.checked?1:0;   // solo las reglas generales A/B la definen
+  return out;
 }
 window.setFiltroEsc = v => { escFiltro=v; render(); };
 window.editarEscala = e => { editEsc=e; editLab=null; editId=null; abiertos['ETICOS']=true; render(); };
@@ -803,7 +811,12 @@ function construirFlat(){
     const res=resolverEtico(c.id);
     if(res && res.rule && res.rule.genera){
       const r=res.rule;
-      out.push([c.id, r.recargo, r.piso, (r.modo||"fijo"), (r.cortes||[]).join(","), (r.desc||[]).join(","), (r.unidad||"unidades"), (r.ivaCosto||0), "pvp", (r.descMax||0)].join("~"));
+      // la tilde "IVA al costo" sale de la ESCALA del lab (A/B), no de su regla propia
+      const e=ESCALA[c.id];
+      const rEsc=(e && CFG.escala) ? CFG.escala[e] : null;
+      const ivaEt = (rEsc && rEsc.ivaCosto!==undefined) ? (rEsc.ivaCosto?1:0)
+                  : ((r.ivaCosto!==undefined) ? (r.ivaCosto?1:0) : 1);
+      out.push([c.id, r.recargo, r.piso, (r.modo||"fijo"), (r.cortes||[]).join(","), (r.desc||[]).join(","), (r.unidad||"unidades"), ivaEt, "pvp", (r.descMax||0)].join("~"));
     }
   });
   return out.join("\n");
