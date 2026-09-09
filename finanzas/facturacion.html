@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=62"></script>
+<script src="../assets/core.js?v=63"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -182,6 +182,11 @@
   .ov .dato b{color:var(--ink)}
   .ov .ovacc{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
   .ov .alerta{background:#FEF4F3;border:1px solid #F2CFCA;color:#8A2F27;border-radius:9px;padding:10px 12px;font-size:12.5px;line-height:1.55;margin-bottom:12px}
+  /* Apartar un pedido: motivos de un toque + el campo libre */
+  .motchips{display:flex;gap:6px;flex-wrap:wrap;margin:11px 0 9px}
+  .motchips .fchip{font-size:11.5px;padding:5px 10px}
+  .motin{width:100%;font-family:inherit;font-size:13.5px;border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:#fff;color:var(--ink)}
+  .motin:focus{outline:none;border-color:var(--teal-med)}
 
   .barras{display:flex;align-items:flex-end;gap:5px;height:130px;padding-top:8px}
   .barra{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px;min-width:0;cursor:help}
@@ -254,7 +259,10 @@ const RE_FRENO=/\bno\s+(la\s+|lo\s+|les\s+)?factur|no\s+emitir|\bespera(r|ndo|me
 const RE_OC=/OC del cliente adjuntada/i;
 
 let PERFIL=null, VISTA="hoy";
-let PEND=[];           // pedidos pendientes (borradores + confirmados sin facturar), <= 120 días
+let FUENTE=[];         // TODO lo que trajo Odoo, sin sacarle nada
+let PEND=[];           // lo mismo, MENOS lo archivado: es lo que ve toda la pantalla
+let ARCH={};           // pedido_id -> fila de facturacion_archivado
+let ARCHIVADOS=[];     // los pedidos apartados, para su pestaña
 let AVISOS={};         // res_id -> [notas de las comerciales]
 let EMITIDO=[];        // facturas y notas de crédito del mes
 let PORDIA=[];         // facturado por día del mes
@@ -281,6 +289,18 @@ function montoK(n){
 const soloFecha=s=>String(s||"").slice(0,10);
 const fmtFecha=f=>f?soloFecha(f).split("-").reverse().join("/"):"—";
 const fmtHora=s=>String(s||"").slice(11,16);
+/* Supabase devuelve la hora con zona ("...T19:08:59.1+00:00"); Odoo la devuelve en UTC
+   pelada. Para que fmtFecha/fmtHora muestren la hora de acá, se normaliza a
+   "YYYY-MM-DD HH:MM:SS" ya en hora argentina. */
+function fechaAR(iso){
+  if(!iso) return "";
+  const d=new Date(iso); if(isNaN(d.getTime())) return String(iso);
+  const g={};
+  new Intl.DateTimeFormat("en-CA",{timeZone:"America/Argentina/Buenos_Aires",year:"numeric",
+    month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false})
+    .formatToParts(d).forEach(x=>g[x.type]=x.value);
+  return `${g.year}-${g.month}-${g.day} ${String((+g.hour)%24).padStart(2,"0")}:${g.minute}:00`;
+}
 function diasDe(f){ if(!f) return 0; const h=new Date(EYG.argToday()+"T00:00:00"); const d=new Date(soloFecha(f)+"T00:00:00"); return Math.round((h-d)/86400000); }
 function hace(n){ const t=new Date(); t.setDate(t.getDate()-n); return t.toISOString().slice(0,10); }
 function antig(d){ return d<=0?"hoy":d===1?"ayer":"hace "+d+" días"; }
@@ -320,8 +340,10 @@ async function cargar(){
       EYG.rpc("account.move","search_count",[[["move_type","in",["out_invoice","out_refund"]],["state","=","draft"]]])
     ]);
 
-    PEND=pend; EMITIDO=emit;
+    FUENTE=pend; EMITIDO=emit;
     KPI.viejos=viejos; KPI.draftInv=draftInv;
+    await cargarArchivados();
+    reagrupar();
     await cargarAvisos();
     recalcularDias();
     calcularKpis(hoy);
@@ -329,6 +351,96 @@ async function cargar(){
   }catch(e){
     app.innerHTML='<div class="errbox"><b>No pude cargar la facturación.</b><br>'+esc(e.message||e)+'</div>';
   }
+}
+
+/* ══════════════ ARCHIVAR ══════════════
+   Pedidos que no se van a facturar ahora y no tienen resolución: en vez de dejarlos
+   tapando la cola, se apartan. NO se tocan en Odoo —el pedido sigue igual—: el
+   apartado vive en Supabase, así que es reversible y no ensucia la contabilidad.
+   Al archivar salen de PEND, y con eso desaparecen solos de la cola, de los avisos,
+   de las tarjetas de Mi día y de Atrasados: todo el módulo mira PEND. */
+async function cargarArchivados(){
+  ARCH={};
+  try{
+    const {data,error}=await EYG.supa().from("facturacion_archivado").select("*").limit(1000);
+    if(error) throw error;
+    (data||[]).forEach(r=>{ ARCH[r.pedido_id]=r; });
+  }catch(e){ /* si no se puede leer, no se archiva nada: la cola queda como antes */ }
+}
+function reagrupar(){
+  PEND=FUENTE.filter(o=>!ARCH[o.id]);
+  ARCHIVADOS=FUENTE.filter(o=>ARCH[o.id])
+    .sort((a,b)=>String((ARCH[b.id]||{}).ts||"").localeCompare(String((ARCH[a.id]||{}).ts||"")));
+}
+const MOTIVOS=["No se va a facturar","Esperando definición del cliente","Falta la orden de compra",
+               "Pedido duplicado","Lo tiene que resolver la comercial"];
+function pedirArchivar(id){
+  const o=FUENTE.find(x=>x.id===id); if(!o) return;
+  confirmarDialogo({
+    titulo:"Apartar el pedido "+o.name,
+    cuerpo:`<b>${esc(o.partner_id?o.partner_id[1]:"—")}</b> · ${money(montoPend(o)||o.amount_untaxed||0)}<br>
+      Sale de la cola, de los avisos y de Mi día. <b>En Odoo no se toca nada</b> y lo podés devolver cuando quieras.
+      <div class="motchips">${MOTIVOS.map(m=>`<button class="fchip" onclick="ponerMotivo(this.textContent)">${esc(m)}</button>`).join("")}</div>
+      <input id="motivo" class="motin" placeholder="¿Por qué lo apartás? Queda registrado." autocomplete="off">`,
+    ok:"🗄️ Apartar",
+    run:()=>archivar(id)
+  });
+  setTimeout(()=>{const i=document.getElementById("motivo"); if(i) i.focus();},50);
+}
+function ponerMotivo(m){ const i=document.getElementById("motivo"); if(i){ i.value=m; i.focus(); } }
+async function archivar(id){
+  const o=FUENTE.find(x=>x.id===id); if(!o) return;
+  const motivo=((document.getElementById("motivo")||{}).value||"").trim();
+  if(!motivo){ toast("Escribí por qué lo apartás — el que lo revise después necesita saberlo"); return; }
+  cerrarDialogo();
+  const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
+  const fila={pedido_id:o.id, pedido_nombre:o.name||"", cliente:o.partner_id?o.partner_id[1]:"",
+    comercial:o.user_id?o.user_id[1]:"", monto:montoPend(o)||o.amount_untaxed||0,
+    motivo, por:quien, por_email:(PERFIL&&PERFIL.email)||null};
+  try{
+    const {data,error}=await EYG.supa().from("facturacion_archivado").insert([fila]).select();
+    if(error) throw error;
+    ARCH[o.id]=(data&&data[0])||{...fila, ts:new Date().toISOString()};
+    reagrupar(); calcularKpis(); ABIERTO=null; render();
+    toast("🗄️ "+o.name+" apartado — está en la pestaña Archivados");
+  }catch(e){ dialogoError(o.name, e.message||String(e)); }
+}
+async function desarchivar(id){
+  const o=FUENTE.find(x=>x.id===id); if(!o) return;
+  try{
+    const {error}=await EYG.supa().from("facturacion_archivado").delete().eq("pedido_id",id);
+    if(error) throw error;
+    delete ARCH[id];
+    reagrupar(); calcularKpis(); render();
+    toast("↩ "+o.name+" volvió a la cola");
+  }catch(e){ dialogoError(o.name, e.message||String(e)); }
+}
+function vistaArchivados(){
+  const l=ARCHIVADOS;
+  return `<div class="panel">
+    <h3>🗄️ Archivados</h3>
+    <div class="sub">Pedidos que apartaste de la cola porque no se van a facturar ahora o no tienen resolución. <b>En Odoo siguen exactamente igual</b>: esto es sólo para que no te tapen la pantalla. Acá quedan para revisarlos cuando haya tiempo, y vuelven a la cola de un toque.</div>
+    ${l.length?l.map(o=>{
+      const a=ARCH[o.id]||{};
+      return `<div class="ped" id="ped${o.id}">
+        <div class="pedhead" onclick="abrir(${o.id})" title="Tocá para ver los renglones y las notas.">
+          <span class="nro">${esc(o.name)}</span>
+          <span class="cli">${esc(o.partner_id?o.partner_id[1]:"—")}
+            <small>${esc(o.user_id?o.user_id[1]:"sin comercial")} · ${fmtFecha(o.date_order)} · ${antig(diasDe(o.date_order))}</small></span>
+          <span>${porFacturar(o)?'<span class="chip c-info">🧾 falta facturar</span>':'<span class="chip c-ok">✅ facturado</span>'}</span>
+          <span class="mt">${money(porFacturar(o)?montoPend(o):(o.amount_untaxed||0))}<small>${porFacturar(o)?"falta facturar":"neto del pedido"}</small></span>
+        </div>
+        <div class="avisos"><div class="aviso">
+          <span class="qui">${esc(a.por||"—")}${a.ts?" · "+fmtFecha(fechaAR(a.ts))+" "+fmtHora(fechaAR(a.ts)):""}</span>${esc(a.motivo||"sin motivo")}</div></div>
+        <div class="acc">
+          <button class="btn sm" onclick="desarchivar(${o.id})" title="Vuelve a la cola, a los avisos y a Mi día, como si no se hubiera apartado.">↩ Devolver a la cola</button>
+          <button class="btn sm" onclick="abrir(${o.id})">👁️ Ver detalle</button>
+          <a class="lnk" style="margin-left:4px" target="_blank" href="${ODOO}/web#id=${o.id}&model=sale.order&view_type=form">Abrir en Odoo ↗</a>
+        </div>
+        ${ABIERTO===o.id?detalleHTML(o):""}
+      </div>`;
+    }).join(""):'<div class="vacio"><span class="big">🗄️</span>No apartaste ningún pedido.</div>'}
+  </div>`;
 }
 
 /* Notas de las comerciales sobre los pedidos que siguen pendientes.
@@ -350,6 +462,66 @@ async function cargarAvisos(){
       oc:RE_OC.test(txt), freno:RE_FRENO.test(txt)
     });
   });
+  await cargarNotasCore(ids);
+}
+
+/* Las notas que las comerciales dejan desde el Core ("Para facturación", el 🧾 del
+   panel): viven en Supabase, NO en Odoo. Es la vía nueva —desde que quedaron en solo
+   lectura casi no entran más a Odoo—, así que va PRIMERO en la fila. Las de Odoo se
+   siguen leyendo: están las históricas y alguna las escribe allá todavía.
+   No se filtra por pedido en la consulta: son pocas y así se detecta la que quedó
+   colgada de un pedido que no está en esta lista. */
+async function cargarNotasCore(ids){
+  const enLista=new Set(ids);
+  try{
+    const {data,error}=await EYG.supa().from("comercial_nota")
+      .select("id,texto,creada_ts,comercial,pedido_id,pedido_nombre")
+      .eq("tipo","facturacion").eq("estado","abierta").limit(1000);
+    if(error) throw error;
+    (data||[]).forEach(n=>{
+      const txt=String(n.texto||"").trim();
+      if(!txt || !n.pedido_id || !enLista.has(n.pedido_id)) return;
+      (AVISOS[n.pedido_id]=AVISOS[n.pedido_id]||[]).unshift({
+        id:"core-"+n.id, notaId:n.id, core:true, txt, fecha:fechaAR(n.creada_ts),
+        autor:n.comercial||"—", oc:RE_OC.test(txt), freno:RE_FRENO.test(txt)
+      });
+    });
+  }catch(e){ /* si Supabase no contesta, quedan las notas de Odoo: la cola no se cae */ }
+}
+
+/* Cerrar una nota del Core la saca de la pantalla de Vanesa Y le avisa a la comercial
+   en su panel (ve quién la resolvió y por qué). Las de Odoo no se tocan: ésas se
+   resuelven solas cuando el pedido se factura. */
+async function cerrarNotasCore(pedidoId, motivo){
+  const notas=(AVISOS[pedidoId]||[]).filter(a=>a.core&&a.notaId);
+  if(!notas.length) return;
+  const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"Facturación";
+  const ahora=new Date().toISOString();
+  for(const n of notas){
+    try{
+      await EYG.supa().from("comercial_nota").update({
+        estado:"hecha", hecha_ts:ahora,
+        detalle:{cerrada_por:quien, cerrada_ts:ahora, cerrada_nota:motivo||null}
+      }).eq("id",n.notaId);
+      AVISOS[pedidoId]=(AVISOS[pedidoId]||[]).filter(a=>a.notaId!==n.notaId);
+    }catch(e){ /* si falla, la nota sigue abierta: es preferible a darla por resuelta */ }
+  }
+}
+/* Botón "Listo" de la pestaña Avisos: la atendió sin facturar (habló con la comercial,
+   ya estaba resuelto, etc.). */
+async function notaListo(pedidoId, notaId){
+  const a=(AVISOS[pedidoId]||[]).find(x=>x.notaId===notaId); if(!a) return;
+  AVISOS[pedidoId]=(AVISOS[pedidoId]||[]).filter(x=>x.notaId!==notaId);
+  const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"Facturación";
+  const ahora=new Date().toISOString();
+  try{
+    await EYG.supa().from("comercial_nota").update({
+      estado:"hecha", hecha_ts:ahora,
+      detalle:{cerrada_por:quien, cerrada_ts:ahora, cerrada_nota:"resuelto desde Facturación"}
+    }).eq("id",notaId);
+    toast("✓ Aviso resuelto — la comercial lo va a ver en su panel");
+  }catch(e){ AVISOS[pedidoId].unshift(a); toast("No pude marcarlo: "+(e.message||e)); }
+  render();
 }
 
 /* Facturado por día del mes: se arma sumando los comprobantes emitidos, no con
@@ -448,7 +620,8 @@ function render(){
     ["cola","📥 Por facturar",KPI.cola,KPI.bloq?"rojo":null],
     ["avisos","💬 Avisos de comerciales",KPI.conAviso,KPI.bloq?"rojo":null],
     ["emitido","🧾 Emitido",KPI.draftInv||null,null],
-    ["atrasados","🕰️ Atrasados",KPI.viejos,"gris"]
+    ["atrasados","🕰️ Atrasados",KPI.viejos,"gris"],
+    ["archivados","🗄️ Archivados",ARCHIVADOS.length||null,"gris"]
   ];
   const tabs=T.map(([k,t,n,cl])=>`<button class="tab ${VISTA===k?"on":""}" onclick="irA('${k}')">${t}${n?`<span class="pill ${cl||""}">${fnum(n)}</span>`:""}</button>`).join("");
   let cuerpo="";
@@ -457,6 +630,7 @@ function render(){
   else if(VISTA==="avisos") cuerpo=vistaAvisos();
   else if(VISTA==="emitido") cuerpo=vistaEmitido();
   else if(VISTA==="atrasados") cuerpo=vistaAtrasados();
+  else if(VISTA==="archivados") cuerpo=vistaArchivados();
   document.getElementById("app").innerHTML=`
     <div class="wip">⚠️ <div><b>Módulo nuevo, en pruebas.</b> Lee los pedidos y las facturas de Odoo en vivo. Los botones <b>Confirmar</b> y <b>Facturar</b> escriben de verdad en Odoo — antes de usarlos en el día a día conviene probar uno acompañada.</div></div>
     <div class="tabs">${tabs}</div>${cuerpo}`;
@@ -513,8 +687,8 @@ function vistaHoy(){
      leerla antes de emitir), después el resto de lo que falta facturar, y si no
      queda nada pendiente, los últimos confirmados del día. */
   const falta=PEND.filter(porFacturar);
-  const conAv=falta.filter(o=>avisosDe(o).length).sort((a,b)=>(frenado(b)-frenado(a))||(diasDe(b.date_order)-diasDe(a.date_order)));
-  const resto=falta.filter(o=>!avisosDe(o).length).sort((a,b)=>diasDe(b.date_order)-diasDe(a.date_order));
+  const conAv=falta.filter(o=>avisosDe(o).length).sort((a,b)=>(frenado(b)-frenado(a))||String(b.date_order).localeCompare(String(a.date_order)));
+  const resto=falta.filter(o=>!avisosDe(o).length).sort((a,b)=>String(b.date_order).localeCompare(String(a.date_order)));
   const relleno=PEND.filter(o=>!porFacturar(o)).sort((a,b)=>String(b.date_order).localeCompare(String(a.date_order)));
   const urg=conAv.concat(resto).concat(relleno).slice(0,6);
   return `<div class="kpis">${kpis}</div>
@@ -545,12 +719,12 @@ function vistaCola(){
   if(FILTRO.com) l=l.filter(o=>(o.user_id?o.user_id[1]:"")===FILTRO.com);
   if(FILTRO.tipo) l=l.filter(o=>String(o.type_id?o.type_id[1]:"")===FILTRO.tipo);
   if(FILTRO.q){ const q=FILTRO.q.toLowerCase(); l=l.filter(o=>(o.name+" "+(o.partner_id?o.partner_id[1]:"")+" "+(o.client_order_ref||"")).toLowerCase().includes(q)); }
-  /* Orden: primero lo que la comercial pidió frenar, después lo que falta
-     facturar (lo más viejo arriba, que es lo que se escapa) y al final lo ya
-     resuelto, con lo más nuevo primero. */
+  /* Orden: primero lo que la comercial pidió frenar, después lo que falta facturar
+     y al final lo ya resuelto; dentro de cada grupo, LO MÁS NUEVO ARRIBA (pedido de
+     Dirección, 9/9/2026 — es el trabajo del día). Lo viejo no se pierde: tiene la
+     pestaña Atrasados, y lo que no va a facturarse se aparta con "Apartar". */
   l.sort((a,b)=>(frenado(b)-frenado(a)) || (porFacturar(b)-porFacturar(a)) ||
-    (porFacturar(a) ? diasDe(b.date_order)-diasDe(a.date_order)
-                    : String(b.date_order).localeCompare(String(a.date_order))));
+    String(b.date_order).localeCompare(String(a.date_order)));
 
   const cuenta=f=>PEND.filter(enRango).filter(f).length;
   const coms=[...new Set(PEND.map(o=>o.user_id?o.user_id[1]:"").filter(Boolean))].sort();
@@ -616,6 +790,7 @@ function filaPedido(o){
     <div class="acc">
       ${falta?`<button class="btn pri" ${trab?"disabled":""} title="Genera la factura de este pedido. Vas a poder elegir si se emite con CAE o queda en borrador." onclick="accion(${o.id})">🧾 Facturar</button>`:""}
       <button class="btn sm" onclick="abrir(${o.id})">👁️ Ver detalle</button>
+      <button class="btn sm" onclick="pedirArchivar(${o.id})" title="Lo saca de la cola, de los avisos y de Mi día, sin tocar nada en Odoo. Queda en la pestaña Archivados y se puede devolver.">🗄️ Apartar</button>
       <a class="lnk" style="margin-left:4px" target="_blank" href="${ODOO}/web#id=${o.id}&model=sale.order&view_type=form">Abrir en Odoo ↗</a>
       ${trab?'<span class="chip c-warn">trabajando…</span>':""}
     </div>
@@ -638,7 +813,12 @@ async function abrir(id){
         EYG.rpc("ir.attachment","search_read",[[["res_model","=","sale.order"],["res_id","=",id]]],
           {fields:["name","mimetype","create_date"],limit:0,order:"create_date desc"})
       ]);
-      DET[id]={lineas,msgs:msgs.map(m=>({date:m.date,author_id:m.author_id,txt:limpiar(m.body)})).filter(m=>m.txt),adj};
+      // Las del Core van primero: son las que la comercial escribió para ella.
+      const deCore=(AVISOS[id]||[]).filter(a=>a.core)
+        .map(a=>({date:a.fecha, author_id:[0,a.autor], txt:a.txt, core:true}));
+      DET[id]={lineas,
+        msgs:deCore.concat(msgs.map(m=>({date:m.date,author_id:m.author_id,txt:limpiar(m.body)})).filter(m=>m.txt)),
+        adj};
     }catch(e){ DET[id]={error:e.message||String(e)}; }
     render();
   }
@@ -691,7 +871,7 @@ function detalleHTML(o){
 
   const msgs=d.msgs.length
     ? d.msgs.map(m=>`<div class="aviso ${RE_FRENO.test(m.txt)?"stop":""}">
-        <span class="qui">${esc(m.author_id?m.author_id[1]:"—")} · ${fmtFecha(m.date)} ${fmtHora(m.date)}</span>${esc(m.txt)}</div>`).join("")
+        <span class="qui">${esc(m.author_id?m.author_id[1]:"—")} · ${fmtFecha(m.date)} ${fmtHora(m.date)}${m.core?" · 🧾 dirigido a Facturación":""}</span>${esc(m.txt)}</div>`).join("")
     : '<span class="muted">Nadie escribió nada en este pedido.</span>';
 
   const adj=d.adj.length
@@ -847,12 +1027,14 @@ function vistaAvisos(){
           <span class="nro">${esc(o.name)}</span>
           <span class="cli">${esc(o.partner_id?o.partner_id[1]:"—")}<small>${esc(a.autor)} · ${fmtFecha(a.fecha)} ${fmtHora(a.fecha)} · pedido de ${antig(diasDe(o.date_order))}</small></span>
           <span>${a.freno?'<span class="chip c-bad">🛑 pidió frenar</span>':(a.oc?'<span class="chip c-gris">📎 OC adjunta</span>':'<span class="chip c-warn">indicación</span>')}
+            ${a.core?'<span class="chip c-info" title="La dejó desde su panel, dirigida a Facturación.">🧾 del Core</span>':""}
             ${porFacturar(o)?'<span class="chip c-info">🧾 falta facturar</span>':'<span class="chip c-ok">✅ facturado</span>'}</span>
           <span class="mt" title="${porFacturar(o)?"Importe que falta facturar de este pedido.":"Neto del pedido, sin IVA."}">${money(porFacturar(o)?montoPend(o):(o.amount_untaxed||0))}</span>
         </div>
         <div class="avisos"><div class="aviso ${a.freno?"stop":""}">${esc(a.txt)}</div></div>
         <div class="acc">
           ${porFacturar(o)?`<button class="btn pri" onclick="accion(${o.id})">🧾 Facturar</button>`:'<span class="chip c-ok">✅ ya facturado</span>'}
+          ${a.core?`<button class="btn sm" onclick="notaListo(${o.id},${a.notaId})" title="Sacarlo de acá y avisarle a la comercial que ya está resuelto, sin facturar.">✔ Resuelto</button>`:""}
           <button class="btn sm" onclick="irPedido(${o.id})">👁️ Ver el pedido</button>
           <a class="lnk" style="margin-left:4px" target="_blank" href="${ODOO}/web#id=${o.id}&model=sale.order&view_type=form">Abrir en Odoo ↗</a>
         </div>
@@ -902,9 +1084,10 @@ function vistaEmitido(){
 async function cargarAtrasados(){
   ATRAS="cargando"; render();
   try{
-    ATRAS=await EYG.rpc("sale.order","search_read",[domAtrasados()],
+    const filas=await EYG.rpc("sale.order","search_read",[domAtrasados()],
       {fields:["name","date_order","partner_id","user_id","amount_total","amount_to_invoice","state","type_id","invoice_status","delivery_status"],
        context:{lang:"es_AR"},limit:0,order:"date_order desc"});
+    ATRAS=filas.filter(o=>!ARCH[o.id]);   // lo apartado no vuelve por la ventana de atrás
   }catch(e){ ATRAS={error:e.message||String(e)}; }
   render();
 }
@@ -987,6 +1170,7 @@ async function ejecutar(id,{emitir}){
       const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
       try{ await EYG.rpc("sale.order","message_post",[[id]],
         {body:"🧾 Facturado desde EyG Core por "+esc(quien)+": "+esc(nombres)+" ("+etiqueta+")",message_type:"comment"}); }catch(_){}
+      await cerrarNotasCore(id, "se facturó "+nombres);   // la comercial lo ve resuelto en su panel
       toast("Factura "+nombres+" — "+etiqueta+" ✓");
     }
     delete TRABAJANDO[id]; delete DET[id];
@@ -1056,6 +1240,8 @@ function dialogoError(nombre,msg){
 window.irA=irA; window.filtrar=filtrar; window.verCola=verCola; window.filtrarQ=filtrarQ; window.abrir=abrir;
 window.accion=accion; window.irPedido=irPedido; window.cerrarDialogo=cerrarDialogo;
 window.recalcLinea=recalcLinea; window.guardarLineas=guardarLineas; window.descartarLineas=descartarLineas;
+window.pedirArchivar=pedirArchivar; window.archivar=archivar; window.desarchivar=desarchivar;
+window.ponerMotivo=ponerMotivo; window.notaListo=notaListo;
 
 EYG.guard(["finanzas","admin","direccion"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]})
   .then(perfil=>{ PERFIL=perfil; cargar(); });

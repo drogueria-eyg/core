@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=62"></script>
+<script src="../assets/core.js?v=63"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -451,6 +451,8 @@
   .ntpin b{color:#5B44A8}
   .ntpin.ent{background:#FDEDE4;color:#B5613A}   /* este pedido tiene indicacion de entrega */
   .ntpin.ent b{color:#B5613A}
+  .ntpin.fac{background:#E9F5EC;color:#1E6B3A}   /* ...o algo dicho a Facturacion */
+  .ntpin.fac b{color:#1E6B3A}
   .ntlist{display:flex;flex-direction:column;gap:9px;margin-bottom:10px}
   .ntrow{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:start;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 15px;box-shadow:var(--shadow)}
   .ntrow.hecha{opacity:.55}
@@ -476,7 +478,10 @@
   .ntnueva{background:var(--teal);color:#fff;border:0;border-radius:10px;padding:11px 18px;font-family:inherit;font-size:13.5px;font-weight:800;cursor:pointer;white-space:nowrap}
   /* --- instrucciones de entrega (tipo "para logística") --- */
   .ntchip.entrega{background:#FDEDE4;color:#B5613A}
+  .ntchip.facturacion{background:#E9F5EC;color:#1E6B3A}
   .ntpublica{background:#FDEDE4;border:1px solid #F0C9B4;border-radius:10px;padding:9px 12px;font-size:12px;color:#8A4B2C;line-height:1.45;margin-bottom:13px}
+  .ntpublica.fac{background:#E9F5EC;border-color:#BFE0C9;color:#1E6B3A}
+  .ntcerrada{display:block;margin-top:4px;font-size:11.5px;font-weight:700;color:#1E6B3A}
   .ntmodos{display:flex;flex-direction:column;gap:6px}
   .ntmodo{display:flex;align-items:flex-start;gap:9px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-family:inherit;font-size:13px;font-weight:700;color:var(--gris);cursor:pointer;text-align:left;width:100%}
   .ntmodo:hover{border-color:var(--teal-med)}
@@ -1214,9 +1219,11 @@ const NT_TIPOS=[
   {k:"avisar", ic:"🔔",lab:"Avisar cuando entre", ayuda:"Está esperando un producto: cuando entre, hay que avisarle."},
   {k:"parcial",ic:"✂️",lab:"Entrega parcial",     ayuda:"Se le facturó menos de lo que había pedido."},
   {k:"nota",   ic:"📝",lab:"Nota",                ayuda:"Cualquier otra cosa que quieras recordar."},
-  // El único que NO es privado: se escribe también en el pedido de Odoo, que es donde
-  // logística lo lee hoy. Necesita un pedido: el cronograma es sobre sus renglones.
-  {k:"entrega",ic:"🚚",lab:"Para logística",      ayuda:"Cómo y cuándo entregar este pedido. Lo ve logística en el pedido de Odoo.", publica:true, requierePedido:true}
+  // Los dos que NO son privados. Necesitan un pedido: son sobre ese pedido.
+  // · entrega    -> además se escribe en el pedido de Odoo, porque es lo único que sale impreso en el remito.
+  // · facturacion-> NO toca Odoo: la lee Facturación desde el Core, pegada a la fila del pedido.
+  {k:"entrega",ic:"🚚",lab:"Para logística",      ayuda:"Cómo y cuándo entregar este pedido. Lo ve logística en el pedido de Odoo.", publica:true, requierePedido:true},
+  {k:"facturacion",ic:"🧾",lab:"Para facturación",ayuda:"Lo que Facturación tiene que saber antes de emitir: un precio o descuento pactado, que falta la OC, que no se facture todavía.", publica:true, requierePedido:true}
 ];
 /* Formas estándar de entregar. "Lo antes posible" es lo que Odoo ya hace solo:
    si eligen eso y no aclaran nada, no se escribe nada en el pedido. */
@@ -1435,15 +1442,16 @@ function ntPintarEditor(){
   const donde=[e.cliente_nombre?esc(e.cliente_nombre):"", e.pedido_nombre?"pedido "+esc(e.pedido_nombre):""].filter(Boolean).join(" · ");
   h.innerHTML=`<div class="ntscrim" onclick="if(event.target===this)ntCerrar()"><div class="ntbox">
     <h3>${esNueva?"Nueva anotación":"Editar anotación"}</h3>
-    <div class="nt-sub">${donde||"Anotación suelta, sin cliente"}${esNueva?" · solo la ves vos":""}</div>
+    <div class="nt-sub">${donde||"Anotación suelta, sin cliente"}${esNueva&&!(NT_MAP[e.tipo]||{}).publica?" · solo la ves vos":""}</div>
     <div class="ntfld"><label>¿De qué se trata?</label><div class="nttipos">
       ${NT_TIPOS.map(t=>`<button class="nttipo${e.tipo===t.k?" on":""}" onclick="ntSetTipo('${t.k}')" title="${esc(t.ayuda)}">${t.ic} ${t.lab}</button>`).join("")}
     </div></div>
     ${e.tipo==="entrega" ? ntEditorEntregaHTML(e) : `
+    ${e.tipo==="facturacion"?'<div class="ntpublica fac">🧾 <b>Esto lo lee Facturación</b> en su pantalla, pegado a este pedido. No es una nota privada. Se cierra sola cuando el pedido se factura.</div>':""}
     <div class="ntfld"><label>Anotación</label>
-      <textarea id="ntTexto" placeholder="ej: 250 ENOXA 40 a $7880 · avisar cuando entre el alprazolam">${esc(e.texto||"")}</textarea></div>
-    <div class="ntfld"><label>Recordármelo el día (opcional)</label>
-      <input type="date" id="ntFecha" value="${esc(e.recordar_el||"")}"></div>
+      <textarea id="ntTexto" placeholder="${e.tipo==="facturacion"?"ej: facturar la cipro a $4999 · no facturar hasta que mande la OC":"ej: 250 ENOXA 40 a $7880 · avisar cuando entre el alprazolam"}">${esc(e.texto||"")}</textarea></div>
+    ${e.tipo==="facturacion"?"":`<div class="ntfld"><label>Recordármelo el día (opcional)</label>
+      <input type="date" id="ntFecha" value="${esc(e.recordar_el||"")}"></div>`}
     ${e.tipo==="avisar"?'<div class="ntfld" id="ntRepoBox"></div>':""}`}
     <div class="ntpie">
       <button class="g" onclick="ntCerrar()">Cancelar</button>
@@ -1628,7 +1636,15 @@ async function ntGuardar(){
     reposicion_orden_id:(NT_EDIT.tipo==="avisar"?(NT_EDIT.reposicion_orden_id||null):null) };
   try{
     const sb=EYG.supa();
-    if(NT_EDIT.id){ const {error}=await sb.from("comercial_nota").update(fila).eq("id",NT_EDIT.id); if(error) throw error; }
+    /* UNA anotación por pedido y por destino. Si ya hay una abierta del mismo tipo en
+       este pedido, se EDITA esa en vez de crear otra: si no, el que la recibe termina
+       leyendo tres versiones de lo mismo y no sabe cuál vale. */
+    let id=NT_EDIT.id||null;
+    if(!id && fila.pedido_id){
+      const prev=ntAbiertas().find(x=>x.pedido_id===fila.pedido_id && x.tipo===fila.tipo);
+      if(prev) id=prev.id;
+    }
+    if(id){ const {error}=await sb.from("comercial_nota").update(fila).eq("id",id); if(error) throw error; }
     else{ const {error}=await sb.from("comercial_nota").insert([fila]); if(error) throw error; }
   }catch(e){ toast("No pude guardar la anotación"); return; }
   // Recién con la fila guardada se escribe en Odoo. Si esto falla, la anotación existe
@@ -1644,7 +1660,7 @@ async function ntGuardar(){
       }
       toast("🚚 Va a salir impreso en el remito");
     }catch(e){ toast("Guardé la anotación, pero no pude escribirla en el pedido de Odoo"); }
-  } else toast("📝 Anotación guardada");
+  } else toast(NT_EDIT.tipo==="facturacion"?"🧾 Facturación la va a ver en este pedido":"📝 Anotación guardada");
   ntCerrar(); await ntCargar(); render();
 }
 async function ntHecha(id, deshacer){
@@ -1732,9 +1748,14 @@ function ppRow(o,t){
   const click=t==="pres"?`location.href='${venderURL('reanudar='+o.id)}'`:`verOdoo('id=${o.id}&model=sale.order&view_type=form')`;
   const go=t!=="pres"?'Ver →':(cerrado?'Confirmar →':'Retomar →');
   // 📝 anotaciones de ESTE pedido: si ya hay, abre la lista filtrada; si no, una nueva.
-  const anots=ntDePedido(o.id), nAnot=anots.length, ent=anots.find(x=>x.tipo==="entrega");
-  const pin=ntEsMiPanel()?`<button class="ntpin${ent?" ent":""}" onclick="event.stopPropagation();ntDelPedido(${o.id})"
-      title="${ent?"Entrega: "+esc(ent.texto||"")+"\n":""}${nAnot?nAnot+" anotación"+(nAnot===1?"":"es")+" en este pedido":"Dejar una anotación o indicar la entrega"}">${ent?"🚚":"📝"}${nAnot?`<b> ${nAnot}</b>`:""}</button>`:"";
+  const anots=ntDePedido(o.id), nAnot=anots.length;
+  const ent=anots.find(x=>x.tipo==="entrega"), fac=anots.find(x=>x.tipo==="facturacion");
+  // El ícono dice de un vistazo si este pedido ya lleva algo dicho para afuera.
+  const ntIc=(ent&&fac)?"🚚🧾":ent?"🚚":fac?"🧾":"📝";
+  const ntTit=[ent?"Entrega: "+esc(ent.texto||""):"", fac?"Facturación: "+esc(fac.texto||""):"",
+    nAnot?nAnot+" anotación"+(nAnot===1?"":"es")+" en este pedido":"Dejar una anotación, indicar la entrega o avisarle a Facturación"].filter(Boolean).join("\n");
+  const pin=ntEsMiPanel()?`<button class="ntpin${ent?" ent":fac?" fac":""}" onclick="event.stopPropagation();ntDelPedido(${o.id})"
+      title="${ntTit}">${ntIc}${nAnot?`<b> ${nAnot}</b>`:""}</button>`:"";
   return `<div class="pprow${cerrado?' urge':''}" onclick="${click}">
     <div><div class="cli">${esc(cli)}${tag}</div>
     <div class="meta">${esc(o.name||'')}${extra?' · '+extra:''}${f?' · '+f:''}</div></div>
@@ -1857,6 +1878,12 @@ function ntFiltrar(){
     return px-py || String(y.creada_ts||"").localeCompare(String(x.creada_ts||""));
   });
 }
+// "+ Nueva anotación" desde la lista: si estamos viendo las de UN pedido, la nueva nace con ese pedido.
+function ntNuevaAqui(){
+  const ped=ST.ntPedido?((ST.ordHist||[]).concat(ST.drafts||[])).find(x=>x.id===ST.ntPedido):null;
+  ntEditar(null, ped?{pedido_id:ped.id,pedido_nombre:ped.name||"",
+    cliente_id:ped.partner_id?ped.partner_id[0]:null, cliente_nombre:ped.partner_id?ped.partner_id[1]:""}:null);
+}
 function ntSetEstado(v){ ST.ntEstado=v; render(); }
 function ntSetTipoFiltro(k){ ST.ntTipo=(ST.ntTipo===k?null:k); render(); }
 function ntLimpiarPedido(){ ST.ntPedido=null; render(); }
@@ -1874,7 +1901,8 @@ function ntFilaHTML(x){
   return `<div class="ntrow${hecha?" hecha":""}${llego?" llego":""}${vence?" vence":""}">
     <span class="nt-ic" title="${esc(T.ayuda)}">${T.ic}</span>
     <div>
-      <div class="nt-tx"><span class="ntchip ${x.tipo}">${T.lab}</span>${esc(x.texto||"")}${llego?`<span class="ntavisa">✅ ya llegó${repo&&repo.producto_nombre?": "+esc(repo.producto_nombre):""} — avisale</span>`:""}</div>
+      <div class="nt-tx"><span class="ntchip ${x.tipo}">${T.lab}</span>${esc(x.texto||"")}${llego?`<span class="ntavisa">✅ ya llegó${repo&&repo.producto_nombre?": "+esc(repo.producto_nombre):""} — avisale</span>`:""}${
+        (x.detalle||{}).cerrada_por?`<span class="ntcerrada">✔ ${esc((x.detalle||{}).cerrada_por)} la dio por resuelta${(x.detalle||{}).cerrada_nota?": "+esc((x.detalle||{}).cerrada_nota):""}</span>`:""}</div>
       ${meta?`<div class="nt-meta">${meta}</div>`:""}
     </div>
     <div class="nt-acc">
@@ -1897,7 +1925,7 @@ function pintarVistaNotas(app){
   app.innerHTML=`<div class="vhead">
       <button class="vback" onclick="volverDash()">← Volver</button>
       <h1>📝 Mis anotaciones <span class="vcount">${arr.length}</span></h1>
-      ${ntEsMiPanel()?'<button class="ntnueva" onclick="ntEditar(null)">+ Nueva anotación</button>':''}
+      ${ntEsMiPanel()?'<button class="ntnueva" onclick="ntNuevaAqui()">+ Nueva anotación</button>':''}
     </div>
     ${ped?`<div class="ppalert" onclick="ntLimpiarPedido()"><span class="ppa-ic">📦</span><span class="ppa-tx">Viendo solo las del pedido <b>${esc(ped.name||"")}</b>${ped.partner_id?" · "+esc(ped.partner_id[1]):""}.</span><span class="ppa-go">Ver todas ✕</span></div>`:""}
     ${avisos.length?`<div class="ppalert${r.llegaron?" urge":""}"><span class="ppa-ic">${r.llegaron?"✅":"⏰"}</span><span class="ppa-tx">${avisos.join(" · ")}.</span></div>`:""}
