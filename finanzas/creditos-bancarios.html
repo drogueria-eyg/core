@@ -185,7 +185,7 @@ const COLS={ venc:["vencimiento","vto","fecha"], total:["total a pagar","total c
 function matchCol(h){ const n=norm(h); for(const k in COLS){ if(COLS[k].some(a=>n===a||n.includes(a))) return k; } return null; }
 
 let ST = { form:{banco:"santafe", fecha:EYG.argToday(), numero:"", capital:"", neto:"", nro:"", texto:""},
-           loan:null, customBanks:[], _bankHits:[], netoManual:false, fileName:"", extracting:false, autodet:{}, termByCount:{}, parsed:null, error:null, generating:false, result:null };
+           loan:null, customBanks:[], _bankHits:[], netoManual:false, depositoBanco:null, fileName:"", extracting:false, autodet:{}, termByCount:{}, parsed:null, error:null, generating:false, result:null };
 
 /* =========================================================================
    LECTURA DE ARCHIVOS
@@ -365,13 +365,46 @@ function finalizeLoan(cuotas, opt){
 }
 // Vuelca el "loan" leído al formulario (banco, nº, capital, fecha) y analiza.
 function aplicarLoan(loan, text){
-  ST.loan=loan; ST.netoManual=false; const a={};   // archivo nuevo → el neto se recalcula
-  const b=detectarBanco(text||""); if(b){ ST.form.banco=b; a.banco=true; }
+  ST.loan=loan; ST.netoManual=false; ST.depositoBanco=null; const a={};   // archivo nuevo → el neto se recalcula
+  const b=detectarBanco(text||"");
+  const cambioBanco = b && b!==ST.form.banco;
+  if(b){ ST.form.banco=b; a.banco=true; }
   const nro=loan.nro || buscarTexto(text||"",["N[ÚU]MERO\\s+DE\\s+PR[ÉE]STAMO","NRO\\.?\\s+DE\\s+PR[ÉE]STAMO","N[°º]?\\s+OPERACI[ÓO]N"]);
   if(nro){ ST.form.nro=nro; a.nro=true; }
   if(loan.capital){ ST.form.capital=String(loan.capital); a.capital=true; }
   if(loan.fecha){ ST.form.fecha=loan.fecha; a.fecha="estim"; }
   ST.autodet=a; analizar();     // analizar estima el neto desde el capital
+  /* El banco viene elegido en "santafe" por defecto. Si el archivo detecta otro,
+     el número que estaba calculado es de OTRA serie y hay que pedirlo de nuevo:
+     por esto un préstamo del Credicoop salió numerado 14, que era del Santa Fe. */
+  if(cambioBanco) refrescarNumero();
+  /* El neto estimado puede errarle por unos pesos (el sellado del Macro es
+     0,25% MÁS $52 fijos). Se busca el depósito real en el extracto. */
+  confirmarNetoConBanco();
+}
+
+/* Busca en las cuentas de banco un depósito parecido al neto estimado, en los
+   días alrededor de la fecha del préstamo. Si aparece UNO solo, ése es el neto
+   de verdad y se usa: es el dato del banco, no una estimación. Si hay varios o
+   ninguno, no toca nada. */
+async function confirmarNetoConBanco(){
+  if(ST.netoManual) return;
+  const neto=parseNum(ST.form.neto), fecha=ST.form.fecha;
+  if(!(neto>0) || !fecha) return;
+  const corr=(f,n)=>{ const x=new Date(f+"T00:00:00"); x.setDate(x.getDate()+n); return x.toISOString().slice(0,10); };
+  try{
+    const r = await EYG.rpc("account.move.line","search_read",
+      [[["date",">=",corr(fecha,-4)],["date","<=",corr(fecha,4)],
+        ["account_id.account_type","=","asset_cash"],
+        ["debit",">",neto*0.985],["debit","<",neto*1.015]]],
+      {fields:["date","debit","account_id","move_id","name"], limit:6, order:"date"});
+    if(!r || r.length!==1) return;
+    const dep=r[0];
+    ST.depositoBanco = {monto:round2(dep.debit), fecha:dep.date, cuenta:dep.account_id[1],
+                        asiento:dep.move_id[1], detalle:dep.name||"", dif:round2(dep.debit-neto)};
+    if(Math.abs(ST.depositoBanco.dif)>=0.005){ ST.form.neto=String(ST.depositoBanco.monto); ST.netoManual=true; }
+    analizar();
+  }catch(e){ /* si no se puede consultar, se queda con la estimación */ }
 }
 // Neto tocado a mano → no lo pisamos con la estimación. Si lo vacían, vuelve a estimarse.
 function setNeto(v){ ST.form.neto=v; ST.netoManual = String(v||"").trim()!==""; }
@@ -418,7 +451,7 @@ function analizar(){
     const tasa = (bk && bk.sell!==undefined) ? bk.sell : SELLADO_RATE;
     neto = capital>0 ? round2(capital*(1-tasa)) : 0; ST.form.neto = neto?String(neto):""; netoEstim = neto>0;
   }
-  ST.autodet=ST.autodet||{}; ST.autodet.neto = netoEstim ? "estim" : (ST.netoManual ? "manual" : "");
+  ST.autodet=ST.autodet||{}; ST.autodet.neto = netoEstim ? "estim" : (ST.depositoBanco ? "banco" : (ST.netoManual ? "manual" : ""));
   const interes=L.interes, iva=L.iva, percepcion=L.percepcion||0, totalCuotas=L.totalCuotas, extras=L.extras||{}, extraTot=L.extraTot||0;
   const sellados=round2(capital-neto);
   const hayExtras=Object.keys(extras).length>0;
@@ -564,7 +597,7 @@ function render(){
       <div><label class="req">N° de comprobante</label><input value="${esc(f.numero)}" oninput="setF('numero',this.value)" placeholder="${POS}-00000014"><div class="hint">Serie ${POS} (préstamos). Sugerido: el próximo libre.</div></div>
       <div><label>N° de préstamo (banco)${flag('nro')}</label><input class="${a.nro?'auto':''}" value="${esc(f.nro)}" oninput="setF('nro',this.value)" placeholder="del archivo"></div>
       <div><label class="req">Capital solicitado${flag('capital')}</label><input class="${a.capital?'auto':''}" value="${esc(f.capital)}" oninput="setF('capital',this.value)" placeholder="del archivo"></div>
-      <div><label>Neto acreditado${a.neto==='estim'?'<span style="color:var(--teal);font-weight:700"> · calculado</span>':(a.neto==='manual'?'<span style="color:var(--gris2);font-weight:700"> · a mano</span>':'')}</label><input class="${a.neto==='estim'?'auto':'manual'}" value="${esc(f.neto)}" oninput="setNeto(this.value)" placeholder="se calcula del capital"><div class="hint">${a.neto==='estim'?`Lo calculo = capital − sellado 0,2515% (sellados ≈ ${money2(round2((parseNum(f.capital)||0)-(parseNum(f.neto)||0)))}). Corregí sólo si el extracto difiere.`:'Sellados = capital − neto. Se calcula solo; podés corregirlo con el dato del extracto.'}</div></div>
+      <div><label>Neto acreditado${a.neto==='estim'?'<span style="color:var(--teal);font-weight:700"> · calculado</span>':(a.neto==='banco'?'<span style="color:var(--ok);font-weight:700"> · del extracto</span>':(a.neto==='manual'?'<span style="color:var(--gris2);font-weight:700"> · a mano</span>':''))}</label><input class="${a.neto==='estim'?'auto':'manual'}" value="${esc(f.neto)}" oninput="setNeto(this.value)" placeholder="se calcula del capital"><div class="hint">${a.neto==='banco'?`Es el depósito que encontré en <b>${esc(ST.depositoBanco.cuenta)}</b> el ${esc(ST.depositoBanco.fecha)}${ST.depositoBanco.dif?` — la estimación erraba ${money2(Math.abs(ST.depositoBanco.dif))}`:''}. Sellados = ${money2(round2((parseNum(f.capital)||0)-(parseNum(f.neto)||0)))}.`:(a.neto==='estim'?`Lo calculo = capital − sellado (${esc(((bankByK(f.banco)&&bankByK(f.banco).sell!==undefined?bankByK(f.banco).sell:SELLADO_RATE)*100).toFixed(4))}%, sellados ≈ ${money2(round2((parseNum(f.capital)||0)-(parseNum(f.neto)||0)))}). <b>No lo encontré en el extracto: confirmalo.</b>`:'Sellados = capital − neto. Se calcula solo; podés corregirlo con el dato del extracto.')}</div></div>
     </div>
     <div class="actions"><button class="btn" onclick="analizar()">Analizar</button>${p?`<span style="color:var(--ok);font-weight:700;font-size:13px">✓ ${p.cuotas.length} cuotas leídas</span>`:""}</div>
   </div>`;
@@ -612,7 +645,7 @@ function render(){
 
   document.getElementById("app").innerHTML = html;
 }
-function nuevo(){ const b0=bankByK(ST.form.banco); proximoNumero(b0?b0.partner:null).then(n=>{ ST.form={banco:ST.form.banco, fecha:EYG.argToday(), numero:n, capital:"", neto:"", nro:"", texto:""}; ST.loan=null; ST.netoManual=false; ST.fileName=""; ST.autodet={}; ST.parsed=null; ST.error=null; ST.result=null; render(); }); }
+function nuevo(){ const b0=bankByK(ST.form.banco); proximoNumero(b0?b0.partner:null).then(n=>{ ST.form={banco:ST.form.banco, fecha:EYG.argToday(), numero:n, capital:"", neto:"", nro:"", texto:""}; ST.loan=null; ST.netoManual=false; ST.depositoBanco=null; ST.fileName=""; ST.autodet={}; ST.parsed=null; ST.error=null; ST.result=null; render(); }); }
 
 /* EN PRUEBAS: gateado al super-admin (Diego). Ver core.js SUPER. */
 EYG.guard(["finanzas","direccion","admin"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(async ()=>{
