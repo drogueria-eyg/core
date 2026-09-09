@@ -83,6 +83,11 @@
   table.cuotas td{padding:7px 10px;border-bottom:1px solid #EEF3F2;font-variant-numeric:tabular-nums}
   table.cuotas td.r,table.cuotas th.r{text-align:right}
   table.cuotas tr:last-child td{border-bottom:0}
+  table.cuotas input.cel{font-size:12.5px;padding:5px 7px;border-radius:7px;border:1px solid transparent;background:transparent}
+  table.cuotas input.cel:hover{border-color:var(--line);background:#fff}
+  table.cuotas input.cel:focus{border-color:var(--teal-med);background:#fff}
+  table.cuotas input.cel.r{text-align:right}
+  table.cuotas input.cel.manual{background:#FFFDF3;border-color:#EAD9A0}
   .foot td{font-weight:800;border-top:2px solid var(--line)!important;background:var(--bg)}
 
   .check{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:600;border-radius:9px;padding:10px 13px;margin-bottom:10px}
@@ -479,31 +484,19 @@ function parsePdfLoan(text){
      y señala EXACTAMENTE qué fila mirar. */
   const malas = cols ? filasQueNoCierran(cuotas, cols) : [];
 
-  /* Contra lo que declara el papel: cantidad de cuotas y fila de Totales. */
-  const faltantes=[];
+  /* Contra lo que declara el papel: cantidad de cuotas y fila de Totales.
+     Se guardan en el préstamo para poder volver a controlar después de una
+     corrección a mano (ver recontrolar()). */
   const nDeclarado = cuotasDeclaradas(text);
-  if(nDeclarado && nDeclarado!==cuotas.length)
-    faltantes.push({que:"cuotas", leido:cuotas.length, papel:nDeclarado, texto:true});
   const tp = cols ? totalesDelPapel(lineas, cols) : null;
-  if(tp){
-    const cmp=(que, leido, delPapel)=>{
-      if(delPapel===undefined || delPapel===null) return;
-      if(Math.abs(round2(leido)-round2(delPapel))>0.05) faltantes.push({que, leido:round2(leido), papel:round2(delPapel)});
-    };
-    cmp("total de las cuotas", suma("total"),   tp.total);
-    cmp("capital",             suma("capital"), tp.capital);
-    cmp("interés",             totInt,          tp.interes);
-    /* después de partir "Otros Cargos"/"Impuestos", el importe vive en iva+percep */
-    if(tp.otros!==undefined) cmp("IVA + percepción", round2(suma("iva")+percepcion), tp.otros);
-    if(tp.iva!==undefined)   cmp("IVA",              suma("iva"),                    tp.iva);
-  }
+  const faltantes = contraElPapel(cuotas, tp, nDeclarado);
 
   const nro=(text.match(/N[ÚU]MERO\s+DE\s+PR[ÉE]STAMO\s*[\r\n]*\s*(\d{4,})/i)||[])[1]||null;
   /* Fecha del préstamo: si el papel la dice, se usa ésa. La estimación
      "primer vencimiento − 1 mes" falla cuando hay período de gracia (el
      Municipal liquidó el 7/8 y la primera cuota vence el 15/9). */
   const mf = text.match(/fecha\s+(?:de\s+)?(?:liq\.?|liquidaci[oó]n|valor|acreditaci[oó]n|otorgamiento)\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
-  return finalizeLoan(cuotas, {nro, extras, percepcion, malas, faltantes, desordenadas,
+  return finalizeLoan(cuotas, {nro, extras, percepcion, malas, faltantes, desordenadas, cols, tp, nDeclarado,
     deducidas: cuotas.filter(c=>c.fechaDeducida).length, fecha: mf?normFechaCorta(mf[1]):null});
 }
 
@@ -575,6 +568,27 @@ function cuotasDeclaradas(text){
   const m=String(text||"").match(/cantidad\s+de\s+cuotas\s+totales?\s*:?\s*(\d{1,3})/i);
   return m?parseInt(m[1],10):null;
 }
+/* Compara lo leído contra lo que declara el papel. Se usa al leer el archivo y
+   otra vez cada vez que se corrige una cuota a mano. */
+function contraElPapel(cuotas, tp, nDeclarado){
+  const suma = k => round2(cuotas.reduce((a,c)=>a+(c[k]||0),0));
+  const out=[];
+  if(nDeclarado && nDeclarado!==cuotas.length)
+    out.push({que:"cuotas", leido:cuotas.length, papel:nDeclarado, texto:true});
+  if(tp){
+    const cmp=(que, leido, delPapel)=>{
+      if(delPapel===undefined || delPapel===null) return;
+      if(Math.abs(round2(leido)-round2(delPapel))>0.05) out.push({que, leido:round2(leido), papel:round2(delPapel)});
+    };
+    cmp("total de las cuotas", suma("total"),   tp.total);
+    cmp("capital",             suma("capital"), tp.capital);
+    cmp("interés",             suma("interes"), tp.interes);
+    /* después de partir "Otros Cargos"/"Impuestos", el importe vive en iva+percep */
+    if(tp.otros!==undefined) cmp("IVA + percepción", round2(suma("iva")+suma("percep")), tp.otros);
+    if(tp.iva!==undefined)   cmp("IVA",              suma("iva"),                        tp.iva);
+  }
+  return out;
+}
 
 /* Devuelve las cuotas donde las partes no suman el total. `saldo` no cuenta:
    es lo que queda por amortizar, no plata a pagar. */
@@ -636,13 +650,20 @@ function finalizeLoan(cuotas, opt){
     if(Math.abs(extras[k]-round2(interes*0.015)) < Math.max(1, interes*0.0006)){ percepcion=extras[k]; delete extras[k]; break; }
   }
   const extraTot=round2(Object.values(extras).reduce((a,v)=>a+v,0));
-  const cu=cuotas.map(c=>({venc:c.venc, interes:round2(c.interes||0), iva:round2(c.iva||0), total:round2(c.total||0), fechaDeducida:!!c.fechaDeducida}));
+  /* Se guardan TODAS las columnas de cada cuota (no sólo las que se muestran):
+     hacen falta para volver a controlar cuando Federico corrige una fila a mano. */
+  const cu=cuotas.map(c=>({venc:c.venc, interes:round2(c.interes||0), iva:round2(c.iva||0),
+    total:round2(c.total||0), capital:round2(c.capital||0), percep:round2(c.percep||0),
+    otros:round2(c.otros||0), gastos:round2(c.gastos||0), ajuste:round2(c.ajuste||0),
+    seguro:round2(c.seguro||0), saldo:round2(c.saldo||0),
+    fechaDeducida:!!c.fechaDeducida, editada:!!c.editada}));
   return { cuotas:cu, capital, interes, iva, percepcion, totalCuotas, extras, extraTot,
            nro:opt.nro||null,
            /* la que dice el papel manda; si no la dice, se estima */
            fecha: opt.fecha || menosUnMes(cu[0]&&cu[0].venc),
            fechaDelPapel: !!opt.fecha, malas: opt.malas||[], faltantes: opt.faltantes||[],
-           desordenadas: opt.desordenadas||[], deducidas: opt.deducidas||0 };
+           desordenadas: opt.desordenadas||[], deducidas: opt.deducidas||0,
+           cols: opt.cols||null, tp: opt.tp||null, nDeclarado: opt.nDeclarado||null };
 }
 // Vuelca el "loan" leído al formulario (banco, nº, capital, fecha) y analiza.
 function aplicarLoan(loan, text){
@@ -689,6 +710,44 @@ async function confirmarNetoConBanco(){
     analizar();
   }catch(e){ /* si no se puede consultar, se queda con la estimación */ }
 }
+/* =========================================================================
+   CORREGIR UNA CUOTA A MANO
+   -------------------------------------------------------------------------
+   Cuando el cuadro sale de un escaneo, el OCR erra alguna fecha o algún
+   dígito. Antes había que ir al texto crudo y volver a analizar; ahora se
+   corrige en la misma tabla y los controles se rehacen al toque.
+   ========================================================================= */
+function setCuota(i, campo, valor){
+  const L=ST.loan; if(!L || !L.cuotas[i]) return;
+  const c=L.cuotas[i];
+  if(campo==="venc"){
+    if(!esFechaValida(valor)) return;
+    c.venc=valor; c.fechaDeducida=false;
+  }else{
+    const antes=c[campo]||0, ahora=round2(parseNum(valor));
+    c[campo]=ahora;
+    /* Si se corrige el total de la cuota, la diferencia va al capital: es la
+       columna que no se muestra y la que hace cerrar la fila. */
+    if(campo==="total") c.capital = round2((c.capital||0) + (ahora-antes));
+  }
+  c.editada=true;
+  recontrolar();
+}
+/* Rehace los totales del préstamo y los tres controles con las cuotas de ahora. */
+function recontrolar(){
+  const L=ST.loan; if(!L) return;
+  const suma = k => round2(L.cuotas.reduce((a,c)=>a+(c[k]||0),0));
+  L.interes=suma("interes"); L.iva=suma("iva"); L.percepcion=suma("percep");
+  L.totalCuotas=suma("total"); L.capital=suma("capital");
+  L.malas        = L.cols ? filasQueNoCierran(L.cuotas, L.cols) : [];
+  L.desordenadas = fechasFueraDeOrden(L.cuotas);
+  L.faltantes    = contraElPapel(L.cuotas, L.tp||null, L.nDeclarado||null);
+  L.deducidas    = L.cuotas.filter(c=>c.fechaDeducida).length;
+  /* el capital manda la estimación del neto, así que se rehace todo */
+  ST.form.capital = String(L.capital);
+  analizar();
+}
+
 // Neto tocado a mano → no lo pisamos con la estimación. Si lo vacían, vuelve a estimarse.
 function setNeto(v){ ST.form.neto=v; ST.netoManual = String(v||"").trim()!==""; }
 function reanalizar(){ try{ aplicarLoan(parsePdfLoan(ST.form.texto||""), ST.form.texto||""); }catch(e){ ST.error="No pude releer el texto: "+(e.message||e); render(); } }
@@ -889,12 +948,24 @@ function render(){
 
   // Card 3: vista previa
   if(p){
+    /* El cuadro se puede corregir a mano: con un escaneo el OCR erra alguna
+       fecha o algún dígito, y es más rápido arreglarlo acá que en el texto. */
     const fueraDeOrden = new Set(p.desordenadas.map(x=>x.n));
-    const rows = p.cuotas.map((c,i)=>`<tr${(c.fechaDeducida||fueraDeOrden.has(i+1))?' style="background:var(--warnbg)"':''}><td>${i+1}</td><td>${fechaLinda(c.venc)}${c.fechaDeducida?' <b title="no se pudo leer: la deduje de la cadencia mensual">~</b>':''}${fueraDeOrden.has(i+1)?' <b title="rompe el orden del cuadro">⚠</b>':''}</td><td class="r">${money2(c.interes)}</td><td class="r">${money2(c.iva)}</td><td class="r">${money2(c.total)}</td></tr>`).join("");
+    const malaFila = new Set(p.malas.map(x=>x.n));
+    const rows = p.cuotas.map(function(c,i){
+      const ojo = c.fechaDeducida || fueraDeOrden.has(i+1) || malaFila.has(i+1);
+      const marca = (c.fechaDeducida?' <b title="no se pudo leer: la deduje de la cadencia mensual">~</b>':'')
+                  + (fueraDeOrden.has(i+1)?' <b title="rompe el orden del cuadro">⚠</b>':'')
+                  + (c.editada?' <b title="corregida a mano" style="color:var(--teal)">✎</b>':'');
+      const plata=(campo,val)=>`<td class="r"><input class="cel r${c.editada?' manual':''}" value="${money2(val).replace("$","")}" onchange="setCuota(${i},'${campo}',this.value)"></td>`;
+      return `<tr${ojo?' style="background:var(--warnbg)"':''}><td>${i+1}${marca}</td>`+
+        `<td><input class="cel${c.fechaDeducida||fueraDeOrden.has(i+1)?' manual':''}" type="date" value="${esc(c.venc)}" onchange="setCuota(${i},'venc',this.value)"></td>`+
+        plata("interes",c.interes)+plata("iva",c.iva)+plata("total",c.total)+`</tr>`;
+    }).join("");
     const ivaDif = Math.abs(p.iva-p.ivaTeorico)>=0.005;
     html += `<div class="card">
       <h3><span class="step">3</span>Vista previa del comprobante</h3>
-      <div class="cap">Así queda en Odoo. Revisá antes de generar.</div>
+      <div class="cap">Así queda en Odoo. Revisá antes de generar — <b>el cuadro se puede corregir acá mismo</b>: tocá cualquier fecha o importe y los controles se rehacen solos.</div>
       <div class="pv-tiles">
         <div class="pv-tile"><div class="l">Neto acreditado</div><div class="v">${money2(p.neto)}</div></div>
         <div class="pv-tile"><div class="l">Interés</div><div class="v">${money2(p.interes)}</div></div>
