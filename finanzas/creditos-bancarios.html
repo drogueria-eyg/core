@@ -314,7 +314,7 @@ function setNeto(v){ ST.form.neto=v; ST.netoManual = String(v||"").trim()!==""; 
 function reanalizar(){ try{ aplicarLoan(parsePdfLoan(ST.form.texto||""), ST.form.texto||""); }catch(e){ ST.error="No pude releer el texto: "+(e.message||e); render(); } }
 
 /* ---- Selección / alta de banco ---- */
-function onBanco(v){ ST.form.banco=v; if(v!=="__add__" && ST.loan) analizar(); else render(); if(v==="__add__"){ const q=document.getElementById("bankq"); if(q) q.focus(); } }
+function onBanco(v){ ST.form.banco=v; if(v!=="__add__"){ if(ST.loan) analizar(); refrescarNumero(); } else render(); if(v==="__add__"){ const q=document.getElementById("bankq"); if(q) q.focus(); } }
 let _bankT=null;
 function buscarBanco(q){
   clearTimeout(_bankT);
@@ -416,14 +416,29 @@ async function generar(){
   ST.generating=false; render();
 }
 
-async function proximoNumero(){
+/* El número corre POR BANCO, no en una única serie: es el número del documento
+   del proveedor, así que cada banco tiene el suyo (Santa Fe va por el 13, BBVA
+   por el 6, Macro por el 18). Tomando el máximo global, un préstamo del BBVA
+   salía numerado 20 y le rompía la serie. */
+async function proximoNumero(partnerId){
   try{
-    const r = await EYG.rpc("account.move","search_read",[[["name","like","OC-X "+POS+"-"]]],
-      {fields:["l10n_latam_document_number"], order:"l10n_latam_document_number desc", limit:1});
+    const dom = [["name","like","OC-X "+POS+"-"]];
+    if(partnerId) dom.push(["partner_id","=",partnerId]);
+    const r = await EYG.rpc("account.move","search_read",[dom],
+      {fields:["l10n_latam_document_number"], limit:400});
     let next=1;
-    if(r && r[0] && r[0].l10n_latam_document_number){ const n=parseInt(String(r[0].l10n_latam_document_number).split("-")[1],10); if(!isNaN(n)) next=n+1; }
+    for(const m of (r||[])){
+      const n=parseInt(String(m.l10n_latam_document_number||"").split("-")[1],10);
+      if(!isNaN(n) && n>=next) next=n+1;               // el orden por texto no sirve: se compara número
+    }
     return POS+"-"+String(next).padStart(8,"0");
   }catch(e){ return POS+"-00000001"; }
+}
+/* Al cambiar de banco hay que volver a pedir el número: es de ese banco. */
+async function refrescarNumero(){
+  const b=bankByK(ST.form.banco);
+  ST.form.numero = await proximoNumero(b?b.partner:null);
+  render();
 }
 async function cargarTerms(){
   try{
@@ -529,12 +544,13 @@ function render(){
 
   document.getElementById("app").innerHTML = html;
 }
-function nuevo(){ proximoNumero().then(n=>{ ST.form={banco:ST.form.banco, fecha:EYG.argToday(), numero:n, capital:"", neto:"", nro:"", texto:""}; ST.loan=null; ST.netoManual=false; ST.fileName=""; ST.autodet={}; ST.parsed=null; ST.error=null; ST.result=null; render(); }); }
+function nuevo(){ const b0=bankByK(ST.form.banco); proximoNumero(b0?b0.partner:null).then(n=>{ ST.form={banco:ST.form.banco, fecha:EYG.argToday(), numero:n, capital:"", neto:"", nro:"", texto:""}; ST.loan=null; ST.netoManual=false; ST.fileName=""; ST.autodet={}; ST.parsed=null; ST.error=null; ST.result=null; render(); }); }
 
 /* EN PRUEBAS: gateado al super-admin (Diego). Ver core.js SUPER. */
 EYG.guard(["finanzas","direccion","admin"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(async ()=>{
   await cargarTerms();
-  ST.form.numero = await proximoNumero();
+  const b0=bankByK(ST.form.banco);
+  ST.form.numero = await proximoNumero(b0?b0.partner:null);
   render();
 });
 </script>
