@@ -483,8 +483,10 @@ function fijoPreviewHTML(){
     if(_labSim.estado==="error") return cab+`<br><span style="color:#b0322f">No pude simular: ${esc(_labSim.msg||"")}</span>`;
     if(_labSim.estado!=="ok") return cab;
     // en qué margen queda el ÚLTIMO escalón de cada producto con lo que hay cargado ahora
-    const sinDato=[]; const conM=[];
-    _labSim.filas.forEach(p=>{ const r=ultimoEscalon(p, dm/100, perf);
+    const sinDato=[]; const conM=[]; const conPropia=[];
+    _labSim.filas.forEach(p=>{
+      if(p.propia){ conPropia.push(Object.assign({},p,{motivo:"tiene su propia línea: la del laboratorio no lo toca"})); return; }
+      const r=ultimoEscalon(p, dm/100, perf);
       if(r.motivo||r.margen==null) sinDato.push(Object.assign({},p,{motivo:r.motivo||"sin precio"}));
       else conM.push(Object.assign({},p,r)); });
     const grupos=LAB_BANDAS.map(b=>Object.assign({},b,{items:conM.filter(x=>b.test(x.margen))}));
@@ -492,13 +494,16 @@ function fijoPreviewHTML(){
       const on=(_labSim.banda===g.k);
       return `<span onclick="fijoBanda('${g.k}')" title="Tocá para ver cuáles son" style="cursor:pointer;display:inline-block;margin:3px 5px 0 0;padding:3px 9px;border-radius:999px;font-size:11.5px;font-weight:800;background:${g.bg};color:${g.col};border:1px solid ${on?g.col:"transparent"}">${g.items.length} ${g.lbl}</span>`;
     }).join("");
+    const cp=conPropia.length?`<span onclick="fijoBanda('cp')" title="Tocá para ver cuáles son" style="cursor:pointer;display:inline-block;margin:3px 5px 0 0;padding:3px 9px;border-radius:999px;font-size:11.5px;font-weight:800;background:#e7f4f4;color:var(--teal-deep);border:1px solid ${_labSim.banda==="cp"?"var(--teal-deep)":"transparent"}">${conPropia.length} con línea propia (no se tocan)</span>`:"";
     const sd=sinDato.length?`<span onclick="fijoBanda('sd')" title="Tocá para ver cuáles son" style="cursor:pointer;display:inline-block;margin:3px 5px 0 0;padding:3px 9px;border-radius:999px;font-size:11.5px;font-weight:800;background:#eef2f1;color:var(--gris);border:1px solid ${_labSim.banda==="sd"?"var(--gris)":"transparent"}">${sinDato.length} sin poder calcular</span>`:"";
     const neg=grupos.find(g=>g.k==="neg");
     const negStk=neg?neg.items.filter(x=>x.stock>0).length:0;
     const alerta=(neg&&neg.items.length)?`<div style="margin-top:7px;padding:7px 10px;border-radius:8px;background:#fbeceb;color:#b0322f;font-weight:800">⚠ ${neg.items.length} producto${neg.items.length===1?"":"s"} quedaría${neg.items.length===1?"":"n"} por debajo del costo${negStk?`, ${negStk} con stock`:" (ninguno con stock)"}. Tocá la pastilla roja para ver cuáles.</div>`:"";
     let detalle="";
     if(_labSim.banda){
-      const g=(_labSim.banda==="sd")?{lbl:"sin poder calcular", items:sinDato}:grupos.find(x=>x.k===_labSim.banda);
+      const g=(_labSim.banda==="sd")?{lbl:"sin poder calcular", items:sinDato}
+             :(_labSim.banda==="cp")?{lbl:"con línea propia (la del laboratorio no los toca)", items:conPropia}
+             :grupos.find(x=>x.k===_labSim.banda);
       if(g){
         const orden=g.items.slice().sort((a,b)=>(a.margen==null?1:0)-(b.margen==null?1:0) || (a.margen-b.margen));
         const filas=orden.slice(0,40).map(x=>`<div style="display:flex;gap:8px;padding:3px 0;border-top:1px solid var(--line);font-size:12px">
@@ -509,7 +514,7 @@ function fijoPreviewHTML(){
         detalle=`<div style="margin-top:8px"><b>${g.items.length} ${esc(g.lbl)}</b>${g.items.length>40?" (muestro los primeros 40)":""}${filas}</div>`;
       }
     }
-    return `${cab}<br><span style="color:var(--gris)">Así queda el <b>último escalón</b> de cada producto, con la regla de su categoría${perf?" y el piso perforado":""}:</span><div style="margin-top:4px">${pastillas}${sd}</div>${alerta}${detalle}`;
+    return `${cab}<br><span style="color:var(--gris)">Así queda el <b>último escalón</b> de cada producto, con la regla de su categoría${perf?" y el piso perforado":""}:</span><div style="margin-top:4px">${pastillas}${sd}${cp}</div>${alerta}${detalle}`;
   }
   if(_fijoSel.loading) return "Trayendo costo y precio base…";
   const cost=_fijoSel.cost||0, base=_fijoSel.base||0, iva=_fijoSel.iva||0;
@@ -631,8 +636,11 @@ window.fijoCargarLabSim=async (tipo,id)=>{
     const dom = tipo==="M"
       ? [["x_costo_motor",">",0],["x_studio_many2one_field_6o_1if0l6ud2","=",id]]
       : [["x_costo_motor",">",0],["categ_id","child_of",id]];
-    const rs=await rpc("product.product","search_read",[dom,["default_code","name","categ_id","x_costo_motor","x_iva_compra","x_iva_costo","list_price","qty_available"]],{limit:600,context:{lang:"es_AR"}});
+    const rs=await rpc("product.product","search_read",[dom,["default_code","name","categ_id","product_tmpl_id","x_costo_motor","x_iva_compra","x_iva_costo","list_price","qty_available"]],{limit:600,context:{lang:"es_AR"}});
+    // los que YA tienen su propia línea en la capa: a esos el laboratorio no los toca (manda lo individual)
+    const propias={}; FIJOS.forEach(f=>{ if(f.tmpl) propias[f.tmpl]=f; });
     _labSim.filas=rs.map(r=>({sku:r.default_code||"", nombre:r.name||"", catId:(r.categ_id?r.categ_id[0]:0),
+      tmpl:(r.product_tmpl_id?r.product_tmpl_id[0]:0), propia:!!propias[r.product_tmpl_id&&r.product_tmpl_id[0]],
       costo:r.x_costo_motor||0, ivaCompra:r.x_iva_compra||0, tilde:r.x_iva_costo||"", pvp:r.list_price||0, stock:r.qty_available||0}));
     _labSim.estado="ok";
   }catch(e){ _labSim.estado="error"; _labSim.msg=e.message; }
