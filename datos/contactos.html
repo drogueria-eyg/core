@@ -233,7 +233,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=67"></script>
+<script src="../assets/core.js?v=68"></script>
 <script>
 /* ===== EyG Core · Contactos: la base única de contactos de EyG =====
    Una sola casa para TODOS los contactos: los que ya son nuestros (con la ficha completa,
@@ -265,7 +265,7 @@ const norm2 = s => (s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"")
 /* ================= Estado ================= */
 const RUBRO_FIELD="x_studio_selection_field_6ui_1j42g6fu9";
 const RUBROS7=["FARMACIAS","INSTITUCIONES","DISTRIBUIDORAS","VETERINARIAS","EMPRESAS DE SALUD","DROGUERIAS","PERSONAL"];
-const PFIELDS=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","customer_rank","supplier_rank","parent_id","function","comment","website","x_studio_selection_field_6ui_1j42g6fu9","property_payment_term_id"];
+const PFIELDS=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","create_date","create_uid","customer_rank","supplier_rank","parent_id","function","comment","website","x_studio_selection_field_6ui_1j42g6fu9","property_payment_term_id"];
 /* ---- Condición de pago (plazo) ----------------------------------------
    Es el campo que DETERMINA EL VENCIMIENTO de cada factura, así que si el
    cliente no lo tiene cargado, Odoo factura a vencimiento inmediato y
@@ -436,6 +436,7 @@ async function cargar(silent){
         proveedor:(p.supplier_rank||0)>0, empresa:(p.is_company||p.company_type==="company"),
         comprado:v.tot||0, mesv:v.mes||0, semv:v.sem||0, faltantes,
         wa:waNumber(p.mobile,p.phone), tellink:telLink(p.mobile,p.phone),
+        creado:p.create_date||"", creadoPor:p.create_uid?p.create_uid[1]:"",
         dupVat:DUPVAT[p.id]||"", dupName:DUPNAME[p.id]||"", enPadron:false, nombreOficial:"", part:p, boveda:BOVEDA[p.id]||null,
         // Nivel 3 del modelo de contactos: las personas cargadas DENTRO de una empresa (celular de
         // pagos, el dueño, compras…) no son un contacto aparte — viven en la ficha del padre.
@@ -474,42 +475,48 @@ async function cargarRiesgos(){
 /* Historial de contactos NUEVOS (creados desde el Core): quién los creó, a quién están
    asignados hoy, si fueron contactados (cruce con los marcadores del comercial) y si vendieron.
    Se re-consulta en vivo → los datos se van actualizando solos. */
+/* La fuente son TODAS las altas de clientes de los últimos 180 días, vengan de donde
+   vengan: si sólo se miraran las que dejan constancia en el Core, quedarían afuera las
+   que Administración carga directo en Odoo y las que se registran solas por el portal
+   —dos de cada tres altas—, y el control tendría un agujero por donde pasa cualquiera.
+   La constancia del chatter, cuando está, agrega lo que Odoo no guarda: quién la cargó
+   de verdad y de dónde la sacó. */
+const CONECTOR="Diego Velazquez";   // el usuario con el que el Core escribe en Odoo
 async function cargarNuevos(){
   try{
-    const msgs=await rpc("mail.message","search_read",[[["model","=","res.partner"],["body","like",NUEVO_TAG]]],{fields:["res_id","body","date"],limit:0});
-    msgs.sort((a,b)=>(a.date||"").localeCompare(b.date||""));   // el más viejo = la creación
+    const desde=EYG.hace(180);
+    const base=(DATA||[]).filter(c=>c.creado && String(c.creado).slice(0,10)>=desde && !(c.part&&c.part.parent_id));
+    const ids=base.map(c=>c.id);
+    if(!ids.length){ NUEVOS=[]; if(filtro.tab==="nuevos") renderNuevos(); const t0=document.getElementById("cntNuevos"); if(t0)t0.textContent="0"; return; }
+    const [marcas, contactMsgs]=await Promise.all([
+      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["body","like",NUEVO_TAG]]],{fields:["res_id","body","date"],limit:0}),
+      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],"|","|","|",["body","like","[COBRO-CONTACTO]"],["body","like","EyGWA"],["body","like","EyGCRM"],["body","like","[EyGWA]"]]],{fields:["res_id","date","body"],limit:0})
+    ]);
+    marcas.sort((a,b)=>(a.date||"").localeCompare(b.date||""));   // la más vieja es la del alta
     const creado={};
-    for(const m of msgs){
+    for(const m of marcas){
       if(creado[m.res_id]) continue;
       const b=(m.body||"").replace(/<[^>]+>/g," ");
-      const mm=b.match(/por=(.*?)(?:\s+origen=|$)/);          // el nombre corta en "origen=" si está
+      const mm=b.match(/por=(.*?)(?:\s+origen=|$)/);              // el nombre corta en "origen=" si está
       const om=b.match(/origen=([a-z]+)/i);
-      creado[m.res_id]={creador:((mm&&mm[1])||"").trim()||"—", origen:(om&&om[1]||"").toLowerCase(), fecha:m.date};
+      creado[m.res_id]={creador:((mm&&mm[1])||"").trim(), origen:(om&&om[1]||"").toLowerCase()};
     }
-    const ids=Object.keys(creado).map(x=>+x);
-    if(!ids.length){ NUEVOS=[]; if(filtro.tab==="nuevos") renderNuevos(); const t=document.getElementById("cntNuevos"); if(t)t.textContent="0"; return; }
-    const [parts, contactMsgs, ventas]=await Promise.all([
-      rpc("res.partner","read",[ids],{fields:["id","name","user_id","city","create_date","active","vat","phone","mobile","email","street",RUBRO_FIELD],context:{lang:"es_AR"}}),
-      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],"|","|","|",["body","like","[COBRO-CONTACTO]"],["body","like","EyGWA"],["body","like","EyGCRM"],["body","like","[EyGWA]"]]],{fields:["res_id","date","body"],limit:0}),
-      rpc("sale.order","read_group",[[["partner_id","in",ids],["state","in",["sale","done"]]],["amount_total:sum"],["partner_id"]],{lazy:false})
-    ]);
     // último contacto por cliente: fecha/hora + quién lo hizo (del "· por X" del marcador del comercial)
     const cont={};
     contactMsgs.forEach(m=>{ const prev=cont[m.res_id]; if(!prev||m.date>prev.date){ const b=(m.body||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," "); const pm=b.match(/\bpor\s+([^<\n·]+?)\s*$/i); cont[m.res_id]={date:m.date, por:(pm&&pm[1]?pm[1].trim():"")}; } });
-    const vt={}; ventas.forEach(g=>{ if(g.partner_id) vt[g.partner_id[0]]={tot:g.amount_total||0,n:g.__count||0}; });
-    const byId={}; parts.forEach(p=>byId[p.id]=p);
-    // Solo cuentan como NUEVOS los que existen y están activos: si un "creado" resultó
-    // ser duplicado (se archivó) o se dio de baja, NO es un contacto nuevo → fuera.
-    /* Para el control de altas: el contacto que figura en el PADRÓN oficial (REFAR/REFES)
-       existe de verdad. El cruce ya está hecho sobre DATA por cruzar(); acá se reusa. */
-    const enPad={}; (DATA||[]).forEach(c=>{ if(c.enPadron) enPad[c.id]=true; });
-    NUEVOS=ids.filter(id=>byId[id] && byId[id].active!==false).map(id=>{ const p=byId[id], cr=creado[id], v=vt[id]||{}; return {
-      id, nombre:p.name||"(sin nombre)", creador:cr.creador, origen:cr.origen||"", fecha:p.create_date||cr.fecha,
-      comercial:p.user_id?p.user_id[1]:"Sin asignar", rubro:p[RUBRO_FIELD]||"",
-      vat:p.vat||"", tel:p.phone||p.mobile||"", email:p.email||"", calle:p.street||"",
-      enPadron:!!enPad[id],
-      contactado:cont[id]||null, ventaTot:v.tot||0, nped:v.n||0 };
-    }).sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||""));
+    NUEVOS=base.map(c=>{
+      const cr=creado[c.id]||{};
+      // Sin constancia hay que deducir: Odoo sólo guarda el usuario que escribió.
+      const porOdoo=c.creadoPor||"";
+      const esCore=(porOdoo===CONECTOR), esPortal=/public/i.test(porOdoo);
+      return {
+        id:c.id, nombre:c.nombre, rubro:c.rubro, fecha:c.creado,
+        creador: cr.creador || (esPortal?"el propio cliente":(esCore?"—":(porOdoo||"—"))),
+        origen: cr.origen || (esPortal?"portal":(esCore?"core":"odoo")),
+        comercial:c.comercial, vat:c.cuit||"", tel:c.telv||"", enPadron:!!c.enPadron,
+        contactado:cont[c.id]||null, ventaTot:c.comprado||0, nped:c.nped||0
+      };
+    }).sort((a,b)=>String(b.fecha||"").localeCompare(String(a.fecha||"")));
     const t=document.getElementById("cntNuevos"); if(t) t.textContent=NUEVOS.length;
     if(filtro.tab==="nuevos" && !drawerAbierto()) renderNuevos();
   }catch(e){ console.warn("nuevos:",e.message); }
@@ -556,7 +563,10 @@ function renderNuevos(){
     .map(q=>`<button class="tab ${fnv.com===q?"on":""}" onclick="nvSet('com','${esc(q).replace(/'/g,"&#39;")}')">${esc(q)} <span class="cnt">${porQuien[q]}</span></button>`).join("");
   const ORIG={padron:{t:"🎯 del padrón",ay:"Salió de la lista oficial de farmacias e instituciones: el establecimiento existe."},
               manual:{t:"✍️ a mano",ay:"Lo escribió el comercial de cero, sin pasar por el padrón. Es el que más conviene revisar."},
-              administracion:{t:"🗂️ Administración",ay:"Alta cargada desde Legajos, con la documentación."}};
+              administracion:{t:"🗂️ Administración",ay:"Alta cargada desde Legajos, con la documentación."},
+              portal:{t:"🌐 portal web",ay:"Se registró solo en el portal de clientes. No lo cargó nadie de la casa."},
+              core:{t:"📱 desde el Core",ay:"Cargado desde el Core, pero antes de que se registrara quién lo hacía (altas anteriores al 9/9/2026)."},
+              odoo:{t:"🖥️ en Odoo",ay:"Cargado directamente en Odoo, no por el Core."}};
   const rows=L.slice(0,500).map(n=>{
     const s=nvSemaforo(n), o=ORIG[n.origen]||{t:"—",ay:"Alta anterior al registro de origen."};
     const vendio=(n.ventaTot>0||n.nped>0);
@@ -718,7 +728,7 @@ function render(){
       <button class="tab ${filtro.tab==="nuestros"?"on":""}" onclick="setTab('nuestros')" title="Todos los contactos que ya tenemos cargados en Odoo">👥 Nuestros contactos <span class="cnt">${base().length}</span></button>
       <button class="tab ${filtro.tab==="conquistar"?"on":""}" onclick="setTab('conquistar')" title="Farmacias e instituciones habilitadas que todavía NO son contacto nuestro">🎯 Potenciales <span class="cnt" id="cntConq">${nConq}</span></button>
       <button class="tab ${filtro.tab==="duplicados"?"on":""}" onclick="setTab('duplicados')" title="Contactos que parecen ser el mismo cargado dos veces">🔀 Duplicados <span class="cnt" id="cntDup">${gruposDup().length||"—"}</span></button>
-      <button class="tab ${filtro.tab==="nuevos"?"on":""}" onclick="setTab('nuevos')" title="Contactos creados desde el Core: cuándo, quién y si ya compraron">📊 Nuevos <span class="cnt" id="cntNuevos">${NUEVOS.length}</span></button>
+      <button class="tab ${filtro.tab==="nuevos"?"on":""}" onclick="setTab('nuevos')" title="Control de altas: qué clientes se dieron de alta, quién los cargó, de dónde salieron y si existen de verdad">📊 Altas <span class="cnt" id="cntNuevos">${NUEVOS.length}</span></button>
     </div>
     <div id="tabbody"></div>`;
   if(filtro.tab==="nuestros") renderNuestros();
