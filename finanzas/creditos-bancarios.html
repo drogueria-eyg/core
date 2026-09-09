@@ -152,6 +152,7 @@ function bankByK(k){ return allBanks().find(b=>b.k===k) || null; }
 const money2 = n => "$"+Number(n||0).toLocaleString("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2});
 const esc = EYG.esc;
 const round2 = n => Math.round((n+Number.EPSILON)*100)/100;
+const fechaLinda = f => String(f||"").split("-").reverse().join("/");
 const norm = s => String(s==null?"":s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").trim();
 
 // Números robustos a formato AR (1.234.567,89) y US (1,234,567.89): el ÚLTIMO
@@ -230,7 +231,9 @@ function sheetFlatten(wb){ const out=[]; wb.SheetNames.forEach(nm=>{ XLSX.utils.
    por cuota, y el aviso de "salió de una imagen" en la vista previa.
    ========================================================================= */
 const OCR_IDIOMA = "spa";
-const OCR_LANG_PATH = "https://cdn.jsdelivr.net/npm/@tesseract.js-data";
+/* Tesseract pide <langPath>/spa.traineddata.gz, así que la ruta va COMPLETA
+   hasta la carpeta del idioma. Con la corta daba 404 y el lector no arrancaba. */
+const OCR_LANG_PATH = "https://cdn.jsdelivr.net/npm/@tesseract.js-data/spa@1.0.0/4.0.0_best_int";
 
 function pareceEscaneado(texto){
   const t=String(texto||"").replace(/\s+/g," ").trim();
@@ -277,13 +280,46 @@ async function ocrDeImagenes(imagenes){
   return trozos.join("\n");
 }
 
+/* Saca las imágenes JPEG que el escáner metió dentro del PDF, sin pasar por el
+   renderizador. Un PDF escaneado ES una imagen: no hace falta dibujarlo.
+   Y hay motivo de fondo: con este PDF `page.render()` de pdfjs **se cuelga para
+   siempre** (getOperatorList responde bien, pero la promesa del render nunca
+   resuelve). Comprobado en el navegador. */
+function jpegsDelPdf(buf){
+  const b = new Uint8Array(buf);
+  let txt=""; const CH=32768;
+  for(let i=0;i<b.length;i+=CH) txt += String.fromCharCode.apply(null, b.subarray(i,i+CH));
+  const out=[]; const re=/<<([\s\S]*?)>>\s*stream\r?\n?/g; let m;
+  while((m=re.exec(txt))){
+    const dic=m[1];
+    if(dic.indexOf("/Image")<0 || !/DCT/i.test(dic)) continue;   // DCTDecode = JPEG
+    const ini=m.index+m[0].length, fin=txt.indexOf("endstream", ini);
+    if(fin<0 || fin-ini < 5000) continue;                        // los sellitos no interesan
+    out.push(new Blob([b.subarray(ini,fin)], {type:"image/jpeg"}));
+  }
+  return out;
+}
+
 async function ocrPdf(buf){
-  if(!window.pdfjsLib) throw new Error("El lector de PDF no cargó.");
-  const pdf = await pdfjsLib.getDocument({data:buf.slice(0)}).promise;
-  const canvases=[];
-  const hasta = Math.min(pdf.numPages, 6);              // más de 6 páginas es otra cosa
-  for(let p=1;p<=hasta;p++){ ocrProgreso("preparando la página "+p, 0); canvases.push(await paginaACanvas(pdf, p, 2.5)); }
-  return await ocrDeImagenes(canvases);
+  ocrProgreso("buscando las imágenes del escaneo", 0);
+  let imagenes = jpegsDelPdf(buf);
+  if(!imagenes.length){
+    /* No son JPEG: se cae al renderizador, pero CON RELOJ — si se cuelga,
+       preferimos avisar antes que dejarlo girando. */
+    if(!window.pdfjsLib) throw new Error("El lector de PDF no cargó.");
+    const pdf = await pdfjsLib.getDocument({data:buf.slice(0)}).promise;
+    const hasta = Math.min(pdf.numPages, 6);
+    imagenes=[];
+    for(let p=1;p<=hasta;p++){
+      ocrProgreso("preparando la página "+p, 0);
+      const cv = await Promise.race([
+        paginaACanvas(pdf, p, 2.5),
+        new Promise((_,rech)=>setTimeout(()=>rech(new Error("el dibujo de la página "+p+" se colgó")), 30000))
+      ]);
+      imagenes.push(cv);
+    }
+  }
+  return await ocrDeImagenes(imagenes.slice(0,6));
 }
 
 async function onFile(file){
@@ -381,20 +417,34 @@ function parsePdfLoan(text){
   const lineas = String(text).split(/\r?\n/);
   const cols = columnasDelCuadro(lineas);
   const rows=[];
+  /* Una fila del cuadro se reconoce por sus IMPORTES, no por la fecha: el OCR
+     rompe fechas ("15/0€/2029", "16/50/2028") y antes esas filas se perdían
+     enteras — el préstamo del Municipal salía con 35 cuotas en vez de 36. */
   for(const ln of lineas){
-    const dm = ln.match(/\d{1,2}\/\d{1,2}\/\d{2,4}/);
+    if(/^\s*totales?\b/i.test(ln)) continue;
     const nums = (ln.match(/-?\d{1,3}(?:[.,]\d{3})*[.,]\d{2}/g)||[]);
-    if(!dm || nums.length<5) continue;
+    if(nums.length<5) continue;
+    const dm = ln.match(/\d{1,2}\s*[\/-]\s*\d{1,2}\s*[\/-]\s*\d{2,4}/);
+    /* La fecha puede venir rota del OCR, pero TIENE que haber una: la fila de
+       liquidación del Municipal (neto + gastos, sin vencimiento) tiene los
+       mismos importes que una cuota y si no se la exige se cuela como cuota
+       —sumaba $50.000.000 de capital de más. */
+    const fechaRota = !dm && /\d{1,2}\s*[\/-]\s*\S{1,2}\s*[\/-]\s*\d{2,4}/.test(ln);
+    if(!dm && !fechaRota) continue;
     const v = nums.map(parseNum);
     let r;
-    if(cols && v.length===cols.length){ r={rawv:dm[0]}; cols.forEach((k,i)=>{ r[k]=v[i]; }); }
-    else r={ rawv:dm[0], capital:v[0], interes:v[1], iva:v[v.length-2], total:v[v.length-1] };
+    if(cols && v.length===cols.length){ r={rawv:dm?dm[0]:null}; cols.forEach((k,i)=>{ r[k]=v[i]; }); }
+    else r={ rawv:dm?dm[0]:null, capital:v[0], interes:v[1], iva:v[v.length-2], total:v[v.length-1] };
     rows.push(r);
   }
-  const ds=smartDates(rows.map(r=>r.rawv)); rows.forEach((r,i)=>r.venc=ds[i]);
+  const ds=smartDates(rows.map(r=>r.rawv||"")); rows.forEach((r,i)=>r.venc=ds[i]);
+  completarFechas(rows);
   const seen=new Set();
-  const cuotas=rows.filter(r=>{ const k=r.venc+"|"+r.total; if(seen.has(k))return false; seen.add(k); return true; })
-                   .sort((a,b)=>String(a.venc).localeCompare(String(b.venc)));
+  let cuotas=rows.filter(r=>{ const k=r.venc+"|"+r.total; if(seen.has(k))return false; seen.add(k); return true; });
+  /* Sólo se reordena si las fechas leídas ya vienen en orden. Con una fecha mal
+     leída, ordenar mueve la fila de lugar y desarma el cuadro de amortización. */
+  const desordenadas = fechasFueraDeOrden(cuotas);
+  if(!desordenadas.length) cuotas = cuotas.slice().sort((a,b)=>String(a.venc).localeCompare(String(b.venc)));
 
   const suma = k => round2(cuotas.reduce((a,c)=>a+(c[k]||0),0));
   const extras={};
@@ -423,12 +473,101 @@ function parsePdfLoan(text){
      y señala EXACTAMENTE qué fila mirar. */
   const malas = cols ? filasQueNoCierran(cuotas, cols) : [];
 
+  /* Contra lo que declara el papel: cantidad de cuotas y fila de Totales. */
+  const faltantes=[];
+  const nDeclarado = cuotasDeclaradas(text);
+  if(nDeclarado && nDeclarado!==cuotas.length)
+    faltantes.push({que:"cuotas", leido:cuotas.length, papel:nDeclarado, texto:true});
+  const tp = cols ? totalesDelPapel(lineas, cols) : null;
+  if(tp){
+    const cmp=(que, leido, delPapel)=>{
+      if(delPapel===undefined || delPapel===null) return;
+      if(Math.abs(round2(leido)-round2(delPapel))>0.05) faltantes.push({que, leido:round2(leido), papel:round2(delPapel)});
+    };
+    cmp("total de las cuotas", suma("total"),   tp.total);
+    cmp("capital",             suma("capital"), tp.capital);
+    cmp("interés",             totInt,          tp.interes);
+    /* después de partir "Otros Cargos"/"Impuestos", el importe vive en iva+percep */
+    if(tp.otros!==undefined) cmp("IVA + percepción", round2(suma("iva")+percepcion), tp.otros);
+    if(tp.iva!==undefined)   cmp("IVA",              suma("iva"),                    tp.iva);
+  }
+
   const nro=(text.match(/N[ÚU]MERO\s+DE\s+PR[ÉE]STAMO\s*[\r\n]*\s*(\d{4,})/i)||[])[1]||null;
   /* Fecha del préstamo: si el papel la dice, se usa ésa. La estimación
      "primer vencimiento − 1 mes" falla cuando hay período de gracia (el
      Municipal liquidó el 7/8 y la primera cuota vence el 15/9). */
   const mf = text.match(/fecha\s+(?:de\s+)?(?:liq\.?|liquidaci[oó]n|valor|acreditaci[oó]n|otorgamiento)\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
-  return finalizeLoan(cuotas, {nro, extras, percepcion, malas, fecha: mf?normFechaCorta(mf[1]):null});
+  return finalizeLoan(cuotas, {nro, extras, percepcion, malas, faltantes, desordenadas,
+    deducidas: cuotas.filter(c=>c.fechaDeducida).length, fecha: mf?normFechaCorta(mf[1]):null});
+}
+
+/* ---- fechas: validarlas, deducir las rotas y controlar el orden ---- */
+const esFechaValida = f => {
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(f||""))) return false;
+  const [a,m,d]=String(f).split("-").map(Number);
+  if(m<1||m>12||d<1||d>31||a<2000||a>2100) return false;
+  const t=new Date(f+"T00:00:00");
+  return t.getFullYear()===a && (t.getMonth()+1)===m && t.getDate()===d;
+};
+function sumarMeses(f, n){
+  const [a,m,d]=String(f).split("-").map(Number);
+  const t=new Date(a, m-1+n, 1);
+  const ultimo=new Date(t.getFullYear(), t.getMonth()+1, 0).getDate();
+  t.setDate(Math.min(d, ultimo));
+  return t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0");
+}
+/* Las cuotas de un préstamo son mensuales. Si una fecha no se pudo leer, se
+   deduce de la más cercana que sí y queda MARCADA para que se vea. */
+function completarFechas(rows){
+  const buenas = rows.map((r,i)=>({i, f:esFechaValida(r.venc)?r.venc:null})).filter(x=>x.f);
+  if(!buenas.length) return;
+  rows.forEach(function(r,i){
+    if(esFechaValida(r.venc)) return;
+    let ref=buenas[0];
+    for(const b of buenas) if(Math.abs(b.i-i)<Math.abs(ref.i-i)) ref=b;
+    r.venc = sumarMeses(ref.f, i-ref.i);
+    r.fechaDeducida = true;
+  });
+}
+/* Un cuadro de amortización va siempre para adelante. Una fecha que rompe el
+   orden es un dígito mal leído que SÍ formó una fecha creíble (15/06/2027 por
+   15/09/2027): no lo caza ninguna suma, sólo el orden. */
+function fechasFueraDeOrden(cuotas){
+  const malas=[];
+  for(let i=1;i<cuotas.length;i++)
+    if(String(cuotas[i].venc) <= String(cuotas[i-1].venc))
+      malas.push({n:i+1, venc:cuotas[i].venc, anterior:cuotas[i-1].venc});
+  return malas;
+}
+
+/* =========================================================================
+   LO QUE DECLARA EL PROPIO PAPEL
+   -------------------------------------------------------------------------
+   Que cada cuota cierre NO alcanza: si el lector se come una fila entera —pasa
+   con los escaneos, basta una fecha mal leída ("15/0€/2029") para que la fila
+   se descarte— la identidad interna SIGUE cerrando y el préstamo queda corto.
+   Comprobado: el del Municipal salía con 35 cuotas y $47,9M de capital en vez
+   de 36 y $50M, y ningún control lo veía.
+   Por eso se leen los totales que el papel declara y se comparan.
+   ========================================================================= */
+function totalesDelPapel(lineas, cols){
+  for(const L of lineas){
+    const t=L.replace(/\s+/g," ").trim();
+    if(!/^totales?\b/i.test(t)) continue;
+    const v=(t.match(/-?\d{1,3}(?:[.,]\d{3})*[.,]\d{2}/g)||[]).map(parseNum);
+    if(!v.length) continue;
+    /* la fila de totales no suele traer el saldo */
+    const sinSaldo = cols.filter(k=>k!=="saldo");
+    const claves = v.length===cols.length ? cols : (v.length===sinSaldo.length ? sinSaldo : null);
+    if(!claves) continue;
+    const o={}; claves.forEach((k,i)=>o[k]=v[i]); return o;
+  }
+  return null;
+}
+/* "Cantidad de cuotas totales: 24" (Credicoop) */
+function cuotasDeclaradas(text){
+  const m=String(text||"").match(/cantidad\s+de\s+cuotas\s+totales?\s*:?\s*(\d{1,3})/i);
+  return m?parseInt(m[1],10):null;
 }
 
 /* Devuelve las cuotas donde las partes no suman el total. `saldo` no cuenta:
@@ -491,12 +630,13 @@ function finalizeLoan(cuotas, opt){
     if(Math.abs(extras[k]-round2(interes*0.015)) < Math.max(1, interes*0.0006)){ percepcion=extras[k]; delete extras[k]; break; }
   }
   const extraTot=round2(Object.values(extras).reduce((a,v)=>a+v,0));
-  const cu=cuotas.map(c=>({venc:c.venc, interes:round2(c.interes||0), iva:round2(c.iva||0), total:round2(c.total||0)}));
+  const cu=cuotas.map(c=>({venc:c.venc, interes:round2(c.interes||0), iva:round2(c.iva||0), total:round2(c.total||0), fechaDeducida:!!c.fechaDeducida}));
   return { cuotas:cu, capital, interes, iva, percepcion, totalCuotas, extras, extraTot,
            nro:opt.nro||null,
            /* la que dice el papel manda; si no la dice, se estima */
            fecha: opt.fecha || menosUnMes(cu[0]&&cu[0].venc),
-           fechaDelPapel: !!opt.fecha, malas: opt.malas||[] };
+           fechaDelPapel: !!opt.fecha, malas: opt.malas||[], faltantes: opt.faltantes||[],
+           desordenadas: opt.desordenadas||[], deducidas: opt.deducidas||0 };
 }
 // Vuelca el "loan" leído al formulario (banco, nº, capital, fecha) y analiza.
 function aplicarLoan(loan, text){
@@ -607,7 +747,7 @@ function analizar(){
   const okIdentPDF=Math.abs(round2(capital+interes+iva+percepcion+extraTot)-totalCuotas)<0.05;
 
   ST.parsed = errs.length ? null :
-    { capital, neto, nro:L.nro||f.nro, cuotas:L.cuotas, interes, iva, percepcion, sellados, extras, extraTot, hayExtras, malas:L.malas||[],
+    { capital, neto, nro:L.nro||f.nro, cuotas:L.cuotas, interes, iva, percepcion, sellados, extras, extraTot, hayExtras, malas:L.malas||[], faltantes:L.faltantes||[], desordenadas:L.desordenadas||[], deducidas:L.deducidas||0,
       totalCuotas, totalDoc, ivaTeorico, percepTeorico, okBalance, okIdentPDF, termId };
   if(errs.length) ST.error=errs.join(" ");
   render();
@@ -743,7 +883,8 @@ function render(){
 
   // Card 3: vista previa
   if(p){
-    const rows = p.cuotas.map((c,i)=>`<tr><td>${i+1}</td><td>${c.venc.split("-").reverse().join("/")}</td><td class="r">${money2(c.interes)}</td><td class="r">${money2(c.iva)}</td><td class="r">${money2(c.total)}</td></tr>`).join("");
+    const fueraDeOrden = new Set(p.desordenadas.map(x=>x.n));
+    const rows = p.cuotas.map((c,i)=>`<tr${(c.fechaDeducida||fueraDeOrden.has(i+1))?' style="background:var(--warnbg)"':''}><td>${i+1}</td><td>${fechaLinda(c.venc)}${c.fechaDeducida?' <b title="no se pudo leer: la deduje de la cadencia mensual">~</b>':''}${fueraDeOrden.has(i+1)?' <b title="rompe el orden del cuadro">⚠</b>':''}</td><td class="r">${money2(c.interes)}</td><td class="r">${money2(c.iva)}</td><td class="r">${money2(c.total)}</td></tr>`).join("");
     const ivaDif = Math.abs(p.iva-p.ivaTeorico)>=0.005;
     html += `<div class="card">
       <h3><span class="step">3</span>Vista previa del comprobante</h3>
@@ -759,6 +900,9 @@ function render(){
       </div>
       ${ST.deOCR?`<div class="check ${p.malas.length?'bad':'ok'}"><span class="ic">👁️</span> Esto salió de una <b>imagen</b>, no de un archivo con texto. ${p.malas.length?'<b>Revisá los números marcados abajo.</b>':'Cada cuota cierra sola, así que la lectura pinta bien — igual dale una mirada antes de generar.'}</div>`:""}
       ${p.malas.length?`<div class="check bad"><span class="ic">✕</span> ${p.malas.length===1?'Una cuota no cierra':`${p.malas.length} cuotas no cierran`}: ${p.malas.slice(0,4).map(x=>`<b>#${x.n}</b> (${x.venc}) suma ${money2(x.suma)} pero dice ${money2(x.total)}`).join(" · ")}${p.malas.length>4?` y ${p.malas.length-4} más`:""}. Corregilo en "Ver el texto leído" y volvé a analizar.</div>`:""}
+      ${p.faltantes.length?`<div class="check bad"><span class="ic">✕</span> <b>No coincide con los totales del papel.</b> ${p.faltantes.map(x=>`${esc(x.que)}: leí ${x.texto?x.leido:money2(x.leido)} y el papel dice ${x.texto?x.papel:money2(x.papel)}`).join(" · ")}. Seguro se perdió alguna fila — revisá "Ver el texto leído".</div>`:""}
+      ${p.desordenadas.length?`<div class="check bad"><span class="ic">📅</span> <b>${p.desordenadas.length===1?'Una fecha rompe el orden':`${p.desordenadas.length} fechas rompen el orden`}</b> del cuadro: ${p.desordenadas.slice(0,3).map(x=>`<b>#${x.n}</b> dice ${fechaLinda(x.venc)} después de ${fechaLinda(x.anterior)}`).join(" · ")}${p.desordenadas.length>3?` y ${p.desordenadas.length-3} más`:""}. Las cuotas van siempre para adelante, así que alguna se leyó mal: corregilas en "Ver el texto leído".</div>`:""}
+      ${p.deducidas?`<div class="check ok"><span class="ic">📅</span> ${p.deducidas===1?'Una fecha no se pudo leer y la deduje':`${p.deducidas} fechas no se pudieron leer y las deduje`} de la cadencia mensual. Están marcadas con <b>~</b> en el cuadro de abajo — miralas contra el papel.</div>`:""}
       ${p.hayExtras?`<div class="check bad"><span class="ic">⚠️</span> Este préstamo trae <b>${esc(Object.keys(p.extras).join(", "))}</b> — falta definir a qué cuenta contable van esos rubros antes de poder generarlo. Avisame cuál es.</div>`:""}
       <div class="check ${p.okBalance?'ok':'bad'}"><span class="ic">${p.okBalance?'✓':'✕'}</span> Débitos = créditos: ${money2(p.totalDoc)} vs ${money2(p.totalCuotas)} ${p.okBalance?'(cuadra)':'(NO cuadra)'}</div>
       <div class="check ${p.okIdentPDF?'ok':'bad'}"><span class="ic">${p.okIdentPDF?'✓':'✕'}</span> Capital + Interés + IVA = suma de cuotas ${p.okIdentPDF?'(el archivo cierra)':'(revisá los números)'}</div>
@@ -769,7 +913,7 @@ function render(){
         <tfoot class="foot"><tr><td colspan="2">Totales</td><td class="r">${money2(p.interes)}</td><td class="r">${money2(p.iva)}</td><td class="r">${money2(p.totalCuotas)}</td></tr></tfoot>
       </table>
       <div class="actions">
-        <button class="btn big" onclick="generar()" ${(!p.okBalance||p.hayExtras||p.malas.length||ST.generating)?'disabled':''}>${ST.generating?'<span class="spinner"></span>Generando…':'Generar en Odoo (borrador)'}</button>
+        <button class="btn big" onclick="generar()" ${(!p.okBalance||p.hayExtras||p.malas.length||p.faltantes.length||p.desordenadas.length||ST.generating)?'disabled':''}>${ST.generating?'<span class="spinner"></span>Generando…':'Generar en Odoo (borrador)'}</button>
         <span class="hint">Banco: <b>${esc((bankByK(f.banco)||{}).nom||'—')}</b> · N° ${esc(f.numero||'(definí el número)')}</span>
       </div>
     </div>`;
