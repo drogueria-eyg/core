@@ -218,13 +218,13 @@ function resolver(id){
 function resumen(r){
   if(!r) return "";
   const p=[];
-  if(!r.genera){ p.push("NO genera escalera"); if(r.ivaCosto) p.push("IVA al costo +"+pct(r.ivaCosto)+"%"); return p.join(" · "); }
+  if(!r.genera){ p.push("NO genera escalera"); if(r.ivaCosto) p.push("IVA al costo (el de la compra)"); return p.join(" · "); }
   const n=(r.desc&&r.desc.length)||(r.cortes&&r.cortes.length)||0;
   const dmax=(r.desc&&r.desc.length)?Math.max.apply(null,r.desc.map(x=>+x||0)):0;
   p.push("recargo "+pct(r.recargo)+"%");
   p.push("piso "+pct(r.piso)+"%");
   p.push(n+" tramos · desc máx "+pct(dmax)+"%");
-  if(r.ivaCosto) p.push("IVA al costo +"+pct(r.ivaCosto)+"%");
+  if(r.ivaCosto) p.push("IVA al costo (el de la compra)");
   return p.join(" · ");
 }
 
@@ -710,7 +710,7 @@ function leerFormPvp(idp){
   // descuento máximo y cantidad de tramos ya NO se configuran por escala/lab: los maneja la regla general
   // "Escalera de éticos por precio" + el piso. El motor deriva los escalones del tope (precio). descMax=0.
   const n=4; const cortes=cortesEven(1,Math.max(n,2),n); const desc=[]; for(let i=0;i<n;i++) desc.push(0);
-  return { genera, base:'pvp', recargo, piso, descMax:0, modo:'auto', unidad:'', cortes, desc, ivaCosto:0 };
+  return { genera, base:'pvp', recargo, piso, descMax:0, modo:'auto', unidad:'', cortes, desc, ivaCosto:1 };   // eticos: se venden exentos
 }
 window.setFiltroEsc = v => { escFiltro=v; render(); };
 window.editarEscala = e => { editEsc=e; editLab=null; editId=null; abiertos['ETICOS']=true; render(); };
@@ -762,7 +762,7 @@ function formHTML(c){
       <div class="fld2"><label>Recargo sobre costo</label><div class="inpu"><input type="number" id="f-recargo" step="1" value="${pct(r.recargo)}"><span class="suf">%</span></div><div class="hint">markup neto · 80 = ×1,80</div></div>
       <div class="fld2"><label>Piso de margen</label><div class="inpu"><input type="number" id="f-piso" step="1" value="${pct(r.piso)}"><span class="suf">%</span></div><div class="hint">margen mínimo · el último tramo llega justo acá</div></div>
       <div class="fld2"><label>Cantidad de tramos</label><input type="number" id="f-ncortes" min="1" max="8" value="${nT}"><div class="hint">escalones de precio · las cantidades y la unidad salen del Maestro</div></div>
-      <div class="fld2"><label>IVA al costo</label><div class="inpu"><input type="number" id="f-iva" step="0.5" value="${pct(r.ivaCosto)}"><span class="suf">%</span></div><div class="hint">0 = no aplica · 21 = parenterales</div></div>
+      <div class="fld2"><label>IVA al costo</label><label class="chk" style="margin:0"><input type="checkbox" id="f-iva" ${r.ivaCosto?"checked":""}> <span>sumarlo al costo</span></label><div class="hint">Tildar cuando el producto se vende <b>exento</b>: ese IVA no se recupera, es costo. El motor le suma <b>el IVA que dice la factura de compra</b> — no se carga ningún %. Destildado = costo neto (Descartables y Perfumería, que trasladan el IVA al cliente).</div></div>
     </div>
     <div class="acts"><button class="cancel" onclick="editId=null;render()">Cancelar</button><button class="ok" onclick="guardarRegla(${c.id})">Aplicar regla</button></div>
   </div>`;
@@ -777,7 +777,8 @@ window.guardarRegla = id => {
   const gv=x=>document.getElementById(x).value;
   const genera=document.getElementById("f-genera").checked;
   const n=Math.max(1,Math.min(8, parseInt(gv("f-ncortes"))||4));
-  const recargo=frac(gv("f-recargo")), piso=frac(gv("f-piso")), ivaCosto=frac(gv("f-iva"));
+  const recargo=frac(gv("f-recargo")), piso=frac(gv("f-piso"));
+  const ivaCosto=document.getElementById("f-iva").checked?1:0;   // TILDE (el % lo saca el motor de la compra)
   // descuento máximo = el que lleva el último tramo JUSTO al piso de margen (se calcula, no se carga)
   const descMax = (1+recargo)>0 ? Math.max(0, 1 - (1/(1-piso))/(1+recargo)) : 0;
   const desc=[]; for(let i=0;i<n;i++){ desc.push(n===1?0:Math.round((i/(n-1))*descMax*1000)/1000); }
@@ -854,7 +855,7 @@ function resumen23(r){
   if(!r.genera) return "NO genera precio";
   const p=["margen "+pct(r.margen)+"%"];
   if(TIER===2) p.push("desc. comercial "+pct(r.descom)+"% (piso duro "+pct(r.pisoduro)+"%)");
-  if(r.iva!==undefined&&r.iva!==null) p.push("IVA al costo "+pct(r.iva)+"%");
+  if(r.iva!==undefined&&r.iva!==null) p.push(r.iva?"IVA al costo (el de la compra)":"sin IVA al costo");
   return p.join(" · ");
 }
 function renderTier23(){
@@ -915,8 +916,8 @@ function formHTML23(c){
   const r=isG ? (CFG23[TIER].global||DEF23[TIER]) : (()=>{const res=resolver23(c.id);return (res&&res.rule)?res.rule:DEF23[TIER];})();
   const idArg=isG?"'G'":c.id;
   const label=isG?"Genera precio (regla general del tier)":"Genera precio para esta categoría";
-  const ivaVal=(r&&r.iva!==undefined&&r.iva!==null)?pct(r.iva):pct(iva1(c.id));
-  const ivaFld=isG?"":`<div class="fld2"><label>IVA al costo</label><div class="inpu"><input type="number" id="g-iva" step="0.5" value="${ivaVal}"><span class="suf">%</span></div><div class="hint">editable</div></div>`;
+  const ivaVal=(r&&r.iva!==undefined&&r.iva!==null)?r.iva:iva1(c.id);
+  const ivaFld=isG?"":`<div class="fld2"><label>IVA al costo</label><label class="chk" style="margin:0"><input type="checkbox" id="g-iva" ${ivaVal?"checked":""}> <span>sumarlo al costo</span></label><div class="hint">se vende exento: el IVA de la compra es costo</div></div>`;
   const cols=(t2?3:1)+(isG?0:1);
   return `<div class="form" onclick="event.stopPropagation()">
     <label class="chk"><input type="checkbox" id="g-genera" ${r.genera?"checked":""}> <span>${esc(label)}</span></label>
@@ -940,7 +941,7 @@ window.guardarRegla23 = id => {
   const pisoduro=TIER===2?frac((gv("g-pisoduro")||{}).value):margen;
   const rule={genera,margen,descom,pisoduro};
   if(id==='G'){ CFG23[TIER].global=rule; }
-  else { const ivaEl=document.getElementById("g-iva"); if(ivaEl) rule.iva=frac(ivaEl.value); CFG23[TIER].reglas[id]=rule; }
+  else { const ivaEl=document.getElementById("g-iva"); if(ivaEl) rule.iva=(ivaEl.checked?1:0); CFG23[TIER].reglas[id]=rule; }
   dirty=true; editId23=null; render();
 };
 // texto plano que lee el cron. Línea 0 = regla general del tier (cubre todo). Resto = solo categorías con regla PROPIA.
