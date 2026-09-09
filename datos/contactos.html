@@ -233,7 +233,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=70"></script>
+<script src="../assets/core.js?v=71"></script>
 <script>
 /* ===== EyG Core · Contactos: la base única de contactos de EyG =====
    Una sola casa para TODOS los contactos: los que ya son nuestros (con la ficha completa,
@@ -488,10 +488,32 @@ async function cargarNuevos(){
     const base=(DATA||[]).filter(c=>c.creado && String(c.creado).slice(0,10)>=desde && !(c.part&&c.part.parent_id));
     const ids=base.map(c=>c.id);
     if(!ids.length){ NUEVOS=[]; if(filtro.tab==="nuevos") renderNuevos(); const t0=document.getElementById("cntNuevos"); if(t0)t0.textContent="0"; return; }
-    const [marcas, contactMsgs]=await Promise.all([
+    const [marcas, contactMsgs, msgsTrack]=await Promise.all([
       rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["body","like",NUEVO_TAG]]],{fields:["res_id","body","date"],limit:0}),
-      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],"|","|","|",["body","like","[COBRO-CONTACTO]"],["body","like","EyGWA"],["body","like","EyGCRM"],["body","like","[EyGWA]"]]],{fields:["res_id","date","body"],limit:0})
+      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],"|","|","|",["body","like","[COBRO-CONTACTO]"],["body","like","EyGWA"],["body","like","EyGCRM"],["body","like","[EyGWA]"]]],{fields:["res_id","date","body"],limit:0}),
+      // los cambios de vendedor que registró Odoo, para reconstruir el alta hacia atrás
+      rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["tracking_value_ids","!=",false]]],{fields:["res_id","date","tracking_value_ids"],limit:0,order:"id asc"})
     ]);
+    /* RECONSTRUCCIÓN DE LAS ALTAS VIEJAS (las de antes de que se firmara la constancia).
+       El panel del comercial crea el contacto con el VENDEDOR puesto en el propio
+       comercial, así que ese campo dice quién lo dio de alta. Si después lo reasignaron,
+       Odoo guardó el cambio: el valor MÁS VIEJO de "Vendedor" es el de la creación. Así
+       se recupera el autor aunque el cliente hoy esté en la cartera de otro. */
+    const primerVendedor={}, reasignado={};
+    try{
+      const tvIds=[]; const msgDe={};
+      msgsTrack.forEach(m=>(m.tracking_value_ids||[]).forEach(tv=>{ tvIds.push(tv); msgDe[tv]=m.res_id; }));
+      if(tvIds.length){
+        const tvs=await rpc("mail.tracking.value","read",[tvIds,["field_id","old_value_char","new_value_char"]],{context:{lang:"es_AR"}});
+        tvs.forEach(tv=>{
+          const campo=(tv.field_id&&tv.field_id[1])||"";
+          if(!/vendedor|salesperson|user_id/i.test(campo)) return;
+          const pid=msgDe[tv.id]; if(!pid) return;
+          if(primerVendedor[pid]===undefined) primerVendedor[pid]=(tv.old_value_char||"").trim();   // el más viejo: llegan en orden
+          reasignado[pid]=true;
+        });
+      }
+    }catch(e){ /* sin tracking se cae al vendedor actual, que igual es el del alta */ }
     marcas.sort((a,b)=>(a.date||"").localeCompare(b.date||""));   // la más vieja es la del alta
     const creado={};
     for(const m of marcas){
@@ -509,9 +531,20 @@ async function cargarNuevos(){
       // Sin constancia hay que deducir: Odoo sólo guarda el usuario que escribió.
       const porOdoo=c.creadoPor||"";
       const esCore=(porOdoo===CONECTOR), esPortal=/public/i.test(porOdoo);
+      // el vendedor con el que NACIÓ el contacto: el más viejo del historial, o el de hoy
+      const original=(primerVendedor[c.id]||"").trim() || (c.comercial!=="Sin asignar"?c.comercial:"");
+      let quien=cr.creador;                                  // 1) la constancia firmada, si está
+      let reconstruido=false;
+      if(!quien){
+        if(esPortal) quien="el propio cliente";
+        else if(esCore && original){ quien=original; reconstruido=true; }   // 2) reconstruido del vendedor
+        else quien=porOdoo||"—";                                            // 3) lo cargaron en Odoo
+      }
       return {
         id:c.id, nombre:c.nombre, rubro:c.rubro, fecha:c.creado,
-        creador: cr.creador || (esPortal?"el propio cliente":(esCore?"—":(porOdoo||"—"))),
+        creador:quien, reconstruido,
+        // "lo creó X y hoy lo tiene Y" es en sí una señal para mirar
+        movido: (reasignado[c.id] && original && original!==c.comercial) ? original : "",
         origen: cr.origen || (esPortal?"portal":(esCore?"core":"odoo")),
         comercial:c.comercial, vat:c.cuit||"", tel:c.telv||"", enPadron:!!c.enPadron,
         contactado:cont[c.id]||null, ventaTot:c.comprado||0, nped:c.nped||0
@@ -589,9 +622,9 @@ function renderNuevos(){
     const vendio=(n.ventaTot>0||n.nped>0);
     return `<div class="row" onclick="abrir(${n.id})" style="${GC}">
       <div><div class="cname"><span title="${esc(s.t)}" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${s.c};margin-right:7px"></span>${esc(n.nombre)}</div><div style="margin-top:3px">${rubroBadge(n.rubro)}</div></div>
-      <div class="hide-sm"><span class="muted trunc" title="${esc(n.creador)}">${esc(n.creador)}</span><div class="cmeta" title="${esc(o.ay)}">${o.t}</div></div>
+      <div class="hide-sm"><span class="muted trunc" title="${n.reconstruido?"Reconstruido: el alta es anterior a la firma, pero el contacto nació con este vendedor.":esc(n.creador)}">${esc(n.creador)}${n.reconstruido?' <span style="opacity:.6" title="Reconstruido del historial de Odoo">≈</span>':""}</span><div class="cmeta" title="${esc(o.ay)}">${o.t}</div></div>
       <div class="muted">${fmtCuando(n.fecha)}</div>
-      <div><span class="muted trunc" title="${esc(n.comercial)}">${esc(n.comercial)}</span></div>
+      <div><span class="muted trunc" title="${esc(n.comercial)}">${esc(n.comercial)}</span>${n.movido?`<div class="cmeta" title="Lo dio de alta ${esc(n.movido)} y después pasó a esta cartera.">↷ era de ${esc(n.movido.split(" ")[0])}</div>`:""}</div>
       <div>${n.enPadron?'<span class="badge ok" title="Figura en el padrón oficial (REFAR/REFES): el establecimiento existe.">✓ en el padrón</span>':'<span class="badge bad" title="NO aparece en el padrón oficial. Puede ser un cliente que no es del rubro salud, o un dato inventado.">✗ fuera del padrón</span>'}
         <div class="cmeta">${n.vat?"CUIT ✓":'<b style="color:#B3261E">sin CUIT</b>'} · ${n.tel?"tel ✓":"sin tel"}</div></div>
       <div>${n.contactado?`<span class="badge ok" title="${esc(n.contactado.date||'')} (UTC)">✓ ${fmtDiaHora(n.contactado.date)}</span>${n.contactado.por?`<div class="cmeta">por ${esc(n.contactado.por)}</div>`:''}`:`<span class="badge bad">sin contactar</span>`}</div>
