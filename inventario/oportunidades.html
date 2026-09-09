@@ -563,6 +563,17 @@ function toast(m,win){ let t=document.getElementById("toast"); if(!t){ t=documen
    Las entradas de _origen "oportunidades" (id "opo_…") las gestiona el propio
    módulo (pisado por oferta manual de 1 producto) y NO se muestran/editan acá. */
 let rgDraft=null, rgBusq=[], rgBusqQ="", rgCosto=null, rgTramos=null, rgTramosBase=null, rgApplied=null, rgPvp=0;
+let rgCostoFuente="";   // de dónde salió el costo, para poder auditar el margen que se muestra
+/* Mismo redondeo que hace el motor con los éticos (_snap_pvp de la acción 1213): el precio que
+   se cobra es PVP x (1 - descuento ENTERO/100). Sin esto el calculador muestra el número tipeado
+   y el cliente termina pagando otro (7.507 tipeado -> 7.454,50 cobrado). */
+function snapPvp(pr,pvp){
+  if(!(pvp>0)) return pr;
+  let d=Math.round((1-pr/pvp)*100);
+  if(d<0) d=0;
+  if(d>100) d=100;
+  return Math.round(pvp*(1-d/100)*100)/100;
+}
 const rgPct=x=>Math.round((x||0)*1000)/10;
 function rgUserRules(){ return SYNC_OF.filter(o=>o._origen!=='oportunidades'); }
 function rgEstado(o){ if(o.pausada) return {t:"Pausada",c:"pau"}; if(o.hasta && o.hasta<hoy()) return {t:"Vencida",c:"ven"}; return {t:"Activa",c:"act"}; }
@@ -724,13 +735,29 @@ async function rgCargarRent(tmplId){
     if(/[EÉ]TICO/i.test((th.categ_id&&th.categ_id[1])||"")) rgPvp=Math.round(th.list_price||0);
     if(rgDraft) rgDraft._pvp=rgPvp;   // ético: el descuento se calcula sobre el PVP (mecánica propia)
     const vid=th.product_variant_id&&th.product_variant_id[0];
-    let costo=0;
+    let costo=0; rgCostoFuente="";
     if(vid){
-      const pv=await EYG.rpc("product.product","read",[[vid],["x_costo_manual","x_costo_manual_date","standard_price"]],LANG);
-      const p=(pv&&pv[0])||{}; const m=p.x_costo_manual||0, md=p.x_costo_manual_date||null;
-      let uc=0, uf=null;
-      try{ const pol=await EYG.rpc("purchase.order.line","search_read",[[["product_id","=",vid],["state","in",["purchase","done"]],["product_qty",">",0]],["price_subtotal","product_qty","date_order"]],{limit:1,order:"date_order desc",context:{lang:"es_AR"}}); if(pol&&pol[0]&&pol[0].price_subtotal>0){ uc=pol[0].price_subtotal/(pol[0].product_qty||1); uf=pol[0].date_order||null; } }catch(e){}
-      if(m>0 && ((!uf)||(md&&md>=uf))) costo=m; else if(uc>0) costo=uc; else if((p.standard_price||0)>0) costo=p.standard_price;
+      const pv=await EYG.rpc("product.product","read",[[vid],["x_costo_manual","x_costo_manual_date","standard_price","x_costo_motor"]],LANG);
+      const p=(pv&&pv[0])||{};
+      /* x_costo_motor = el costo con el que el MOTOR calcula el precio (su regla de 3 fuentes:
+         costo manual / última compra / standard_price, el más reciente). Usar el mismo número es
+         lo único que garantiza que el margen de acá y el precio que sale sean la misma cuenta. */
+      if((p.x_costo_motor||0)>0){ costo=p.x_costo_motor; rgCostoFuente="el que usa el motor"; }
+      else{
+        const m=p.x_costo_manual||0, md=p.x_costo_manual_date||null;
+        let uc=0, uf=null;
+        /* ⚠️ purchase.order.line.date_order es un related NO almacenado: Odoo IGNORA
+           "order: date_order desc" y devuelve cualquier línea. Con limit:1 devolvía la compra más
+           VIEJA y el margen salía inflado. Hay que traerlas todas y elegir acá la más nueva.
+           El costo por unidad va por price_subtotal/product_qty (así entran las bonificaciones). */
+        try{
+          const pol=await EYG.rpc("purchase.order.line","search_read",[[["product_id","=",vid],["state","in",["purchase","done"]],["product_qty",">",0]],["price_subtotal","product_qty","date_order"]],{limit:200,context:{lang:"es_AR"}});
+          for(const l of (pol||[])){ if(!(l.price_subtotal>0)) continue; const f=l.date_order||""; if(!uf||f>uf){ uf=f; uc=l.price_subtotal/(l.product_qty||1); } }
+        }catch(e){}
+        if(m>0 && ((!uf)||(md&&md>=uf))){ costo=m; rgCostoFuente="costo manual"; }
+        else if(uc>0){ costo=uc; rgCostoFuente="última compra "+(uf?(uf.slice(8,10)+"/"+uf.slice(5,7)+"/"+uf.slice(0,4)):""); }
+        else if((p.standard_price||0)>0){ costo=p.standard_price; rgCostoFuente="costo de Odoo"; }
+      }
     }
     rgCosto=costo>0?costo:null;
     const its=await EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","=",tmplId],["compute_price","=","fixed"]],["min_quantity","fixed_price"]],{limit:50,context:{lang:"es_AR"}});
@@ -755,6 +782,7 @@ function rgActualizarRent(){
   const valRaw=parseFloat((document.getElementById("rg-valor")||{}).value);
   const rem = modo==='precio'?true:((document.getElementById("rg-reemplaza")||{}).value==='1');
   const costo=rgCosto; const M=n=>money(n);
+  const MD=n=>n<0?("−"+money(-n)):money(n);   // diferencia con signo adelante: −$1.284, no $-1.284
   if(costo==null){ box.className="rentbox"; box.innerHTML="No hay costo cargado en Odoo para este producto."; return; }
   const mrg=pr=>pr>0?Math.round((pr-costo)/pr*100):-999;
   const cls=mm=>mm<0?"neg":(mm<15?"low":"ok");
@@ -765,11 +793,13 @@ function rgActualizarRent(){
   // ===== ÉTICOS · PRECIO ÚNICO: el descuento se calcula sobre el PVP de Alfabeta =====
   if(etico && (rem || modo==='precio')){
     if(!(valRaw>0)){ box.className="rentbox"; box.innerHTML=refEtico+`Cargá el valor para ver el precio y el margen. <span class="sub2">PVP ${M(pvp)} · costo ${M(costo)}</span>`; return; }
-    const precio = modo==='precio'?valRaw:(modo==='monto'?pvp-valRaw:pvp*(1-valRaw/100));
-    if(!(precio>0)){ box.className="rentbox neg"; box.innerHTML=refEtico+`Ese descuento deja el precio en cero o menos. <span class="sub2">PVP ${M(pvp)}</span>`; return; }
+    const pedido = modo==='precio'?valRaw:(modo==='monto'?pvp-valRaw:pvp*(1-valRaw/100));
+    if(!(pedido>0)){ box.className="rentbox neg"; box.innerHTML=refEtico+`Ese descuento deja el precio en cero o menos. <span class="sub2">PVP ${M(pvp)}</span>`; return; }
+    const precio = snapPvp(pedido, pvp);   // el que REALMENTE se cobra (el motor redondea el % del PVP)
+    const ajuste = Math.abs(precio-pedido)>=1 ? ` <span class="sub2">(cargaste ${M(pedido)}; se cobra ${M(precio)} para que el descuento dé redondo)</span>` : "";
     const mm=mrg(precio), descTot=Math.round((1-precio/pvp)*100);
     box.className="rentbox "+cls(mm);
-    box.innerHTML=refEtico+`💊 <b>Ético</b> · Precio final <b>${M(precio)}</b> · Margen <b>${mm}%</b> <span class="sub2">(${M(precio-costo)}/u · costo ${M(costo)})</span>
+    box.innerHTML=refEtico+`💊 <b>Ético</b> · Precio final <b>${M(precio)}</b>${ajuste} · Margen <b>${mm}%</b> <span class="sub2">(${MD(precio-costo)}/u · costo ${M(costo)}${rgCostoFuente?" · "+rgCostoFuente:""})</span>
       <div style="margin-top:6px;font-weight:800;color:#0E5C46">🏷️ Descuento total que ve el cliente: −${descTot}% <span class="sub2" style="font-weight:600">(PVP ${M(pvp)} → ${M(precio)})</span></div>
       ${mm<0?'<div style="margin-top:4px;font-weight:700">⚠️ perdés plata</div>':(mm<15?'<div class="sub2" style="margin-top:4px">margen ajustado</div>':'')}`;
     return;
@@ -781,7 +811,7 @@ function rgActualizarRent(){
   if(rem || modo==='precio'){
     const pf=modo==='precio'?valRaw:finalDe(base); const mm=mrg(pf);
     box.className="rentbox "+cls(mm);
-    box.innerHTML=refEtico+`Precio único <b>${M(pf)}</b> · Rentabilidad <b>${mm}%</b> <span class="sub2">(${M(pf-costo)}/u · costo ${M(costo)})</span>${mm<0?' ⚠️ perdés plata':(mm<15?' · margen ajustado':'')}`;
+    box.innerHTML=refEtico+`Precio único <b>${M(pf)}</b> · Rentabilidad <b>${mm}%</b> <span class="sub2">(${MD(pf-costo)}/u · costo ${M(costo)}${rgCostoFuente?" · "+rgCostoFuente:""})</span>${mm<0?' ⚠️ perdés plata':(mm<15?' · margen ajustado':'')}`;
   } else {
     const t1=rgTramosBase[0], tN=rgTramosBase[rgTramosBase.length-1];
     const p1=finalDe(t1.p), pN=finalDe(tN.p); const m1=mrg(p1), mN=mrg(pN);
