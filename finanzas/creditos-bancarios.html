@@ -849,12 +849,38 @@ async function generar(){
       else if(tid===TAX.percep && p.percepcion>0 && Math.abs(p.percepcion-p.percepTeorico)>=0.005) tcmds.push([1,l.id,{debit:p.percepcion,credit:0}]);
     }
     if(tcmds.length) await EYG.rpc("account.move","write",[[moveId],{line_ids:tcmds}]);
+    /* ⚠️ ODOO SÓLO RESPETA LAS CUOTAS SI SUMAN EXACTO EL TOTAL DEL COMPROBANTE.
+       Si no, las descarta en silencio y las regenera con el plazo de pago: salen
+       todas iguales cada 30 días. Pasó con el préstamo del Municipal por UN
+       CENTAVO (el cuadro sumaba ,87 y el comprobante daba ,86).
+       Así que primero se mira el total que quedó en Odoo y la diferencia de
+       redondeo se carga en la última cuota. */
+    const previo = await EYG.rpc("account.move","read",[[moveId],["amount_total"]]);
+    const totalOdoo = round2(previo[0].amount_total);
+    const sumaCuotas = round2(p.cuotas.reduce((a,c)=>a+c.total,0));
+    const dif = round2(totalOdoo - sumaCuotas);
+    if(Math.abs(dif) > 1)
+      throw new Error(`Las cuotas suman ${money2(sumaCuotas)} y el comprobante da ${money2(totalOdoo)}. Documento ${moveId} quedó en borrador.`);
+
     const cuotaLines = await EYG.rpc("account.move.line","search_read",
       [[["move_id","=",moveId],["display_type","=","payment_term"]]],{fields:["id"],order:"id"});
-    const cmds = cuotaLines.map((l,i)=>[1,l.id,{name:"cuota #"+(i+1), date_maturity:p.cuotas[i].venc, credit:p.cuotas[i].total, debit:0}]);
+    const importeDe = i => round2(p.cuotas[i].total + (i===cuotaLines.length-1 ? dif : 0));
+    const cmds = cuotaLines.map((l,i)=>[1,l.id,{name:"cuota #"+(i+1), date_maturity:p.cuotas[i].venc, credit:importeDe(i), debit:0}]);
     await EYG.rpc("account.move","write",[[moveId],{line_ids:cmds}]);
+
+    /* Y se LEEN DE VUELTA: no alcanza con que la escritura no dé error, porque
+       cuando Odoo las regenera tampoco lo da. */
+    const quedaron = await EYG.rpc("account.move.line","search_read",
+      [[["move_id","=",moveId],["display_type","=","payment_term"]]],{fields:["credit","date_maturity"],order:"id"});
+    const noRespetadas = quedaron.filter((l,i)=> !p.cuotas[i]
+      || String(l.date_maturity)!==String(p.cuotas[i].venc)
+      || Math.abs(l.credit - importeDe(i)) > 0.005).length;
+    if(noRespetadas)
+      throw new Error(`Odoo no respetó ${noRespetadas} de las ${quedaron.length} cuotas: las reemplazó por las del plazo de pago. Documento ${moveId} quedó en borrador.`);
+
     const hdr = await EYG.rpc("account.move","read",[[moveId],["name","amount_total"]]);
-    ST.result = { moveId, name:hdr[0].name, total:hdr[0].amount_total, balanceada:Math.abs(round2(hdr[0].amount_total)-p.totalCuotas)<0.05 };
+    ST.result = { moveId, name:hdr[0].name, total:hdr[0].amount_total, ajuste:dif,
+                  balanceada:Math.abs(round2(hdr[0].amount_total)-round2(sumaCuotas+dif))<0.005 };
   }catch(e){ ST.error="No se pudo generar: "+(e.message||e); }
   ST.generating=false; render();
 }
@@ -998,7 +1024,7 @@ function render(){
 
   if(ST.result){
     const r=ST.result;
-    html += `<div class="banner ok">✅ <b>Borrador creado:</b> ${esc(r.name)} · Total ${money2(r.total)} ${r.balanceada?'(balanceado)':'<b style="color:var(--err)">(revisar balance)</b>'}.
+    html += `<div class="banner ok">✅ <b>Borrador creado:</b> ${esc(r.name)} · Total ${money2(r.total)} ${r.balanceada?'(balanceado)':'<b style="color:var(--err)">(revisar balance)</b>'}${r.ajuste?` · <b>la última cuota lleva ${money2(Math.abs(r.ajuste))} de ajuste por redondeo</b>`:''} · <b>las cuotas quedaron como el cuadro</b>.
       <a href="${ODOO}/web#id=${r.moveId}&model=account.move&view_type=form" target="_blank">ver en Odoo ↗</a>
       &nbsp;·&nbsp; <a href="#" onclick="nuevo();return false">cargar otro</a></div>`;
   }
