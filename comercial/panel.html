@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=68"></script>
+<script src="../assets/core.js?v=69"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -850,6 +850,18 @@ const PFIELDS=["id","name","company_type","is_company","street","street2","city"
 function plazoTxt(c){ const t=c&&c.property_payment_term_id; if(!t||!t[1]) return ""; const n=String(t[1]), m=n.match(/(\d+)/);
   if(/cheque/i.test(n)) return m?("cheque "+m[1]+" d"):n;   // "Cheque a 90 días" no es lo mismo que "90 días"
   return m?(m[1]+" d"):n; }
+/* PLAZOS QUE EL COMERCIAL PUEDE ASIGNAR. Misma lista cerrada que Contactos, en orden de
+   días. Se ordenaron en Odoo el 11/9/2026: cada uno vence exactamente a lo que dice su
+   nombre. Los préstamos bancarios y los plazos viejos NO se ofrecen. */
+const PLAZOS_COMERCIALES=[21,18,2,3,12,13,20,14,17];   // Contado·7·15·30·Cheque 30·60·90·Cheque 90·120
+function optPlazoCom(cur){
+  const curId=cur&&cur[0];
+  const lista=PLAZOS_COMERCIALES.map(id=>(ST.catPlazo||[]).find(p=>p.id===id)).filter(Boolean);
+  let h=`<option value="">— sin plazo —</option>`+lista.map(p=>`<option value="${p.id}" ${p.id===curId?"selected":""}>${esc(p.name)}</option>`).join("");
+  // si el cliente ya tiene un plazo de afuera de la lista, se muestra para no borrárselo sin querer
+  if(curId && !PLAZOS_COMERCIALES.includes(curId)) h+=`<option value="${curId}" selected>${esc(cur[1]||("#"+curId))} (fuera de la lista)</option>`;
+  return h;
+}
 function plazoBadge(c){ const p=plazoTxt(c); return p?`<span class="plazo" title="Plazo de pago acordado: ${esc((c.property_payment_term_id||[])[1]||'')}">🕐 ${esc(p)}</span>`:''; }
 
 function completar(c){
@@ -870,14 +882,15 @@ async function cargar(){
     // CARTERA = clientes REALES del comercial: excluye direcciones de entrega (type=delivery),
     // de facturación (invoice) y sub-contactos (parent_id) — esos no son fichas a completar.
     const CARTERA=[["user_id","=",ST.userId],["type","=","contact"],["parent_id","=",false]];
-    const [contactos,fiscal,idt,prov,nuevos] = await Promise.all([
+    const [contactos,fiscal,idt,prov,nuevos,plazos] = await Promise.all([
       rpc("res.partner","search_read",[CARTERA],{fields:PFIELDS,limit:0}),
       rpc("l10n_ar.afip.responsibility.type","search_read",[[]],{fields:["id","name"]}),
       rpc("l10n_latam.identification.type","search_read",[[["active","=",true]]],{fields:["id","name"]}),
       rpc("res.country.state","search_read",[[["country_id.code","=","AR"]]],{fields:["id","name"],limit:0}),
-      rpc("res.partner","search_count",[[["user_id","=",ST.userId],["type","=","contact"],["parent_id","=",false],["create_date",">=",inicioMes]]])
+      rpc("res.partner","search_count",[[["user_id","=",ST.userId],["type","=","contact"],["parent_id","=",false],["create_date",">=",inicioMes]]]),
+      rpc("account.payment.term","search_read",[[["id","in",PLAZOS_COMERCIALES],["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}}).catch(()=>[])
     ]);
-    ST.contactos=contactos; ST.catFiscal=fiscal; ST.catId=idt; ST.catProv=prov; ST.nuevos=nuevos;
+    ST.contactos=contactos; ST.catFiscal=fiscal; ST.catId=idt; ST.catProv=prov; ST.nuevos=nuevos; ST.catPlazo=plazos||[];
     const ids=contactos.map(c=>c.id);
     // recencia/frecuencia + notas de hoy + cuentas corrientes (deuda) + cobrado del mes
     const [og,notas,ccLines,cobrado,aFact,facMes,facSem,ncMes,ncSem,bovMsgs, ordHist,cobro3,facHist,drafts]=await Promise.all([
@@ -3123,6 +3136,7 @@ function abrirForm(c,isNew){
           <div class="fld"><label>Número ${comp.has.vat||isNew?'':'<span class="miss">falta</span>'}</label><input id="f_vat" value="${esc(c.vat||'')}" oninput="prevDoc()" placeholder="20-12345678-9"><div class="prev" id="prev_doc"></div></div>
         </div>
         <div class="fld"><label>Condición fiscal (AFIP) ${comp.has.fiscal||isNew?'':'<span class="miss">falta</span>'}</label><select id="f_fiscal">${optSel(ST.catFiscal,c.l10n_ar_afip_responsibility_type_id,'— condición —')}</select></div>
+        <div class="fld"><label>Plazo de pago</label><select id="f_plazo">${optPlazoCom(c.property_payment_term_id)}</select><div class="hint">Cuándo vencen las facturas de este cliente. Vence a los días que dice el nombre.</div></div>
       </div>
     </div>
     <div class="dfoot">${isNew?'':`<button class="btn arch" onclick="pedirArchivar(${c.id})">🔒 Archivar</button>`}<button class="btn save" id="btnSave" onclick="guardar()">${isNew?'Crear contacto':'Guardar ficha'}</button></div>`;
@@ -3374,8 +3388,12 @@ async function guardar(){
     zip: val("f_zip")||false, city: val("f_city")?oracion(val("f_city")):false,
     state_id: num("f_state"), l10n_latam_identification_type_id: idtype,
     vat: val("f_vat")?fmtDoc(val("f_vat"),idtype):false,
-    l10n_ar_afip_responsibility_type_id: num("f_fiscal")
+    l10n_ar_afip_responsibility_type_id: num("f_fiscal"),
+    property_payment_term_id: num("f_plazo")
   };
+  // el plazo que tenía antes, para dejar constancia si cambia
+  const _prevC=(ST.contactos||[]).find(x=>x.id===EDIT.id), _prevT=_prevC&&_prevC.property_payment_term_id;
+  const plazoPrevId=_prevT?_prevT[0]:false, plazoPrevNom=_prevT?_prevT[1]:"sin plazo";
   const rubro=num("f_rubro");
   if(rubro) vals.category_id=[[4,rubro]];
   if(!vals.name){ btn.disabled=false; btn.textContent=EDIT.isNew?"Crear contacto":"Guardar ficha"; toast("⚠️ Falta el nombre"); return; }
@@ -3395,7 +3413,18 @@ async function guardar(){
           {body:"👤 "+NUEVO_TAG+" por="+esc(quien)+" origen="+origen, message_type:"comment"});
       }catch(_){ /* si falla la constancia, el contacto igual se creó */ }
     }
-    else { await rpc("res.partner","write",[[id],vals]); }
+    else {
+      await rpc("res.partner","write",[[id],vals]);
+      // CONSTANCIA DEL CAMBIO DE PLAZO, firmada por quien lo hizo: el plazo define cuándo
+      // vence cada factura y cuánta deuda figura vencida, así que queda registrado.
+      if(plazoPrevId!==(vals.property_payment_term_id||false)){
+        try{
+          const p=window.__perfil||{}, quien=(p.comercial_ref||p.nombre||COMERCIAL||"—");
+          const nuevo=vals.property_payment_term_id ? (((ST.catPlazo||[]).find(x=>x.id===vals.property_payment_term_id)||{}).name||("#"+vals.property_payment_term_id)) : "sin plazo";
+          await rpc("res.partner","message_post",[[id]],{body:"🕐 Plazo de pago: "+esc(plazoPrevNom)+" → "+esc(nuevo)+" · por "+esc(quien),message_type:"comment"});
+        }catch(_){ /* si falla la constancia, el plazo igual quedó guardado */ }
+      }
+    }
     const fresh=(await rpc("res.partner","read",[[id]],{fields:PFIELDS}))[0];
     const i=ST.contactos.findIndex(x=>x.id===id);
     if(i>=0) ST.contactos[i]=fresh; else ST.contactos.push(fresh);

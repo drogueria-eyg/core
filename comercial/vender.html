@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=68"></script>
+<script src="../assets/core.js?v=69"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF; --agua:#E2F1EF;
@@ -89,7 +89,8 @@
   .clihdr .who2 .nm{font-size:18px;font-weight:800;line-height:1.15}
   .clihdr .who2 .badges{margin-top:5px;display:flex;gap:7px;flex-wrap:wrap}
   .bdg{font-size:11.5px;font-weight:700;border-radius:20px;padding:3px 10px;background:var(--agua);color:var(--teal-deep)}
-  .bdg.plazo{background:#FBF0D6;color:#9A6A0B}
+  .bdg.plazo{background:#FBF0D6;color:#9A6A0B;cursor:pointer}
+  .bdg.plazo.sin{background:#FDECEA;color:#B3261E}   /* pedido sin plazo: la factura vencería en el día */
   .bdg.entrega{background:#EAF3FF;color:#12507F;cursor:pointer}
   .bdg.entrega:hover{filter:brightness(.97)}
   /* paso "¿a dónde entregás?" (modal): opciones tocables grandes */
@@ -829,6 +830,7 @@ async function crearOrden(pid, c, ship){
       shipId, shipName:(shipId!==pid && o.partner_shipping_id)?o.partner_shipping_id[1]:"",
       pricelistId:(o.pricelist_id&&o.pricelist_id[0])||null, listName:(o.pricelist_id&&o.pricelist_id[1])||"",
       plazo:(o.payment_term_id&&o.payment_term_id[1])||plazoTxt(c),
+      plazoId:(o.payment_term_id&&o.payment_term_id[0])||null,
     };
     ST.want={}; ST.lines={}; ST.amount={untaxed:0,total:0};
     await irAElegirLista();
@@ -932,7 +934,7 @@ async function reanudar(orderId){
     ST.order={ id:o.id, name:o.name, partnerId:pId, partnerName:(o.partner_id&&o.partner_id[1])||"",
       shipId:sId, shipName:(sId!==pId && o.partner_shipping_id)?o.partner_shipping_id[1]:"",
       pricelistId:(o.pricelist_id&&o.pricelist_id[0])||null, listName:(o.pricelist_id&&o.pricelist_id[1])||"",
-      plazo:(o.payment_term_id&&o.payment_term_id[1])||"" };
+      plazo:(o.payment_term_id&&o.payment_term_id[1])||"", plazoId:(o.payment_term_id&&o.payment_term_id[0])||null };
     ST.want={}; ST.lines={};
     await refrescarLineas();       // trae las líneas ya cargadas
     Object.values(ST.lines).forEach(l=>{ ST.want[l.pid]=l.qty; });
@@ -1625,7 +1627,7 @@ function vVenta(){
         <div class="badges">
           <span class="bdg">${esc(o.name||"Presupuesto")}</span>
           <span class="bdg lista-badge" onclick="elegirLista()" title="Cambiar lista de precios">🏷️ ${esc(o.listName||"Elegir lista")} ✎</span>
-          ${o.plazo?`<span class="bdg plazo">🕐 ${esc(o.plazo)}</span>`:""}
+          <span class="bdg plazo ${o.plazo?"":"sin"}" onclick="elegirPlazo()" title="Plazo de pago de este pedido: define cuándo vence la factura. Tocá para cambiarlo.">🕐 ${o.plazo?esc(o.plazo):"Sin plazo"} ✎</span>
           <span class="bdg entrega" onclick="cambiarEntrega()" title="Cambiar dirección de entrega">📦 ${o.shipName?("Entrega: "+esc(o.shipName)):"Entrega: dirección fiscal"} ✎</span>
         </div>
       </div>
@@ -1835,8 +1837,63 @@ async function doOcQuitar(id){
    mucho —791 pedidos en los últimos 90 días— y hasta ahora había que marcarlo en
    Odoo, que las comerciales no pueden tocar. */
 const TIPO_PROFORMA = 3;
+/* PLAZO DE PAGO DEL PEDIDO. Es lo que define cuándo vence la factura: sin plazo, vence el
+   mismo día en que se emite y el cliente figura con deuda vencida enseguida (así se
+   juntaron 301 pedidos sin plazo, detectado el 11/9/2026). Sólo la lista cerrada de plazos
+   comerciales, que desde esa fecha vencen exactamente a lo que dice su nombre. */
+const PLAZOS_COMERCIALES=[21,18,2,3,12,13,20,14,17];   // Contado·7·15·30·Cheque 30·60·90·Cheque 90·120
+let _plazosCat=null;
+async function elegirPlazo(despues){
+  if(!ST.order) return;
+  if(!_plazosCat){
+    try{
+      const r=await rpc("account.payment.term","search_read",[[["id","in",PLAZOS_COMERCIALES],["active","=",true]]],{fields:["id","name"],context:ES});
+      _plazosCat=PLAZOS_COMERCIALES.map(id=>r.find(p=>p.id===id)).filter(Boolean);
+    }catch(e){ return toast("No pude leer los plazos de pago"); }
+  }
+  const cur=ST.order.plazoId;
+  modal(`<h3>🕐 Plazo de pago</h3>
+    <p style="font-size:13px;color:var(--gris);margin:0 0 4px">Define cuándo vence la factura de este pedido. Vence a los días que dice el nombre.</p>
+    <div class="eopts">${_plazosCat.map(p=>`<button class="btn ghost eopt${p.id===cur?' sel':''}" onclick="aplicarPlazo(${p.id},${despues?1:0})">${esc(p.name)}${p.id===cur?' ✓':''}</button>`).join("")}</div>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:13px;cursor:pointer"><input type="checkbox" id="plazoCli" checked> Guardarlo también en la ficha del cliente, para los próximos pedidos</label>
+    <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Cancelar</button></div>`);
+}
+async function aplicarPlazo(id,despues){
+  const alCliente=!!(document.getElementById("plazoCli")||{}).checked;
+  cerrarModal();
+  const p=(_plazosCat||[]).find(x=>x.id===id); if(!p) return;
+  try{
+    await rpc("sale.order","write",[[ST.order.id],{payment_term_id:id}],{context:ES});
+    if(alCliente){
+      // el plazo vive en el cliente FISCAL (si el pedido es de una sucursal, en su central)
+      const [cli]=await rpc("res.partner","read",[[ST.order.partnerId],["property_payment_term_id","commercial_partner_id"]],{context:ES});
+      const fiscalId=(cli&&cli.commercial_partner_id&&cli.commercial_partner_id[0])||ST.order.partnerId;
+      const [f]= fiscalId===ST.order.partnerId ? [cli] : await rpc("res.partner","read",[[fiscalId],["property_payment_term_id"]],{context:ES});
+      const antes=f&&f.property_payment_term_id;
+      if(!antes || antes[0]!==id){
+        await rpc("res.partner","write",[[fiscalId],{property_payment_term_id:id}],{context:ES});
+        // constancia firmada por el comercial: el plazo define cuánta deuda figura vencida
+        try{ await rpc("res.partner","message_post",[[fiscalId]],{body:"🕐 Plazo de pago: "+esc(antes?antes[1]:"sin plazo")+" → "+esc(p.name)+" · por "+esc(COMERCIAL)+" (desde Cargar venta)",message_type:"comment"}); }catch(_){}
+      }
+    }
+    ST.order.plazo=p.name; ST.order.plazoId=id;
+    toast("🕐 Plazo: "+p.name+(alCliente?" · guardado también en el cliente":""));
+    render();
+    if(despues) confirmarVenta();
+  }catch(e){ toast("No pude guardar el plazo: "+(e.message||"")); }
+}
 function confirmarVenta(){
   if(!nItems()) return toast("Cargá al menos un producto");
+  if(!ST.order.plazo && !ST._sinPlazoOk){
+    return modal(`<h3>🕐 Este pedido no tiene plazo de pago</h3>
+      <p>Sin plazo, la factura <b>vence el mismo día en que se emite</b> y el cliente figura con deuda vencida enseguida.</p>
+      <div class="mb" style="flex-direction:column;align-items:stretch;gap:9px">
+        <button class="btn grn" onclick="elegirPlazo(true)">🕐 Elegir el plazo</button>
+        <button class="btn ghost" onclick="ST._sinPlazoOk=true;cerrarModal();confirmarVenta()">Confirmar igual, sin plazo</button>
+        <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
+      </div>`);
+  }
+  ST._sinPlazoOk=false;
   modal(`<h3>Confirmar venta</h3>
     <p>Vas a confirmar el pedido de <b>${esc(ST.order.partnerName)}</b> por <b>${money(ST.amount.total)}</b> (${nItems()} producto${nItems()===1?"":"s"}).<br><br>Elegí cómo queda en Odoo:</p>
     <div class="mb" style="flex-direction:column;align-items:stretch;gap:9px">
@@ -2091,7 +2148,7 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
    recargan, y desde adentro parece que "el botón no anda" (pasó con el borrado de
    presupuestos, arreglado el 4/9 y todavía fallando en las tablets el 9/9).
    Se compara la versión del archivo publicado con la que está corriendo. */
-const VERSION_MODULO = "2026-09-11-a";
+const VERSION_MODULO = "2026-09-11-b";
 async function chequearVersion(){
   try{
     const r = await fetch(location.pathname + "?_v=" + Date.now(), {cache:"no-store"});

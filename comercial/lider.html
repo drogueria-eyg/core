@@ -382,7 +382,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=67"></script>
+<script src="../assets/core.js?v=68"></script>
 <script src="../assets/metrics.js?v=5"></script>
 <script src="../assets/liquidacion.js?v=1"></script>
 <script>
@@ -2118,7 +2118,7 @@ function fuentesHTML(d){
    asignar todavía). Reasignar = escribir res.partner.user_id: mueve el cliente
    entero de cartera. Crear un contacto lo asigna al líder por defecto (después lo
    reparte). Espeja los campos y formateadores de panel.html para no divergir. */
-const PFIELDS_C=["id","name","company_type","is_company","street","street2","city","zip","state_id","phone","mobile","email","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","customer_rank","user_id"];
+const PFIELDS_C=["id","name","property_payment_term_id","company_type","is_company","street","street2","city","zip","state_id","phone","mobile","email","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","customer_rank","user_id"];
 const REQ=[{k:"name"},{k:"tel"},{k:"email"},{k:"street"},{k:"zip"},{k:"city"},{k:"state"},{k:"idtype"},{k:"vat"},{k:"fiscal"}];
 const RUBROS=[{v:30,l:"Farmacia"},{v:32,l:"Sanatorio / Clínica"},{v:37,l:"Empresa de salud"},{v:33,l:"Institución / Mutual"},{v:34,l:"Distribuidora / Droguería"},{v:35,l:"Veterinaria"},{v:62,l:"SAMCO"}];
 const RUBRO_MAP={28:30,29:30,30:30, 8:35,35:35, 7:34,34:34, 31:33,33:33,36:33, 20:32,32:32, 37:37, 62:62};
@@ -2151,17 +2151,28 @@ function rubroActual(c){ for(const t of (c.category_id||[])) if(RUBRO_MAP[t]) re
 function duenos(){ return [{uid:LIDER.uid,name:LIDER.name,color:"#0E5C58",lider:true}, ...COM.map(c=>({uid:c.uid,name:c.name,color:c.color}))]; }
 function dueno(uid){ return duenos().find(d=>d.uid===uid) || {uid:null,name:"Sin asignar",color:"#B0413E"}; }
 
+/* PLAZOS QUE SE PUEDEN ASIGNAR: misma lista cerrada que el panel del comercial y Contactos.
+   Ordenados en Odoo el 11/9/2026: cada uno vence a lo que dice su nombre. */
+const PLAZOS_COMERCIALES=[21,18,2,3,12,13,20,14,17];   // Contado·7·15·30·Cheque 30·60·90·Cheque 90·120
+function optPlazoCom(cur){
+  const curId=cur&&cur[0];
+  const lista=PLAZOS_COMERCIALES.map(id=>((CT.cat&&CT.cat.plazo)||[]).find(p=>p.id===id)).filter(Boolean);
+  let h=`<option value="">— sin plazo —</option>`+lista.map(p=>`<option value="${p.id}" ${p.id===curId?"selected":""}>${EYG.esc(p.name)}</option>`).join("");
+  if(curId && !PLAZOS_COMERCIALES.includes(curId)) h+=`<option value="${curId}" selected>${EYG.esc(cur[1]||("#"+curId))} (fuera de la lista)</option>`;
+  return h;
+}
 async function cargarContactos(){
   const owners=[LIDER.uid,...UIDS];
-  const [list,sinAsig,fiscal,idt,prov]=await Promise.all([
+  const [list,sinAsig,fiscal,idt,prov,plazo]=await Promise.all([
     EYG.rpc("res.partner","search_read",[[["user_id","in",owners],["customer_rank",">",0],["category_id","not in",[ARCH_TAG]]]],{fields:PFIELDS_C,limit:0}),
     // pool GLOBAL de contactos sin comercial asignado (para repartir al equipo), sin los archivados
     EYG.rpc("res.partner","search_read",[[["user_id","=",false],["customer_rank",">",0],["category_id","not in",[ARCH_TAG]]]],{fields:PFIELDS_C,limit:0}),
     EYG.rpc("l10n_ar.afip.responsibility.type","search_read",[[]],{fields:["id","name"]}),
     EYG.rpc("l10n_latam.identification.type","search_read",[[["active","=",true]]],{fields:["id","name"]}),
     EYG.rpc("res.country.state","search_read",[[["country_id.code","=","AR"]]],{fields:["id","name"],limit:0}),
+    EYG.rpc("account.payment.term","search_read",[[["id","in",PLAZOS_COMERCIALES],["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}}).catch(()=>[]),
   ]);
-  CT.list=list; CT.sinAsig=sinAsig; CT.cat={prov,idt,fiscal}; CT.cargado=true;
+  CT.list=list; CT.sinAsig=sinAsig; CT.cat={prov,idt,fiscal,plazo:plazo||[]}; CT.cargado=true;
 }
 async function renderContactos(){
   const v=document.getElementById("vista"); if(!v)return;
@@ -2300,6 +2311,7 @@ function abrirDrawer(c,isNew){
         <div class="fld"><label>Número ${comp.has.vat||isNew?'':'<span class="miss">falta</span>'}</label><input id="c_vat" value="${esc(c.vat||'')}" oninput="cPrevDoc()" placeholder="20-12345678-9"><div class="hint" id="c_prevdoc"></div></div>
       </div>
       <div class="fld"><label>Condición fiscal (AFIP) ${comp.has.fiscal||isNew?'':'<span class="miss">falta</span>'}</label><select id="c_fiscal">${optSel(CT.cat.fiscal,c.l10n_ar_afip_responsibility_type_id,'— condición —')}</select></div>
+      <div class="fld"><label>Plazo de pago</label><select id="c_plazo">${optPlazoCom(c.property_payment_term_id)}</select><div class="hint">Cuándo vencen las facturas de este cliente. Vence a los días que dice el nombre.</div></div>
     </div>
     <div class="foot"><button class="cancel" onclick="cerrarDrawer()">Cancelar</button><button class="ok" id="c_save" onclick="guardarContacto()">${isNew?'Crear contacto':'Guardar ficha'}</button></div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
@@ -2324,7 +2336,11 @@ async function guardarContacto(){
     zip: val("c_zip")||false, city: val("c_city")?oracion(val("c_city")):false,
     state_id: num("c_state"), l10n_latam_identification_type_id: idtype,
     vat: val("c_vat")?fmtDoc(val("c_vat"),idtype):false,
-    l10n_ar_afip_responsibility_type_id: num("c_fiscal"), user_id: owner };
+    l10n_ar_afip_responsibility_type_id: num("c_fiscal"), user_id: owner,
+    property_payment_term_id: num("c_plazo") };
+  // el plazo que tenía antes, para dejar constancia si cambia
+  const _prevC=[...(CT.list||[]),...(CT.sinAsig||[])].find(x=>x.id===(CT.edit&&CT.edit.id)), _prevT=_prevC&&_prevC.property_payment_term_id;
+  const plazoPrevId=_prevT?_prevT[0]:false, plazoPrevNom=_prevT?_prevT[1]:"sin plazo";
   const rubro=num("c_rubro"); if(rubro) vals.category_id=[[4,rubro]];
   if(!vals.name){ btn.disabled=false; btn.textContent=CT.edit.isNew?"Crear contacto":"Guardar ficha"; toast("⚠️ Falta el nombre"); return; }
   try{
@@ -2339,7 +2355,17 @@ async function guardarContacto(){
           {body:"👤 [CONTACTO-NUEVO] por="+EYG.esc(quien)+" origen=manual", message_type:"comment"});
       }catch(_){}
     }
-    else { await EYG.rpc("res.partner","write",[[id],vals]); }
+    else {
+      await EYG.rpc("res.partner","write",[[id],vals]);
+      // constancia del cambio de plazo, firmada por quien lo hizo
+      if(plazoPrevId!==(vals.property_payment_term_id||false)){
+        try{
+          const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
+          const nuevo=vals.property_payment_term_id ? (((CT.cat&&CT.cat.plazo)||[]).find(x=>x.id===vals.property_payment_term_id)||{}).name||("#"+vals.property_payment_term_id) : "sin plazo";
+          await EYG.rpc("res.partner","message_post",[[id]],{body:"🕐 Plazo de pago: "+EYG.esc(plazoPrevNom)+" → "+EYG.esc(nuevo)+" · por "+EYG.esc(quien),message_type:"comment"});
+        }catch(_){}
+      }
+    }
     const fresh=(await EYG.rpc("res.partner","read",[[id]],{fields:PFIELDS_C}))[0];
     const i=CT.list.findIndex(x=>x.id===id);
     if(i>=0) CT.list[i]=fresh; else CT.list.push(fresh);
