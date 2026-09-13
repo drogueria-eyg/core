@@ -90,6 +90,19 @@
   .modal .mh h3{font-size:17px;font-weight:800}
   .modal .mb{padding:18px 20px;display:flex;flex-direction:column;gap:13px}
   .modal .mf{padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end}
+  /* cartel de advertencia al aplicar una oferta que perfora, y la línea de la fila afectada */
+  .owsec{padding:14px 20px;border-top:1px solid var(--line)}
+  .owsec:first-child{border-top:none}
+  .owsec h4{font-size:13.5px;font-weight:800;margin:0 0 3px}
+  .owsec .d{font-size:12px;color:var(--gris,#6b7f7d);margin:0 0 9px;line-height:1.45}
+  .owlista{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:9px;background:#fff}
+  .owfila{display:flex;gap:8px;padding:4px 9px;border-top:1px solid var(--line);font-size:12px}
+  .owfila:first-child{border-top:none}
+  .owok{display:flex;align-items:flex-start;gap:9px;font-size:13px;font-weight:800;margin-top:10px;cursor:pointer}
+  .owok input{width:18px;height:18px;margin-top:1px}
+  .ofalerta{font-size:11.5px;font-weight:700;margin-top:3px;line-height:1.4}
+  .ofalerta.costo{color:#b0322f}
+  .ofalerta.piso{color:#a1560f}
   .fld label{display:block;font-size:12px;font-weight:700;color:var(--gris);margin-bottom:4px}
   .fld input,.fld textarea,.fld select{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;font-family:inherit}
   .fld .row2{display:flex;gap:10px} .fld .row2>div{flex:1}
@@ -174,8 +187,42 @@ function masDias(n){ const d=new Date(); d.setDate(d.getDate()+n); return d.toIS
 function fmtF(s){ if(!s) return ""; const [y,m,d]=String(s).slice(0,10).split("-"); return d+"/"+m; }
 let OPOS=[], ARCH=[], OFERTAS=[], OPORT_STOCK=[], ESTADO={ignora:[],arch:[]}, stockLoading=true, UMBRAL=0.10, SYNC_OF=[];
 let STOCK_T={};   // stock real por plantilla (para marcar "Agotada" en los descuentos por regla)
-let COSTO_T={};   // costo del motor (x_costo_motor) por plantilla, para calcular el margen de cada oferta
+let COSTO_T={};   // costo EFECTIVO por plantilla (x_costo_motor + IVA de compra si la tilde está puesta)
 let COSTO_V={};   // idem por variante (los combos guardan ids de variante)
+/* Reglas del motor por categoría (eyg.sync_precios_flat, ya resuelto por categoría). De acá salen
+   dos cosas que el margen necesita: la TILDE "IVA al costo" -sin ella el costo sale corto y el
+   margen optimista- y el PISO de margen de la categoría. */
+let REGLA_CAT={};
+function reglaCat(catId){ return REGLA_CAT[catId]||null; }
+function tildeIvaDe(tildeProp, catId){
+  const v=String(tildeProp||"").trim().toLowerCase();
+  if(v==="si") return 1;
+  if(v==="no") return 0;
+  const r=reglaCat(catId);
+  return (r&&r.tilde)?1:0;
+}
+/* Costo con el que compara el MOTOR: el neto más el IVA de compra cuando la tilde está puesta. */
+function costoEfectivo(p){
+  const c=p.x_costo_motor||0;
+  if(!(c>0)) return 0;
+  const cat=(p.categ_id&&p.categ_id[0])||0;
+  return tildeIvaDe(p.x_iva_costo, cat) ? c*(1+(p.x_iva_compra||0)) : c;
+}
+function pisoDe(costo, catId){
+  const r=reglaCat(catId);
+  if(!r||!(costo>0)||!(r.piso<1)) return 0;
+  return costo/(1-r.piso);
+}
+async function cargarReglasMotor(){
+  REGLA_CAT={};
+  const flat=String(await getParam("eyg.sync_precios_flat","")||"");
+  flat.replace(/\r/g,"").split("\n").forEach(l=>{
+    l=l.trim(); if(!l||l[0]==="#") return;
+    const f=l.split("~"); if(f.length<8) return;
+    const cat=parseInt(f[0]); if(!cat) return;
+    REGLA_CAT[cat]={piso:parseFloat(f[2])||0, tilde:(f[7]==="1"), base:(f[8]||"costo").trim()};
+  });
+}
 let FOCO="";      // KPI seleccionado: "" | "perdida" | "ofertas" | "costo" | "stock" | "agotadas"
 let VER_OCULTAS=false;   // mostrar las oportunidades que el módulo filtra (sin stock / ya no aplican)
 let STOCK_MAX=5, STOCK_DESC={vence:0.25,sobre:0.15,muerto:0.20};   // config del módulo (Configuración)
@@ -299,6 +346,7 @@ async function cargar(){
   const cont=document.getElementById("cont"); cont.innerHTML='<div class="spin"></div>';
   try{
     STOCK_T={};
+    await cargarReglasMotor();   // tilde de IVA al costo y piso de margen por categoría
     UMBRAL=parseFloat(await getParam("eyg.oferta.umbral","0.10"))||0.10;
     STOCK_MAX=parseInt(await getParam("eyg.oportunidades_stock_max","5"))||5;
     try{ const dsc=JSON.parse(await getParam("eyg.oportunidades_desc","")||"null"); if(dsc&&dsc.vence!=null) STOCK_DESC=dsc; }catch(e){}
@@ -336,12 +384,12 @@ async function cargar(){
       const tIds=[...new Set(SYNC_OF.filter(o=>o.tipo===`p`&&o.target).map(o=>o.target))];
       const vIds=[...new Set(OFERTAS.flatMap(o=>((o&&o.items)||[]).map(it=>it&&it.id)).filter(Boolean))];
       if(tIds.length){
-        const rows=await EYG.rpc("product.product","search_read",[[["product_tmpl_id","in",tIds]],["product_tmpl_id","x_costo_motor"]],{limit:5000,context:{lang:"es_AR"}});
-        for(const r of rows) if((r.x_costo_motor||0)>0) COSTO_T[r.product_tmpl_id[0]]=r.x_costo_motor;
+        const rows=await EYG.rpc("product.product","search_read",[[["product_tmpl_id","in",tIds]],["product_tmpl_id","x_costo_motor","x_iva_compra","x_iva_costo","categ_id"]],{limit:5000,context:{lang:"es_AR"}});
+        for(const r of rows){ const c=costoEfectivo(r); if(c>0) COSTO_T[r.product_tmpl_id[0]]=c; }
       }
       if(vIds.length){
-        const rows=await EYG.rpc("product.product","read",[vIds,["x_costo_motor"]],LANG);
-        for(const r of rows) if((r.x_costo_motor||0)>0) COSTO_V[r.id]=r.x_costo_motor;
+        const rows=await EYG.rpc("product.product","read",[vIds,["x_costo_motor","x_iva_compra","x_iva_costo","categ_id"]],LANG);
+        for(const r of rows){ const c=costoEfectivo(r); if(c>0) COSTO_V[r.id]=c; }
       }
     }catch(e){}
     // estado de oportunidades por stock (ignorados / archivadas). Las oportunidades se calculan en vivo (refrescarStockOpo).
@@ -681,6 +729,9 @@ function toast(m,win){ let t=document.getElementById("toast"); if(!t){ t=documen
    módulo (pisado por oferta manual de 1 producto) y NO se muestran/editan acá. */
 let rgDraft=null, rgBusq=[], rgBusqQ="", rgCosto=null, rgTramos=null, rgTramosBase=null, rgApplied=null, rgPvp=0;
 let rgCostoFuente="";   // de dónde salió el costo, para poder auditar el margen que se muestra
+let rgPiso=0, rgCatId=0, rgIvaCompra=0, rgTildeIva=0;   // piso de margen y tilde de IVA al costo del producto elegido
+let rgCatSim={estado:"", filas:[], catId:0};            // simulación cuando la oferta es de CATEGORÍA
+let ofWarn=null;                                        // cartel de advertencia abierto
 /* Mismo redondeo que hace el motor con los éticos (_snap_pvp de la acción 1213): el precio que
    se cobra es PVP x (1 - descuento ENTERO/100). Sin esto el calculador muestra el número tipeado
    y el cliente termina pagando otro (7.507 tipeado -> 7.454,50 cobrado). */
@@ -719,10 +770,20 @@ function filaRegla(o){
   const acts=`<button class="btn ghost sm" onclick="rgEditar('${esc(o.id)}')">Editar</button>`
     +`<button class="btn ghost sm" onclick="rgPausar('${esc(o.id)}')">${o.pausada?"Reanudar":"Pausar"}</button>`
     +`<button class="btn warn sm" onclick="rgEliminar('${esc(o.id)}')">Eliminar</button>`;
-  const meta=(o.tipo==='p'?catBadge(o._cat)+(o._sku?esc(o._sku)+" ":""):"")+chips;
+  const meta=(o.tipo==='p'?catBadge(o._cat)+(o._sku?esc(o._sku)+" ":""):"")+chips+ofAlertaFila(o);
   return fila("of"+(m!=null&&m<0?" mala":"")+((ag||st.c!=='act')?" gris":""), esc(o.targetName||("#"+o.target)), meta, cols, acts);
 }
 
+/* Línea de aviso de la fila: lo que esa oferta está publicando HOY contra el costo de hoy.
+   Una compra nueva puede subir el costo y dejar bajo costo una oferta cargada hace un mes. */
+function ofAlertaFila(o){
+  if(o.tipo!=='p'||!o.target) return "";
+  const c=COSTO_T[o.target]||0, p=o._precio||0;
+  if(!(c>0&&p>0)) return "";
+  const mg=(p-c)/p*100;
+  if(p<c-_OF_TOL_COSTO) return `<div class="ofalerta costo">⛔ hoy publica ${money(p)} y el costo es ${money(c)} · margen ${mg.toFixed(1)}%</div>`;
+  return "";
+}
 /* editor unificado: Descuento (producto/categoría) o Combo (varios productos) */
 function rgFormHTML(){
   const d=rgDraft;
@@ -834,7 +895,32 @@ window.rgBuscar=EYG.debounce(async q=>{
   if(rgBusqQ!==q) return;   // llegó tarde: ya hay una búsqueda más nueva
   rgBusq=cats.concat(prods); EYG.repintar(render);
 },350);
-window.rgElegir=async(k,id,name)=>{ if(!rgDraft)return; rgDraft.tipo=k; rgDraft.target=id; rgDraft.targetName=name; rgDraft._pvp=0; rgBusq=[];rgBusqQ=""; rgCosto=null;rgTramos=null;rgTramosBase=null;rgApplied=null; render(); if(k==='p'){ await rgCargarRent(id); render(); rgActualizarRent(); } };
+window.rgElegir=async(k,id,name)=>{ if(!rgDraft)return; rgDraft.tipo=k; rgDraft.target=id; rgDraft.targetName=name; rgDraft._pvp=0; rgBusq=[];rgBusqQ=""; rgCosto=null;rgPiso=0;rgTramos=null;rgTramosBase=null;rgApplied=null; render(); if(k==='p'){ await rgCargarRent(id); render(); rgActualizarRent(); } else { rgCargarCatSim(id); } };
+/* Una oferta de CATEGORÍA toca muchos productos a la vez: se traen una vez, con su costo
+   efectivo, su piso y lo que hoy publican, para poder decir ANTES de aplicar cuántos perforan. */
+window.rgCargarCatSim=async(catId)=>{
+  if(rgCatSim.catId===catId && rgCatSim.estado==="ok") return;
+  rgCatSim={estado:"cargando", filas:[], catId:catId}; render();
+  try{
+    const rs=await EYG.rpc("product.product","search_read",[[["categ_id","child_of",catId],["active","=",true]],["default_code","name","product_tmpl_id","categ_id","x_costo_motor","x_iva_compra","x_iva_costo","qty_available"]],{limit:800,context:{lang:"es_AR"}});
+    const tIds=[...new Set(rs.map(r=>r.product_tmpl_id&&r.product_tmpl_id[0]).filter(Boolean))];
+    const its=tIds.length?await EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",tIds]],["product_tmpl_id","fixed_price"]],{limit:5000,context:{lang:"es_AR"}}):[];
+    const mx={}, mn={};
+    its.forEach(i=>{ const t=i.product_tmpl_id&&i.product_tmpl_id[0]; if(!t) return;
+      if(mx[t]==null||i.fixed_price>mx[t]) mx[t]=i.fixed_price;
+      if(mn[t]==null||i.fixed_price<mn[t]) mn[t]=i.fixed_price; });
+    const tp=tIds.length?await EYG.rpc("product.template","read",[tIds,["list_price","categ_id"]],LANG):[];
+    const lp={}; tp.forEach(t=>{ if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) lp[t.id]=t.list_price||0; });
+    rgCatSim={estado:"ok", catId:catId, filas:rs.map(r=>{
+      const t=(r.product_tmpl_id&&r.product_tmpl_id[0])||0;
+      const c=costoEfectivo(r);
+      return {sku:r.default_code||"", nombre:r.name||"", tmpl:t, costo:c,
+        piso:pisoDe(c,(r.categ_id&&r.categ_id[0])||0), base1:mx[t]||0, baseN:mn[t]||0,
+        pvp:lp[t]||0, stock:r.qty_available||0};
+    })};
+  }catch(e){ rgCatSim={estado:"error", filas:[], catId:catId, msg:e.message}; }
+  render();
+};
 // costo (misma recencia que el motor: manual > última compra > estándar) + escalera del producto
 async function rgCargarRent(tmplId){
   rgPvp=0;
@@ -845,10 +931,11 @@ async function rgCargarRent(tmplId){
     if(/[EÉ]TICO/i.test((th.categ_id&&th.categ_id[1])||"")) rgPvp=Math.round(th.list_price||0);
     if(rgDraft) rgDraft._pvp=rgPvp;   // ético: el descuento se calcula sobre el PVP (mecánica propia)
     const vid=th.product_variant_id&&th.product_variant_id[0];
-    let costo=0; rgCostoFuente="";
+    let costo=0; rgCostoFuente=""; rgPiso=0; rgCatId=(th.categ_id&&th.categ_id[0])||0;
     if(vid){
-      const pv=await EYG.rpc("product.product","read",[[vid],["x_costo_manual","x_costo_manual_date","standard_price","x_costo_motor"]],LANG);
+      const pv=await EYG.rpc("product.product","read",[[vid],["x_costo_manual","x_costo_manual_date","standard_price","x_costo_motor","x_iva_compra","x_iva_costo","categ_id"]],LANG);
       const p=(pv&&pv[0])||{};
+      rgIvaCompra=p.x_iva_compra||0; rgTildeIva=tildeIvaDe(p.x_iva_costo, rgCatId);
       /* x_costo_motor = el costo con el que el MOTOR calcula el precio (su regla de 3 fuentes:
          costo manual / última compra / standard_price, el más reciente). Usar el mismo número es
          lo único que garantiza que el margen de acá y el precio que sale sean la misma cuenta. */
@@ -869,7 +956,10 @@ async function rgCargarRent(tmplId){
         else if((p.standard_price||0)>0){ costo=p.standard_price; rgCostoFuente="costo de Odoo"; }
       }
     }
+    // mismo costo con el que compara el motor: neto + IVA de compra si la tilde está puesta
+    if(costo>0 && rgTildeIva) costo=costo*(1+rgIvaCompra);
     rgCosto=costo>0?costo:null;
+    rgPiso=pisoDe(costo, rgCatId);
     const its=await EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","=",tmplId],["compute_price","=","fixed"]],["min_quantity","fixed_price"]],{limit:50,context:{lang:"es_AR"}});
     its.sort((a,b)=>a.min_quantity-b.min_quantity);
     rgTramos=its.map(i=>({q:i.min_quantity,p:i.fixed_price}));
@@ -894,6 +984,7 @@ function rgActualizarRent(){
   const costo=rgCosto; const M=n=>money(n);
   const MD=n=>n<0?("−"+money(-n)):money(n);   // diferencia con signo adelante: −$1.284, no $-1.284
   if(costo==null){ box.className="rentbox"; box.innerHTML="No hay costo cargado en Odoo para este producto."; return; }
+  const pisoTxt = rgPiso>0 ? ` <span class="sub2">· piso de su categoría ${M(rgPiso)}</span>` : "";
   const mrg=pr=>pr>0?Math.round((pr-costo)/pr*100):-999;
   const cls=mm=>mm<0?"neg":(mm<15?"low":"ok");
   const etico=rgDraft._pvp>0, pvp=rgDraft._pvp;
@@ -911,7 +1002,7 @@ function rgActualizarRent(){
     box.className="rentbox "+cls(mm);
     box.innerHTML=refEtico+`💊 <b>Ético</b> · Precio final <b>${M(precio)}</b>${ajuste} · Margen <b>${mm}%</b> <span class="sub2">(${MD(precio-costo)}/u · costo ${M(costo)}${rgCostoFuente?" · "+rgCostoFuente:""})</span>
       <div style="margin-top:6px;font-weight:800;color:#0E5C46">🏷️ Descuento total que ve el cliente: −${descTot}% <span class="sub2" style="font-weight:600">(PVP ${M(pvp)} → ${M(precio)})</span></div>
-      ${mm<0?'<div style="margin-top:4px;font-weight:700">⚠️ perdés plata</div>':(mm<15?'<div class="sub2" style="margin-top:4px">margen ajustado</div>':'')}`;
+      ${mm<0?'<div style="margin-top:4px;font-weight:700">⚠️ perdés plata</div>':(rgPiso>0&&precio<rgPiso?'<div style="margin-top:4px;font-weight:700;color:#a1560f">⚠ por debajo del piso de margen'+pisoTxt+'</div>':(mm<15?'<div class="sub2" style="margin-top:4px">margen ajustado</div>':''))}`;
     return;
   }
   if(!(valRaw>0)){ box.className="rentbox"; box.innerHTML=refEtico+`Cargá el valor para ver la rentabilidad. <span class="sub2">costo ${M(costo)}</span>`; return; }
@@ -931,6 +1022,90 @@ function rgActualizarRent(){
     box.innerHTML=refEtico+`Sobre la escalera · Rentabilidad ${rango} <span class="sub2">· costo ${M(costo)}</span>${mN<0?' ⚠️ el último tramo pierde plata':(mN<15?' · último tramo ajustado':'')}${dPvp}`;
   }
 }
+/* ============ ¿ESTA OFERTA PERFORA? ============
+   Igual que en la capa temporal de precios: no se tilda nada de antemano; se avisa al aplicar y
+   ahí se confirma. Se mide contra el COSTO EFECTIVO (con el IVA al costo) y contra el PISO de
+   margen de la categoría, que es lo que mira el motor. */
+const _OF_TOL_COSTO=0.5, _OF_TOL_PISO=0.995;   // el precio va redondeado: unos centavos no son perforar
+function ofFilasAlcanzadas(rule){
+  if(rule.tipo==='p'){
+    const tb=rgTramosBase||[];
+    return [{sku:(rgDraft&&rgDraft._sku)||"", nombre:(rgDraft&&rgDraft.targetName)||("#"+rule.target), tmpl:rule.target,
+      costo:rgCosto||0, piso:rgPiso||0, base1:(tb.length?tb[0].p:0), baseN:(tb.length?tb[tb.length-1].p:0),
+      pvp:(rgDraft&&rgDraft._pvp)||0, stock:(STOCK_T[rule.target]!=null?STOCK_T[rule.target]:0)}];
+  }
+  if(rgCatSim.estado!=="ok" || rgCatSim.catId!==rule.target) return null;   // todavía calculando
+  return rgCatSim.filas;
+}
+/* El precio MÁS BAJO que va a quedar publicado con esta oferta. 'reemplaza' fija un precio único
+   que el motor calcula sobre el PRIMER tramo; si no, el descuento se aplica a CADA tramo y el que
+   importa es el último, que es el más barato. */
+function ofPrecioFinal(f, rule){
+  if(rule.modo==='precio') return rule.valor||0;
+  const base = rule.reemplaza ? (f.base1||f.baseN||0) : (f.baseN||f.base1||0);
+  if(!(base>0)) return 0;
+  if(rule.modo==='monto') return base-(rule.valor||0);
+  return base*(1-(rule.valor||0));
+}
+function ofChequear(rule){
+  const filas=ofFilasAlcanzadas(rule);
+  if(filas===null) return null;
+  const out={bajoCosto:[], bajoPiso:[], sinDato:[], total:0};
+  filas.forEach(f=>{
+    out.total++;
+    const pr=ofPrecioFinal(f, rule);
+    if(!(pr>0)||!(f.costo>0)){ out.sinDato.push(Object.assign({},f,{motivo:(f.costo>0?"sin precio base":"sin costo")})); return; }
+    const it=Object.assign({},f,{precio:pr, margen:(pr-f.costo)/pr*100});
+    if(pr<f.costo-_OF_TOL_COSTO) out.bajoCosto.push(it);
+    else if(f.piso>0 && pr<f.piso*_OF_TOL_PISO) out.bajoPiso.push(it);
+  });
+  return out;
+}
+function _owLista(arr){
+  const fs=arr.slice(0,60).map(x=>`<div class="owfila">
+    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.nombre)}">${esc(x.nombre)}</span>
+    <span style="opacity:.6">${esc(x.sku||"")}</span>
+    <span style="width:78px;text-align:right;opacity:${x.stock>0?".9":".5"}">${x.stock>0?("stock "+x.stock):"sin stock"}</span>
+    <span style="width:200px;text-align:right">${money(x.precio)} · costo ${money(x.costo)} · <b>${x.margen.toFixed(1)}%</b></span></div>`).join("");
+  return `<div class="owlista">${fs}${arr.length>60?`<div class="owfila" style="opacity:.6">…y ${arr.length-60} más</div>`:""}</div>`;
+}
+window.ofWarnOpen=()=>{
+  if(!ofWarn) return;
+  const c=ofWarn.chk, bc=c.bajoCosto, bp=c.bajoPiso, stk=a=>a.filter(x=>x.stock>0).length;
+  const secC=bc.length?`<div class="owsec">
+      <h4 style="color:#b0322f">⛔ ${bc.length} producto${bc.length===1?"":"s"} queda${bc.length===1?"":"n"} POR DEBAJO DEL COSTO</h4>
+      <p class="d">${stk(bc)} con stock. Vender ahí es perder plata en cada unidad.</p>
+      ${_owLista(bc)}
+      <label class="owok" style="color:#b0322f"><input type="checkbox" id="ow-c" onchange="ofWarnSync()"> Confirmo que quiero vender por debajo del costo</label>
+    </div>`:"";
+  const secP=bp.length?`<div class="owsec">
+      <h4 style="color:#a1560f">⚠ ${bp.length} producto${bp.length===1?"":"s"} queda${bp.length===1?"":"n"} por debajo del piso de margen</h4>
+      <p class="d">${stk(bp)} con stock. Se vende con ganancia, pero con menos margen que el mínimo de su categoría.</p>
+      ${_owLista(bp)}
+      <label class="owok" style="color:#a1560f"><input type="checkbox" id="ow-p" onchange="ofWarnSync()"> Confirmo vender con menos margen que el piso</label>
+    </div>`:"";
+  const sd=c.sinDato.length?`<div class="owsec"><p class="d" style="margin:0">${c.sinDato.length} sin costo o sin precio base: no se pudieron calcular.</p></div>`:"";
+  document.getElementById("modal").innerHTML=`<div class="scrim" onclick="if(event.target===this)ofWarnCancelar()"><div class="modal" style="max-width:720px">
+    <div class="mh"><h3>${bc.length?"⛔":"⚠"} Revisá antes de aplicar</h3><span style="opacity:.65;font-size:12.5px">${esc(ofWarn.rule.targetName||"")} · ${c.total} producto${c.total===1?"":"s"}</span></div>
+    ${secC}${secP}${sd}
+    <div class="mf" style="justify-content:space-between;align-items:center">
+      <span style="font-size:12px;opacity:.65">Sin tildar lo de arriba no se aplica.</span>
+      <span style="display:flex;gap:8px"><button class="btn ghost" onclick="ofWarnCancelar()">Volver y corregir</button>
+      <button class="btn" id="ow-go" disabled onclick="ofWarnConfirmar()">Aplicar igual</button></span>
+    </div>
+  </div></div>`;
+  ofWarnSync();
+};
+window.ofWarnSync=()=>{
+  const b=document.getElementById("ow-go"); if(!b) return;
+  const c=document.getElementById("ow-c"), p=document.getElementById("ow-p");
+  b.disabled=(!!c&&!c.checked)||(!!p&&!p.checked);
+};
+window.ofWarnCancelar=()=>{ ofWarn=null; cerrarModal(); };
+window.ofWarnConfirmar=async()=>{
+  const w=ofWarn; ofWarn=null; cerrarModal();
+  if(w) await rgAplicar(w.rule, w.draft);
+};
 // Escribe eyg.sync_ofertas (+_flat) con TODO SYNC_OF y recalcula (1 producto → instantáneo; categoría → completo).
 async function rgSave(recalcTmpl){
   await setParam(KEY_SYNC_OF, JSON.stringify(SYNC_OF));
@@ -969,6 +1144,14 @@ window.rgGuardar=async()=>{
     rule.modo='precio'; rule.valor=precio; rule.reemplaza=true;
   }
   if(d._cat) rule._cat=d._cat;   // para el badge de categoría sin recargar
+  // ANTES de aplicar: ¿algún producto queda bajo el costo o bajo el piso? Si sí, se confirma.
+  const chk=ofChequear(rule);
+  if(chk===null){ toast("Esperá a que termine de calcular cómo queda la categoría"); return; }
+  if(chk.bajoCosto.length||chk.bajoPiso.length){ ofWarn={rule:rule, draft:d, chk:chk}; ofWarnOpen(); return; }
+  await rgAplicar(rule, d);
+};
+/* Guarda y aplica la oferta (después de pasar el chequeo, o de confirmarlo en el cartel). */
+async function rgAplicar(rule, d){
   const desdeOpo=d._desdeOpo, desdeStock=d._desdeStock;
   const i=SYNC_OF.findIndex(o=>o.id===rule.id);
   if(i>=0) SYNC_OF[i]=rule; else SYNC_OF.push(rule);
@@ -982,7 +1165,7 @@ window.rgGuardar=async()=>{
     if(desdeStock){ OPORT_STOCK=OPORT_STOCK.filter(x=>x.id!==desdeStock); ESTADO.arch=ESTADO.arch.filter(x=>x.id!==desdeStock); ESTADO.ignora=ESTADO.ignora.filter(x=>x!==desdeStock); await guardarEstado(); }
     toast("Oferta guardada y aplicada ✓"); render();
   }catch(e){ toast("Error: "+e.message); }
-};
+}
 /* guardar combo → eyg.ofertas (panel del comercial). No pisa la escalera del motor. */
 window.rgGuardarCombo=async()=>{
   const d=rgDraft; if(!d) return;
