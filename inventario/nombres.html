@@ -487,7 +487,7 @@ async function cargar(preservar){
     const dom = [["categ_id","child_of",ROOT.id]];
     if(ROOT.dom) ROOT.dom.forEach(c=>dom.push(c));   // filtro extra por categoría (ej. éticos: solo con stock)
     recs = await EYG.rpc("product.template","search_read",
-      [dom,["id","default_code","name","categ_id","qty_available","product_variant_id","x_laboratorio","x_unidad","alfabeta_code"]],
+      [dom,["id","default_code","name","categ_id","qty_available","product_variant_id","x_laboratorio","x_unidad","alfabeta_code","barcode"]],
       Object.assign({limit:2000, order:"name"}, LANG));
   }catch(e){ cont.innerHTML='<div class="empty">No se pudieron leer los productos: '+EYG.esc(e.message)+'</div>'; return; }
 
@@ -523,7 +523,7 @@ async function cargar(preservar){
     return { id:r.id, sku:r.default_code||"", nombre:r.name||"",
              stock:(r.qty_available!=null?r.qty_available:0),
              varId, embalaje: pk?pk.qty:null, embId: pk?pk.id:null, embNombre: pk?pk.name:"", sub,
-             labField, unidadField, ed, ab:(r.alfabeta_code||0), catId:(r.categ_id&&r.categ_id[0])||0,
+             labField, unidadField, ed, ab:(r.alfabeta_code||0), catId:(r.categ_id&&r.categ_id[0])||0, barcode:(r.barcode||null),
              ...a, aplicado:false };
   });
   await cargarEngancheAB(TODOS);
@@ -735,7 +735,11 @@ window.soltarAB = async (id) => {
     : "\u2022 Se crea una COPIA de esta ficha con el código " + cod + ", que queda de pararrayos.\n"
       + "  Queda activa pero NO vendible. Tiene que quedar activa: si se archiva, AlfaBeta no la\n"
       + "  encuentra y crea otra igual.\n";
-  msg += "\nNo se toca el stock, ni las compras, ni las facturas, ni los precios ya cargados.\n\n¿Confirmás?";
+  msg += "\nEl historial NO se toca: las compras, las facturas, el stock y las ventas cuelgan del\n"
+       + "producto, no de su código. El código de barras se queda con este producto.\n";
+  msg += "\nOJO: buscar por el código viejo (" + (p.sku||("AB"+cod)) + ") va a traer la ficha pararrayos,\n"
+       + "que no se puede comprar ni vender. De ahora en más este producto es el " + nuevo + ".\n";
+  msg += "\n¿Confirmás?";
   if(!confirm(msg)) return;
   const btn = document.querySelector("#row-"+id+" .abbtn");
   if(btn){ btn.disabled = true; btn.textContent = "…"; }
@@ -747,6 +751,17 @@ window.soltarAB = async (id) => {
         name: p.nombre, default_code: "AB"+cod, alfabeta_code: 0, sale_ok: false, purchase_ok: false, active: true
       }], LANG);
       creada = Array.isArray(cid) ? cid[0] : cid;
+      /* El CÓDIGO DE BARRAS se queda con NUESTRO producto: es el que se escanea al recibir y al
+         vender. En Odoo el código de barras es único, así que si la copia se lo llevó hay que
+         sacárselo, y si de paso el nuestro lo perdió, devolvérselo. */
+      try{
+        const chk = await EYG.rpc("product.template","read",[[creada],["barcode"]], LANG);
+        if(chk && chk[0] && chk[0].barcode) await EYG.rpc("product.template","write",[[creada],{barcode:false}], LANG);
+        if(p.barcode){
+          const mio = await EYG.rpc("product.template","read",[[p.id],["barcode"]], LANG);
+          if(!(mio && mio[0] && mio[0].barcode)) await EYG.rpc("product.template","write",[[p.id],{barcode:p.barcode}], LANG);
+        }
+      }catch(e){ /* si el campo no se puede tocar, se avisa abajo */ }
       await EYG.rpc("product.template","write",[[p.id],{alfabeta_code:0, default_code:nuevo}], LANG);
       await EYG.rpc("product.template","write",[[creada],{alfabeta_code:cod}], LANG);
     }else{
@@ -857,12 +872,12 @@ async function buscarFuera(q){
     const yaEstan = TODOS.map(p=>p.id);
     const recs = await EYG.rpc("product.template","search_read",
       [["&",["id","not in",yaEstan],"|",["name","ilike",q],["default_code","ilike",q]],
-       ["id","default_code","name","categ_id","qty_available","alfabeta_code"]],
+       ["id","default_code","name","categ_id","qty_available","alfabeta_code","barcode"]],
       Object.assign({limit:25, order:"name"}, LANG));
     if(String(filtro||"").trim() !== q) return;    // el usuario siguió tipeando: este resultado ya no sirve
     FUERA = recs.map(r=>({ id:r.id, sku:r.default_code||"", nombre:r.name||"",
       cat:(r.categ_id&&r.categ_id[1]||"").replace("ALL / ",""), stock:(r.qty_available||0),
-      ab:(r.alfabeta_code||0), catId:(r.categ_id&&r.categ_id[0])||0, fuera:true }));
+      ab:(r.alfabeta_code||0), catId:(r.categ_id&&r.categ_id[0])||0, barcode:(r.barcode||null), fuera:true }));
     await cargarEngancheAB(FUERA);
   }catch(e){ FUERA = []; }
   BUSCANDO = false; render();
