@@ -20,7 +20,21 @@
   .kpi{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 16px;box-shadow:var(--shadow);min-width:120px}
   .kpi .n{font-size:22px;font-weight:900;color:var(--ink);line-height:1}
   .kpi .l{font-size:11.5px;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
-  .kpi.warn .n{color:#c2410c} .kpi.good .n{color:var(--teal)}
+  .kpi.warn .n{color:#c2410c} .kpi.good .n{color:var(--teal)} .kpi.bad .n{color:#b45309}
+  /* enganche con AlfaBeta */
+  .pcard.atado{border-left:4px solid #b45309;background:#fffdf7}
+  .abbox{margin-top:6px;display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+  .abchip{background:#fdf0dd;color:#92400e;border:1px solid #f0cfa0;border-radius:999px;padding:2px 8px;font-size:10.5px;font-weight:800;cursor:help;white-space:nowrap}
+  .abbtn{background:#b45309;color:#fff;border:none;border-radius:8px;padding:4px 10px;font-size:11.5px;font-weight:800;cursor:pointer;font-family:inherit}
+  .abbtn:hover{background:#92400e} .abbtn:disabled{opacity:.5;cursor:default}
+  .absub{font-size:10px;color:var(--gris2);font-weight:700}
+  /* "a corregir" clickeable: sube esos productos al principio de la sección */
+  .secchg.clk{cursor:pointer} .secchg.clk:hover{filter:brightness(1.08)}
+  .secchg.on{box-shadow:0 0 0 2px #fff,0 0 0 4px #f97316}
+  /* resultados del buscador que están fuera de la categoría abierta */
+  .fuera{margin:14px 0;background:#f4fbfa;border:1px dashed var(--teal-med);border-radius:12px;padding:12px 14px}
+  .fuera .fhead{font-size:12px;font-weight:800;color:var(--teal-deep);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+  .fuera .fsub{font-size:12px;color:var(--gris);margin-bottom:10px}
 
   /* ---- selector de categoría raíz (Hospitalarios / Farmacopea / …) ---- */
   .catsel{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;align-items:center}
@@ -446,7 +460,24 @@ function desglosar(core, parens, add){
 }
 
 /* =========================== estado + carga =========================== */
-let TODOS = [], SUBCATS = [], abiertos = new Set(), filtro = "", HISTORIAL = [], filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false, sinEmbalaje:false};
+let TODOS = [], SUBCATS = [], abiertos = new Set(), filtro = "", HISTORIAL = [], filtros = {conCambios:false, sinBulto:false, sinConc:false, sinStock:false, conStock:false, sinEmbalaje:false, atadoAB:false};
+/* ===== ENGANCHE CON ALFABETA =====
+   AlfaBeta no mira nuestros productos: mira UN solo campo, `alfabeta_code`. Cada vez que corre
+   (novedades cada 3 h, base completa a las 4 de la mañana) busca TODAS las fichas que llevan ese
+   código y les escribe encima el PVP, y también la categoría y el impuesto. Por eso un producto
+   nuestro que quedó con el código vuelve solo a Éticos cada noche.
+   SOLTARLO = ponerle el código en cero y darle un interno de la casa (serie 153xxx).
+   Para que AlfaBeta no cree una ficha nueva hay que dejarle un PARARRAYOS: otra ficha con ese
+   código. Si el producto ya tiene una gemela en el vademécum, esa hace de pararrayos; si no la
+   tiene, se le crea una copia.
+   OJO (verificado 13/9/2026): el pararrayos tiene que quedar ACTIVO. Si se archiva, AlfaBeta deja
+   de encontrarlo y crea una ficha nueva igual. Se le destilda "Puede ser vendido" para que nadie
+   lo venda por error. */
+let ARRIBA = new Set();// subcategorías donde los "a corregir" van primero (badge naranja clickeado)
+let GEM = {};          // {tmplId: ficha gemela con el mismo código, si existe}
+let PROX_INT = null;   // próximo código interno libre de la serie 153xxx
+let FUERA = [];        // resultados del buscador que están FUERA de la categoría cargada
+let BUSCANDO = false;
 
 async function cargar(preservar){
   const cont = document.getElementById("cont");
@@ -456,7 +487,7 @@ async function cargar(preservar){
     const dom = [["categ_id","child_of",ROOT.id]];
     if(ROOT.dom) ROOT.dom.forEach(c=>dom.push(c));   // filtro extra por categoría (ej. éticos: solo con stock)
     recs = await EYG.rpc("product.template","search_read",
-      [dom,["id","default_code","name","categ_id","qty_available","product_variant_id","x_laboratorio","x_unidad"]],
+      [dom,["id","default_code","name","categ_id","qty_available","product_variant_id","x_laboratorio","x_unidad","alfabeta_code"]],
       Object.assign({limit:2000, order:"name"}, LANG));
   }catch(e){ cont.innerHTML='<div class="empty">No se pudieron leer los productos: '+EYG.esc(e.message)+'</div>'; return; }
 
@@ -492,9 +523,10 @@ async function cargar(preservar){
     return { id:r.id, sku:r.default_code||"", nombre:r.name||"",
              stock:(r.qty_available!=null?r.qty_available:0),
              varId, embalaje: pk?pk.qty:null, embId: pk?pk.id:null, embNombre: pk?pk.name:"", sub,
-             labField, unidadField, ed,
+             labField, unidadField, ed, ab:(r.alfabeta_code||0), catId:(r.categ_id&&r.categ_id[0])||0,
              ...a, aplicado:false };
   });
+  await cargarEngancheAB(TODOS);
   // subcategorías presentes (ordenadas por cantidad)
   const bycat = {};
   TODOS.forEach(p=>{ bycat[p.sub]=(bycat[p.sub]||0)+1; });
@@ -514,6 +546,7 @@ function filtrarSub(sc){
   if(filtros.sinStock)   arr = arr.filter(p=>(p.stock||0)<=0);
   if(filtros.conStock)   arr = arr.filter(p=>(p.stock||0)>0);
   if(filtros.sinEmbalaje)arr = arr.filter(p=>p.embalaje==null);
+  if(filtros.atadoAB)    arr = arr.filter(p=>p.ab>0);
   return arr;
 }
 function hayFiltroActivo(){ return !!filtro || Object.values(filtros).some(Boolean); }
@@ -527,6 +560,7 @@ function render(){
   const sinBulto = TODOS.filter(p=>!p.desg.bultoNum).length;
   const sinEmb = TODOS.filter(p=>p.embalaje==null).length;
   const sinStock = TODOS.filter(p=>(p.stock||0)<=0).length;
+  const atados = TODOS.filter(p=>p.ab>0).length;
 
   const kpi = (key,n,label,cls)=>`<div class="kpi ${cls||""} ${key?"clk":""} ${key&&filtros[key]?"on":""}" ${key?`onclick="toggleFiltro('${key}')"`:""}><div class="n">${n}</div><div class="l">${label}</div></div>`;
   const kpis = `<div class="kpis">
@@ -536,13 +570,14 @@ function render(){
     ${kpi("sinBulto",sinBulto,"Sin bulto/caja","warn")}
     ${kpi("sinEmbalaje",sinEmb,"Sin embalaje","warn")}
     ${kpi("sinStock",sinStock,"Sin stock","")}
+    ${kpi("atadoAB",atados,"🧲 Atados a AlfaBeta","bad")}
   </div>`;
 
   const catsel = `<div class="catsel"><span class="lbl">Categoría</span>${CATEGS.map((c,i)=>`<div class="catpill ${c.id===ROOT.id?"active":""}" onclick="setCateg(${i})">${EYG.esc(c.label)}</div>`).join("")}</div>`;
 
   const filtrando = hayFiltroActivo();
   const enVista = SUBCATS.reduce((a,sc)=>a+filtrarSub(sc).length,0);
-  const algunFiltro = filtros.conCambios||filtros.sinBulto||filtros.sinConc||filtros.sinStock||filtros.conStock||filtros.sinEmbalaje;
+  const algunFiltro = filtros.conCambios||filtros.sinBulto||filtros.sinConc||filtros.sinStock||filtros.conStock||filtros.sinEmbalaje||filtros.atadoAB;
   const toolbar = `<div class="toolbar">
     <button class="btn-sync" onclick="sincronizar()">🔄 Actualizar</button>
     <button class="btn-toggle ${filtros.conStock?"on":""}" onclick="toggleFiltro('conStock')">📦 Solo con stock</button>
@@ -561,22 +596,50 @@ function render(){
     if(filtrando && arr.length===0) return "";           // oculta subcategorías sin coincidencias
     const abierta = abiertos.has(sc) || (!!filtro && arr.length>0);
     const pend = arr.filter(p=>p.cambia && !p.aplicado).length;
+    // el badge naranja ordena: primero los que tienen algo para corregir, así no hay que buscarlos
+    const pendiente = p => (p.cambia && !p.aplicado) || !p.desg.conc || !p.desg.bultoNum || p.embalaje==null;
+    const arrOrd = ARRIBA.has(sc) ? arr.slice().sort((a,b)=>(pendiente(b)?1:0)-(pendiente(a)?1:0)) : arr;
     const cuerpo = abierta
-      ? `<div class="secbody">${arr.length?arr.map(p=>fila(p)).join(""):'<div class="empty">Sin coincidencias con el filtro.</div>'}</div>`
+      ? `<div class="secbody">${arrOrd.length?arrOrd.map(p=>fila(p)).join(""):'<div class="empty">Sin coincidencias con el filtro.</div>'}</div>`
       : "";
     return `<div class="sec ${abierta?"open":""}">
       <div class="sechead" onclick="toggleSec(${i})">
         <span class="chev">▶</span>
         <span class="secname">${EYG.esc(sc)}</span>
         <span class="seccount">${filtrando?arr.length+" / "+totalSc:totalSc}</span>
-        ${pend?`<span class="secchg">${pend} a corregir</span>`:""}
+        ${pend?`<span class="secchg clk ${ARRIBA.has(sc)?"on":""}" title="Tocá para traer arriba de todo los que tienen algo para corregir" onclick="event.stopPropagation();subirPendientes('${EYG.esc(sc).replace(/'/g,"\\'")}')">${pend} a corregir${ARRIBA.has(sc)?" ↑":""}</span>`:""}
         <span class="secright">${pend?`<button class="btn-secap" onclick="event.stopPropagation();aplicarTodos(${i})">Aplicar los ${pend} sugeridos</button>`:""}</span>
       </div>${cuerpo}</div>`;
   }).join("");
   const accordion = `<div class="accordion">${secciones||'<div class="empty">Sin resultados. Probá quitar filtros.</div>'}</div>`;
+  // lo que el buscador encontró FUERA de la categoría abierta (otra categoría, o sin stock)
+  let fueraHTML = "";
+  if(String(filtro||"").trim().length>=3){
+    if(BUSCANDO) fueraHTML = `<div class="fuera"><div class="fhead">Buscando en todo el catálogo…</div></div>`;
+    else if(FUERA.length) fueraHTML = `<div class="fuera">
+        <div class="fhead">${FUERA.length} encontrado${FUERA.length===1?"":"s"} fuera de esta categoría</div>
+        <div class="fsub">Están en otra categoría, o son de Éticos sin stock (el Maestro no los carga). Desde acá podés soltarlos de AlfaBeta; para editarles el nombre y el bulto, abrí su categoría arriba.</div>
+        ${FUERA.map(p=>filaFuera(p)).join("")}
+      </div>`;
+  }
 
   cont.innerHTML = `${catsel}<div class="intro">
       <b>Maestro de productos — Depósito.</b> El dato ordenado de cada producto: <b>nombre</b> (detecta mayúsculas, acentos, espacios, unidades pegadas, abreviaturas, códigos sueltos y propone el correcto), <b>bulto/caja</b>, <b>embalaje (caja real)</b> y <b>subcategoría</b>. Cada subcategoría es una <b>sección desplegable</b>: tocá el título para abrirla o cerrarla. <b>Tocá una tarjeta</b> de arriba para filtrar en todas a la vez (con corrección, sin concentración, sin bulto, sin embalaje, sin stock); el buscador también recorre todas las subcategorías. Donde falte el <b>bulto/caja</b>, cargalo desde la fila. En <b>Embalaje (caja real)</b>: cuántas unidades trae la caja cerrada — es el mínimo de compra, se guarda en Odoo. A los productos <b>sin subcategoría</b> asignásela con el desplegable. Revisá y aplicá con un clic; el resto lo sincroniza el sistema solo.
+      <details><summary>🧲 Qué es "Atado a AlfaBeta" y cómo se suelta</summary>
+        <div class="std">
+          AlfaBeta no mira nuestros productos: mira <b>un solo campo</b>, el Código Alfa Beta. Cada vez que corre
+          (novedades cada 3 h, base completa a las 4 de la mañana) busca todas las fichas con ese código y les
+          <b>escribe encima el precio, la categoría y el impuesto</b>. Por eso un producto nuestro que quedó con el
+          código <b>vuelve solo a Éticos cada noche</b>, aunque lo hayas movido.<br>
+          <b>Soltarlo</b> le pone el código en cero y le da un interno de la casa (serie 153xxx). A partir de ahí
+          AlfaBeta no lo toca más y la categoría, el impuesto y el precio quedan firmes.<br>
+          Para que AlfaBeta no cree una ficha nueva se le deja un <b>pararrayos</b>: otra ficha con ese código.
+          Si el producto ya tiene una gemela en el vademécum, esa hace de pararrayos; si no la tiene, <b>se le crea
+          una copia</b>. El pararrayos queda <b>activo pero no vendible</b> — si se archiva, AlfaBeta no lo encuentra
+          y genera otra ficha igual.<br>
+          La tarjeta <b>🧲 Atados a AlfaBeta</b> de arriba filtra todos los que están en esta situación.
+        </div>
+      </details>
       <details><summary>Ver la regla de nombres que se aplica</summary>
         <div class="std">
           Formato objetivo: <code>MONODROGA CONCENTRACIÓN forma x contenido - LABORATORIO (Caja x N tipo)</code><br>
@@ -587,7 +650,7 @@ function render(){
           • El bulto se normaliza a <code>(Caja x N tipo)</code>; “SE VENDE POR CAJA CERRADA” se conserva.
         </div>
       </details>
-    </div>${kpis}${toolbar}${accordion}`;
+    </div>${kpis}${toolbar}${fueraHTML}${accordion}`;
 }
 
 function fila(p){
@@ -619,9 +682,9 @@ function fila(p){
     ? `<div class="cajahint">🧩 <b>Venta por caja:</b> el <b>costo</b> se sigue cargando por <b>tira</b> · <b>Bulto/caja</b> = tiras que trae la caja · <b>Embalaje</b> = tope de la escalera, en tiras (hasta ahí llega el máximo descuento; si lo ponés igual al bulto, queda un solo precio).</div>`
     : "";
   const fld = (l,inner,cls)=>`<div class="fld ${cls||""}"><label>${l}</label>${inner}</div>`;
-  return `<div class="pcard" id="row-${p.id}">
+  return `<div class="pcard${p.ab>0?" atado":""}" id="row-${p.id}">
     <div class="pc-top">
-      <div class="pc-cod">${EYG.esc(p.sku)||"—"}${stk}</div>
+      <div class="pc-cod">${EYG.esc(p.sku)||"—"}${stk}${chipAB(p)}</div>
       <div class="pc-nom">
         <label class="pc-lnom">Nombre <span>· se edita acá, se guarda solo</span></label>
         ${inNom}${sug}${subSel}
@@ -636,6 +699,102 @@ function fila(p){
       ${fld("Embalaje (caja real)", embInner, "fld-emb")}
     </div>${cajaHint}${nota}
   </div>`;
+}
+
+/* Chip 🧲 + botón "Soltar", en la columna del código de cada fila atada a AlfaBeta. */
+function chipAB(p){
+  if(!p || !(p.ab>0)) return "";
+  const g = GEM[p.id];
+  const ayuda = "AlfaBeta le escribe encima el precio, la categoría y el impuesto cada vez que corre "
+    + "(cada 3 h, y la base completa a las 4 de la mañana). Por eso lo que le cambies acá se deshace solo. "
+    + (g ? "Ya existe otra ficha con el mismo código, así que al soltarlo esa queda de pararrayos."
+         : "No hay otra ficha con este código: al soltarlo se le crea una copia que queda de pararrayos.");
+  return `<div class="abbox">
+      <span class="abchip" title="${EYG.esc(ayuda)}">🧲 AlfaBeta ${p.ab}</span>
+      <button class="abbtn" onclick="soltarAB(${p.id})" title="Cortarle el enganche y darle un código propio de la casa">Soltar</button>
+      <div class="absub">${g ? "tiene pararrayos" : "sin pararrayos"}</div>
+    </div>`;
+}
+/* Corta el enganche de UN producto:
+   1. si no hay otra ficha con ese código, se crea una copia que queda de pararrayos (activa y NO
+      vendible) para que AlfaBeta le pegue ahí y no genere una ficha nueva;
+   2. al producto nuestro se le pone el código de AlfaBeta en cero y un interno de la casa. */
+window.soltarAB = async (id) => {
+  const p = TODOS.find(x=>x.id===id) || FUERA.find(x=>x.id===id);
+  if(!p || !(p.ab>0)) return;
+  const g = GEM[p.id];
+  if(PROX_INT==null) await calcularProxInterno();
+  if(PROX_INT==null){ alert("No pude calcular el próximo código interno. Probá de nuevo."); return; }
+  const nuevo = String(PROX_INT);
+  const cod = p.ab;
+  let msg = "SOLTAR DE ALFABETA\n\n" + p.nombre + "\n\n"
+    + "\u2022 Se le pone el Código Alfa Beta en cero: AlfaBeta no lo toca nunca más.\n"
+    + "\u2022 Se le asigna el código interno de la casa: " + nuevo + "\n";
+  msg += g
+    ? "\u2022 Ya existe otra ficha con el código " + cod + " (\"" + String(g.name).slice(0,46) + "\"): esa queda de pararrayos.\n"
+    : "\u2022 Se crea una COPIA de esta ficha con el código " + cod + ", que queda de pararrayos.\n"
+      + "  Queda activa pero NO vendible. Tiene que quedar activa: si se archiva, AlfaBeta no la\n"
+      + "  encuentra y crea otra igual.\n";
+  msg += "\nNo se toca el stock, ni las compras, ni las facturas, ni los precios ya cargados.\n\n¿Confirmás?";
+  if(!confirm(msg)) return;
+  const btn = document.querySelector("#row-"+id+" .abbtn");
+  if(btn){ btn.disabled = true; btn.textContent = "…"; }
+  try{
+    let creada = null;
+    if(!g){
+      // la copia se crea SIN el código, para no tener dos fichas con el mismo a la vez
+      const cid = await EYG.rpc("product.template","copy",[[p.id],{
+        name: p.nombre, default_code: "AB"+cod, alfabeta_code: 0, sale_ok: false, purchase_ok: false, active: true
+      }], LANG);
+      creada = Array.isArray(cid) ? cid[0] : cid;
+      await EYG.rpc("product.template","write",[[p.id],{alfabeta_code:0, default_code:nuevo}], LANG);
+      await EYG.rpc("product.template","write",[[creada],{alfabeta_code:cod}], LANG);
+    }else{
+      await EYG.rpc("product.template","write",[[p.id],{alfabeta_code:0, default_code:nuevo}], LANG);
+    }
+    PROX_INT++;
+    p.ab = 0; p.sku = nuevo;
+    if(creada) GEM[p.id] = {id:creada, name:p.nombre, alfabeta_code:cod, active:true};
+    render();
+    alert("Listo. " + p.nombre + "\n\nCódigo interno: " + nuevo
+      + (creada ? "\nPararrayos creado (ficha " + creada + ")." : "\nPararrayos: la ficha que ya existía.")
+      + "\n\nAhora ponele la categoría y el impuesto que correspondan: ya no se los pisa nadie.");
+  }catch(e){
+    if(btn){ btn.disabled = false; btn.textContent = "Soltar"; }
+    alert("No se pudo soltar: " + (e.message||e));
+  }
+};
+
+/* Para los productos atados a AlfaBeta: busca si ya existe una ficha GEMELA con el mismo código
+   (la del vademécum, que hace de pararrayos) y calcula el próximo código interno libre. */
+async function cargarEngancheAB(lista){
+  GEM = {};
+  const conAB = lista.filter(p=>p.ab>0);
+  if(!conAB.length){ PROX_INT = PROX_INT || null; return; }
+  const codes = [...new Set(conAB.map(p=>p.ab))];
+  const ids   = conAB.map(p=>p.id);
+  try{
+    const gem = await EYG.rpc("product.template","search_read",
+      [[["alfabeta_code","in",codes],["id","not in",ids]],["id","name","alfabeta_code","categ_id","active","sale_ok"]],
+      {context:{lang:"es_AR", active_test:false}});
+    const porCod = {};
+    gem.forEach(g=>{ (porCod[g.alfabeta_code]=porCod[g.alfabeta_code]||[]).push(g); });
+    conAB.forEach(p=>{
+      const g = porCod[p.ab]||[];
+      // la del vademécum es la que vive en ÉTICOS o cuelga de la raíz
+      GEM[p.id] = g.find(x=>/ETICO/.test(x.categ_id[1])||x.categ_id[1]==="ALL") || g[0] || null;
+    });
+  }catch(e){ /* si falla, se muestra el chip igual y el botón avisa */ }
+  if(PROX_INT==null) await calcularProxInterno();
+}
+/* Próximo libre de la serie 153xxx, igual que en el módulo de Enganches. */
+async function calcularProxInterno(){
+  try{
+    const serie = await EYG.rpc("product.template","search_read",
+      [[["default_code","=like","153%"]],["default_code"]], {context:{lang:"es_AR", active_test:false}});
+    const nums = serie.map(x=>parseInt(x.default_code,10)).filter(n=>n>=153000 && n<154000);
+    PROX_INT = (nums.length?Math.max(...nums):153000) + 1;
+  }catch(e){ PROX_INT = null; }
 }
 
 /* ---------- celda de EMBALAJE (caja real = mínimo de compra) ---------- */
@@ -685,13 +844,52 @@ window.asignarSub = async id => {
 };
 /* render() reconstruye #cont, que contiene al propio input #buscar: el debounce
    solo no alcanzaba, había que devolverle el foco y el cursor. Lo hace EYG.buscador. */
-window.onBuscar = EYG.buscador(v => { filtro=v; render(); });
+window.onBuscar = EYG.buscador(v => { filtro=v; FUERA=[]; render(); if(String(v||"").trim().length>=3) buscarFuera(v); });
+/* El Maestro carga una categoría por vez, y de Éticos sólo los que tienen stock. Así que hay
+   productos que existen y no están a la vista (la crema de ordeñe de 170 g, por ejemplo). Cuando
+   se busca algo, además de filtrar lo cargado se sale a buscar a TODO Odoo y lo que aparece afuera
+   se muestra en una tarjeta aparte, con su chip de AlfaBeta y el botón de soltar. */
+async function buscarFuera(q){
+  q = String(q||"").trim();
+  if(q.length<3) return;
+  BUSCANDO = true; render();
+  try{
+    const yaEstan = TODOS.map(p=>p.id);
+    const recs = await EYG.rpc("product.template","search_read",
+      [["&",["id","not in",yaEstan],"|",["name","ilike",q],["default_code","ilike",q]],
+       ["id","default_code","name","categ_id","qty_available","alfabeta_code"]],
+      Object.assign({limit:25, order:"name"}, LANG));
+    if(String(filtro||"").trim() !== q) return;    // el usuario siguió tipeando: este resultado ya no sirve
+    FUERA = recs.map(r=>({ id:r.id, sku:r.default_code||"", nombre:r.name||"",
+      cat:(r.categ_id&&r.categ_id[1]||"").replace("ALL / ",""), stock:(r.qty_available||0),
+      ab:(r.alfabeta_code||0), catId:(r.categ_id&&r.categ_id[0])||0, fuera:true }));
+    await cargarEngancheAB(FUERA);
+  }catch(e){ FUERA = []; }
+  BUSCANDO = false; render();
+}
+/* tarjeta compacta para un producto que está fuera de la categoría abierta */
+function filaFuera(p){
+  const stk = (p.stock||0)>0 ? (p.stock+" u") : "sin stock";
+  return `<div class="pcard${p.ab>0?" atado":""}" id="row-${p.id}" style="margin-bottom:8px">
+    <div class="pc-top">
+      <div class="pc-cod">${EYG.esc(p.sku)||"—"}<div class="stk ${(p.stock||0)<=0?'zero':''}">${stk}</div>${chipAB(p)}</div>
+      <div class="pc-nom">
+        <label class="pc-lnom">${EYG.esc(p.cat)}</label>
+        <div style="font-size:14px;font-weight:700;color:var(--ink);line-height:1.35">${EYG.esc(p.nombre)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+window.subirPendientes = sc => {
+  if(ARRIBA.has(sc)) ARRIBA.delete(sc); else { ARRIBA.add(sc); abiertos.add(sc); }
+  render();
+};
 window.toggleFiltro = k => {
   filtros[k]=!filtros[k];
   if(filtros[k]){ if(k==="conStock") filtros.sinStock=false; if(k==="sinStock") filtros.conStock=false; }
   render();
 };
-window.limpiarFiltros = () => { filtros={conCambios:false,sinBulto:false,sinConc:false,sinStock:false,conStock:false,sinEmbalaje:false}; render(); };
+window.limpiarFiltros = () => { filtros={conCambios:false,sinBulto:false,sinConc:false,sinStock:false,conStock:false,sinEmbalaje:false,atadoAB:false}; render(); };
 async function escribir(id, nombre){
   return EYG.rpc("product.template","write",[[id],{name:nombre}], LANG);
 }
