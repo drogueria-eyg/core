@@ -21,6 +21,15 @@
   .kpi .n{font-size:22px;font-weight:900;color:var(--ink);line-height:1}
   .kpi .l{font-size:11.5px;color:var(--gris);text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
   .kpi.warn .n{color:#c2410c} .kpi.good .n{color:var(--teal)} .kpi.bad .n{color:#b45309}
+  /* cambiar la categoría desde la fila */
+  .catcell .catbtn{background:#eef6f5;color:var(--teal-deep);border:1px solid var(--teal-med);border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;max-width:100%;text-align:left;line-height:1.3}
+  .catcell .catbtn:hover{background:#e0f0ee}
+  .catcell.edit select{width:100%;padding:7px 9px;border:1px solid var(--teal);border-radius:8px;font-family:inherit;font-size:12.5px}
+  .catacts{display:flex;gap:6px;margin-top:5px}
+  .catok{background:var(--teal);color:#fff;border:none;border-radius:7px;padding:5px 12px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit}
+  .catok:disabled{opacity:.5}
+  .catcancel{background:#fff;color:var(--gris);border:1px solid var(--line);border-radius:7px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
+  .fld-cat{min-width:210px}
   /* enganche con AlfaBeta */
   .pcard.atado{border-left:4px solid #b45309;background:#fffdf7}
   .abbox{margin-top:6px;display:flex;flex-direction:column;gap:4px;align-items:flex-start}
@@ -473,6 +482,8 @@ let TODOS = [], SUBCATS = [], abiertos = new Set(), filtro = "", HISTORIAL = [],
    OJO (verificado 13/9/2026): el pararrayos tiene que quedar ACTIVO. Si se archiva, AlfaBeta deja
    de encontrarlo y crea una ficha nueva igual. Se le destilda "Puede ser vendido" para que nadie
    lo venda por error. */
+let CATS_TODAS = [];   // todas las categorías de Odoo, para poder mover un producto a cualquiera
+let CAT_EDIT = null;   // id del producto al que se le está cambiando la categoría (una por vez)
 let ARRIBA = new Set();// subcategorías donde los "a corregir" van primero (badge naranja clickeado)
 let GEM = {};          // {tmplId: ficha gemela con el mismo código, si existe}
 let PROX_INT = null;   // próximo código interno libre de la serie 153xxx
@@ -524,9 +535,11 @@ async function cargar(preservar){
              stock:(r.qty_available!=null?r.qty_available:0),
              varId, embalaje: pk?pk.qty:null, embId: pk?pk.id:null, embNombre: pk?pk.name:"", sub,
              labField, unidadField, ed, ab:(r.alfabeta_code||0), catId:(r.categ_id&&r.categ_id[0])||0, barcode:(r.barcode||null),
+             catFull:((r.categ_id&&r.categ_id[1])||"").replace(/^ALL \/ /,""),
              ...a, aplicado:false };
   });
   await cargarEngancheAB(TODOS);
+  if(!CATS_TODAS.length) await cargarCategorias();
   // subcategorías presentes (ordenadas por cantidad)
   const bycat = {};
   TODOS.forEach(p=>{ bycat[p.sub]=(bycat[p.sub]||0)+1; });
@@ -662,7 +675,7 @@ function fila(p){
   const sug = dif
     ? `<div class="sugbox"><span class="sugtag">sugerido</span> ${EYG.esc(p.sugerido)} <button class="usar" title="Usar la versión ordenada" onclick="usarSug(${p.id})">usar</button></div>`
     : "";
-  const subSel = (p.sub===SIN_SUB) ? selectorSub(p) : "";
+  const subSel = "";   // el selector viejo lo reemplaza la celda "Categoría", que sirve siempre
   const nota = p.desg && p.desg.ubicacion ? `<div class="nota">Ubicación: ${EYG.esc(p.desg.ubicacion)}</div>` : "";
   const inNom = `<textarea class="f-nom" id="nom-${p.id}" rows="2" onchange="guardarNombre(${p.id})">${EYG.esc(p.nombre)}</textarea>`;
   const inLab = `<input class="f-in" id="lab-${p.id}" value="${EYG.esc(e.lab||"")}" placeholder="—" onchange="guardarCampo(${p.id},'lab')">`;
@@ -691,6 +704,7 @@ function fila(p){
       </div>
     </div>
     <div class="pc-fields">
+      ${fld("Categoría", celdaCat(p), "fld-cat")}
       ${fld("Laboratorio / marca", inLab)}
       ${fld("Concentración", inCon)}
       ${fld("Presentación", inPre)}
@@ -700,6 +714,76 @@ function fila(p){
     </div>${cajaHint}${nota}
   </div>`;
 }
+
+/* Todas las categorías de Odoo (son ~250), para poder mover un producto a cualquiera desde acá
+   y no tener que ir a Odoo. Se traen una sola vez. */
+async function cargarCategorias(){
+  try{
+    const cs = await EYG.rpc("product.category","search_read",
+      [[["id","!=",1]],["id","complete_name","parent_id"]], Object.assign({limit:0}, LANG));
+    CATS_TODAS = cs.map(c=>({id:c.id, full:(c.complete_name||"").replace(/^ALL \/ /,""), pid:c.parent_id?c.parent_id[0]:null}))
+                   .filter(c=>c.full && c.full!=="ALL")
+                   .sort((a,b)=>a.full.localeCompare(b.full));
+  }catch(e){ CATS_TODAS = []; }
+}
+/* Celda "Categoría": muestra la actual y, al tocarla, deja elegir cualquier otra (de cualquier
+   familia). Se dibuja el desplegable SOLO en la fila que se está editando: con 2.000 filas,
+   poner 250 opciones en cada una haría la pantalla imposible. */
+function celdaCat(p){
+  const actual = p.catFull || p.sub || "—";
+  if(CAT_EDIT !== p.id){
+    return `<div class="catcell">
+        <button class="catbtn" onclick="editarCat(${p.id})" title="Cambiar la categoría de este producto">📁 ${EYG.esc(actual)} ▾</button>
+      </div>`;
+  }
+  const fams = [...new Set(CATS_TODAS.map(c=>c.full.split(" / ")[0]))].sort();
+  const opts = fams.map(f=>{
+    const hijas = CATS_TODAS.filter(c=>c.full.split(" / ")[0]===f);
+    return `<optgroup label="${EYG.esc(f)}">` + hijas.map(c=>
+      `<option value="${c.id}" ${c.full===actual?"selected":""}>${EYG.esc(c.full)}</option>`).join("") + `</optgroup>`;
+  }).join("");
+  return `<div class="catcell edit">
+      <select id="cat-${p.id}">${opts}</select>
+      <div class="catacts">
+        <button class="catok" onclick="moverCat(${p.id})">Mover</button>
+        <button class="catcancel" onclick="CAT_EDIT=null;render()">Cancelar</button>
+      </div>
+    </div>`;
+}
+window.editarCat = id => { CAT_EDIT = id; render(); };
+window.moverCat = async id => {
+  const p = TODOS.find(x=>x.id===id) || FUERA.find(x=>x.id===id);
+  if(!p) return;
+  const sel = document.getElementById("cat-"+id);
+  const catId = parseInt(sel && sel.value, 10);
+  if(!catId){ toast("Elegí una categoría"); return; }
+  const c = CATS_TODAS.find(x=>x.id===catId); if(!c) return;
+  if(c.full === (p.catFull||p.sub)){ CAT_EDIT=null; render(); return; }
+  if(p.ab>0 && !confirm("OJO: este producto sigue ATADO A ALFABETA (código "+p.ab+").\n\n"
+      + "Si lo movés sin soltarlo antes, AlfaBeta lo va a devolver a su categoría en la próxima\n"
+      + "corrida (cada 3 h, y la base completa a las 4 de la mañana).\n\n"
+      + "Lo recomendable es tocar \"Soltar\" primero.\n\n¿Lo movés igual?")) return;
+  const btn = document.querySelector("#row-"+id+" .catok"); if(btn){ btn.disabled=true; btn.textContent="…"; }
+  try{
+    await EYG.rpc("product.template","write",[[p.id],{categ_id:catId}], LANG);
+    const salioDeLaVista = !c.full.startsWith(ROOT.prefix.replace(/^ALL \/ /,""));
+    p.catFull = c.full;
+    p.sub = stripPrefix("ALL / "+c.full) || SIN_SUB;
+    CAT_EDIT = null;
+    if(p.fuera){ toast("Movido a "+c.full+" ✓"); render(); return; }
+    if(salioDeLaVista){
+      TODOS = TODOS.filter(x=>x.id!==p.id);      // se fue a otra familia: ya no va en esta lista
+      recomputarSubs();
+      toast("Movido a "+c.full+" ✓ — ya no está en "+ROOT.label);
+    }else{
+      resyncProducto(p);                          // otra subcategoría = otra regla -> recalcular
+      recomputarSubs();
+      abiertos.add(p.sub);
+      toast("Movido a "+c.full+" ✓ — aplicando la escalera…");
+    }
+    render();
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent="Mover"; } toast("Error: "+EYG.esc(e.message)); }
+};
 
 /* Chip 🧲 + botón "Soltar", en la columna del código de cada fila atada a AlfaBeta. */
 function chipAB(p){
@@ -876,7 +960,7 @@ async function buscarFuera(q){
       Object.assign({limit:25, order:"name"}, LANG));
     if(String(filtro||"").trim() !== q) return;    // el usuario siguió tipeando: este resultado ya no sirve
     FUERA = recs.map(r=>({ id:r.id, sku:r.default_code||"", nombre:r.name||"",
-      cat:(r.categ_id&&r.categ_id[1]||"").replace("ALL / ",""), stock:(r.qty_available||0),
+      cat:(r.categ_id&&r.categ_id[1]||"").replace("ALL / ",""), catFull:(r.categ_id&&r.categ_id[1]||"").replace("ALL / ",""), stock:(r.qty_available||0),
       ab:(r.alfabeta_code||0), catId:(r.categ_id&&r.categ_id[0])||0, barcode:(r.barcode||null), fuera:true }));
     await cargarEngancheAB(FUERA);
   }catch(e){ FUERA = []; }
@@ -891,6 +975,7 @@ function filaFuera(p){
       <div class="pc-nom">
         <label class="pc-lnom">${EYG.esc(p.cat)}</label>
         <div style="font-size:14px;font-weight:700;color:var(--ink);line-height:1.35">${EYG.esc(p.nombre)}</div>
+        <div style="margin-top:7px">${celdaCat(p)}</div>
       </div>
     </div>
   </div>`;
