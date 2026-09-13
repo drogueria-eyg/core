@@ -276,7 +276,10 @@ const catBadge=c=>c?`<span class="catb">${esc(catCorta(c))}</span>`:"";
    Configuración de precios: cada override lleva id "opo_<producto>" y _origen:"oportunidades". */
 const KEY_SYNC_OF="eyg.sync_ofertas", KEY_SYNC_OF_FLAT="eyg.sync_ofertas_flat";
 // mismo formato plano que lee el cron (idéntico a ofFlat() de config-precios)
-function ofSyncFlat(arr){ return arr.map(o=>[o.id,o.tipo,o.target,o.modo,o.valor,(o.reemplaza||o.modo==='precio')?1:0,o.hasta||'',o.pausada?1:0,o.stock||0].join("~")).join("\n"); }
+/* El 10º campo es 'perforar': el motor lo lee para saber si esa oferta puede bajar del piso de
+   margen. Si no se escribiera, cada vez que se guarda una oferta se perderían las autorizaciones
+   y el motor le levantaría el precio al piso a todas las promos. */
+function ofSyncFlat(arr){ return arr.map(o=>[o.id,o.tipo,o.target,o.modo,o.valor,(o.reemplaza||o.modo==='precio')?1:0,o.hasta||'',o.pausada?1:0,o.stock||0,o.perforar?1:0].join("~")).join("\n"); }
 async function leerSyncOf(){ try{ return JSON.parse(await getParam(KEY_SYNC_OF,"[]")||"[]")||[]; }catch(e){ return []; } }
 async function escribirSyncOf(arr, varId){
   await setParam(KEY_SYNC_OF, JSON.stringify(arr));
@@ -1104,7 +1107,9 @@ window.ofWarnSync=()=>{
 window.ofWarnCancelar=()=>{ ofWarn=null; cerrarModal(); };
 window.ofWarnConfirmar=async()=>{
   const w=ofWarn; ofWarn=null; cerrarModal();
-  if(w) await rgAplicar(w.rule, w.draft);
+  if(!w) return;
+  w.rule.perforar=true;   // queda registrado: el motor no le va a levantar el precio al piso
+  await rgAplicar(w.rule, w.draft);
 };
 // Escribe eyg.sync_ofertas (+_flat) con TODO SYNC_OF y recalcula (1 producto → instantáneo; categoría → completo).
 async function rgSave(recalcTmpl){
@@ -1131,7 +1136,8 @@ window.rgGuardar=async()=>{
     modo, valor:(modo==='pct'?valorRaw/100:valorRaw),
     reemplaza:(modo==='precio'?true:(remEl&&remEl.value==='1')),
     hasta:(document.getElementById("rg-hasta").value||""),
-    stock:(document.getElementById("rg-stock").value||""), pausada:!!d.pausada };
+    stock:(document.getElementById("rg-stock").value||""), pausada:!!d.pausada,
+    perforar:false };   // sólo se autoriza confirmando el cartel, nunca de antemano
   // ÉTICOS · PRECIO ÚNICO: el descuento se define sobre el PVP → lo convertimos a un PRECIO FIJO
   // limpio. Así el motor fija ese precio y el panel/orden muestran el descuento contra el PVP.
   // ÉTICOS · ESCALERA (pisa): se deja como %/monto y el motor lo aplica a cada tramo (como el resto).
