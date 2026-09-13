@@ -128,6 +128,20 @@
   .etinline{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink);flex-wrap:wrap}
   .etinline input,.etinline select{height:34px;border:1px solid var(--line);border-radius:8px;padding:0 9px;font-family:inherit;font-size:13px;background:#fff}
   .etnote{font-size:11.5px;color:var(--gris2);margin-top:8px;line-height:1.4}
+  /* avisos de la capa: una linea general arriba y una linea por fila afectada */
+  .capaviso{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-radius:10px;padding:8px 12px;margin:0 0 10px;font-size:12.5px;font-weight:700}
+  .capaviso.ok{background:#eef5f4;color:var(--gris)}
+  .capaviso.warn{background:#fdf3e7;color:#a1560f}
+  .capaviso.bad{background:#fbeceb;color:#b0322f}
+  .capaviso .btn-mini{margin-left:auto}
+  .ofalerta{font-size:11.5px;font-weight:700;margin-top:3px;line-height:1.4}
+  .ofalerta.costo{color:#b0322f}
+  .ofalerta.piso{color:#a1560f}
+  .cwlista{max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:9px;margin-top:8px;background:#fff}
+  .cwfila{display:flex;gap:8px;padding:4px 9px;border-top:1px solid var(--line);font-size:12px}
+  .cwfila:first-child{border-top:none}
+  .cwok{display:flex;align-items:flex-start;gap:9px;font-size:13px;font-weight:800;margin-top:10px;cursor:pointer}
+  .cwok input{width:18px;height:18px;margin-top:1px}
 </style>
 </head>
 <body>
@@ -223,6 +237,7 @@ async function cargar(){
     try{ const cr=await rpc("ir.cron","read",[[92],["interval_number","interval_type"]]); if(cr&&cr[0]){ ETCRON.num=cr[0].interval_number; ETCRON.type=cr[0].interval_type; } }catch(e){}
     render();
     etLoadCounts();   // trae cuántos productos caen en cada franja (explicador de impacto)
+    capaRevisar();    // cómo está publicando hoy cada línea de la capa (costos del momento)
   }catch(e){ cont.innerHTML='<div class="empty">No pude cargar: '+esc(e.message)+'</div>'; }
 }
 
@@ -293,7 +308,8 @@ function render(){
     const hb = (rr&&rr.own)?`<span class="badge gen" style="margin-left:8px">regla general</span>`:`<span class="badge no" style="margin-left:8px">sin regla general</span>`;
     return `<div class="grp"><div class="grphead" onclick="toggleGrp('${esc(top)}')"><span>${open?"▾":"▸"}</span> ${esc(top)} ${hb} <span class="cnt">${subs.length} subcat.</span></div>${body}</div>`;
   }).join("");
-  _paint(renderTabs()+savebar+intro+renderFijos()+grupos+renderEtModal());
+  _paint(renderTabs()+savebar+intro+renderFijos()+grupos+renderEtModal()+renderCapaWarn());
+  capaWarnSync();
 }
 // pestañas de tier + engranaje (solo ícono) para el ajuste general del motor (cron)
 function renderTabs(){
@@ -310,6 +326,13 @@ window.setTier = async t => {
 };
 /* =================== CAPA TEMPORAL DE PRECIOS (unificada, pisa al motor) =================== */
 let _fijoEdit=null;   // valores a precargar cuando editás una entrada
+// Perforar el piso YA NO se tilda de antemano: se avisa al aceptar y ahí se confirma.
+// _capaWarn = el cartel abierto · _capaChk = cómo está publicando HOY cada línea de la capa
+// (se recalcula con los costos del momento, así una compra que sube el costo se ve acá).
+let _capaWarn=null;
+let _capaChk={estado:"", porTmpl:{}, porLab:{}, bajoCosto:0, bajoPiso:0, prods:0, cuando:"", msg:""};
+// El precio publicado va redondeado al peso: quedar unos centavos abajo es redondeo, no perforar.
+const _TOL_COSTO=0.5, _TOL_PISO=0.995;
 function _mrgColor(m){ return m<0?"#b0322f":(m<0.15?"#8a5a00":"#0E6B39"); }   // rojo <0 · amarillo <15% · verde
 function _mrgTxt(precioNeto, cost){ if(!(precioNeto>0)) return "—"; const m=(precioNeto-cost)/precioNeto; return `<b style="color:${_mrgColor(m)}">${Math.round(m*100)}%</b>`; }
 function _fijoDet(f){
@@ -317,7 +340,7 @@ function _fijoDet(f){
   const tr=f.tramos>1?`${f.tramos} tramos`:"tramos del motor";
   const dm=f.descmax>0?` · desc. máx <b>${Math.round(f.descmax)}%</b>`:"";
   const tp=f.tope>0?` · tope <b>${f.tope}</b>`:"";
-  const pf=f.perforar?` · <span style="color:#b0322f;font-weight:700">perfora piso</span>`:"";
+  const pf=f.perforar?` · <span style="color:#b0322f;font-weight:700">perforación autorizada</span>`:"";
   return `escalera (${tr})${dm}${tp}${pf}`;
 }
 /* El formulario es uno solo: se dibuja arriba para AGREGAR, o dentro de la fila para EDITAR EN EL LUGAR. */
@@ -336,7 +359,6 @@ function fijoFormHTML(){
         ${esLab?"":cmp("Precio único", inp("fijo-precio", pe.precio, 118))}
         ${cmp("Desc. máx. s/PVP", inp("fijo-descmax", pe.descmax, 76)+" %")}
         ${cmp("Tope (cajas)", inp("fijo-tope", pe.tope, 78, "franjas"))}
-        <label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:#b0322f;height:38px"><input type="checkbox" id="fijo-perforar" ${pe.perforar?'checked':''} onchange="fijoPreview()" style="width:17px;height:17px;accent-color:#b0322f"> perforar piso</label>
         ${cmp("Hasta (opc.)", `<input type="date" id="fijo-hasta" value="${pe.hasta||''}" style="height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font-family:inherit">`)}
         <button class="btn-mini cons" onclick="fijoAgregar()">${editando?'✓ Guardar cambios':'＋ Agregar'}</button>
         ${_fijoSel?`<button class="btn-mini" onclick="fijoLimpiar()">Cancelar</button>`:''}
@@ -359,11 +381,12 @@ function _capaEst(f){
     if(!f.hasta) out.push("sinvto");
     else if(f.hasta<=_enDias(7)) out.push("pronto");
   }
+  if(TIER===1 && capaAlertaFila(f)) out.push("alerta");   // publica bajo costo o bajo el piso sin autorizar
   return " "+out.join(" ")+" ";
 }
 function capaStats(){
-  const s={total:0, activo:0, pronto:0, vencido:0, pausado:0, sinvto:0};
-  capaArr().forEach(f=>{ s.total++; const e=_capaEst(f); ["activo","pronto","vencido","pausado","sinvto"].forEach(k=>{ if(e.indexOf(" "+k+" ")>=0) s[k]++; }); });
+  const s={total:0, activo:0, pronto:0, vencido:0, pausado:0, sinvto:0, alerta:0};
+  capaArr().forEach(f=>{ s.total++; const e=_capaEst(f); ["activo","pronto","vencido","pausado","sinvto","alerta"].forEach(k=>{ if(e.indexOf(" "+k+" ")>=0) s[k]++; }); });
   return s;
 }
 function capaHeadHTML(){
@@ -377,6 +400,7 @@ function capaHeadHTML(){
       + met("vencido",s.vencido,s.vencido===1?"vencido":"vencidos","bad","Pasaron su fecha de fin: ya no se aplican. Conviene quitarlas para dejar la lista limpia.")
       + met("pausado",s.pausado,s.pausado===1?"pausado":"pausados","","En pausa: no se aplican, pero quedan guardadas para reanudarlas cuando haga falta.")
       + met("sinvto",s.sinvto,"sin vencimiento","","Activas y sin fecha de fin: se quedan hasta que alguien las saque a mano.")
+      + met("alerta",s.alerta,s.alerta===1?"con aviso":"con aviso","bad","Hoy están publicando por debajo del costo, o por debajo del piso de margen sin que nadie lo haya autorizado. Suele ser una compra nueva que subió el costo.")
     : `<span class="capasub">No hay ningún producto en la capa todavía.</span>`;
   return `<div class="capahead" onclick="capaToggle()">
       <div class="capatop"><span>${capaOpen?"▾":"▸"}</span> 💵 Capa temporal de precios <span class="capasub">pisa al motor · ${s.total} producto${s.total===1?"":"s"}</span> ${sd}<span class="capasub" style="margin-left:auto">${capaOpen?"tocá para plegar":"tocá para desplegar"}</span></div>
@@ -429,12 +453,99 @@ window.guardarCapa = async () => {
     for(let i=0;i<btns.length;i++) btns[i].textContent="Sincronizando precios…";
     await rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
     dirtyCapa=false; render(); toast("Capa guardada y precios sincronizados ✓");
+    capaRevisar();   // con los precios ya recalculados, revisa cómo quedó publicando
   }catch(e){
     for(let i=0;i<btns.length;i++){ btns[i].disabled=false; btns[i].textContent="💾 Guardar y sincronizar"; }
     toast("Error: "+(e.message||e));
   }
 };
 
+/* ---- Revisión con los costos de HOY: una compra nueva puede dejar una línea vieja bajo costo.
+   Mira lo que está PUBLICADO en la lista 3 contra el costo actual de cada producto. ---- */
+window.capaRevisar=async ()=>{
+  if(_capaChk.estado==="cargando") return;
+  _capaChk={estado:"cargando", porTmpl:{}, porLab:{}, bajoCosto:0, bajoPiso:0, prods:0, cuando:"", msg:""};
+  render();
+  try{
+    const hoy=hoyStr();
+    const vivas=FIJOS.filter(f=>!f.pausado && !(f.hasta&&f.hasta<hoy));
+    const set={}, porLabIds={};
+    vivas.forEach(f=>{ if(f.tmpl) set[f.tmpl]=1; });
+    for(let i=0;i<vivas.length;i++){
+      const f=vivas[i]; if(!f.lab) continue;
+      const dom = f.lab==="M" ? [["x_studio_many2one_field_6o_1if0l6ud2","=",f.labId]] : [["categ_id","child_of",f.labId]];
+      const rs=await rpc("product.product","search_read",[[...dom,["active","=",true]],["product_tmpl_id"]],{limit:800});
+      const ids=rs.map(r=>r.product_tmpl_id&&r.product_tmpl_id[0]).filter(Boolean);
+      porLabIds[f.lab+f.labId]=ids; ids.forEach(t=>{ set[t]=1; });
+    }
+    // por cada plantilla, si la línea que la cubre autorizó perforar el piso
+    const autoriza={}, propia={};
+    vivas.forEach(f=>{ if(f.tmpl){ autoriza[f.tmpl]=!!f.perforar; propia[f.tmpl]=1; } });
+    Object.keys(porLabIds).forEach(k=>{
+      const f=vivas.find(x=>x.lab&&(x.lab+x.labId)===k); if(!f) return;
+      porLabIds[k].forEach(t=>{ if(!propia[t] && autoriza[t]==null) autoriza[t]=!!f.perforar; });
+    });
+    const tmpls=Object.keys(set).map(Number);
+    if(!tmpls.length){ _capaChk={estado:"ok", porTmpl:{}, porLab:{}, bajoCosto:0, bajoPiso:0, prods:0, cuando:_ahoraHM(), msg:""}; render(); return; }
+    const vs=await rpc("product.product","search_read",[[["product_tmpl_id","in",tmpls]],["default_code","name","product_tmpl_id","categ_id","x_costo_motor","x_iva_compra","x_iva_costo","qty_available"]],{limit:0,context:{lang:"es_AR"}});
+    const its=await rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",tmpls]],["product_tmpl_id","fixed_price"]],{limit:0});
+    const minP={};
+    its.forEach(i=>{ const t=i.product_tmpl_id&&i.product_tmpl_id[0]; if(!t) return; if(minP[t]==null||i.fixed_price<minP[t]) minP[t]=i.fixed_price; });
+    const porTmpl={};
+    vs.forEach(v=>{
+      const t=v.product_tmpl_id&&v.product_tmpl_id[0]; if(!t) return;
+      const pr=minP[t]; if(!(pr>0)) return;
+      const p={catId:(v.categ_id?v.categ_id[0]:0), costo:v.x_costo_motor||0, ivaCompra:v.x_iva_compra||0, tilde:v.x_iva_costo||""};
+      const costo=(p.costo||0)*(1+(tildeDeProd(p)?(p.ivaCompra||0):0));
+      if(!(costo>0)) return;
+      const r=reglaMotor(p.catId);
+      const piso=(r&&(r.piso||0)<1)?costo/(1-(r.piso||0)):0;
+      // bajo el piso CON autorización no se avisa: se decidió a propósito al cargar la línea
+      const est = (pr<costo-_TOL_COSTO) ? "costo" : ((piso>0 && pr<piso*_TOL_PISO && !autoriza[t]) ? "piso" : "");
+      if(!est) return;
+      const ya=porTmpl[t];
+      if(ya && (ya.est==="costo"||est!=="costo")) return;   // por plantilla me quedo con el peor caso
+      porTmpl[t]={est:est, precio:pr, costo:costo, piso:piso, margen:(pr-costo)/pr*100,
+        sku:v.default_code||"", nombre:v.name||"", stock:v.qty_available||0};
+    });
+    const porLab={};
+    Object.keys(porLabIds).forEach(k=>{
+      let c=0,p=0,n=0;
+      porLabIds[k].forEach(t=>{ if(propia[t]) return; n++; const x=porTmpl[t]; if(!x) return; if(x.est==="costo") c++; else p++; });
+      porLab[k]={costo:c, piso:p, total:n};   // los que tienen línea propia no los toca el laboratorio
+    });
+    let bc=0,bp=0; Object.keys(porTmpl).forEach(t=>{ if(porTmpl[t].est==="costo") bc++; else bp++; });
+    _capaChk={estado:"ok", porTmpl:porTmpl, porLab:porLab, bajoCosto:bc, bajoPiso:bp, prods:tmpls.length, cuando:_ahoraHM(), msg:""};
+  }catch(e){ _capaChk={estado:"error", porTmpl:{}, porLab:{}, bajoCosto:0, bajoPiso:0, prods:0, cuando:"", msg:(e.message||String(e))}; }
+  render();
+};
+function _ahoraHM(){ const d=new Date(); return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); }
+/* La línea general, arriba de todo en la capa. */
+function capaAvisoHTML(){
+  if(_capaChk.estado==="cargando") return `<div class="capaviso ok">⏳ Revisando cómo está publicando cada línea con los costos de hoy…</div>`;
+  if(_capaChk.estado==="error") return `<div class="capaviso warn">No pude revisar los costos: ${esc(_capaChk.msg)} <button class="btn-mini" onclick="capaRevisar()">Reintentar</button></div>`;
+  if(_capaChk.estado!=="ok") return `<div class="capaviso ok">Todavía no revisé cómo está publicando la capa. <button class="btn-mini" onclick="capaRevisar()">Revisar ahora</button></div>`;
+  const bc=_capaChk.bajoCosto, bp=_capaChk.bajoPiso;
+  const pie=`<button class="btn-mini" onclick="capaRevisar()">Revisar de nuevo</button>`;
+  if(!bc && !bp) return `<div class="capaviso ok">✓ Ningún producto de la capa quedó bajo el costo, ni bajo el piso sin autorizar. <small style="font-weight:600">Revisado ${_capaChk.cuando} sobre ${_capaChk.prods} producto${_capaChk.prods===1?"":"s"}.</small>${pie}</div>`;
+  const p1=bc?`<b>${bc}</b> producto${bc===1?"":"s"} publicando <b>por debajo del costo</b>`:"";
+  const p2=bp?`${bc?" · ":""}<b>${bp}</b> por debajo del piso <b>sin haberlo autorizado</b>`:"";
+  return `<div class="capaviso ${bc?"bad":"warn"}">${bc?"⛔":"⚠"} ${p1}${p2}. <small style="font-weight:600">Suele ser una compra nueva que subió el costo: mirá las líneas marcadas abajo. Revisado ${_capaChk.cuando} sobre ${_capaChk.prods} producto${_capaChk.prods===1?"":"s"}.</small>${pie}</div>`;
+}
+/* La línea de la fila afectada (producto suelto o laboratorio). */
+function capaAlertaFila(f){
+  if(_capaChk.estado!=="ok") return "";
+  if(f.lab){
+    const a=_capaChk.porLab[f.lab+f.labId]; if(!a||(!a.costo&&!a.piso)) return "";
+    const p1=a.costo?`<b>${a.costo}</b> por debajo del costo`:"";
+    const p2=a.piso?`${a.costo?" · ":""}<b>${a.piso}</b> por debajo del piso`:"";
+    return `<div class="ofalerta ${a.costo?"costo":"piso"}">${a.costo?"⛔":"⚠"} de sus ${a.total} productos, hoy ${p1}${p2}</div>`;   // los de línea propia no cuentan: no los toca
+  }
+  const x=_capaChk.porTmpl[f.tmpl]; if(!x) return "";
+  return x.est==="costo"
+    ? `<div class="ofalerta costo">⛔ hoy publica ${EYG.money(x.precio)} y el costo es ${EYG.money(x.costo)} · margen ${x.margen.toFixed(1)}%</div>`
+    : `<div class="ofalerta piso">⚠ hoy publica ${EYG.money(x.precio)} y quedó bajo el piso de su categoría (${EYG.money(x.piso)}) · margen ${x.margen.toFixed(1)}%</div>`;
+}
 function renderFijos(){
   const hoy=hoyStr();
   const editando=(_fijoIdx!=null);
@@ -451,7 +562,7 @@ function renderFijos(){
     const clave=esLab?`${f.lab==="M"?"marca":"categoría"} #${f.labId}`:`#${f.tmpl}`;
     return `<div class="ofrow"${estilo} data-capa="${esc(_norm(f.nombre+" "+clave+(esLab?" laboratorio":"")))}" data-estado="${_capaEst(f)}">
       <div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">${clave}</small></div>
-        <div class="ofdet">${_fijoDet(f)} · ${venc}</div></div>
+        <div class="ofdet">${_fijoDet(f)} · ${venc}</div>${capaAlertaFila(f)}</div>
       ${marca}
       ${est}
       <button class="btn-mini" onclick="fijoEditar(${i})">Editar</button>
@@ -463,7 +574,8 @@ function renderFijos(){
     ${capaHeadHTML()}
     ${!capaOpen?"":`<div style="padding:14px">
       ${capaBarHTML()}
-      <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual y temporal que <b>pisa</b> al motor cuando conseguís una compra muy buena. Buscá <b>un producto o un laboratorio</b> en el mismo campo: el buscador te devuelve los dos. Aplicada a un laboratorio alcanza a todos sus productos (esas filas van en <b>violeta 🏭</b>; si un producto tiene su propia línea, esa le gana) y va sólo la escalera, no el precio único. La <b>cantidad de tramos</b> manda: <b>1</b> = precio único (una sola línea, en todas las listas); <b>N</b> = escalera de N tramos; <b>vacío</b> = los tramos que calcula el motor. Para éticos la escalera arranca del <b>PVP</b>. Podés poner un <b>descuento máximo más profundo</b> que el del motor e incluso <b>perforar el piso</b>. Al <b>pausar/quitar</b>, vuelve solo a la escalera automática.</p>
+      ${capaAvisoHTML()}
+      <p class="intro" style="box-shadow:none;margin:0 0 12px;padding:11px 13px">Capa manual y temporal que <b>pisa</b> al motor cuando conseguís una compra muy buena. Buscá <b>un producto o un laboratorio</b> en el mismo campo: el buscador te devuelve los dos. Aplicada a un laboratorio alcanza a todos sus productos (esas filas van en <b>violeta 🏭</b>; si un producto tiene su propia línea, esa le gana) y va sólo la escalera, no el precio único. La <b>cantidad de tramos</b> manda: <b>1</b> = precio único (una sola línea, en todas las listas); <b>N</b> = escalera de N tramos; <b>vacío</b> = los tramos que calcula el motor. Para éticos la escalera arranca del <b>PVP</b>. Podés poner un <b>descuento máximo más profundo</b> que el del motor: si con eso algún producto queda <b>bajo el piso de margen</b> o <b>bajo el costo</b>, al aceptar sale un cartel con la lista y hay que confirmarlo ahí. Al <b>pausar/quitar</b>, vuelve solo a la escalera automática.</p>
       ${editando?"":fijoFormHTML()}
       <div class="oflist" id="capa-list">${rows}<div class="ofrow" id="capa-vacio" style="display:none;justify-content:center;color:var(--gris)">Ningún producto de la capa coincide con la búsqueda.</div></div>
       <div class="capafoot" style="margin-top:12px"><button class="btn-save" onclick="guardarCapa()">💾 Guardar y sincronizar</button></div>
@@ -476,7 +588,6 @@ function fijoPreviewHTML(){
     const dm=(parseFloat((document.getElementById("fijo-descmax")||{}).value))||0;
     const tr=(parseInt((document.getElementById("fijo-tramos")||{}).value))||0;
     const tp=(parseInt((document.getElementById("fijo-tope")||{}).value))||0;
-    const perf=!!(document.getElementById("fijo-perforar")||{}).checked;
     const q=[]; if(tr>1) q.push(`${tr} tramos`); if(dm) q.push(`desc. máx ${Math.round(dm)}%`); if(tp) q.push(`tope ${tp}`);
     const cab=`Se aplica a los <b>${_fijoSel.nprod||0} productos</b> de <b>${esc(_fijoSel.nombre)}</b>${q.length?" · "+q.join(" · "):""}. Si un producto ya tiene su propia línea, <b>esa manda</b>.`;
     if(_labSim.estado==="cargando") return cab+"<br>Calculando cómo queda cada producto…";
@@ -486,7 +597,7 @@ function fijoPreviewHTML(){
     const sinDato=[]; const conM=[]; const conPropia=[];
     _labSim.filas.forEach(p=>{
       if(p.propia){ conPropia.push(Object.assign({},p,{motivo:"tiene su propia línea: la del laboratorio no lo toca"})); return; }
-      const r=ultimoEscalon(p, dm/100, perf);
+      const r=ultimoEscalon(p, dm/100, true);   // true = sin clampear: queremos ver lo que la capa PIDE
       if(r.motivo||r.margen==null) sinDato.push(Object.assign({},p,{motivo:r.motivo||"sin precio"}));
       else conM.push(Object.assign({},p,r)); });
     const grupos=LAB_BANDAS.map(b=>Object.assign({},b,{items:conM.filter(x=>b.test(x.margen))}));
@@ -514,12 +625,18 @@ function fijoPreviewHTML(){
         detalle=`<div style="margin-top:8px"><b>${g.items.length} ${esc(g.lbl)}</b>${g.items.length>40?" (muestro los primeros 40)":""}${filas}</div>`;
       }
     }
-    return `${cab}<br><span style="color:var(--gris)">Así queda el <b>último escalón</b> de cada producto, con la regla de su categoría${perf?" y el piso perforado":""}:</span><div style="margin-top:4px">${pastillas}${sd}${cp}</div>${alerta}${detalle}`;
+    return `${cab}<br><span style="color:var(--gris)">Así queda el <b>último escalón</b> de cada producto, con la regla de su categoría:</span><div style="margin-top:4px">${pastillas}${sd}${cp}</div>${alerta}${detalle}`;
   }
   if(_fijoSel.loading) return "Trayendo costo y precio base…";
-  const cost=_fijoSel.cost||0, base=_fijoSel.base||0, iva=_fijoSel.iva||0;
+  // costo EFECTIVO: el neto más el IVA de compra cuando la tilde "IVA al costo" está puesta
+  // (es el costo con el que compara el motor; sin esto el margen sale optimista).
+  const fp=_fijoSel.fila;
+  const cost=fp ? (fp.costo||0)*(1+(tildeDeProd(fp)?(fp.ivaCompra||0):0)) : (_fijoSel.cost||0);
+  const base=_fijoSel.base||0, iva=_fijoSel.iva||0;
+  const rp=fp?reglaMotor(fp.catId):null;
+  const pisoP=(rp&&cost>0&&(rp.piso||0)<1)?cost/(1-(rp.piso||0)):0;
   const tramos=(parseInt((document.getElementById("fijo-tramos")||{}).value))||0;
-  const cab=`Costo real <b>${EYG.money(cost)}</b>${base?` · precio base (1ª caja) <b>${EYG.money(base)}</b> · margen ${_mrgTxt(base,cost)}`:""}`;
+  const cab=`Costo <b>${EYG.money(cost)}</b>${pisoP?` · piso de su categoría <b>${EYG.money(pisoP)}</b> (${Math.round((rp.piso||0)*100)}%)`:""}${base?` · precio base (1ª caja) <b>${EYG.money(base)}</b> · margen ${_mrgTxt(base,cost)}`:""}`;
   if(tramos===1){
     const pr=(parseFloat((document.getElementById("fijo-precio")||{}).value))||0;
     const neto=pr/(1+iva/100);
@@ -617,7 +734,7 @@ function ultimoEscalon(p, dmFrac, perforar){
   if(dmFrac>0) precio=(r.base==="pvp") ? pvp*(1-dmFrac) : base*(1-dmFrac);
   else precio = piso>0 ? piso : base;
   if(!perforar && piso>0 && precio<piso) precio=piso;
-  return {precio:precio, costo:costo, margen:(precio>0?(precio-costo)/precio*100:null)};
+  return {precio:precio, costo:costo, piso:piso, base:base, margen:(precio>0?(precio-costo)/precio*100:null)};
 }
 const LAB_BANDAS=[
   {k:"neg",  lbl:"bajo el costo", col:"#b0322f", bg:"#fbeceb", test:m=>m<0},
@@ -661,7 +778,7 @@ window.fijoElegir=async (id,nombre,prefill)=>{
   _fijoEdit=prefill||null;
   _fijoSel={tmpl:id, nombre:nombre, loading:true}; render();
   try{
-    const vs=await rpc("product.product","search_read",[[["product_tmpl_id","=",id]],["x_costo_motor","standard_price"]],{limit:1});
+    const vs=await rpc("product.product","search_read",[[["product_tmpl_id","=",id]],["x_costo_motor","standard_price","x_iva_compra","x_iva_costo","categ_id","qty_available","default_code"]],{limit:1});
     const tp=await rpc("product.template","read",[[id],["taxes_id","list_price"]]);
     const its=await rpc("product.pricelist.item","search_read",[[["product_tmpl_id","=",id],["pricelist_id","=",3],["min_quantity","<=",1]],["fixed_price"]],{limit:1});
     let iva=0; const taxes=(tp[0]&&tp[0].taxes_id)||[];
@@ -669,9 +786,14 @@ window.fijoElegir=async (id,nombre,prefill)=>{
     const cost=(vs[0]&&(vs[0].x_costo_motor||vs[0].standard_price))||0;
     const lp=(tp[0]&&tp[0].list_price)||0;
     let base=(its[0]&&its[0].fixed_price)||0; if(!base && lp>1) base=lp;
-    _fijoSel={tmpl:id, nombre:nombre, cost:cost, base:base, pvp:lp, iva:iva, etico:(lp>1)};
+    const v0=vs[0]||{};
+    // fila con la misma forma que usa la simulación por laboratorio, para poder chequearlo igual
+    const fila={sku:v0.default_code||"", nombre:nombre, catId:(v0.categ_id?v0.categ_id[0]:0), tmpl:id,
+      costo:v0.x_costo_motor||0, ivaCompra:v0.x_iva_compra||0, tilde:v0.x_iva_costo||"",
+      pvp:lp, ivaVenta:iva, stock:v0.qty_available||0};
+    _fijoSel={tmpl:id, nombre:nombre, cost:cost, base:base, pvp:lp, iva:iva, etico:(lp>1), fila:fila};
     render();
-  }catch(e){ _fijoSel={tmpl:id, nombre:nombre, cost:0, base:0, pvp:0, iva:0, etico:false}; render(); }
+  }catch(e){ _fijoSel={tmpl:id, nombre:nombre, cost:0, base:0, pvp:0, iva:0, etico:false, fila:null}; render(); }
 };
 window.fijoLimpiar=()=>{ _fijoSel=null; _fijoEdit=null; _fijoIdx=null; render(); };
 window.fijoAgregar=()=>{
@@ -680,18 +802,107 @@ window.fijoAgregar=()=>{
   const precio=parseFloat((document.getElementById("fijo-precio")||{}).value)||0;
   const dm=parseFloat((document.getElementById("fijo-descmax")||{}).value)||0;
   const tope=parseInt((document.getElementById("fijo-tope")||{}).value)||0;
-  const perf=!!(document.getElementById("fijo-perforar")||{}).checked;
   const hasta=(document.getElementById("fijo-hasta")||{}).value||"";
   const esLab=!!_fijoSel.lab;
   if(esLab && tramos===1){ if(typeof toast==="function") toast("Por laboratorio no se puede poner un precio único: sería el mismo número para todos sus productos. Usá descuento máximo, tope o cantidad de tramos."); return; }
   if(!esLab && tramos===1){ if(!(precio>0)){ if(typeof toast==="function") toast("Para precio único (1 tramo), poné el precio"); return; } }
   else if(!(dm>0||tope>0||tramos>1)){ if(typeof toast==="function") toast("Definí descuento máx., tope o cantidad de tramos"); return; }
   const ent = esLab
-    ? {lab:_fijoSel.lab, labId:_fijoSel.labId, nprod:_fijoSel.nprod, tmpl:0, nombre:_fijoSel.nombre, precio:0, descmax:dm, tramos:tramos, tope:tope, perforar:perf, hasta:hasta, pausado:false}
-    : {tmpl:_fijoSel.tmpl, nombre:_fijoSel.nombre, precio:precio, descmax:dm, tramos:tramos, tope:tope, perforar:perf, hasta:hasta, pausado:false};
+    ? {lab:_fijoSel.lab, labId:_fijoSel.labId, nprod:_fijoSel.nprod, tmpl:0, nombre:_fijoSel.nombre, precio:0, descmax:dm, tramos:tramos, tope:tope, perforar:false, hasta:hasta, pausado:false}
+    : {tmpl:_fijoSel.tmpl, nombre:_fijoSel.nombre, precio:precio, descmax:dm, tramos:tramos, tope:tope, perforar:false, hasta:hasta, pausado:false};
+  // ANTES de guardar: ¿alguno queda bajo el piso o bajo el costo? Si sí, se avisa y se confirma.
+  const filas=capaFilas(esLab);
+  if(!filas){ if(typeof toast==="function") toast("Esperá a que termine de calcular cómo queda cada producto"); return; }
+  const chk=capaChequear(ent, filas);
+  if(chk.bajoCosto.length || chk.bajoPiso.length){ _capaWarn={ent:ent, esLab:esLab, chk:chk}; render(); return; }
+  _capaCommit(ent);
+};
+/* Guarda la entrada en la capa (después de pasar el chequeo, o de confirmarlo en el cartel). */
+function _capaCommit(ent){
+  const esLab=!!ent.lab;
   if(_fijoIdx!=null && FIJOS[_fijoIdx]){ ent.pausado=!!FIJOS[_fijoIdx].pausado; FIJOS[_fijoIdx]=ent; }   // editar: queda donde estaba
   else { FIJOS=FIJOS.filter(f=> esLab ? !(f.lab===ent.lab && f.labId===ent.labId) : f.tmpl!==ent.tmpl); FIJOS.unshift(ent); }
   _fijoSel=null; _fijoEdit=null; _fijoIdx=null; dirtyCapa=true; capaQ=""; capaEstado=""; render();
+}
+/* Los productos que alcanza lo que se está por guardar. null = todavía no se pudo calcular. */
+function capaFilas(esLab){
+  if(esLab) return (_labSim.estado==="ok") ? _labSim.filas : null;
+  return (_fijoSel && _fijoSel.fila) ? [_fijoSel.fila] : null;
+}
+/* Cómo queda cada producto con lo que pide la capa, SIN clampear al piso: así se ve de verdad
+   si perfora. Devuelve las dos listas que importan: bajo el costo y bajo el piso de margen. */
+function capaChequear(ent, filas){
+  const out={bajoCosto:[], bajoPiso:[], sinDato:[], total:0};
+  filas.forEach(p=>{
+    if(p.propia) return;   // tiene línea propia: la del laboratorio no lo toca
+    out.total++;
+    const costo=(p.costo||0)*(1+(tildeDeProd(p)?(p.ivaCompra||0):0));
+    const r=reglaMotor(p.catId);
+    let precio=null, motivo="";
+    if(ent.tramos===1){
+      precio=(ent.precio||0)/(1+((p.ivaVenta||0)/100));   // el precio único se carga CON IVA
+      if(!(precio>0)) motivo="sin precio";
+    }else{
+      const e=ultimoEscalon(p,(ent.descmax||0)/100,true);
+      if(e.motivo) motivo=e.motivo; else precio=e.precio;
+    }
+    if(!(costo>0)) motivo=motivo||"sin costo";
+    if(motivo||!(precio>0)){ out.sinDato.push(Object.assign({},p,{motivo:motivo||"sin precio"})); return; }
+    const piso=(r&&(r.piso||0)<1)?costo/(1-(r.piso||0)):0;
+    const it=Object.assign({},p,{precio:precio, costoEf:costo, piso:piso, margen:(precio-costo)/precio*100});
+    if(precio<costo-_TOL_COSTO) out.bajoCosto.push(it);
+    else if(piso>0 && precio<piso*_TOL_PISO) out.bajoPiso.push(it);
+  });
+  return out;
+}
+/* ---- Cartel de advertencia: sale al aceptar, no antes. Hay que tildar lo que se autoriza. ---- */
+function _cwLista(arr){
+  const filas=arr.slice(0,60).map(x=>`<div class="cwfila">
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.nombre)}">${esc(x.nombre)}</span>
+      <span style="color:var(--gris2)">${esc(x.sku||"")}</span>
+      <span style="width:82px;text-align:right;color:${x.stock>0?"var(--gris)":"var(--gris2)"}">${x.stock>0?("stock "+x.stock):"sin stock"}</span>
+      <span style="width:210px;text-align:right">${EYG.money(x.precio)} · costo ${EYG.money(x.costoEf)} · <b>${x.margen.toFixed(1)}%</b></span></div>`).join("");
+  return `<div class="cwlista">${filas}${arr.length>60?`<div class="cwfila" style="color:var(--gris2)">…y ${arr.length-60} más</div>`:""}</div>`;
+}
+function renderCapaWarn(){
+  if(!_capaWarn) return "";
+  const c=_capaWarn.chk, bc=c.bajoCosto, bp=c.bajoPiso;
+  const stk=a=>a.filter(x=>x.stock>0).length;
+  const secCosto=bc.length?`<div class="etsec">
+      <h4 style="color:#b0322f">⛔ ${bc.length} producto${bc.length===1?"":"s"} queda${bc.length===1?"":"n"} POR DEBAJO DEL COSTO</h4>
+      <p class="d">${stk(bc)} con stock. Vender ahí es perder plata en cada unidad.</p>
+      ${_cwLista(bc)}
+      <label class="cwok" style="color:#b0322f"><input type="checkbox" id="cw-ok-c" onchange="capaWarnSync()"> Confirmo que quiero vender por debajo del costo</label>
+    </div>`:"";
+  const secPiso=bp.length?`<div class="etsec">
+      <h4 style="color:#a1560f">⚠ ${bp.length} producto${bp.length===1?"":"s"} queda${bp.length===1?"":"n"} por debajo del piso de margen</h4>
+      <p class="d">${stk(bp)} con stock. Se vende con ganancia, pero con menos margen que el mínimo de su categoría.</p>
+      ${_cwLista(bp)}
+      <label class="cwok" style="color:#a1560f"><input type="checkbox" id="cw-ok-p" onchange="capaWarnSync()"> Confirmo vender con menos margen que el piso</label>
+    </div>`:"";
+  const sd=c.sinDato.length?`<div class="etsec"><p class="d" style="margin:0">${c.sinDato.length} producto${c.sinDato.length===1?"":"s"} sin costo o sin precio base: no se pudieron calcular y quedan como estén.</p></div>`:"";
+  return `<div class="etmodal-bg" onclick="if(event.target===this)capaWarnCancelar()">
+   <div class="etmodal" style="max-width:760px">
+    <div class="mhd">${bc.length?"⛔":"⚠"} Revisá antes de aplicar <span style="font-weight:600;color:var(--gris);font-size:12.5px">${esc(_capaWarn.ent.nombre)} · ${c.total} producto${c.total===1?"":"s"} alcanzado${c.total===1?"":"s"}</span><button class="btn-mini" style="margin-left:auto" onclick="capaWarnCancelar()">✕ Cancelar</button></div>
+    ${secCosto}${secPiso}${sd}
+    <div class="etsec" style="display:flex;align-items:center;gap:12px">
+      <button class="btn-save" id="cw-go" disabled onclick="capaWarnConfirmar()">Aplicar igual</button>
+      <button class="btn-mini" onclick="capaWarnCancelar()">Volver y corregir</button>
+      <span style="font-size:12px;color:var(--gris2)">Sin tildar lo de arriba no se aplica.</span>
+    </div>
+   </div></div>`;
+}
+window.capaWarnSync=()=>{
+  const b=document.getElementById("cw-go"); if(!b) return;
+  const c=document.getElementById("cw-ok-c"), p=document.getElementById("cw-ok-p");
+  b.disabled = (!!c && !c.checked) || (!!p && !p.checked);
+};
+window.capaWarnCancelar=()=>{ _capaWarn=null; render(); };
+window.capaWarnConfirmar=()=>{
+  if(!_capaWarn) return;
+  const ent=_capaWarn.ent;
+  ent.perforar=true;            // queda registrado que se autorizó a perforar
+  _capaWarn=null; _capaCommit(ent);
 };
 window.fijoPausar=(i)=>{ if(FIJOS[i]){ FIJOS[i].pausado=!FIJOS[i].pausado; dirtyCapa=true; render(); } };
 window.fijoQuitar=(i)=>{ const f=FIJOS[i]||{};
