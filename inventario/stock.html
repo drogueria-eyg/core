@@ -395,7 +395,7 @@ async function cargar(){
     const ini3=new Date(HOY.getFullYear(),HOY.getMonth()-3,1);
 
     prog("stock, ventas y compras…");
-    const [stock, ventas, ventas3, so, po, cad, comprasF, modoParam, pedidosOC, pedidoManParam, descartParam] = await Promise.all([
+    const [stock, ventas, ventas3, so, po, cad, comprasF, modoParam, pedidosOC, pedidoManParam, descartParam, cartsParam] = await Promise.all([
       rpc("stock.quant","read_group",[[["location_id.usage","=","internal"],["quantity","!=",0]],["value:sum","quantity:sum"],["product_id"]],{lazy:false,limit:6000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini12)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini3)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
@@ -407,6 +407,7 @@ async function cargar(){
       rpc("purchase.order.line","search_read",[[["state","in",["draft","sent"]],["product_id","!=",false]]],{fields:["product_id","product_qty","order_id","state"],limit:3000}).catch(()=>[]),
       rpc("ir.config_parameter","get_param",["eyg.stock_pedido_manual"]).catch(()=>null),
       rpc("ir.config_parameter","get_param",["eyg.stock_descartados"]).catch(()=>null),
+      rpc("ir.config_parameter","get_param",["eyg.stock_carritos"]).catch(()=>null),
     ]);
 
     const CF={}; for(const c of comprasF){ if(c.product_id) CF[c.product_id[0]]=c.__count||0; }   // veces que EyG compró cada producto en 12m
@@ -416,8 +417,8 @@ async function cargar(){
       const e=PEDIDOS_OC[id]||(PEDIDOS_OC[id]={qty:0,orders:[],state:l.state}); e.qty+=l.product_qty||0; const on=l.order_id?l.order_id[1]:""; if(on&&!e.orders.includes(on)) e.orders.push(on); }
     try{ PEDIDO_MANUAL=pedidoManParam?JSON.parse(pedidoManParam):{}; }catch(e){ PEDIDO_MANUAL={}; }
     try{ DESCARTADO=descartParam?JSON.parse(descartParam):{}; }catch(e){ DESCARTADO={}; }
-    // carritos persistidos EN CORE (localStorage del navegador), no en Odoo
-    try{ CARTS=JSON.parse(localStorage.getItem("eyg_stock_carritos")||"{}"); }catch(e){ CARTS={}; }
+    // carritos COMPARTIDOS entre sesiones (param eyg.stock_carritos): German y Diego ven el mismo carrito al actualizar
+    try{ CARTS=cartsParam?JSON.parse(cartsParam):{}; }catch(e){ CARTS={}; }
     const V={}, F={}, V3={};
     for(const v of ventas){ if(v.product_id){ V[v.product_id[0]]=v.product_uom_qty||0; F[v.product_id[0]]=v.__count||0; } }
     for(const v of ventas3){ if(v.product_id) V3[v.product_id[0]]=v.product_uom_qty||0; }
@@ -1690,10 +1691,34 @@ function cartOf(prov,provName){ if(!CARTS[prov]) CARTS[prov]={prov,provName,item
 function cur(){ return curCart!=null ? CARTS[curCart] : null; }
 function cartTotal(c){ return c.items.reduce((a,it)=>a+it.qty*it.precio,0); }
 function cartsActivos(){ return Object.keys(CARTS).map(k=>CARTS[k]).filter(c=>c.items.length||c.poId); }
-// Persistencia de los carritos EN CORE (localStorage del navegador) — NO en Odoo, para no generar basura.
-// A Odoo solo van cuando se crea el borrador de OC. Sobrevive recargas/navegación.
-function saveCarts(){ try{ localStorage.setItem("eyg_stock_carritos", JSON.stringify(CARTS)); }catch(e){} }
-function saveCartsSoon(){ saveCarts(); }
+// Carritos COMPARTIDOS en el param eyg.stock_carritos (un solo JSON, NO son órdenes → no ensucia Odoo).
+// Guardado con MERGE por proveedor: no pisa el carrito que otra sesión (ej. German) armó de otro proveedor.
+// A Odoo-órdenes solo van al crear el borrador de OC.
+let _savingCarts=false;
+async function saveCarts(){
+  if(_savingCarts) return; _savingCarts=true;
+  try{
+    let cur={}; try{ cur=JSON.parse((await rpc("ir.config_parameter","get_param",["eyg.stock_carritos"]))||"{}"); }catch(e){}
+    CARTS={...cur, ...CARTS};   // conservo los de otros proveedores creados en otra sesión; los míos ganan en su clave
+    await rpc("ir.config_parameter","set_param",["eyg.stock_carritos", JSON.stringify(CARTS)]);
+    pintarCarrito();
+  }catch(e){} finally{ _savingCarts=false; }
+}
+let tSaveCarts=null; function saveCartsSoon(){ clearTimeout(tSaveCarts); tSaveCarts=setTimeout(saveCarts, 900); }
+// Borrar un carrito del param compartido (lee, saca esa clave, escribe) para que el borrado se propague
+async function saveCartsDelete(prov){
+  try{
+    let cur={}; try{ cur=JSON.parse((await rpc("ir.config_parameter","get_param",["eyg.stock_carritos"]))||"{}"); }catch(e){}
+    delete cur[prov]; CARTS=cur;
+    await rpc("ir.config_parameter","set_param",["eyg.stock_carritos", JSON.stringify(CARTS)]);
+    pintarCarrito();
+  }catch(e){}
+}
+// Releer los carritos compartidos sin recargar toda la página (botón 🔄 del panel)
+async function refrescarCarritos(){
+  try{ CARTS=JSON.parse((await rpc("ir.config_parameter","get_param",["eyg.stock_carritos"]))||"{}"); }catch(e){ CARTS={}; }
+  pintarCarrito(); renderCartPanel(); toast("🔄 Carritos actualizados");
+}
 // Nuevo carrito desde cero (elige proveedor a mano)
 function nuevaCompra(){ curCart=null; renderCompra(); document.getElementById("drawer").classList.add("on"); document.getElementById("scrim").classList.add("on"); }
 // Agregar un producto AL CARRITO DE SU PROVEEDOR (lo crea si no existe). No abre el drawer.
@@ -1731,7 +1756,7 @@ function renderCartPanel(){
   const cs=cartsActivos();
   if(!cs.length){ cerrarCartPanel(); return; }
   const totItems=cs.reduce((a,c)=>a+c.items.length,0), totVal=cs.reduce((a,c)=>a+cartTotal(c),0);
-  p.innerHTML=`<div class="cp-head"><div><b>Carritos de compra</b><span>${cs.length} proveedor${cs.length===1?"":"es"} · ${totItems} ítems · ${money(totVal)}</span></div><span class="cp-x" onclick="cerrarCartPanel()">✕</span></div>
+  p.innerHTML=`<div class="cp-head"><div><b>Carritos de compra</b><span>${cs.length} proveedor${cs.length===1?"":"es"} · ${totItems} ítems · ${money(totVal)}</span></div><div style="display:flex;gap:8px;align-items:center"><span class="cp-x" onclick="refrescarCarritos()" title="Actualizar (ver los de otras sesiones)" style="font-size:15px">🔄</span><span class="cp-x" onclick="cerrarCartPanel()">✕</span></div></div>
     <div class="cp-list">${cs.map(c=>`<div class="cp-cart" onclick="verCarrito(${c.prov})">
         <div class="cp-nm"><b>${esc(c.provName)}</b><span>${c.items.length} producto${c.items.length===1?"":"s"}${c.poId?` · <b style="color:var(--teal-deep)">✓ ${esc(c.poName)}</b>`:""}</span></div>
         <div class="cp-tot">${money(cartTotal(c))}<span>abrir →</span></div>
@@ -1743,7 +1768,7 @@ function seguirCatalogo(){ const c=cur(); cerrar(); TAB="inventario"; invMode="t
 function cancelarCarrito(){
   const c=cur(); if(!c){ cerrar(); return; }
   if(c.items.length && !confirm(`¿Descartar el carrito de ${c.provName} sin terminar?`)) return;
-  delete CARTS[c.prov]; curCart=null; saveCarts();
+  const prov=c.prov; delete CARTS[prov]; curCart=null; saveCartsDelete(prov);
   pintarCarrito(); cerrar(); render();
 }
 function pasos(){
