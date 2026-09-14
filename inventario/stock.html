@@ -236,8 +236,11 @@
 
   .scrim{position:fixed;inset:0;background:rgba(6,65,62,.35);opacity:0;pointer-events:none;transition:opacity .2s;z-index:60}
   .scrim.on{opacity:1;pointer-events:auto}
-  .drawer{position:fixed;top:0;right:0;height:100%;width:520px;max-width:96vw;background:var(--surface);z-index:70;box-shadow:-8px 0 40px rgba(6,65,62,.18);transform:translateX(100%);transition:transform .24s ease;display:flex;flex-direction:column}
+  .drawer{position:fixed;top:0;right:0;height:100%;width:520px;max-width:96vw;background:var(--surface);z-index:70;box-shadow:-8px 0 40px rgba(6,65,62,.18);transform:translateX(100%);transition:transform .24s ease,width .2s ease;display:flex;flex-direction:column}
   .drawer.on{transform:none}
+  .drawer.wide{width:1080px}
+  .dampliar{position:absolute;top:14px;right:46px;background:rgba(255,255,255,.16);color:#fff;border:0;border-radius:8px;padding:6px 11px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer}
+  .dampliar:hover{background:rgba(255,255,255,.28)}
   .dhead{padding:20px 22px;border-bottom:1px solid var(--line);background:var(--teal-deep);color:#fff}
   .dhead .x{float:right;cursor:pointer;opacity:.85;font-size:22px;line-height:1}
   .dhead h2{font-size:17px;font-weight:800;padding-right:24px;line-height:1.3}
@@ -553,7 +556,7 @@ async function cargar(){
     const keys=[...new Set([...Object.keys(soM),...Object.keys(poM)])].sort();
     FLUJO={meses:keys.map(label), ventas:keys.map(k=>(soM[k]||0)/1e6), compras:keys.map(k=>(poM[k]||0)/1e6)};
 
-    computar(); render(); pintarCarrito();
+    computar(); render(); pintarCarrito(); iniciarPollCarritos();
   }catch(e){
     document.getElementById("app").innerHTML='<div class="errbox"><b>No pude leer los datos desde Odoo.</b><br>'+esc(e.message)+'</div>';
   }
@@ -1488,7 +1491,7 @@ function abrirFicha(id){
   const cr=CAT.loaded?CAT.rows.find(x=>x.id===id):null, dr=DATA.find(x=>x.id===id);
   const r=cr||dr; if(!r) return;
   const provs=r.provs||[]; const conP=provs.filter(p=>p.price>0).map(p=>p.price), minP=conP.length?Math.min(...conP):null;
-  const d=document.getElementById("drawer");
+  const d=document.getElementById("drawer"); d.classList.remove("wide");
   d.innerHTML=`
     <div class="dhead"><span class="x" onclick="cerrar()">✕</span>
       <h2>${esc(cleanName(r.name))}</h2>
@@ -1526,7 +1529,7 @@ function abrirProd(id){
   const rp=repo(r);
   const lotes=(LOTES[id]||[]).sort((a,b)=>(a.mh??9999)-(b.mh??9999));
   const c=rotCls(r.meses);
-  const d=document.getElementById("drawer");
+  const d=document.getElementById("drawer"); d.classList.remove("wide");
   d.innerHTML=`
     <div class="dhead"><span class="x" onclick="cerrar()">✕</span>
       <h2>${esc(cleanName(r.name))}</h2>
@@ -1797,6 +1800,10 @@ async function crearOC(){
 // ---------- CARRITOS DE COMPRA (uno por proveedor) → borrador Odoo → cotizar/confirmar ----------
 let CARTS={};        // provId -> {prov, provName, items:[{id,code,name,qty,precio}], poId, poName, estado}
 let curCart=null;    // provId abierto en el drawer (null = eligiendo proveedor para un carrito nuevo)
+let drawerWide=false;   // drawer ampliado a ventana grande (carrito / cotizar)
+function btnAmpliar(){ return `<button class="dampliar" onclick="toggleDrawerWide()">${drawerWide?"⤡ Reducir":"⛶ Ampliar"}</button>`; }
+function toggleDrawerWide(){ drawerWide=!drawerWide; const d=document.getElementById("drawer"); if(d) d.classList.toggle("wide",drawerWide);
+  const b=document.querySelector("#drawer .dampliar"); if(b) b.textContent=drawerWide?"⤡ Reducir":"⛶ Ampliar"; }
 function cartOf(prov,provName){ if(!CARTS[prov]) CARTS[prov]={prov,provName,items:[],poId:null,poName:"",estado:"draft"}; else if(provName) CARTS[prov].provName=provName; return CARTS[prov]; }
 function cur(){ return curCart!=null ? CARTS[curCart] : null; }
 function cartTotal(c){ return c.items.reduce((a,it)=>a+it.qty*it.precio,0); }
@@ -1815,6 +1822,19 @@ async function saveCarts(){
   }catch(e){} finally{ _savingCarts=false; }
 }
 let tSaveCarts=null; function saveCartsSoon(){ clearTimeout(tSaveCarts); tSaveCarts=setTimeout(saveCarts, 900); }
+// SONDEO: relee los carritos compartidos cada ~12s y los muestra solos (para ver los que arma German EN SIMULTÁNEO)
+let POLL_CARTS=false;
+async function pollCarritos(){
+  if(document.hidden || _savingCarts) return;
+  let remote; try{ remote=JSON.parse((await rpc("ir.config_parameter","get_param",["eyg.stock_carritos"]))||"{}"); }catch(e){ return; }
+  // no pisar el carrito que estoy editando en este momento (drawer abierto)
+  const drw=document.getElementById("drawer");
+  const openId=(curCart!=null && drw && drw.classList.contains("on")) ? String(curCart) : null;
+  if(openId!=null && CARTS[openId]) remote[openId]=CARTS[openId];
+  if(JSON.stringify(remote)===JSON.stringify(CARTS)) return;   // nada nuevo
+  CARTS=remote; pintarCarrito(); if(document.getElementById("cartpanel")) renderCartPanel();
+}
+function iniciarPollCarritos(){ if(POLL_CARTS) return; POLL_CARTS=true; setInterval(pollCarritos, 12000); }
 // Borrar un carrito del param compartido (lee, saca esa clave, escribe) para que el borrado se propague
 async function saveCartsDelete(prov){
   try{
@@ -1921,9 +1941,10 @@ function renderCompra(){
         <button class="wa-send" onclick="irACotizar(${c.poId})" style="background:var(--teal)">📄 Cotizar / negociar y enviar →</button></div>
       <button class="wa-send ghost" onclick="nuevaCompra()" style="margin-top:12px">➕ Otro carrito</button>`;
   }
-  d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span><h2>${c?"Carrito de compra":"Nuevo carrito"}</h2>
+  d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span>${btnAmpliar()}<h2>${c?"Carrito de compra":"Nuevo carrito"}</h2>
       <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${money(total)}</span></div></div>
     <div class="dbody">${pasos()}${body}</div>`;
+  d.classList.toggle("wide", drawerWide);
   pintarCarrito();
 }
 let tProv=null;
@@ -2113,7 +2134,8 @@ function cotTotal(){ return COT.lines.reduce((a,l)=>a+(l.product_qty*l.price_uni
 function cotLink(){ return (PRES.base||"https://drogueriaeyg.odoo.com").replace(/\/$/,"")+(COT.po._purl||("/my/purchase/"+COT.po.id)); }
 function renderCot(){
   const d=document.getElementById("drawer"); const p=COT.po; const est=p.state==="sent"?"Enviado":"Borrador";
-  d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span>
+  d.classList.toggle("wide", drawerWide);
+  d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span>${btnAmpliar()}
       <h2>${esc(p.name)}</h2><div class="deuda" id="cotTot">${money(cotTotal())}</div>
       <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${esc(p.partner_id?p.partner_id[1]:"")}</span>
         <span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${est} · ${COT.lines.length} líneas</span></div></div>
