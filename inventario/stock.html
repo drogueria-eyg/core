@@ -192,6 +192,7 @@
   .histmodal .hm-head b{font-size:15px;color:var(--teal-deep)} .histmodal .hm-x{cursor:pointer;color:var(--gris2);font-size:17px;font-weight:700;padding:2px 6px}
   .histmodal .hm-body{padding:14px 18px;overflow:auto}
   .g-hist{grid-template-columns:1.3fr 2fr 0.9fr 0.9fr 0.9fr}
+  .g-hist2{grid-template-columns:1.2fr 1.7fr 0.8fr 0.95fr 1.05fr}
   .histbars{display:flex;flex-direction:column;gap:5px}
   .histbars .hb{display:grid;grid-template-columns:78px 1fr 64px;align-items:center;gap:10px;font-size:12.5px}
   .histbars .hb-m{color:var(--gris);font-weight:600} .histbars .hb-bar{background:#EEF4F3;border-radius:6px;height:16px;overflow:hidden} .histbars .hb-bar i{display:block;height:100%;background:var(--teal)} .histbars .hb-u{text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
@@ -327,7 +328,7 @@
   .cotrow .cst{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;font-size:12.5px}
 
   @media(max-width:860px){ .grid2{grid-template-columns:1fr} .rotleg{grid-template-columns:1fr}
-    .g-stock{grid-template-columns:1.8fr 0.7fr 1fr 0.85fr 0.9fr} .g-repo{grid-template-columns:2fr 1fr 0.9fr} .g-win{grid-template-columns:2fr 0.9fr 1fr} .g-liq{grid-template-columns:1.7fr 1fr 1.3fr} .g-rep{grid-template-columns:1.7fr 0.9fr 0.9fr 1.1fr} .g-comp{grid-template-columns:1.5fr 0.9fr 1fr 1.3fr} .g-hist{grid-template-columns:1.2fr 1.6fr 0.8fr 0.9fr} .smartbtns{grid-template-columns:1fr}
+    .g-stock{grid-template-columns:1.8fr 0.7fr 1fr 0.85fr 0.9fr} .g-repo{grid-template-columns:2fr 1fr 0.9fr} .g-win{grid-template-columns:2fr 0.9fr 1fr} .g-liq{grid-template-columns:1.7fr 1fr 1.3fr} .g-rep{grid-template-columns:1.7fr 0.9fr 0.9fr 1.1fr} .g-comp{grid-template-columns:1.5fr 0.9fr 1fr 1.3fr} .g-hist{grid-template-columns:1.2fr 1.6fr 0.8fr 0.9fr} .g-hist2{grid-template-columns:1fr 1.2fr 0.7fr 0.9fr 0.95fr} .smartbtns{grid-template-columns:1fr}
     .hide-sm{display:none} .fbar{width:8px} .spark{width:100%} .health .hh{gap:16px} }
 </style>
 </head>
@@ -1617,19 +1618,32 @@ async function histCompras(id){
   const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id)||(CAT.loaded?CAT.rows.find(x=>x.id===id):null)||{};
   abrirHist("Compras de "+cleanName(r.name||("#"+id)));
   try{
-    const ls=await rpc("purchase.order.line","search_read",[[["product_id","=",id],["state","in",["purchase","done"]]]],
-      {fields:["order_id","partner_id","date_order","product_qty","price_unit","qty_received"],order:"date_order desc",limit:300});
+    // Órdenes + facturas de compra: el motor usa el costo FACTURADO (el real), no el de la orden
+    const [pol, aml]=await Promise.all([
+      rpc("purchase.order.line","search_read",[[["product_id","=",id],["state","in",["purchase","done"]]]],{fields:["order_id","partner_id","date_order","product_qty","price_unit","qty_received"],limit:300}),
+      rpc("account.move.line","search_read",[[["product_id","=",id],["parent_state","=","posted"],["move_id.move_type","in",["in_invoice","in_refund"]]]],{fields:["move_name","date","quantity","price_subtotal","purchase_line_id","move_type"],limit:300}),
+    ]);
     const b=document.getElementById("hmBody"); if(!b) return;
-    if(!ls.length){ b.innerHTML='<div class="empty" style="padding:30px">Sin compras registradas.</div>'; return; }
-    const tot=ls.reduce((a,l)=>a+(l.product_qty||0),0);
-    b.innerHTML=`<div class="count-line" style="margin:0 0 8px"><b>${ls.length}</b> compras · ${Math.round(tot).toLocaleString("es-AR")} u en total</div>
-      <div class="tablecard"><div class="thead g-hist"><div>Fecha</div><div>Proveedor</div><div class="tr-r">Cantidad</div><div class="tr-r">Costo u.</div><div class="tr-r hide-sm">Recibido</div></div>
-      ${ls.map(l=>`<div class="row g-hist" onclick="window.open('${odooPO(l.order_id[0])}','_blank')" style="cursor:pointer">
-        <div class="cmeta">${(l.date_order||"").slice(0,10).split("-").reverse().join("/")}<div style="font-size:10.5px;color:var(--teal-deep)">${esc(l.order_id?l.order_id[1]:"")}</div></div>
-        <div class="cmeta" style="white-space:normal">${esc(l.partner_id?l.partner_id[1]:"—")}</div>
-        <div class="tr-r num">${Math.round(l.product_qty||0).toLocaleString("es-AR")}</div>
-        <div class="tr-r num">${money(l.price_unit||0)}</div>
-        <div class="tr-r num hide-sm" style="font-weight:500">${Math.round(l.qty_received||0).toLocaleString("es-AR")}</div>
+    // agrupar facturas por línea de orden (una orden puede tener varias facturas / notas de crédito)
+    const factByPol={}, sueltas=[];
+    for(const l of aml){ const sign=l.move_type==="in_refund"?-1:1;
+      if(l.purchase_line_id){ const k=l.purchase_line_id[0]; const a=factByPol[k]||(factByPol[k]={qty:0,sub:0}); a.qty+=sign*(l.quantity||0); a.sub+=sign*(l.price_subtotal||0); }
+      else if((l.quantity||0)>0){ sueltas.push({fecha:(l.date||"").slice(0,10), prov:l.move_name||"factura suelta", qty:l.quantity, ordU:null, facU:l.price_subtotal/l.quantity, suelta:true}); } }
+    let rows=pol.map(l=>{ const f=factByPol[l.id]; const facU=(f&&f.qty)?(f.sub/f.qty):null;
+      return {fecha:(l.date_order||"").slice(0,10), prov:l.partner_id?l.partner_id[1]:"—", oid:l.order_id?l.order_id[0]:0, oname:l.order_id?l.order_id[1]:"", qty:l.product_qty||0, ordU:l.price_unit||0, facU}; })
+      .concat(sueltas).sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha)));
+    if(!rows.length){ b.innerHTML='<div class="empty" style="padding:30px">Sin compras registradas.</div>'; return; }
+    const tot=rows.reduce((a,r)=>a+(r.qty||0),0);
+    const dif=(o,f)=> (f!=null && o>0 && Math.abs(f-o)/o>0.02);
+    b.innerHTML=`<div class="note info" style="margin:0 0 10px">El <b>costo que usa el motor</b> (y los márgenes) es el <b>facturado</b> — lo que realmente pagaste, no el de la orden. Cuando difieren, la factura manda (marcado en <b style="color:var(--red)">rojo</b>).</div>
+      <div class="count-line" style="margin:0 0 8px"><b>${rows.length}</b> compras · ${Math.round(tot).toLocaleString("es-AR")} u en total</div>
+      <div class="tablecard"><div class="thead g-hist2"><div>Fecha</div><div>Proveedor</div><div class="tr-r">Cantidad</div><div class="tr-r">Orden $/u</div><div class="tr-r">Facturado $/u</div></div>
+      ${rows.map(r=>`<div class="row g-hist2" ${r.oid?`onclick="window.open('${odooPO(r.oid)}','_blank')" style="cursor:pointer"`:''}>
+        <div class="cmeta">${r.fecha?r.fecha.split("-").reverse().join("/"):"—"}${r.oname?`<div style="font-size:10.5px;color:var(--teal-deep)">${esc(r.oname)}</div>`:(r.suelta?`<div style="font-size:10.5px;color:var(--gris2)">${esc(r.prov)}</div>`:"")}</div>
+        <div class="cmeta" style="white-space:normal">${esc(r.suelta?"—":r.prov)}</div>
+        <div class="tr-r num">${Math.round(r.qty).toLocaleString("es-AR")}</div>
+        <div class="tr-r num" style="font-weight:500;color:var(--gris)">${r.ordU!=null?money(r.ordU):"—"}</div>
+        <div class="tr-r num" style="font-weight:700;${dif(r.ordU,r.facU)?"color:var(--red)":""}">${r.facU!=null?money(r.facU):'<span style="color:var(--gris2);font-weight:500">s/factura</span>'}</div>
       </div>`).join("")}</div>`;
   }catch(e){ const b=document.getElementById("hmBody"); if(b)b.innerHTML='<div class="errbox">No pude cargar las compras: '+esc(e.message)+'</div>'; }
 }
