@@ -36,6 +36,9 @@
   .btn-mini{background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;color:var(--teal-deep);cursor:pointer;font-family:inherit;white-space:nowrap}
   .btn-mini:hover{border-color:var(--teal)}
   .btn-mini.danger{color:var(--bad)} .btn-mini.warn{color:var(--warn)}
+  /* Cuentas de dirección: no se desactivan desde la lista (ver marcarSupers) */
+  .btn-mini.prot{color:var(--gris2);background:var(--bg);border-style:dashed;cursor:default;display:inline-flex;align-items:center;gap:5px}
+  .btn-mini.prot:hover{border-color:var(--line)}
   .uload,.uerr{padding:34px;text-align:center;color:var(--gris)}
   .uerr{color:var(--bad)}
   /* Drawer */
@@ -140,9 +143,19 @@ window.UI = (function(){
 
   async function init(perfil){ P=perfil; await recargar(); }
 
+  /* Marca a los super-admins (German y Diego) para poder BLINDARLOS en la lista.
+     Se resuelve acá, una vez y en bloque, porque la huella del email es asincrónica
+     y render() es sincrónico. No se comparan mails: el repo es público, así que la
+     identidad viaja como huella (misma lista SUPER que usa todo el Core). */
+  async function marcarSupers(){
+    await Promise.all(USERS.map(async u=>{
+      try{ u._sup = EYG.esSuper(await EYG.huella(u.email)); }catch(e){ u._sup = false; }
+    }));
+  }
+
   async function recargar(){
     const w=document.getElementById("uwrap");
-    try{ const {users}=await api("list"); USERS=users||[]; render(); }
+    try{ const {users}=await api("list"); USERS=users||[]; await marcarSupers(); render(); }
     catch(e){ if(w) w.innerHTML=`<div class="uerr">No pude cargar los usuarios.<br><span style="font-size:12.5px">${esc(e.message)}</span></div>`; }
   }
 
@@ -169,7 +182,9 @@ window.UI = (function(){
           <div class="acts">
             <button class="btn-mini" onclick="UI.editar('${esc(u.email)}')">Editar</button>
             <button class="btn-mini warn" onclick="UI.reset('${esc(u.email)}')">Restablecer clave</button>
-            <button class="btn-mini ${u.activo?'danger':''}" onclick="UI.toggleActivo('${esc(u.email)}')">${u.activo?'Desactivar':'Activar'}</button>
+            ${u._sup
+              ? `<span class="btn-mini prot" title="Las cuentas de dirección no se desactivan desde acá, para que nadie pueda dejar al sistema sin administrador." aria-disabled="true">🛡️ Protegido</span>`
+              : `<button class="btn-mini ${u.activo?'danger':''}" onclick="UI.toggleActivo('${esc(u.email)}')">${u.activo?'Desactivar':'Activar'}</button>`}
           </div>
         </td>
       </tr>`;
@@ -377,6 +392,10 @@ window.UI = (function(){
   /* ---------- Activar / desactivar ---------- */
   async function toggleActivo(email){
     const u=USERS.find(x=>x.email===email); if(!u) return;
+    /* Candado de verdad, no sólo el botón escondido: si alguien llama a esta
+       función a mano, igual se frena. Desactivar a dirección dejaría al Core sin
+       nadie que pueda reactivar a nadie —incluido el que se desactivó a sí mismo. */
+    if(u._sup){ toast("Las cuentas de dirección no se desactivan desde acá"); return; }
     const nuevo=!u.activo;
     if(!nuevo && !confirm("¿Desactivar a "+ (u.nombre||email) +"?\n\nNo va a poder entrar al Core hasta que lo reactives. (No se borra nada.)")) return;
     try{ await api("update",{email, activo:nuevo}); await recargar(); toast(nuevo?"Usuario activado":"Usuario desactivado"); }
