@@ -382,7 +382,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=69"></script>
+<script src="../assets/core.js?v=74"></script>
 <script src="../assets/metrics.js?v=5"></script>
 <script src="../assets/liquidacion.js?v=1"></script>
 <script>
@@ -2118,10 +2118,11 @@ function fuentesHTML(d){
    asignar todavía). Reasignar = escribir res.partner.user_id: mueve el cliente
    entero de cartera. Crear un contacto lo asigna al líder por defecto (después lo
    reparte). Espeja los campos y formateadores de panel.html para no divergir. */
-const PFIELDS_C=["id","name","property_payment_term_id","company_type","is_company","street","street2","city","zip","state_id","phone","mobile","email","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","customer_rank","user_id"];
+const PFIELDS_C=["id","name","property_payment_term_id","company_type","is_company","street","street2","city","zip","state_id","phone","mobile","email","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id",EYG.RUBRO_FIELD,"customer_rank","user_id"];
 const REQ=[{k:"name"},{k:"tel"},{k:"email"},{k:"street"},{k:"zip"},{k:"city"},{k:"state"},{k:"idtype"},{k:"vat"},{k:"fiscal"}];
-const RUBROS=[{v:30,l:"Farmacia"},{v:32,l:"Sanatorio / Clínica"},{v:37,l:"Empresa de salud"},{v:33,l:"Institución / Mutual"},{v:34,l:"Distribuidora / Droguería"},{v:35,l:"Veterinaria"},{v:62,l:"SAMCO"}];
-const RUBRO_MAP={28:30,29:30,30:30, 8:35,35:35, 7:34,34:34, 31:33,33:33,36:33, 20:32,32:32, 37:37, 62:62};
+/* Rubro: lista y lectura únicas en core.js (EYG.RUBROS / EYG.rubroDe). Se
+   escribe el CAMPO de la ficha, no la etiqueta — ver el comentario en core.js. */
+const RUBRO_FIELD=EYG.RUBRO_FIELD;
 const ARCH_TAG=63;   // etiqueta res.partner.category "Archivado (Core)" — cola de revisión. Ver memoria eyg-archivado-contactos.
 let CT={ list:[], sinAsig:[], q:"", filtro:"all", cat:{prov:[],idt:[],fiscal:[]}, cargado:false, edit:null };
 
@@ -2145,7 +2146,7 @@ function completar(c){
     vat:!!c.vat,fiscal:!!(c.l10n_ar_afip_responsibility_type_id&&c.l10n_ar_afip_responsibility_type_id[0])};
   return {has, pct:Math.round(REQ.filter(r=>has[r.k]).length/REQ.length*100)};
 }
-function rubroActual(c){ for(const t of (c.category_id||[])) if(RUBRO_MAP[t]) return RUBRO_MAP[t]; return ""; }
+const rubroActual=c=>EYG.rubroDe(c);
 
 // dueños posibles = el líder + sus comerciales (para asignar/reasignar)
 function duenos(){ return [{uid:LIDER.uid,name:LIDER.name,color:"#0E5C58",lider:true}, ...COM.map(c=>({uid:c.uid,name:c.name,color:c.color}))]; }
@@ -2295,7 +2296,7 @@ function abrirDrawer(c,isNew){
       <div class="fld"><label id="c_lblname">${tipo==='company'?'Razón social':'Apellido y nombre'} ${comp.has.name||isNew?'':'<span class="miss">falta</span>'}</label>
         <input id="c_name" value="${esc(c.name||'')}" placeholder="${tipo==='company'?'Ej: Farmacia del Sol S.R.L.':'Ej: Pérez, Juan'}">
         <div class="hint" id="c_hintname">${tipo==='company'?'Nombre tipo oración + sufijo (SRL, SAS…)':'Formato: Apellido, Nombre.'}</div></div>
-      <div class="fld"><label>Rubro</label><select id="c_rubro"><option value="">— elegir rubro —</option>${RUBROS.map(r=>`<option value="${r.v}" ${rubroSel===r.v?'selected':''}>${esc(r.l)}</option>`).join("")}</select></div>
+      <div class="fld"><label>Rubro</label><select id="c_rubro">${EYG.rubroOpts(rubroSel)}</select></div>
       <div class="fld"><label>Teléfono ${comp.has.tel||isNew?'':'<span class="miss">falta</span>'}</label>
         <input id="c_phone" value="${esc(c.phone||c.mobile||'')}" oninput="cPrevTel()" placeholder="0341 155033943">
         <div class="hint" id="c_prevtel">Área sin 0, celular sin 15. Se guarda formateado.</div></div>
@@ -2341,7 +2342,9 @@ async function guardarContacto(){
   // el plazo que tenía antes, para dejar constancia si cambia
   const _prevC=[...(CT.list||[]),...(CT.sinAsig||[])].find(x=>x.id===(CT.edit&&CT.edit.id)), _prevT=_prevC&&_prevC.property_payment_term_id;
   const plazoPrevId=_prevT?_prevT[0]:false, plazoPrevNom=_prevT?_prevT[1]:"sin plazo";
-  const rubro=num("c_rubro"); if(rubro) vals.category_id=[[4,rubro]];
+  /* El desplegable siempre trae el rubro actual (EYG.rubroOpts agrega el viejo
+     si lo tuviera), así que guardar sin tocarlo no lo borra. */
+  vals[RUBRO_FIELD]=val("c_rubro")||false;
   if(!vals.name){ btn.disabled=false; btn.textContent=CT.edit.isNew?"Crear contacto":"Guardar ficha"; toast("⚠️ Falta el nombre"); return; }
   try{
     let id=CT.edit.id;

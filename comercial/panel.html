@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=71"></script>
+<script src="../assets/core.js?v=74"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -773,9 +773,11 @@ let COMERCIAL="";  // se define en el arranque según la cuenta logueada (o ?c= 
 let SIN_COMISION=false;
 let MODO_LIDER=false;  // ?modo=lider (solo no-comercial): panel de cartera SIN gamificación + gráfico de evolución
 const REQ=[{k:"name",l:"Nombre"},{k:"tel",l:"Teléfono"},{k:"email",l:"Email"},{k:"street",l:"Dirección"},{k:"zip",l:"CP"},{k:"city",l:"Localidad"},{k:"state",l:"Provincia"},{k:"idtype",l:"Tipo doc"},{k:"vat",l:"Nº doc"},{k:"fiscal",l:"Cond. fiscal"}];
-// Rubro (vive en category_id / etiquetas de Odoo). Mapa tag->valor canónico
-const RUBROS=[{v:30,l:"Farmacia"},{v:32,l:"Sanatorio / Clínica"},{v:37,l:"Empresa de salud"},{v:33,l:"Institución / Mutual"},{v:34,l:"Distribuidora / Droguería"},{v:35,l:"Veterinaria"},{v:62,l:"SAMCO"}];
-const RUBRO_MAP={28:30,29:30,30:30, 8:35,35:35, 7:34,34:34, 31:33,33:33,36:33, 20:32,32:32, 37:37, 62:62};
+/* Rubro: la lista y la lectura viven en core.js (EYG.RUBROS / EYG.rubroDe), una
+   sola para todo el Core. Hasta el 15/9/2026 este panel lo guardaba como
+   ETIQUETA y cobranzas leía el CAMPO: eran dos sistemas y por eso no coincidían.
+   Ahora se escribe el campo; la etiqueta vieja se sigue leyendo de respaldo. */
+const RUBRO_FIELD=EYG.RUBRO_FIELD;
 const IDT={cuit:4,dni:5,cuil:6};
 
 // ===== Formateadores (estandarización) =====
@@ -844,7 +846,7 @@ let ST={userId:null, contactos:[], catFiscal:[], catId:[], catProv:[], fact:{sem
 function cuitDe(c){ const d=String((c&&c.vat)||"").replace(/\D/g,""); return d.length===11?d:""; }
 let WA_PICK=null, BELL_OPTS=null;
 
-const PFIELDS=["id","name","company_type","is_company","street","street2","city","zip","state_id","phone","mobile","email","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","customer_rank","property_payment_term_id"];
+const PFIELDS=["id","name","company_type","is_company","street","street2","city","zip","state_id","phone","mobile","email","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id",EYG.RUBRO_FIELD,"customer_rank","property_payment_term_id"];
 // Plazo de pago acordado con el cliente (res.partner.property_payment_term_id). Lo ve Cobranzas;
 // se lo mostramos también al comercial como badge para que sepa el acuerdo antes de contactar.
 function plazoTxt(c){ const t=c&&c.property_payment_term_id; if(!t||!t[1]) return ""; const n=String(t[1]), m=n.match(/(\d+)/);
@@ -871,7 +873,7 @@ function completar(c){
   return {has, pct:Math.round(REQ.filter(r=>has[r.k]).length/REQ.length*100)};
 }
 const colorPct=p=>p>=100?'var(--ok)':p>=60?'var(--teal-med)':p>=30?'var(--warn)':'var(--bad)';
-function rubroActual(c){ for(const t of (c.category_id||[])) if(RUBRO_MAP[t]) return RUBRO_MAP[t]; return ""; }
+const rubroActual=c=>EYG.rubroDe(c);
 const diasDe=f=> f? Math.floor((now-new Date(f))/86400000):null;
 
 async function cargar(){
@@ -2648,9 +2650,14 @@ function matchProvId(prov){ if(!prov) return false; const n=prov.toLowerCase().t
 // Tomar un ítem: abre el formulario de "nuevo contacto" prellenado con los datos del padrón.
 function tomar(id){
   const it=(ST.conquistar||[]).find(x=>x.id===id); if(!it) return;
-  const provId=matchProvId(it.prov), rubroTag=it.tipo===1?33:30;   // 33 Institución · 30 Farmacia
+  /* El padrón sólo distingue farmacia (tipo 0) de establecimiento de salud
+     (tipo 1), y adentro del 1 conviven sanatorios, centros y SAMCO. La farmacia
+     se prellena; el resto se deja EN BLANCO para que lo elija el comercial:
+     antes se estampaba "Institución" a todos y salía mal más veces que bien. */
+  const provId=matchProvId(it.prov);
   const pseudo={ id:0, name:it.nombre, company_type:"company", is_company:true, city:it.loc||"", street:it.dom||"",
-    state_id: provId?[provId, it.prov]:false, category_id: rubroTag?[rubroTag]:[], phone:"", mobile:"", email:"", vat:"" };
+    state_id: provId?[provId, it.prov]:false, category_id: [], [EYG.RUBRO_FIELD]: it.tipo===1?false:"FARMACIAS",
+    phone:"", mobile:"", email:"", vat:"" };
   ST._tomando=id;
   abrirForm(pseudo, true);
 }
@@ -3095,8 +3102,7 @@ function abrirForm(c,isNew){
   EDIT={id:c.id, isNew};
   const comp=completar(c); const tipo=c.is_company?'company':(c.company_type||'person');
   const optSel=(cat,sel,ph)=>`<option value="">${ph||'— elegir —'}</option>`+cat.map(o=>`<option value="${o.id}" ${sel&&(Array.isArray(sel)?sel[0]===o.id:sel===o.id)?'selected':''}>${esc(o.name)}</option>`).join("");
-  const rubroSel=rubroActual(c);
-  const rubroOpts=`<option value="">— elegir rubro —</option>`+RUBROS.map(r=>`<option value="${r.v}" ${rubroSel===r.v?'selected':''}>${esc(r.l)}</option>`).join("");
+  const rubroOpts=EYG.rubroOpts(rubroActual(c));
   const d=document.getElementById("drawer");
   const intelHTML = isNew ? '' : `
     <div class="intel"><h4>Actividad comercial</h4>
@@ -3398,8 +3404,9 @@ async function guardar(){
   // el plazo que tenía antes, para dejar constancia si cambia
   const _prevC=(ST.contactos||[]).find(x=>x.id===EDIT.id), _prevT=_prevC&&_prevC.property_payment_term_id;
   const plazoPrevId=_prevT?_prevT[0]:false, plazoPrevNom=_prevT?_prevT[1]:"sin plazo";
-  const rubro=num("f_rubro");
-  if(rubro) vals.category_id=[[4,rubro]];
+  /* El desplegable siempre trae el rubro que la ficha tiene hoy (EYG.rubroOpts
+     agrega el viejo si lo tuviera), así que guardar sin tocarlo no lo borra. */
+  vals[RUBRO_FIELD]=val("f_rubro")||false;
   if(!vals.name){ btn.disabled=false; btn.textContent=EDIT.isNew?"Crear contacto":"Guardar ficha"; toast("⚠️ Falta el nombre"); return; }
   try{
     let id=EDIT.id;

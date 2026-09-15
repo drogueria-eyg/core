@@ -1417,6 +1417,83 @@ window.EYG = (function(){
   /* Leyenda de los 4 niveles (qué significa cada uno). Reutilizable en cualquier módulo. */
   function credLeyendaHTML(){ credStyles(); return '<div class="eyg-credleg">'+["apto","reparos","consultar","noapto"].map(k=>{const m=CRED_NIV[k]; return `<div class="cl-row"><span class="cl-dot ${m.luz}"></span><div><b>${esc(m.titulo)}</b> — ${esc(m.sub)}</div></div>`;}).join("")+'</div>'; }
 
+  /* ===== RUBRO DEL CLIENTE · UNA SOLA DEFINICIÓN PARA TODO EL CORE =====
+     El rubro vive en el campo "Rubro" de la ficha de Odoo (uno solo por cliente).
+
+     POR QUÉ ESTÁ ACÁ: hasta el 15/9/2026 convivían DOS sistemas. El panel del
+     comercial, el del líder y el tablero escribían ETIQUETAS (res.partner.category);
+     cobranzas y contactos leían el CAMPO. Un cliente cargado desde el panel no
+     aparecía con rubro en cobranzas, y cada módulo tenía su propia lista copiada.
+     Ahora se ESCRIBE sólo el campo y la lista vive acá: si hay que agregar o
+     cambiar un rubro, se toca este bloque y lo heredan todos los módulos.
+
+     RESPALDO MIENTRAS SE CATALOGA: las etiquetas viejas NO se borran; `rubroDe`
+     las sigue LEYENDO cuando el campo está vacío, así ninguna ficha que hoy
+     muestra rubro aparece de golpe en blanco. Se borrarán cuando el campo esté
+     completo (ver la memoria del proyecto).
+
+     VIEJOS: los dos valores que se retiran (INSTITUCIONES / EMPRESAS DE SALUD).
+     No se ofrecen para elegir, pero si un cliente todavía los tiene, `rubroOpts`
+     los agrega al desplegable para que queden seleccionados. Sin eso, guardar la
+     ficha sin tocar el rubro se lo borraría. */
+  const RUBRO_FIELD = "x_studio_selection_field_6ui_1j42g6fu9";
+  const RUBROS = [
+    {v:"FARMACIAS",                 l:"Farmacia",                        ab:"Farmacia",      ico:"💊", c:"#048782", bg:"#E2F1EF"},
+    {v:"SANATORIOS Y CLINICAS",     l:"Sanatorio / Clínica (interna)",   ab:"Sanatorio",     ico:"🏥", c:"#1E5FA8", bg:"#E7F0FB"},
+    {v:"CENTROS DE SALUD",          l:"Centro de salud (no interna)",    ab:"Centro salud",  ico:"➕", c:"#04635F", bg:"#DDEFED"},
+    {v:"DISTRIBUIDORAS",            l:"Distribuidora",                   ab:"Distribuidora", ico:"📦", c:"#7A4DB8", bg:"#EEE7F8"},
+    {v:"SECTOR PUBLICO",            l:"Sector público (SAMCO, comuna)",  ab:"Sector púb.",   ico:"🏛️", c:"#B0561F", bg:"#FBE8DC"},
+    {v:"OBRAS SOCIALES Y MUTUALES", l:"Obra social / mutual",            ab:"Obra social",   ico:"🤝", c:"#8A3D6B", bg:"#F7E4EF"},
+    {v:"VETERINARIAS",              l:"Veterinaria",                     ab:"Veterinaria",   ico:"🐾", c:"#1E7D46", bg:"#E4F5E9"},
+    {v:"DROGUERIAS",                l:"Droguería",                       ab:"Droguería",     ico:"⚗️", c:"#B7791F", bg:"#FBF0DA"},
+    {v:"PERSONAL",                  l:"Personal / interno",              ab:"Personal",      ico:"👤", c:"#5F716E", bg:"#EEF1F0"},
+  ];
+  const RUBROS_VIEJOS = [
+    {v:"INSTITUCIONES",     l:"INSTITUCIONES (a reclasificar)",     ab:"Institución", ico:"🏥", c:"#8A9A97", bg:"#EEF1F0", viejo:true},
+    {v:"EMPRESAS DE SALUD", l:"EMPRESAS DE SALUD (a reclasificar)", ab:"Emp. salud",  ico:"➕", c:"#8A9A97", bg:"#EEF1F0", viejo:true},
+  ];
+  const RUBRO_META = {}; RUBROS.concat(RUBROS_VIEJOS).forEach(r=>RUBRO_META[r.v]=r);
+  /* Etiqueta vieja → rubro. Incluye ids de etiquetas que ya no existen en Odoo
+     pero que pueden seguir colgadas de fichas viejas. La 32 se mapea a
+     "sanatorios" porque así se la mostraba el panel al comercial ("Sanatorio /
+     Clínica"), aunque en Odoo la etiqueta se llame "CENTROS DE SALUD": vale lo
+     que vio la persona cuando la eligió. */
+  const TAG_RUBRO = {
+    28:"FARMACIAS", 29:"FARMACIAS", 30:"FARMACIAS",
+    8:"VETERINARIAS", 35:"VETERINARIAS",
+    7:"DISTRIBUIDORAS", 34:"DISTRIBUIDORAS",
+    20:"SANATORIOS Y CLINICAS", 32:"SANATORIOS Y CLINICAS",
+    37:"CENTROS DE SALUD",
+    62:"SECTOR PUBLICO",
+    31:"OBRAS SOCIALES Y MUTUALES", 33:"OBRAS SOCIALES Y MUTUALES", 36:"OBRAS SOCIALES Y MUTUALES",
+  };
+  /* Rubro efectivo de una ficha: manda el campo; si está vacío, la etiqueta. */
+  function rubroDe(p){
+    if(!p) return "";
+    if(p[RUBRO_FIELD]) return p[RUBRO_FIELD];
+    for(const t of (p.category_id||[])) if(TAG_RUBRO[t]) return TAG_RUBRO[t];
+    return "";
+  }
+  /* <option>s del desplegable, con el valor actual siempre presente. */
+  function rubroOpts(sel, ph){
+    sel = sel || "";
+    let lista = RUBROS.slice();
+    const viejo = RUBROS_VIEJOS.find(r=>r.v===sel);
+    if(viejo) lista = lista.concat([viejo]);
+    return `<option value="">${esc(ph||"— elegir rubro —")}</option>`+
+      lista.map(r=>`<option value="${esc(r.v)}"${sel===r.v?" selected":""}>${esc(r.l)}</option>`).join("");
+  }
+  function rubroStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-rubro-css")) return;
+    const s=document.createElement("style"); s.id="eyg-rubro-css";
+    s.textContent=".eyg-rub{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;padding:2px 9px;border-radius:20px;white-space:nowrap}";
+    document.head.appendChild(s); }
+  function rubroBadge(r){
+    rubroStyles();
+    const m=RUBRO_META[r];
+    if(!m) return '<span class="eyg-rub" style="background:#F3F5F4;color:#8A9A97">Sin rubro</span>';
+    return `<span class="eyg-rub" style="background:${m.bg};color:${m.c}"${m.viejo?' title="Rubro viejo: hay que reclasificarlo"':''}>${m.ico} ${esc(m.ab)}</span>`;
+  }
+
   /* ===== CONTACTOS A CONQUISTAR (bolsillo del comercial) =====
      El líder asigna establecimientos del padrón oficial (módulo Contactos) a la carpeta de un
      comercial para que los trabaje y los convierta en clientes nuevos. Se guardan los DATOS del
@@ -1827,6 +1904,7 @@ window.EYG = (function(){
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
     creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
+    RUBRO_FIELD, RUBROS, RUBROS_VIEJOS, RUBRO_META, TAG_RUBRO, rubroDe, rubroOpts, rubroBadge,
     conquistarLeer, conquistarGuardar, conquistarAsignar, conquistarDeComercial, conquistarSetPartner, conquistarQuitar, conquistarPatch, notificarRoles,
     padNorm, padTitulo, padLocKey, padClave, padCoincide, padClaveDir, padCoincideDir, padCargar, padCruzar, padPunto, padTk, PAD_GENERICO,
     mapaBase, mapaPuntos, mapaStyles,
