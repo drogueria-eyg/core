@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=70"></script>
+<script src="../assets/core.js?v=71"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -1585,25 +1585,26 @@ function ntEntTexto(d, quien){
 }
 /* Crea, actualiza o borra el renglón de nota. Se guarda su id en la anotación para
    poder tocarlo después con exactitud; si el id se perdió, se lo busca por la marca. */
+/* LA INDICACIÓN VA AL REMITO, NO AL PEDIDO (cambiado el 15/9/2026).
+   Antes se escribía como renglón de nota del pedido. Ese renglón Odoo lo COPIA a la
+   factura del cliente, así que quien facturaba lo borraba para que no saliera impreso —
+   y al borrarlo, Depósito se quedaba sin la indicación: de 71 escritas sobrevivían 6.
+   Ahora va al campo "Nota" del remito, que nadie borra, no llega al cliente y se imprime
+   en el remito y en la hoja de armado. Si quedó un renglón viejo en el pedido, se saca. */
 async function ntEntEscribirOdoo(pedidoId, texto, fechaISO, lineId){
-  let id=lineId||null;
-  if(id){
-    const ex=await rpc("sale.order.line","search",[[["id","=",id],["order_id","=",pedidoId]]],{limit:1});
-    if(!ex||!ex.length) id=null;                 // lo borraron a mano en Odoo
-  }
-  if(!id){
-    const m=await rpc("sale.order.line","search",[[["order_id","=",pedidoId],["display_type","=","line_note"],["name","like",NT_MARCA]]],{limit:1});
-    if(m&&m.length) id=m[0];
-  }
   const CTX={context:{mail_auto_subscribe_no_notify:true}};
-  if(!texto){ if(id) await rpc("sale.order.line","unlink",[[id]],CTX); await ntEntEscribirRemitos(pedidoId,""); return null; }   // tambien limpia la Nota del remito
-  if(id) await rpc("sale.order.line","write",[[id],{name:texto}],CTX);
-  else   id=await rpc("sale.order.line","create",[{order_id:pedidoId,display_type:"line_note",name:texto,product_uom_qty:0,sequence:999}],CTX);
-  // La "Fecha de entrega" nativa: hoy está vacía en todos los pedidos y es la que va a
-  // ordenar el reparto cuando exista el módulo de logística. Mediodía UTC = 9 acá.
+  try{
+    let id=lineId||null;
+    if(!id){
+      const m=await rpc("sale.order.line","search",[[["order_id","=",pedidoId],["display_type","=","line_note"],["name","like",NT_MARCA]]],{limit:1});
+      if(m&&m.length) id=m[0];
+    }
+    if(id) await rpc("sale.order.line","unlink",[[id]],CTX);
+  }catch(e){ /* si no se puede sacar el renglón viejo, no frena la indicación */ }
+  // La "Fecha de entrega" nativa: es la que va a ordenar el reparto. Mediodía UTC = 9 acá.
   if(fechaISO) await rpc("sale.order","write",[[pedidoId],{commitment_date:fechaISO+" 12:00:00"}],CTX);
-  await ntEntEscribirRemitos(pedidoId, texto);
-  return id;
+  await ntEntEscribirRemitos(pedidoId, texto||"");
+  return null;
 }
 /* El renglón de nota hace que la indicación SALGA IMPRESA en el remito. Pero si
    logística lo mira en pantalla, el renglón vive en el pedido, no en el remito: por
@@ -1642,6 +1643,9 @@ async function ntGuardar(){
     const fechas=[d.fecha,...(d.tramos||[]).map(t=>t.fecha)].filter(Boolean).sort();
     fecha=fechas[0]||null;
     texto=ntEntResumen(d)+(d.aclaracion?" · "+d.aclaracion:"");
+    // El texto EXACTO que va al remito queda guardado con la anotación: los remitos
+    // recién nacen cuando se confirma el pedido, así que Cargar venta lo copia entonces.
+    d.textoRemito=ntEntTexto(d,(p.comercial_ref||p.nombre||COMERCIAL));
     detalle=d;
   } else if(!texto){ toast("Escribí la anotación"); return; }
 

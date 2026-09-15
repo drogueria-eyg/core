@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=70"></script>
+<script src="../assets/core.js?v=71"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF; --agua:#E2F1EF;
@@ -1882,6 +1882,25 @@ async function aplicarPlazo(id,despues){
     if(despues) confirmarVenta();
   }catch(e){ toast("No pude guardar el plazo: "+(e.message||"")); }
 }
+/* LA INDICACIÓN DE ENTREGA AL REMITO.
+   El comercial la deja en su panel ("Para logística") y ahí se guarda con el pedido, pero
+   los REMITOS recién existen cuando el pedido se confirma. Por eso se copia acá: es el
+   campo "Nota" del remito el que ve e imprime Depósito, y el único que no viaja a la
+   factura del cliente. Si algo falla, la venta ya quedó confirmada igual. */
+async function copiarEntregaAlRemito(pedidoId){
+  try{
+    const {data,error}=await EYG.supa().from("comercial_nota")
+      .select("texto,detalle").eq("pedido_id",pedidoId).eq("tipo","entrega").eq("estado","abierta").limit(1);
+    if(error) return;
+    const n=(data||[])[0]; if(!n) return;
+    const txt=((n.detalle&&n.detalle.textoRemito)||n.texto||"").trim();
+    if(!txt) return;
+    const ids=await rpc("stock.picking","search",[[["sale_id","=",pedidoId],["state","!=","cancel"]]],{limit:0,context:ES});
+    if(!ids||!ids.length) return;
+    const html=txt.split("\n").map(l=>"<p>"+esc(l)+"</p>").join("");
+    await rpc("stock.picking","write",[ids,{note:html}],{context:{mail_auto_subscribe_no_notify:true}});
+  }catch(e){ /* la indicación ya está guardada en el panel: no se frena la venta */ }
+}
 function confirmarVenta(){
   if(!nItems()) return toast("Cargá al menos un producto");
   if(!ST.order.plazo && !ST._sinPlazoOk){
@@ -1918,6 +1937,7 @@ async function doConfirmar(proforma){
   }
   try{
     await rpc("sale.order","action_confirm",[[ST.order.id]],{context:ES});
+    await copiarEntregaAlRemito(ST.order.id);   // los remitos recién nacen acá: se les pone la indicación
     ST.proforma=!!proforma;
     ST.view="success"; render();
   }catch(e){ toast("No pude confirmar: "+(e.message||"")); ST.view="venta"; render(); }
@@ -2148,7 +2168,7 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
    recargan, y desde adentro parece que "el botón no anda" (pasó con el borrado de
    presupuestos, arreglado el 4/9 y todavía fallando en las tablets el 9/9).
    Se compara la versión del archivo publicado con la que está corriendo. */
-const VERSION_MODULO = "2026-09-14-a";
+const VERSION_MODULO = "2026-09-15-a";
 async function chequearVersion(){
   try{
     const r = await fetch(location.pathname + "?_v=" + Date.now(), {cache:"no-store"});
