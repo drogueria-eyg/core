@@ -33,6 +33,13 @@
   var KEY = window.__BX_KEY || "";
   var INGESTA = "https://yxotopoklgjowcudveoj.supabase.co/functions/v1/bionexo-ingesta";
 
+  /* La anon key va SÓLO para pasar el portero de Supabase: una function desplegada
+     desde el panel queda con verify_jwt activo y rechaza con 401 a quien llame sin
+     Authorization — y el fallo es MUDO (pasó el 5/9/2026 con vademecum-cargar, el
+     cosechador dejó de cargar en silencio). Es una llave publicable, está en el repo
+     del Core. El permiso de verdad lo da x-connector-key, que no está acá. */
+  var ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl4b3RvcG9rbGdqb3djdWR2ZW9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0OTE3OTAsImV4cCI6MjEwMDA2Nzc5MH0.39DqIenUuRZovmgG89R_JgHco4Lg6OvmP9AgF1Hd7rQ";
+
   /* ---- ritmo (se puede tocar desde el panel) ---- */
   var RITMO = { pausa: 5000, minPausa: 3000, maxPausa: 45000, lento: 6000, cortar: 25000 };
   var ST = { activo: false, hechos: 0, fallos: 0, seguidos: 0, pend: [], log: [], ultimoMs: 0 };
@@ -128,7 +135,7 @@
   function ingesta(payload) {
     return fetch(INGESTA, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-connector-key": KEY },
+      headers: { "Content-Type": "application/json", "x-connector-key": KEY, "Authorization": "Bearer " + ANON, "apikey": ANON },
       body: JSON.stringify(payload)
     }).then(function (r) {
       return r.json().then(function (j) {
