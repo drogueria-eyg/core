@@ -35,7 +35,13 @@
   .card>h3{font-size:14px;font-weight:800;padding:14px 18px 0;display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
   .card>h3 .hint{font-size:11.5px;font-weight:600;color:var(--gris2)}
 
-  .thead,.trow{display:grid;grid-template-columns:1.6fr .9fr .6fr .8fr .8fr .9fr 1fr;gap:10px;align-items:center;padding:10px 18px}
+  /* Franja que dice, siempre a la vista, qué rango se está contando. */
+  .periodo{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;background:var(--teal-deep);color:#fff;border-radius:12px;padding:11px 16px;margin-bottom:16px}
+  .periodo .pk{font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--aqua);font-weight:800}
+  .periodo b{font-size:15px;font-weight:900;letter-spacing:-.2px}
+  .periodo .pd{font-size:11.5px;color:#B9CFCB;margin-left:auto}
+
+  .thead,.trow{display:grid;grid-template-columns:1.9fr .95fr .85fr .85fr .6fr .95fr .95fr;gap:10px;align-items:start;padding:11px 18px}
   .thead{background:#F0F6F5;border-top:1px solid var(--line);border-bottom:1px solid var(--line);font-size:10.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:var(--gris)}
   .thead>div,.trow>div{min-width:0}
   .trow{border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
@@ -44,6 +50,8 @@
   .num{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;font-size:13.5px}
   .num.big{font-size:14.5px;font-weight:900;color:var(--teal-deep)}
   .num.mal{color:#B0322F} .num.bien{color:#1E7D46}
+  .sub{font-size:10.5px;font-weight:700;color:var(--gris2);margin-top:2px;letter-spacing:0}
+  .sub.rojo{color:#B0322F}
   .rname{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px}
   .rdot{width:11px;height:11px;border-radius:4px;flex:none}
   .chev{color:var(--gris2);font-weight:900}
@@ -82,7 +90,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=75"></script>
+<script src="../assets/core.js?v=76"></script>
 <script>
 /* ===== Rentabilidad por rubro =============================================
    Qué contesta: por dónde se vende, cuánto deja cada tipo de cliente y —lo que
@@ -154,7 +162,8 @@ const ent = n => Math.round(n||0).toLocaleString("es-AR");
 /* ---------- estado ---------- */
 let GRA="mes", TASA=TASA_DEF, FOCO=null;
 let PART={};          // id -> {rubro, dias, name, due, overdue, com}
-let DATOS=null;       // {buckets:[{key, porRubro, porCliente}], sinCosto:{rubro:monto}, ventaTotal:{rubro}}
+let DATOS=null;       // {buckets, ventaTotal, pedidos, desde, hasta}
+let DEUDA=null;       // {rubro:{due,venc}} — llega en una segunda ola, no frena la tabla
 let CARGANDO=false;
 const CACHE={};       // por granularidad
 
@@ -188,8 +197,11 @@ async function cargarPadron(){
   PART={};
   parts.forEach(p=>{
     const t=p.property_payment_term_id;
+    /* tagRub = lo que dice la ETIQUETA vieja, aparte de lo que diga el campo.
+       Con eso se muestra qué hay escondido adentro de los rubros a reclasificar. */
+    let tr=null; for(const tg of (p.category_id||[])) if(EYG.TAG_RUBRO[tg]){ tr=EYG.TAG_RUBRO[tg]; break; }
     PART[p.id]={ name:p.name||"—", rubro:RUB[p.id]||"", dias:t?(DIAS[t[0]]!=null?DIAS[t[0]]:null):null,
-                 plazo:t?t[1]:"", com:p.user_id?p.user_id[1]:"" };
+                 plazo:t?t[1]:"", com:p.user_id?p.user_id[1]:"", tagRub:tr };
   });
 }
 
@@ -215,21 +227,38 @@ async function cargar(){
     const g=GRAN[GRA], hoy=EYG.argToday(), fin=g.ini(hoy);
     const claves=[]; for(let i=g.n-1;i>=0;i--) claves.push(g.prev(fin,i));
     const buckets=await Promise.all(claves.map(async k=>({key:k, porCliente:await bucket(k, g.fin(k))})));
-    /* Cuánta venta queda AFUERA del margen por no tener costo cargado. Una sola
-       consulta para toda la ventana (no por período): alcanza para avisar. */
-    const ini=claves[0];
-    const todo=await rpc("sale.order.line","read_group",[
-      [["order_id.state","in",["sale","done"]],["order_id.date_order",">=",uDesde(ini)],
-       ["order_id.date_order","<",uDesde(g.fin(claves[claves.length-1]))]],
-      ["price_subtotal:sum"],["order_partner_id"]], Object.assign({lazy:false,limit:4000},CTX));
-    const ventaTotal={};
-    todo.forEach(x=>{ const id=x.order_partner_id&&x.order_partner_id[0]; if(!id) return;
-      const r=(PART[id]&&PART[id].rubro)||""; ventaTotal[r]=(ventaTotal[r]||0)+(x.price_subtotal||0); });
-    DATOS=CACHE[GRA]={buckets, ventaTotal, desde:ini};
+    /* Una sola consulta más, sobre los PEDIDOS de toda la ventana. Sirve para dos
+       cosas a la vez: cuántos pedidos hizo cada rubro (y su ticket promedio) y
+       cuánta venta queda AFUERA del margen por no tener el costo cargado. */
+    const ini=claves[0], finVentana=g.fin(claves[claves.length-1]);
+    const ord=await rpc("sale.order","read_group",[
+      [["state","in",["sale","done"]],["date_order",">=",uDesde(ini)],["date_order","<",uDesde(finVentana)]],
+      ["amount_untaxed:sum"],["partner_id"]], Object.assign({lazy:false,limit:4000},CTX));
+    const ventaTotal={}, pedidos={};
+    ord.forEach(x=>{ const id=x.partner_id&&x.partner_id[0]; if(!id) return;
+      const r=(PART[id]&&PART[id].rubro)||"";
+      ventaTotal[r]=(ventaTotal[r]||0)+(x.amount_untaxed||0);
+      pedidos[r]=(pedidos[r]||0)+(x.__count||0); });
+    DATOS=CACHE[GRA]={buckets, ventaTotal, pedidos, desde:ini, hasta:hoy};
   }catch(e){
     DATOS={error:(e&&e.message)||String(e)};
   }
   CARGANDO=false; pintar();
+  cargarDeuda();
+}
+/* Deuda abierta HOY por rubro. Va en una segunda ola porque total_due y
+   total_overdue son campos calculados y tardan: la tabla no tiene que esperarlos. */
+async function cargarDeuda(){
+  if(DEUDA) return;
+  try{
+    const ps=await rpc("res.partner","search_read",[[["customer_rank",">",0],["parent_id","=",false]]],
+      Object.assign({fields:["id","total_due","total_overdue"],limit:0},CTX));
+    const o={};
+    ps.forEach(p=>{ const r=(PART[p.id]&&PART[p.id].rubro)||"";
+      const x=o[r]||(o[r]={due:0,venc:0});
+      x.due+=p.total_due||0; x.venc+=Math.max(0,p.total_overdue||0); });
+    DEUDA=o; if(!CARGANDO) pintar();
+  }catch(e){ /* sin deuda la tabla sigue sirviendo */ }
 }
 
 /* ---------- agregados ---------- */
@@ -250,7 +279,9 @@ function agregar(){
   });
   return {porRubro, porCliente};
 }
-const metaRubro = r => EYG.RUBRO_META[r] || {ab:"Sin rubro", ico:"❔", c:"#8A9A97", bg:"#F3F5F4"};
+const metaRubro = r => EYG.RUBRO_META[r] ||
+  {ab:"Sin rubro", l:"Sin rubro", ico:"❔", c:"#8A9A97", bg:"#F3F5F4",
+   desc:"Clientes a los que todavía nadie les puso rubro. Se catalogan en Contactos → Rubros."};
 /* margen financiero = margen nominal − lo que cuesta financiar el plazo.
    Cada mes de plazo se come `TASA` puntos del margen, porque durante ese mes la
    venta está financiada con plata que cuesta esa tasa. */
@@ -259,7 +290,22 @@ function filaRubro(r,d){
   const dias = d.conDias ? d.dias/d.conDias : null;
   const mg = d.v ? d.m/d.v*100 : 0;
   const costo = costoPlazo(dias);
-  return {r, v:d.v, m:d.m, mg, dias, costo, mgf:mg-costo, mfPesos:d.v*(mg-costo)/100, n:d.clientes.size};
+  return {r, v:d.v, m:d.m, mg, dias, costo, mgf:mg-costo, mfPesos:d.v*(mg-costo)/100,
+          n:d.clientes.size, cli:d.clientes, ped:((DATOS.pedidos||{})[r])||0};
+}
+
+/* Qué se esconde adentro de un rubro viejo, leído de las etiquetas. Es la forma
+   de ver los SAMCO (y los sanatorios, y los centros) ANTES de catalogarlos: ya
+   tienen la etiqueta puesta, lo que falta es pasarla al campo Rubro. */
+function adentroDe(set){
+  const o={}; (set||[]).forEach(id=>{ const t=(PART[id]||{}).tagRub; if(t) o[t]=(o[t]||0)+1; });
+  return Object.entries(o).sort((a,b)=>b[1]-a[1]);
+}
+function adentroHTML(f){
+  const m=metaRubro(f.r); if(!m.viejo) return "";
+  const l=adentroDe(f.cli); if(!l.length) return "";
+  const txt=l.map(function(x){ return x[1]+" "+((EYG.RUBRO_META[x[0]]||{ab:x[0]}).ab); }).join(" · ");
+  return '<div class="sub rojo" title="Estos clientes ya tienen una etiqueta vieja que dice lo que son, pero el rubro todavía no está puesto. Se catalogan en Contactos → Rubros y pasan a tener fila propia acá.">⚠ sin repartir: '+esc(txt)+'</div>';
 }
 
 /* ---------- pintado ---------- */
@@ -277,6 +323,20 @@ function introHTML(){
     <b>Qué mira esta pantalla.</b> Cuánto se vende y cuánto deja cada tipo de cliente — y, sobre todo, cuánto de ese margen se lo lleva el <b>plazo de pago</b>.
     <div class="ej">Una venta cobrada a 90 días está financiada tres meses. Si la plata cuesta <b>${p1(TASA)}</b> por mes, esa venta pierde <b>${p1(TASA*3)}</b> de margen antes de que llegue el pago. Por eso un rubro que parece dejar más puede estar dejando menos.</div>
     Pedidos confirmados, importes <b>sin IVA</b>. El plazo de cada cliente sale de lo que Odoo usa para calcular el vencimiento, no del nombre del plazo.
+  </div>`;
+}
+const fechaLarga = s => (+s.slice(8,10))+" de "+MES[+s.slice(5,7)-1]+" de "+s.slice(0,4);
+/* Una línea que diga SIEMPRE qué se está contando y desde cuándo. */
+function rangoTexto(){
+  if(!DATOS||!DATOS.desde) return "";
+  return "del "+fechaLarga(DATOS.desde)+" al "+fechaLarga(DATOS.hasta||EYG.argToday());
+}
+function periodoHTML(){
+  if(!DATOS||!DATOS.desde) return "";
+  return `<div class="periodo" title="Todo lo que ves en esta pantalla está contado en este rango. Se toma la FECHA DEL PEDIDO, no la de la factura.">
+    <span class="pk">Estás viendo</span>
+    <b>${esc(rangoTexto())}</b>
+    <span class="pd">${GRAN[GRA].ult} ${GRAN[GRA].n} ${GRAN[GRA].pl} · pedidos confirmados, sin IVA, por fecha de pedido</span>
   </div>`;
 }
 function barraHTML(){
@@ -301,30 +361,37 @@ function panoramaHTML(){
   const MF=filas.reduce((a,f)=>a+f.mfPesos,0);
   const mg=V?M/V*100:0, mgf=V?MF/V*100:0;
   const costoTotal=M-MF;
+  const nPed=filas.reduce((a,f)=>a+f.ped,0), nCli=filas.reduce((a,f)=>a+f.n,0);
   const max=Math.max(...filas.map(f=>f.v));
+  const D=DEUDA||{};
+  const dueTot=Object.values(D).reduce((a,x)=>a+x.due,0), vencTot=Object.values(D).reduce((a,x)=>a+x.venc,0);
 
   const kpis=`<div class="kpis">
-    <div class="kpi" title="Suma de los pedidos confirmados del período, sin IVA, de las líneas con costo cargado.">
-      <div class="l">Venta del período</div><div class="v">${mc(V)}</div><div class="s">${filas.length} rubros · ${ent(filas.reduce((a,f)=>a+f.n,0))} clientes</div></div>
+    <div class="kpi" title="Suma de los pedidos confirmados del período, sin IVA. Solo las líneas con el costo cargado, que son las que permiten calcular margen.">
+      <div class="l">Venta del período</div><div class="v">${mc(V)}</div>
+      <div class="s">${ent(nPed)} pedidos · ${ent(nCli)} clientes · ticket ${mc(nPed?V/nPed:0)}</div></div>
     <div class="kpi" title="Venta menos costo de la mercadería, las dos cosas sin IVA. Es el margen que se ve hoy en todos lados.">
       <div class="l">Margen nominal</div><div class="v">${p1(mg)}</div><div class="s">${mc(M)}</div></div>
     <div class="kpi ${mgf<mg/2?"alerta":""}" title="El margen que queda después de descontar lo que cuesta esperar el cobro, según el plazo real de cada cliente.">
       <div class="l">Margen real (con el plazo)</div><div class="v">${p1(mgf)}</div><div class="s">${mc(MF)}</div></div>
-    <div class="kpi alerta" title="La diferencia: cuánta plata se va en financiar los plazos de pago que damos.">
+    <div class="kpi alerta" title="La diferencia entre los dos márgenes: cuánta plata se va en financiar los plazos de pago que damos.">
       <div class="l">Se lo come el plazo</div><div class="v">${mc(costoTotal)}</div><div class="s">${p1(mg-mgf)} de margen</div></div>
+    ${DEUDA?`<div class="kpi ${vencTot>dueTot*0.2?"alerta":""}" title="Lo que los clientes deben HOY, sin importar el período elegido arriba. Entre paréntesis, la parte que ya venció.">
+      <div class="l">Deuda abierta hoy</div><div class="v">${mc(dueTot)}</div><div class="s">${mc(vencTot)} vencido (${p1(dueTot?vencTot/dueTot*100:0)})</div></div>`:""}
   </div>`;
 
   const rows=filas.map(f=>{
-    const m=metaRubro(f.r);
-    return `<div class="trow" onclick="verRubro('${esc(f.r).replace(/'/g,"\\'")}')" title="Tocá para ver los clientes de este rubro, uno por uno.">
-      <div><div class="rname"><span class="rdot" style="background:${m.c}"></span>${m.ico} ${esc(m.ab)}<span class="chev">›</span></div>
+    const m=metaRubro(f.r); const dd=D[f.r];
+    return `<div class="trow" onclick="verRubro('${esc(f.r).replace(/'/g,"\\'")}')" title="${esc(m.desc||m.l)} — tocá para ver sus clientes uno por uno.">
+      <div><div class="rname"><span class="rdot" style="background:${m.c}"></span>${m.ico} ${esc(m.l)}<span class="chev">›</span></div>
+        <div class="sub">${ent(f.n)} cliente${f.n===1?"":"s"}</div>${adentroHTML(f)}
         <div class="share"><i style="width:${(f.v/max*100).toFixed(1)}%;background:${m.c}"></i></div></div>
-      <div class="num big" data-l="Venta" title="${money(f.v)}">${mc(f.v)}</div>
-      <div class="num" data-l="% del total" title="Qué parte de la venta del período es este rubro.">${p1(f.v/V*100)}</div>
-      <div class="num" data-l="Margen" title="Venta menos costo, sin IVA. ${money(f.m)}">${p1(f.mg)}</div>
-      <div class="num" data-l="Plazo" title="Promedio ponderado por venta de los días reales de pago de sus clientes.">${f.dias==null?"—":Math.round(f.dias)+" d"}</div>
-      <div class="num ${f.mgf<0?"mal":f.mgf>=20?"bien":""}" data-l="Margen real" title="El margen que queda después de pagar la espera: ${p1(f.mg)} − ${p1(f.costo)}.">${p1(f.mgf)}</div>
-      <div class="num" data-l="Margen real $" title="El margen real llevado a pesos.">${mc(f.mfPesos)}</div>
+      <div class="num big" data-l="Venta" title="${money(f.v)}">${mc(f.v)}<div class="sub">${p1(f.v/V*100)} del total</div></div>
+      <div class="num" data-l="Pedidos" title="Pedidos confirmados del período y cuánto salió cada uno en promedio.">${ent(f.ped)}<div class="sub">${mc(f.ped?f.v/f.ped:0)} c/u</div></div>
+      <div class="num" data-l="Margen" title="Venta menos costo de la mercadería, sin IVA.">${p1(f.mg)}<div class="sub">${mc(f.m)}</div></div>
+      <div class="num" data-l="Plazo" title="Días promedio hasta el cobro, ponderado por venta: un cliente grande a 90 días pesa más que uno chico a 30.">${f.dias==null?"—":Math.round(f.dias)+" d"}</div>
+      <div class="num ${f.mgf<0?"mal":f.mgf>=20?"bien":""}" data-l="Margen real" title="Lo que queda después de pagar la espera: ${p1(f.mg)} − ${p1(f.costo)} de costo del plazo.">${p1(f.mgf)}<div class="sub">${mc(f.mfPesos)}</div></div>
+      <div class="num" data-l="Deuda hoy" title="${dd?`Lo que este rubro debe hoy, sin importar el período de arriba. Vencido: ${money(dd.venc)}.`:"Cargando la deuda…"}">${dd?(dd.due<0?mc(-dd.due)+" a favor":mc(dd.due)):"…"}<div class="sub ${dd&&dd.venc>0?"rojo":""}">${dd?(dd.venc>0?mc(dd.venc)+" vencido":"al día"):""}</div></div>
     </div>`;
   }).join("");
 
@@ -337,17 +404,21 @@ function panoramaHTML(){
     ${fuera.map(x=>`<b>${esc(metaRubro(x.r).ab)}</b> ${p1(x.pct)} (${mc(x.dif)})`).join(" · ")}.
     En esos rubros el margen está calculado sobre el resto, así que tomalo como referencia y no como número cerrado.</div>`:"";
 
-  return kpis+graficoHTML(filas)+`<div class="card">
-    <h3>📊 Rentabilidad por rubro <span class="hint">tocá un rubro para ver sus clientes</span></h3>
+  return periodoHTML()+kpis+graficoHTML(filas)+`<div class="card">
+    <h3>📊 Rentabilidad por rubro <span class="hint">${rangoTexto()} · tocá un rubro para ver sus clientes</span></h3>
     <div class="thead">
-      <div>Rubro</div><div class="num">Venta</div><div class="num">%</div><div class="num">Margen</div>
-      <div class="num">Plazo</div><div class="num">Margen real</div><div class="num">Margen real $</div>
+      <div>Rubro</div><div class="num">Venta</div><div class="num">Pedidos</div><div class="num">Margen</div>
+      <div class="num">Plazo</div><div class="num">Margen real</div><div class="num">Deuda hoy</div>
     </div>
     ${rows}
     <div class="trow tot">
-      <div><div class="rname">Total</div></div>
-      <div class="num big">${mc(V)}</div><div class="num">100%</div><div class="num">${p1(mg)}</div>
-      <div class="num">—</div><div class="num">${p1(mgf)}</div><div class="num">${mc(MF)}</div>
+      <div><div class="rname">Total</div><div class="sub">${ent(nCli)} clientes</div></div>
+      <div class="num big" data-l="Venta">${mc(V)}<div class="sub">100%</div></div>
+      <div class="num" data-l="Pedidos">${ent(nPed)}<div class="sub">${mc(nPed?V/nPed:0)} c/u</div></div>
+      <div class="num" data-l="Margen">${p1(mg)}<div class="sub">${mc(M)}</div></div>
+      <div class="num" data-l="Plazo">—</div>
+      <div class="num" data-l="Margen real">${p1(mgf)}<div class="sub">${mc(MF)}</div></div>
+      <div class="num" data-l="Deuda hoy">${DEUDA?(dueTot<0?mc(-dueTot)+" a favor":mc(dueTot)):"…"}<div class="sub ${vencTot>0?"rojo":""}">${DEUDA?mc(vencTot)+" vencido":""}</div></div>
     </div>
     ${aviso}
   </div>`;
@@ -435,10 +506,11 @@ function detalleHTML(){
     </div>`).join("");
   const alerta=pierden.length?`<div class="avisos">🔴 <b>${pierden.length} cliente(s) de este rubro pierden plata</b> una vez descontado el costo del plazo:
     ${pierden.slice(0,6).map(c=>`${esc(c.name)} (${p1(c.mgf)}, ${mc(c.v)})`).join(" · ")}${pierden.length>6?` y ${pierden.length-6} más`:""}.</div>`:"";
-  return `<button class="back" onclick="verRubro(null)">← Volver a todos los rubros</button>
+  return `<button class="back" onclick="verRubro(null)">← Volver a todos los rubros</button>`+periodoHTML()+`
     <div class="card">
-      <h3><span class="rdot" style="background:${m.c}"></span>${m.ico} ${esc(m.ab)}
-        <span class="hint">${lista.length} clientes · ${mc(V)} · margen ${p1(V?M/V*100:0)} · ${GRAN[GRA].ult} ${GRAN[GRA].n} ${GRAN[GRA].pl}</span></h3>
+      <h3><span class="rdot" style="background:${m.c}"></span>${m.ico} ${esc(m.l)}
+        <span class="hint">${lista.length} clientes · ${mc(V)} · margen ${p1(V?M/V*100:0)}</span></h3>
+      <div class="avisos" style="padding-top:8px;color:var(--gris)">${esc(m.desc||"")}</div>
       <div class="chead"><div>Cliente</div><div class="num">Venta</div><div class="num">%</div><div class="num">Margen</div><div class="num">Plazo</div><div class="num">Margen real</div></div>
       ${rows||'<div class="cargando">Sin ventas con costo cargado en este período.</div>'}
       ${lista.length>300?'<div class="avisos">Mostrando los 300 que más compraron.</div>':""}

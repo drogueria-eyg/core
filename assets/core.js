@@ -1439,19 +1439,30 @@ window.EYG = (function(){
      ficha sin tocar el rubro se lo borraría. */
   const RUBRO_FIELD = "x_studio_selection_field_6ui_1j42g6fu9";
   const RUBROS = [
-    {v:"FARMACIAS",                 l:"Farmacia",                        ab:"Farmacia",      ico:"💊", c:"#048782", bg:"#E2F1EF"},
-    {v:"SANATORIOS Y CLINICAS",     l:"Sanatorio / Clínica (interna)",   ab:"Sanatorio",     ico:"🏥", c:"#1E5FA8", bg:"#E7F0FB"},
-    {v:"CENTROS DE SALUD",          l:"Centro de salud (no interna)",    ab:"Centro salud",  ico:"➕", c:"#04635F", bg:"#DDEFED"},
-    {v:"DISTRIBUIDORAS",            l:"Distribuidora",                   ab:"Distribuidora", ico:"📦", c:"#7A4DB8", bg:"#EEE7F8"},
-    {v:"SECTOR PUBLICO",            l:"Sector público (SAMCO, comuna)",  ab:"Sector púb.",   ico:"🏛️", c:"#B0561F", bg:"#FBE8DC"},
-    {v:"OBRAS SOCIALES Y MUTUALES", l:"Obra social / mutual",            ab:"Obra social",   ico:"🤝", c:"#8A3D6B", bg:"#F7E4EF"},
-    {v:"VETERINARIAS",              l:"Veterinaria",                     ab:"Veterinaria",   ico:"🐾", c:"#1E7D46", bg:"#E4F5E9"},
-    {v:"DROGUERIAS",                l:"Droguería",                       ab:"Droguería",     ico:"⚗️", c:"#B7791F", bg:"#FBF0DA"},
-    {v:"PERSONAL",                  l:"Personal / interno",              ab:"Personal",      ico:"👤", c:"#5F716E", bg:"#EEF1F0"},
+    {v:"FARMACIAS",                 l:"Farmacias",                             ab:"Farmacia",         ico:"💊", c:"#048782", bg:"#E2F1EF",
+     desc:"Farmacias de mostrador."},
+    {v:"SANATORIOS Y CLINICAS",     l:"Sanatorios y clínicas (internan)",      ab:"Sanatorio",        ico:"🏥", c:"#1E5FA8", bg:"#E7F0FB",
+     desc:"Sanatorios, clínicas y policlínicos: tienen camas e internan pacientes."},
+    {v:"CENTROS DE SALUD",          l:"Centros de salud (no internan)",        ab:"Centro salud",     ico:"➕", c:"#04635F", bg:"#DDEFED",
+     desc:"Centros médicos, consultorios, geriátricos, emergencias y ambulancias: atienden y el paciente se va."},
+    {v:"DISTRIBUIDORAS",            l:"Distribuidoras",                        ab:"Distribuidora",    ico:"📦", c:"#7A4DB8", bg:"#EEE7F8",
+     desc:"Distribuidoras que nos compran para revender."},
+    {v:"SECTOR PUBLICO",            l:"SAMCO y sector público",                ab:"SAMCO / público",  ico:"🏛️", c:"#B0561F", bg:"#FBE8DC",
+     desc:"SAMCO, comunas, municipios y hospitales públicos."},
+    {v:"OBRAS SOCIALES Y MUTUALES", l:"Obras sociales y mutuales",             ab:"Obra social",      ico:"🤝", c:"#8A3D6B", bg:"#F7E4EF",
+     desc:"Obras sociales, mutuales, sindicatos, PAMI y cajas de previsión."},
+    {v:"VETERINARIAS",              l:"Veterinarias",                          ab:"Veterinaria",      ico:"🐾", c:"#1E7D46", bg:"#E4F5E9",
+     desc:"Veterinarias y pet shops."},
+    {v:"DROGUERIAS",                l:"Droguerías",                            ab:"Droguería",        ico:"⚗️", c:"#B7791F", bg:"#FBF0DA",
+     desc:"Otras droguerías: nos compran para revender a farmacias."},
+    {v:"PERSONAL",                  l:"Personal de la casa",                   ab:"Personal",         ico:"👤", c:"#5F716E", bg:"#EEF1F0",
+     desc:"Empleados de EyG y consumos internos."},
   ];
   const RUBROS_VIEJOS = [
-    {v:"INSTITUCIONES",     l:"INSTITUCIONES (a reclasificar)",     ab:"Institución", ico:"🏥", c:"#8A9A97", bg:"#EEF1F0", viejo:true},
-    {v:"EMPRESAS DE SALUD", l:"EMPRESAS DE SALUD (a reclasificar)", ab:"Emp. salud",  ico:"➕", c:"#8A9A97", bg:"#EEF1F0", viejo:true},
+    {v:"INSTITUCIONES",     l:"Institución (rubro viejo)",     ab:"Institución (viejo)", ico:"🏥", c:"#8A9A97", bg:"#EEF1F0", viejo:true,
+     desc:"Rubro que se retira: adentro hay sanatorios, centros de salud, SAMCO y obras sociales mezclados. Hay que repartirlo."},
+    {v:"EMPRESAS DE SALUD", l:"Empresa de salud (rubro viejo)", ab:"Emp. salud (viejo)", ico:"➕", c:"#8A9A97", bg:"#EEF1F0", viejo:true,
+     desc:"Rubro que se retira: adentro hay SAMCO, centros de salud y sanatorios mezclados. Hay que repartirlo."},
   ];
   const RUBRO_META = {}; RUBROS.concat(RUBROS_VIEJOS).forEach(r=>RUBRO_META[r.v]=r);
   /* Etiqueta vieja → rubro. Incluye ids de etiquetas que ya no existen en Odoo
@@ -1491,8 +1502,8 @@ window.EYG = (function(){
   function rubroBadge(r){
     rubroStyles();
     const m=RUBRO_META[r];
-    if(!m) return '<span class="eyg-rub" style="background:#F3F5F4;color:#8A9A97">Sin rubro</span>';
-    return `<span class="eyg-rub" style="background:${m.bg};color:${m.c}"${m.viejo?' title="Rubro viejo: hay que reclasificarlo"':''}>${m.ico} ${esc(m.ab)}</span>`;
+    if(!m) return '<span class="eyg-rub" style="background:#F3F5F4;color:#8A9A97" title="Todavía no se le puso rubro a este cliente.">Sin rubro</span>';
+    return `<span class="eyg-rub" style="background:${m.bg};color:${m.c}" title="${esc(m.desc||m.l)}">${m.ico} ${esc(m.ab)}</span>`;
   }
 
   /* ===== CONTACTOS A CONQUISTAR (bolsillo del comercial) =====
