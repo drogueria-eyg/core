@@ -31,7 +31,17 @@
   window.__BX_CORRIENDO = true;
 
   var KEY = window.__BX_KEY || "";
-  var INGESTA = "https://yxotopoklgjowcudveoj.supabase.co/functions/v1/bionexo-ingesta";
+  var BASE_FN = "https://yxotopoklgjowcudveoj.supabase.co/functions/v1/";
+
+  /* OJO CON EL NOMBRE. En Supabase la function se llama de verdad "quick-responder":
+     al crearla desde el panel, Supabase pre-llena un nombre al azar y el título que se
+     ve arriba ("bionexo-ingesta") es OTRO campo. NO "corregir" esta lista dejando sólo
+     bionexo-ingesta sin haber renombrado la function primero — se rompe la recolección
+     y el error es confuso ("Failed to fetch").
+     Se prueban los dos y se recuerda el que contesta: el día que se recree con el
+     nombre bueno, esto sigue andando solo. */
+  var NOMBRES = ["bionexo-ingesta", "quick-responder"];
+  var elQueAnda = null;
 
   /* La anon key va SÓLO para pasar el portero de Supabase: una function desplegada
      desde el panel queda con verify_jwt activo y rechaza con 401 a quien llame sin
@@ -133,16 +143,22 @@
 
   /* ================= hablar con el Core ================= */
   function ingesta(payload) {
-    return fetch(INGESTA, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-connector-key": KEY, "Authorization": "Bearer " + ANON, "apikey": ANON },
-      body: JSON.stringify(payload)
-    }).then(function (r) {
-      return r.json().then(function (j) {
-        if (!r.ok) throw new Error(j.error || ("http " + r.status));
-        return j;
+    var orden = elQueAnda ? [elQueAnda] : NOMBRES;
+    return (function probar(i) {
+      if (i >= orden.length) throw new Error("no encuentro la función en Supabase");
+      return fetch(BASE_FN + orden[i], {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-connector-key": KEY, "Authorization": "Bearer " + ANON, "apikey": ANON },
+        body: JSON.stringify(payload)
+      }).then(function (r) {
+        if (r.status === 404) return probar(i + 1);   // ese nombre no existe: probar el otro
+        return r.json().then(function (j) {
+          if (!r.ok) throw new Error(j.error || ("http " + r.status));
+          elQueAnda = orden[i];
+          return j;
+        });
       });
-    });
+    })(0);
   }
 
   /* ================= el trabajo ================= */
