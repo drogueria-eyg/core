@@ -30,6 +30,12 @@
   if (window.__BX_CORRIENDO) { alert("El recolector ya está abierto en esta pestaña."); return; }
   window.__BX_CORRIENDO = true;
 
+  /* El error más fácil de cometer: apretar el favorito desde el Core en vez de desde
+     Bionexo. Sin este guardia el recolector pedía /jsp/vender/... al dominio equivocado,
+     no encontraba nada y anunciaba «no queda nada pendiente. Terminado» — el peor final
+     posible, porque parece éxito. Pasó en la primera prueba real (15/9/2026). */
+  var EN_BIONEXO = /bionexo/i.test(location.hostname);
+
   var KEY = window.__BX_KEY || "";
   var BASE_FN = "https://yxotopoklgjowcudveoj.supabase.co/functions/v1/";
 
@@ -182,7 +188,9 @@
       });
     }
     return siguiente().then(function (t) {
-      if (!t.length) return t;
+      /* Cero filas NO es "ya está todo": es que la lectura no funcionó. Avisarlo fuerte,
+         porque seguir de largo termina en un «terminado» que parece éxito y no lo es. */
+      if (!t.length) throw new Error("VACIO");
       return ingesta({ op: "indice", filas: t }).then(function () {
         nota("Listado guardado: " + t.length + " cotizaciones", "ok");
         return t;
@@ -241,6 +249,10 @@
   }
 
   function arrancar() {
+    if (!EN_BIONEXO) {
+      nota("Estás en " + location.hostname + ", no en Bionexo. Abrí bionexo-ar.bionexo.com, entrá con tu usuario y recién ahí tocá el favorito.", "err");
+      return;
+    }
     if (!KEY) { alert("Falta la clave. Rearmá el favorito desde el Core."); return; }
     ST.activo = true; pintar();
     ingesta({ op: "estado" })
@@ -250,7 +262,11 @@
       })
       .then(ciclo)
       .catch(function (err) {
-        nota(String(err.message) === "SESION" ? "La sesión de Bionexo está cerrada: entrá y reintentá." : ("Error: " + err.message), "err");
+        var m = String(err.message);
+        nota(
+          m === "SESION" ? "La sesión de Bionexo está cerrada: entrá con tu usuario y volvé a tocar Empezar."
+          : m === "VACIO" ? "No pude leer ninguna cotización. Fijate que estés dentro de Bionexo y con la sesión abierta (probá entrar a Transacciones de Venta y ver si aparece el listado)."
+          : ("Error: " + m), "err");
         parar();
       });
   }
@@ -289,7 +305,9 @@
           return '<div style="padding:5px 0;border-top:1px solid #F2F7F6;line-height:1.45;color:' + c + '">' +
             '<span style="color:#8A9A97;font-size:11px">' + l.t + "</span> " + l.txt + "</div>";
         }).join("") +
-        (ST.log.length ? "" : '<div style="color:#8A9A97;padding:14px 0;line-height:1.5">Dale a Empezar. Podés seguir usando Bionexo mientras trabaja — va despacio a propósito.</div>') +
+        (ST.log.length ? "" : (EN_BIONEXO
+          ? '<div style="color:#8A9A97;padding:14px 0;line-height:1.5">Dale a Empezar. Podés seguir usando Bionexo mientras trabaja — va despacio a propósito.</div>'
+          : '<div style="color:#B0413E;padding:14px 0;line-height:1.5"><b>Estás en ' + location.hostname + ', no en Bionexo.</b><br>Este botón se toca <b>estando dentro de bionexo-ar.bionexo.com</b>, con la sesión abierta. Abrí Bionexo en otra pestaña y tocalo ahí.</div>')) +
       "</div>";
     var g = document.getElementById("bx-go"), s = document.getElementById("bx-stop"), x = document.getElementById("bx-x");
     if (g) g.onclick = arrancar;
