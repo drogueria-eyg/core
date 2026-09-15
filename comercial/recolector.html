@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recolector de Bionexo · EyG Core</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/core.css">
+<style>
+  h2.sec{font-size:12px;text-transform:uppercase;letter-spacing:1.2px;color:var(--teal-deep);font-weight:800;margin:26px 0 12px;display:flex;align-items:center;gap:9px}
+  h2.sec:before{content:"";width:5px;height:16px;background:var(--teal);border-radius:3px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+  .pad{padding:20px}
+  .nota{background:var(--agua);border:1px solid #BFE0DC;border-left:4px solid var(--teal);border-radius:10px;padding:12px 15px;font-size:13.5px;color:#245C57;line-height:1.6;margin-bottom:16px}
+  .nota b{color:var(--teal-deep)}
+  .nota.aviso{background:var(--warnbg);border-color:#E7CE9A;border-left-color:var(--warn);color:#7A5310}
+  .nota.aviso b{color:var(--warn)}
+
+  .pasos{counter-reset:p;display:flex;flex-direction:column;gap:16px}
+  .paso{display:grid;grid-template-columns:34px 1fr;gap:14px;align-items:start}
+  .paso:before{counter-increment:p;content:counter(p);width:30px;height:30px;border-radius:50%;background:var(--teal);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px}
+  .paso h3{font-size:15px;font-weight:700;margin:4px 0 6px}
+  .paso p{font-size:13.5px;color:var(--gris);line-height:1.6;margin:0 0 8px}
+
+  .campo{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+  .campo input{flex:1;min-width:230px;border:1px solid var(--line);border-radius:10px;padding:11px 13px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;outline:none}
+  .campo input:focus{border-color:var(--teal)}
+  .btn{background:var(--teal);color:#fff;border:0;border-radius:10px;padding:11px 18px;font-family:inherit;font-size:14px;font-weight:800;cursor:pointer}
+  .btn:hover{filter:brightness(1.06)}
+  .btn.gris{background:#EEF2F1;color:var(--gris)}
+
+  .marcador{display:inline-flex;align-items:center;gap:9px;background:var(--teal-deep);color:#fff;padding:12px 20px;border-radius:11px;font-weight:800;font-size:14.5px;text-decoration:none;box-shadow:var(--shadow);cursor:grab}
+  .marcador:hover{color:#fff;filter:brightness(1.08)}
+  .zona{border:2px dashed var(--line);border-radius:12px;padding:22px;text-align:center;background:#FAFDFC}
+  .zona.off{opacity:.45}
+
+  .est{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+  .e{border:1px solid var(--line);border-radius:11px;padding:14px 16px;background:var(--surface)}
+  .e .n{font-size:25px;font-weight:900;line-height:1;font-variant-numeric:tabular-nums;color:var(--ink)}
+  .e .n.t{color:var(--teal-deep)}
+  .e .t{font-size:11.5px;font-weight:700;color:var(--gris);margin-top:6px}
+  .barra{height:10px;border-radius:99px;background:#EEF4F3;overflow:hidden;margin-top:14px}
+  .barra i{display:block;height:100%;background:var(--teal);border-radius:99px}
+  .spin{width:30px;height:30px;border:4px solid var(--line);border-top-color:var(--teal);border-radius:50%;animation:sp 1s linear infinite;margin:34px auto}
+  @keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../assets/core.js?v=78"></script>
+<script>
+/* ============================================================
+   RECOLECTOR — la página que lo instala y lo mira trabajar
+   ============================================================
+   El trabajo sucio lo hace comercial/recolector.js, que corre DENTRO de
+   Bionexo (ver el comentario de ese archivo). Esta página sólo:
+     1. arma el favorito con la clave adentro,
+     2. muestra cómo viene la recolección.
+
+   POR QUÉ LA CLAVE NO ESTÁ ACÁ EN EL CÓDIGO: el repo del Core es público
+   (GitHub Pages). La clave la pega la persona una vez, se guarda en SU
+   navegador (localStorage) y viaja sólo dentro del favorito.
+   ============================================================ */
+const INGESTA = "https://yxotopoklgjowcudveoj.supabase.co/functions/v1/bionexo-ingesta";
+const nf = n => Math.round(n||0).toLocaleString("es-AR");
+let KEY = "";
+
+EYG.guard(["lider","admin","direccion"]).then(perfil=>{
+  document.body.innerHTML = EYG.layout(perfil,"plataformas", cuerpo(), "Recolector de Bionexo");
+  KEY = localStorage.getItem("bx_key") || "";
+  const inp = document.getElementById("key");
+  inp.value = KEY;
+  inp.addEventListener("input", ()=>{ KEY = inp.value.trim(); localStorage.setItem("bx_key", KEY); armarMarcador(); });
+  document.getElementById("ver").onclick = ()=>{ inp.type = inp.type==="password" ? "text" : "password"; };
+  armarMarcador();
+  estado();
+  setInterval(estado, 20000);
+});
+
+function cuerpo(){
+  return `
+  <div class="nota">
+    <b>Qué es esto.</b> Bionexo no nos dio una conexión directa, así que el historial se lee
+    desde la pantalla de quien ya está adentro. Este favorito hace ese trabajo solo, despacio,
+    mientras Bionexo se sigue usando normalmente.
+  </div>
+
+  <div class="nota aviso">
+    <b>Va lento a propósito, y no se cambia.</b> Bionexo corta si se le piden muchas páginas seguidas:
+    ya nos pasó. El recolector espera varios segundos entre pedido y pedido, afloja solo si nota que
+    la plataforma se pone lenta, y frena del todo si algo falla dos veces. Puede tardar días en
+    terminar y está bien — lo leído queda guardado y se retoma donde quedó.
+  </div>
+
+  <h2 class="sec">Instalarlo (una sola vez)</h2>
+  <div class="card pad">
+    <div class="pasos">
+      <div class="paso"><div>
+        <h3>Pegá la clave</h3>
+        <p>Es la clave del recolector. La tiene Dirección; se pega una vez y queda guardada en esta computadora.</p>
+        <div class="campo">
+          <input id="key" type="password" placeholder="clave del recolector" autocomplete="off" spellcheck="false">
+          <button class="btn gris" id="ver" type="button">Ver</button>
+        </div>
+      </div></div>
+
+      <div class="paso"><div>
+        <h3>Arrastrá el botón a la barra de favoritos</h3>
+        <p>Agarralo con el mouse y soltalo arriba, en la barra de favoritos del navegador. Si no ves la barra, abrila con <b>Ctrl+Shift+B</b>.</p>
+        <div class="zona off" id="zona">
+          <a class="marcador" id="marcador" href="#" onclick="return false">📥 Recolectar Bionexo</a>
+          <p style="font-size:12.5px;color:var(--gris);margin:12px 0 0" id="zonaTxt">Pegá la clave arriba y el botón se activa.</p>
+        </div>
+      </div></div>
+
+      <div class="paso"><div>
+        <h3>Entrá a Bionexo y hacé clic en el favorito</h3>
+        <p>Con la sesión de Bionexo abierta, tocá <b>Recolectar Bionexo</b> en la barra de favoritos.
+        Aparece un panelito abajo a la derecha: dale <b>Empezar</b> y dejalo trabajando.
+        Podés seguir usando Bionexo normalmente mientras tanto.</p>
+        <p><b>Importante:</b> no cierres esa pestaña. Si la cerrás, frena — pero lo leído ya está guardado.</p>
+      </div></div>
+    </div>
+  </div>
+
+  <h2 class="sec">Cómo viene</h2>
+  <div class="card pad" id="estado"><div class="spin"></div></div>
+
+  <p style="font-size:12px;color:var(--gris2);margin-top:20px;text-align:center;line-height:1.6">
+    Los datos alimentan el tablero de <a href="plataformas.html">Plataformas</a>.<br>
+    El recolector sólo LEE de Bionexo: no carga ofertas ni modifica nada allá.
+  </p>`;
+}
+
+/* El favorito lleva la clave adentro y carga el recolector desde el Core, así se
+   puede corregir el recolector sin que nadie tenga que reinstalar nada. */
+function armarMarcador(){
+  const a = document.getElementById("marcador");
+  const z = document.getElementById("zona");
+  const t = document.getElementById("zonaTxt");
+  if(!KEY){
+    a.href = "#"; z.classList.add("off");
+    t.textContent = "Pegá la clave arriba y el botón se activa.";
+    return;
+  }
+  const base = location.origin + location.pathname.replace(/recolector\.html$/, "recolector.js");
+  a.href = "javascript:(function(){window.__BX_KEY=" + JSON.stringify(KEY) +
+    ";var s=document.createElement('script');s.src=" + JSON.stringify(base) + "+'?'+Date.now();document.body.appendChild(s);})()";
+  z.classList.remove("off");
+  t.textContent = "Listo: arrastralo a la barra de favoritos.";
+}
+
+async function estado(){
+  const caja = document.getElementById("estado");
+  if(!caja) return;
+  if(!KEY){ caja.innerHTML = `<p style="color:var(--gris);font-size:13.5px;margin:0">Pegá la clave para ver cómo viene la recolección.</p>`; return; }
+  try{
+    const r = await fetch(INGESTA, { method:"POST", headers:{"Content-Type":"application/json","x-connector-key":KEY}, body: JSON.stringify({op:"estado"}) });
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.error || ("http "+r.status));
+    const avance = j.cotizaciones ? (j.con_detalle*100/j.cotizaciones) : 0;
+    caja.innerHTML = `
+      <div class="est">
+        <div class="e"><div class="n">${nf(j.cotizaciones)}</div><div class="t">Cotizaciones en la base</div></div>
+        <div class="e"><div class="n t">${nf(j.con_detalle)}</div><div class="t">Ya leídas en detalle</div></div>
+        <div class="e"><div class="n">${nf(j.faltan)}</div><div class="t">Faltan</div></div>
+        <div class="e"><div class="n">${nf(j.renglones_leidos)}</div><div class="t">Renglones leídos</div></div>
+      </div>
+      <div class="barra"><i style="width:${Math.max(1,avance).toFixed(1)}%"></i></div>
+      <p style="font-size:12.5px;color:var(--gris);margin:10px 0 0">
+        ${avance>=100 ? "Historial completo." : `Avance ${avance.toFixed(0)}% · de lo leído: ${nf(j.cotizados)} renglones cotizados, ${nf(j.ganados)} ganados.`}
+      </p>`;
+  }catch(e){
+    caja.innerHTML = `<p style="color:var(--bad);font-size:13.5px;margin:0">No pude leer el estado: ${EYG.esc(String(e.message))}.<br>
+      <span style="color:var(--gris);font-size:12.5px">Puede ser que falte crear la función en el servidor, o que la clave no sea la correcta.</span></p>`;
+  }
+}
+</script>
+</body>
+</html>
