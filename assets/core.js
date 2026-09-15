@@ -406,6 +406,7 @@ window.EYG = (function(){
     /* Precios y Rentabilidad: función de ADMINISTRACIÓN (define/analiza precios, escalas y
        costos). NO la ve el comercial: cuando carga una venta, Odoo ya calcula el precio. */
     {key:"precios",   dept:"precios", cat:"Precios y Rentabilidad", ico:"🏷️", titulo:"Costos y Rentabilidad", desc:"Costo, escalera de precios por cantidad y margen por tramo, con salud por color. Para definir y analizar los precios.", roles:["finanzas"], ready:true, path:()=>"comercial/precios.html"},
+    {key:"rentabilidad", dept:"precios", cat:"Precios y Rentabilidad", ico:"📊", titulo:"Rentabilidad por rubro", desc:"Cuánto vende y cuánto deja cada tipo de cliente — farmacias, sanatorios, SAMCO, veterinarias, distribuidoras — y cuánto de ese margen se lo come el plazo de pago.", roles:["finanzas","direccion"], ready:true, path:()=>"comercial/rentabilidad.html"},
     {key:"config-precios", dept:"precios", cat:"Precios y Rentabilidad", ico:"⚙️", titulo:"Motor de precios", desc:"Reglas del motor por categoría: recargo, cortes, descuentos, IVA al costo y piso de margen. Las ofertas se crean en Oportunidades y Ofertas.", roles:["finanzas"], ready:true, path:()=>"comercial/config-precios.html"},
     /* EN PRUEBAS: Facturación (el puesto de Vanesa). La cola de pedidos por facturar
        con las notas que le dejan las comerciales pegadas al pedido, y los botones de
