@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../assets/core.css">
+<link rel="stylesheet" href="../assets/core.css?v=78">
 <style>
   .intro{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow);margin-bottom:16px;font-size:13.5px;color:var(--gris);line-height:1.6}
   .intro b{color:var(--ink)}
@@ -75,8 +75,8 @@
   .grupo{background:#F4F8F7;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:9px 18px;display:flex;gap:12px;flex-wrap:wrap;align-items:baseline}
   .grupo b{font-size:12.5px;color:var(--teal-deep)}
   .grupo span{font-size:11.5px;color:var(--gris)}
-  .badge{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:6px;white-space:nowrap}
-  .badge.mal{background:#FBE4E3;color:#B0322F}
+  .etq{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:6px;white-space:nowrap}
+  .etq.mal{background:#FBE4E3;color:#B0322F} .etq.esp{background:#EEF1F0;color:#5F716E}
   .avisos{padding:0 18px 14px;font-size:12px;color:var(--gris);line-height:1.6}
   .avisos b{color:#B0322F}
   .cargando{padding:40px 18px;text-align:center;color:var(--gris2);font-size:13px}
@@ -92,7 +92,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=77"></script>
+<script src="../assets/core.js?v=78"></script>
 <script>
 /* ===== Rentabilidad por rubro =============================================
    Qué contesta: por dónde se vende, cuánto deja cada tipo de cliente y cuánto
@@ -122,8 +122,13 @@ const rpc=EYG.rpc, money=EYG.money, esc=EYG.esc;
 const CTX={context:{lang:"es_AR", tz:"America/Argentina/Buenos_Aires"}};
 const RUBRO_FIELD=EYG.RUBRO_FIELD;
 const TASA_KEY="eyg.rentabilidad.tasa_mensual";
-const TASA_DEF=3.2;          // medida sobre los 12 préstamos bancarios cargados en Odoo
-const DIARIO_CHEQUES=16;     // "Cheques de terceros"
+/* 3,84% = lo que cuesta ANTICIPAR la plata, medido en Odoo: $156M de "Intereses
+   por venta de valores" sobre $1.688M de cheques descontados en bancos en 12
+   meses = 9,25% del valor, y como el cheque viene a 72 días promedio, eso da
+   3,84% mensual. Sale más caro que un préstamo bancario (3,18%), que es la otra
+   forma de financiarse. */
+const TASA_DEF=3.84;
+const DIARIOS_CHEQUES=[16,36];   // "Cheques de terceros" y "Cheques de terceros B"
 
 /* ---------- fechas ---------- */
 const dObj = s => new Date(s.slice(0,10)+"T00:00:00Z");
@@ -169,6 +174,7 @@ const dds = n => n==null?"—":Math.round(n)+" d";
 let GRA="mes", TASA=TASA_DEF, VISTA="rubros", FOCO=null;
 let PART={};          // id -> {name, rubro, dias, plazo, com, due, venc}
 let COB=null;         // rubro -> {due,venc,chq,chqFut,fac} — segunda ola
+let CHQ=null;         // cheques que siguen en cartera, uno por uno
 let DATOS=null;       // {buckets, ventaTotal, pedidos, desde, hasta}
 let CARGANDO=false;
 const CACHE={};
@@ -217,23 +223,28 @@ async function cargarCobranza(){
   try{
     const hace12 = addM(EYG.argToday(), -12);
     const [chq, fac] = await Promise.all([
-      rpc("account.payment","search_read",[[["journal_id","=",DIARIO_CHEQUES],["payment_type","=","inbound"],["state","=","posted"]]],
-          Object.assign({fields:["partner_id","amount","l10n_latam_check_payment_date","l10n_latam_check_current_journal_id"],limit:0},CTX)),
+      rpc("account.payment","search_read",[[["journal_id","in",DIARIOS_CHEQUES],["payment_type","=","inbound"],["state","=","posted"]]],
+          Object.assign({fields:["partner_id","amount","date","l10n_latam_check_number","l10n_latam_check_bank_id",
+                                 "l10n_latam_check_payment_date","l10n_latam_check_current_journal_id"],limit:0},CTX)),
       rpc("account.move","read_group",[[["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",hace12]],
           ["amount_total_signed:sum"],["partner_id"]], Object.assign({lazy:false,limit:4000},CTX)),
     ]);
-    const hoy=EYG.argToday(), R={};
+    const hoy=EYG.argToday(), R={}, enCartera=[];
     const de=r=>R[r]||(R[r]={due:0,venc:0,chq:0,chqFut:0,nChq:0,espera:0,fac:0});
     Object.values(PART).forEach(p=>{ const o=de(p.rubro||""); o.due+=p.due; o.venc+=p.venc; });
     chq.forEach(c=>{
       const j=c.l10n_latam_check_current_journal_id;
-      if(!j || j[0]!==DIARIO_CHEQUES) return;      // ya se depositó o se entregó: dejó de ser cartera
+      if(!j || !DIARIOS_CHEQUES.includes(j[0])) return;   // ya se depositó o se entregó
       const id=c.partner_id&&c.partner_id[0]; if(!id) return;
       const o=de((PART[id]&&PART[id].rubro)||""); const v=c.amount||0;
       o.chq+=v; o.nChq++;
       const f=c.l10n_latam_check_payment_date;
       if(f && f>hoy){ o.chqFut+=v; o.espera+=v*Math.round((dObj(f)-dObj(hoy))/864e5); }
+      enCartera.push({pid:id, pname:c.partner_id[1], monto:v, date:(c.date||"").slice(0,10),
+                      pago:c.l10n_latam_check_payment_date||null, nro:c.l10n_latam_check_number||"",
+                      banco:c.l10n_latam_check_bank_id?c.l10n_latam_check_bank_id[1]:""});
     });
+    CHQ=enCartera;
     fac.forEach(x=>{ const id=x.partner_id&&x.partner_id[0]; if(!id) return;
       de((PART[id]&&PART[id].rubro)||"").fac += x.amount_total_signed||0; });
     COB=R;
@@ -326,15 +337,16 @@ function pintar(){
   if(CARGANDO){ c.innerHTML=introHTML()+barraHTML()+`<div class="card"><div class="cargando">Leyendo ventas y márgenes de Odoo… <b>${GRAN[GRA].n}</b> ${GRAN[GRA].pl}, tarda unos segundos.</div></div>`; return; }
   if(!DATOS){ c.innerHTML=introHTML()+barraHTML(); return; }
   if(DATOS.error){ c.innerHTML=introHTML()+barraHTML()+`<div class="errbox"><b>No pude leer Odoo.</b> ${esc(DATOS.error)}</div>`; return; }
-  c.innerHTML = introHTML()+barraHTML()+(FOCO?detalleHTML():(VISTA==="morosos"?morososHTML():panoramaHTML()));
+  c.innerHTML = introHTML()+barraHTML()+(FOCO?detalleHTML():
+    VISTA==="morosos"?morososHTML(): VISTA==="cheques"?chequesHTML(): panoramaHTML());
   if(!FOCO && VISTA==="rubros") engancharGrafico();
 }
 
 function introHTML(){
   return `<div class="intro">
     <b>Qué mira esta pantalla.</b> Cuánto vende y cuánto deja cada tipo de cliente — y cuánto de ese margen se lo lleva el tiempo que tarda en entrar la plata.
-    <div class="ej">El <b>margen real</b> no usa el plazo del papel sino <b>el día en que la plata entra de verdad</b>. Hace la diferencia: cuando un cliente paga con cheque a 90 días, Odoo da la factura por pagada y la deuda baja a cero, pero ese cheque sigue en el cajón. Esta pantalla lo cuenta.</div>
-    Pedidos confirmados, importes <b>sin IVA</b>. Si la plata cuesta <b>${p1(TASA)}</b> por mes, cada mes de espera se lleva <b>${p1(TASA)}</b> de margen.
+    <div class="ej">El <b>margen real</b> descuenta <b>lo que cuesta anticipar la plata</b>. Vender a plazo no es gratis: el cheque del cliente se descuenta en el banco y el banco se queda una parte. Esa parte está medida, no estimada.</div>
+    Pedidos confirmados, importes <b>sin IVA</b>. A <b>${p1(TASA)}</b> por mes, cada mes de espera se lleva <b>${p1(TASA)}</b> de margen.
   </div>`;
 }
 function rangoTexto(){
@@ -351,14 +363,14 @@ function periodoHTML(){
 function barraHTML(){
   const v=(k,l,ay)=>`<button class="${VISTA===k&&!FOCO?"on":""}" onclick="verVista('${k}')" title="${esc(ay)}">${l}</button>`;
   return `<div class="barra">
-    <div class="pills">${v("rubros","📊 Por rubro","Cuánto vende y cuánto deja cada tipo de cliente.")}${v("morosos","🔴 Morosos","Los clientes con plata vencida, de mayor a menor.")}</div>
+    <div class="pills">${v("rubros","📊 Por rubro","Cuánto vende y cuánto deja cada tipo de cliente.")}${v("morosos","🔴 Morosos","Los clientes con plata vencida, de mayor a menor.")}${v("cheques","🧾 Cheques en cartera","Cheques que entraron y todavía no se descontaron: plata que figura cobrada y no está.")}</div>
     <div class="pills">${Object.keys(GRAN).map(k=>
       `<button class="${k===GRA?"on":""}" onclick="verGran('${k}')" title="Mira ${GRAN[k].det} ${GRAN[k].n} ${GRAN[k].pl}.">${GRAN[k].lab}</button>`).join("")}</div>
     <div class="tasabox">
-      <label for="tasa" title="Cuánto te cuesta la plata cada mes. Con esto se calcula lo que cuesta esperar el cobro.">💸 La plata cuesta</label>
+      <label for="tasa" title="Cuánto cuesta por mes adelantar la plata de una venta a plazo. Con esto se calcula cuánto margen se lleva la espera.">💸 Anticipar la plata cuesta</label>
       <input id="tasa" type="number" step="0.1" min="0" max="30" value="${TASA}" onchange="setTasa(this.value)" title="Cambiala y se recalcula todo. Queda guardada para todo el equipo.">
       <span class="pc">% por mes</span>
-      <span class="de" title="Promedio real de los 12 préstamos bancarios cargados en Odoo (Santa Fe, Macro, BBVA y Credicoop), ponderado por monto: cada banco entre 2,6% y 3,5% mensual. No es una estimación.">¿de dónde sale?</span>
+      <span class="de" title="Medido en Odoo, no estimado: en 12 meses se descontaron $1.688M de cheques en bancos (BBVA, Macro y Credicoop) y eso costó $156M de 'Intereses por venta de valores' — 9,25% del valor. Como el cheque viene a 72 días promedio, equivale a 3,84% mensual. De referencia: un préstamo bancario sale 3,18% mensual, así que descontar cheques es más caro.">¿de dónde sale?</span>
     </div>
   </div>`;
 }
@@ -546,7 +558,7 @@ function detalleHTML(){
       <div class="num" data-l="Venta" title="${money(c.v)}">${mc(c.v)}</div>
       <div class="num" data-l="% del rubro">${p1(V?c.v/V*100:0)}</div>
       <div class="num" data-l="Margen" title="Venta menos costo, sin IVA.">${p1(c.mg)}</div>
-      <div class="num ${c.mgf<0?"mal":c.mgf>=20?"bien":""}" data-l="Margen real" title="Margen menos el costo de esperar el cobro pactado.">${p1(c.mgf)}${c.mgf<0?' <span class="badge mal">pierde</span>':""}</div>
+      <div class="num ${c.mgf<0?"mal":c.mgf>=20?"bien":""}" data-l="Margen real" title="Margen menos el costo de esperar el cobro pactado.">${p1(c.mgf)}${c.mgf<0?' <span class="etq mal">pierde</span>':""}</div>
       <div class="num" data-l="Debe" title="Lo que debe hoy. Vencido: ${money(c.venc)}.">${c.due<0?mc(-c.due)+" a favor":mc(c.due)}${c.venc>0?`<div class="sub rojo">${mc(c.venc)} vencido</div>`:""}</div>
     </div>`).join("")+(g.length>120?`<div class="avisos">Mostrando los 120 de este tramo que más compraron, de ${g.length}.</div>`:"");
   });
@@ -596,6 +608,57 @@ function morososHTML(){
     <div class="chead"><div>Cliente</div><div>Rubro</div><div class="num">Debe</div><div class="num">Vencido</div><div class="num">% vencido</div><div class="num">Del total</div></div>
     ${rows}
     ${l.length>300?`<div class="avisos">Mostrando los 300 con más vencido, de ${l.length}.</div>`:""}
+  </div>`;
+}
+
+/* ================= vista: cheques en cartera =================
+   Un cheque que sigue en el diario de cheques de terceros es plata que NO entró.
+   Con el circuito normal (2 días entre que entra y se descuenta en el banco) un
+   cheque no debería quedarse ahí. Los que llevan meses, o los que ya pasaron su
+   fecha de pago y siguen sin moverse, son plata que figura cobrada y no está. */
+function chequesHTML(){
+  if(!CHQ) return `<div class="card"><div class="cargando">Leyendo los cheques de Odoo…</div></div>`;
+  const hoy=EYG.argToday();
+  const l=CHQ.map(c=>{
+    const p=PART[c.pid]||{};
+    return {...c, name:p.name||c.pname||"—", com:p.com||"", rubro:p.rubro||"",
+            enCartera:Math.round((dObj(hoy)-dObj(c.date))/864e5),
+            cobrable: c.pago ? c.pago<=hoy : null};
+  }).sort((a,b)=>b.monto-a.monto);
+  if(!l.length) return `<div class="card"><div class="cargando">No hay cheques en cartera.</div></div>`;
+  const tot=l.reduce((a,c)=>a+c.monto,0);
+  const viejos=l.filter(c=>c.enCartera>90);
+  const vencidos=l.filter(c=>c.cobrable===true);   // ya se podían cobrar y siguen ahí
+  const kpis=`<div class="kpis" style="padding:14px 18px 0;margin:0">
+    <div class="kpi" title="Cheques que entraron y siguen en el diario de cheques de terceros: no se depositaron ni se entregaron.">
+      <div class="l">En cartera hoy</div><div class="v">${mc(tot)}</div><div class="s">${l.length} cheques</div></div>
+    <div class="kpi ${vencidos.length?"alerta":""}" title="Ya pasó la fecha en que el cheque se podía cobrar y sigue sin moverse. Es lo más urgente de revisar.">
+      <div class="l">Ya se podían cobrar</div><div class="v">${mc(vencidos.reduce((a,c)=>a+c.monto,0))}</div>
+      <div class="s">${vencidos.length} cheques</div></div>
+    <div class="kpi ${viejos.length?"alerta":""}" title="Llevan más de 90 días en cartera contando desde que entraron. Con un circuito de 2 días, no deberían estar ahí. La mayoría también aparece en el grupo de arriba.">
+      <div class="l">Más de 90 días quietos</div><div class="v">${mc(viejos.reduce((a,c)=>a+c.monto,0))}</div>
+      <div class="s">${viejos.length} cheques</div></div>
+  </div>`;
+  const fila=c=>`<div class="crow">
+      <div><div class="cn" title="${esc(c.name)}">${esc(c.name)}</div>
+        <div class="cm">${esc(c.com||"sin comercial")}${c.nro?" · cheque "+esc(c.nro):""}${c.banco?" · "+esc(c.banco):""}</div></div>
+      <div data-l="Rubro">${EYG.rubroBadge(c.rubro)}</div>
+      <div class="num" data-l="Monto" title="${money(c.monto)}">${mc(c.monto)}</div>
+      <div class="num ${c.enCartera>90?"mal":""}" data-l="En cartera" title="Días desde que entró el cheque. El circuito normal son 2 días.">${c.enCartera} d<div class="sub">desde ${dm(c.date)}</div></div>
+      <div class="num" data-l="Se cobra" title="Fecha a partir de la cual el cheque se puede cobrar.">${c.pago?dm(c.pago):"—"}</div>
+      <div data-l="Estado">${c.cobrable===true?'<span class="etq mal">ya se podía cobrar</span>'
+        :c.cobrable===false?'<span class="etq esp">todavía no vence</span>':'<span class="etq esp">sin fecha</span>'}</div>
+    </div>`;
+  const grupo=(tit,arr,ay)=>arr.length?`<div class="grupo" title="${esc(ay)}"><b>${esc(tit)}</b><span>${arr.length} cheques</span><span><b>${mc(arr.reduce((a,c)=>a+c.monto,0))}</b></span></div>`+arr.map(fila).join(""):"";
+  const resto=l.filter(c=>c.cobrable!==true && c.enCartera<=90);
+  return `<div class="card">
+    <h3>🧾 Cheques en cartera <span class="hint">plata que figura cobrada y todavía no entró · situación de hoy</span></h3>
+    ${kpis}
+    <div class="avisos" style="color:var(--gris)">El circuito normal es: entra el cheque y a los <b style="color:var(--gris)">2 días</b> se descuenta en el banco. Lo que sigue acá es lo que no salió.</div>
+    <div class="chead"><div>Cliente</div><div>Rubro</div><div class="num">Monto</div><div class="num">En cartera</div><div class="num">Se cobra</div><div>Estado</div></div>
+    ${grupo("🔴 Ya se podían cobrar y siguen acá", vencidos, "Pasó la fecha de pago del cheque y no se depositó ni se entregó. Puede ser un rechazo sin registrar, o que falte cargar la operación.")}
+    ${grupo("⚠️ Más de 90 días quietos, pero todavía sin vencer", viejos.filter(c=>c.cobrable!==true), "Entraron hace más de tres meses y no se movieron, aunque su fecha de cobro todavía no llegó. Los que además ya vencieron están arriba.")}
+    ${grupo("Los demás", resto, "Cheques recientes, en circuito normal.")}
   </div>`;
 }
 

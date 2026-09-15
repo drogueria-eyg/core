@@ -370,6 +370,16 @@ window.EYG = (function(){
       roles:["comercial","lider"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"comunicaciones/whatsapp.html"},
+    /* Plataformas: cómo nos va en los portales de compras de salud (Bionexo, y
+       más adelante Portada Salud). Los dos números que manda el tablero miden
+       cosas distintas y se arreglan al revés: la TASA DE RESPUESTA (renglones
+       cotizados / pedidos) mide horas, y la TASA DE ÉXITO (ganados / cotizados)
+       mide precio. v1 con el índice completo de 260 cotizaciones; el detalle
+       renglón por renglón se recolecta aparte y despacio, porque Bionexo frena
+       si se le piden muchas páginas seguidas. */
+    {key:"plataformas", dept:"comercial", cat:"Comercial", ico:"🏥", titulo:"Plataformas",
+      desc:"Cómo nos va en los portales donde los hospitales piden cotización: cuánto cotizamos, cuánto ganamos, a quién y en qué productos.",
+      roles:["lider"], ready:true, path:()=>"comercial/plataformas.html"},
     {key:"comunicaciones", dept:"direccion", cat:"Dirección", ico:"📣",
       titulo:p=>(p.rol==="admin"||p.rol==="direccion"||p.rol==="lider")?"Comunicaciones":"Novedades",
       desc:p=>(p.rol==="admin"||p.rol==="direccion")?"Bajá novedades a toda la empresa o a un área y seguí quién las leyó."
