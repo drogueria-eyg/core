@@ -1428,72 +1428,68 @@ window.EYG = (function(){
      Ahora se ESCRIBE sólo el campo y la lista vive acá: si hay que agregar o
      cambiar un rubro, se toca este bloque y lo heredan todos los módulos.
 
+     SON SEIS (más "Personal", que es interno). Estuvieron partidos en nueve unos
+     días —sanatorios separados de centros, obras sociales aparte— y se volvió
+     atrás por pedido de Dirección: la distinción no se podía aplicar igual dos
+     veces y hacía ilegible el tablero. Lo que de verdad explica la rentabilidad
+     no es el cartel de la puerta sino el PLAZO de pago, y ese dato ya está
+     cargado en todos los clientes: el corte por plazo vive en el módulo de
+     Rentabilidad, no acá. Ver [[eyg-rentabilidad-rubros]].
+
      RESPALDO MIENTRAS SE CATALOGA: las etiquetas viejas NO se borran; `rubroDe`
      las sigue LEYENDO cuando el campo está vacío, así ninguna ficha que hoy
-     muestra rubro aparece de golpe en blanco. Se borrarán cuando el campo esté
-     completo (ver la memoria del proyecto).
+     muestra rubro aparece de golpe en blanco.
 
-     VIEJOS: los dos valores que se retiran (INSTITUCIONES / EMPRESAS DE SALUD).
-     No se ofrecen para elegir, pero si un cliente todavía los tiene, `rubroOpts`
-     los agrega al desplegable para que queden seleccionados. Sin eso, guardar la
-     ficha sin tocar el rubro se lo borraría. */
+     ALIAS: los valores de la etapa de nueve rubros se traducen solos al que
+     corresponde. Si quedó alguna ficha sin migrar, se sigue viendo bien. */
   const RUBRO_FIELD = "x_studio_selection_field_6ui_1j42g6fu9";
   const RUBROS = [
-    {v:"FARMACIAS",                 l:"Farmacias",                             ab:"Farmacia",         ico:"💊", c:"#048782", bg:"#E2F1EF",
+    {v:"FARMACIAS",      l:"Farmacias",      ab:"Farmacia",      ico:"💊", c:"#048782", bg:"#E2F1EF",
      desc:"Farmacias de mostrador."},
-    {v:"SANATORIOS Y CLINICAS",     l:"Sanatorios y clínicas (internan)",      ab:"Sanatorio",        ico:"🏥", c:"#1E5FA8", bg:"#E7F0FB",
-     desc:"Sanatorios, clínicas y policlínicos: tienen camas e internan pacientes."},
-    {v:"CENTROS DE SALUD",          l:"Centros de salud (no internan)",        ab:"Centro salud",     ico:"➕", c:"#04635F", bg:"#DDEFED",
-     desc:"Centros médicos, consultorios, geriátricos, emergencias y ambulancias: atienden y el paciente se va."},
-    {v:"DISTRIBUIDORAS",            l:"Distribuidoras",                        ab:"Distribuidora",    ico:"📦", c:"#7A4DB8", bg:"#EEE7F8",
-     desc:"Distribuidoras que nos compran para revender."},
-    {v:"SECTOR PUBLICO",            l:"SAMCO y sector público",                ab:"SAMCO / público",  ico:"🏛️", c:"#B0561F", bg:"#FBE8DC",
+    {v:"INSTITUCIONES",  l:"Instituciones",  ab:"Institución",   ico:"🏥", c:"#1E5FA8", bg:"#E7F0FB",
+     desc:"Sanatorios, clínicas, centros médicos, geriátricos, emergencias, obras sociales y mutuales: todo lo institucional privado."},
+    {v:"SAMCO",          l:"SAMCO",          ab:"SAMCO",         ico:"🏛️", c:"#B0561F", bg:"#FBE8DC",
      desc:"SAMCO, comunas, municipios y hospitales públicos."},
-    {v:"OBRAS SOCIALES Y MUTUALES", l:"Obras sociales y mutuales",             ab:"Obra social",      ico:"🤝", c:"#8A3D6B", bg:"#F7E4EF",
-     desc:"Obras sociales, mutuales, sindicatos, PAMI y cajas de previsión."},
-    {v:"VETERINARIAS",              l:"Veterinarias",                          ab:"Veterinaria",      ico:"🐾", c:"#1E7D46", bg:"#E4F5E9",
+    {v:"DISTRIBUIDORAS", l:"Distribuidoras", ab:"Distribuidora", ico:"📦", c:"#7A4DB8", bg:"#EEE7F8",
+     desc:"Distribuidoras que nos compran para revender."},
+    {v:"VETERINARIAS",   l:"Veterinarias",   ab:"Veterinaria",   ico:"🐾", c:"#1E7D46", bg:"#E4F5E9",
      desc:"Veterinarias y pet shops."},
-    {v:"DROGUERIAS",                l:"Droguerías",                            ab:"Droguería",        ico:"⚗️", c:"#B7791F", bg:"#FBF0DA",
+    {v:"DROGUERIAS",     l:"Droguerías",     ab:"Droguería",     ico:"⚗️", c:"#B7791F", bg:"#FBF0DA",
      desc:"Otras droguerías: nos compran para revender a farmacias."},
-    {v:"PERSONAL",                  l:"Personal de la casa",                   ab:"Personal",         ico:"👤", c:"#5F716E", bg:"#EEF1F0",
-     desc:"Empleados de EyG y consumos internos."},
+    {v:"PERSONAL",       l:"Personal de la casa", ab:"Personal", ico:"👤", c:"#5F716E", bg:"#EEF1F0",
+     desc:"Empleados de EyG y consumos internos. No es un rubro comercial."},
   ];
-  const RUBROS_VIEJOS = [
-    {v:"INSTITUCIONES",     l:"Institución (rubro viejo)",     ab:"Institución (viejo)", ico:"🏥", c:"#8A9A97", bg:"#EEF1F0", viejo:true,
-     desc:"Rubro que se retira: adentro hay sanatorios, centros de salud, SAMCO y obras sociales mezclados. Hay que repartirlo."},
-    {v:"EMPRESAS DE SALUD", l:"Empresa de salud (rubro viejo)", ab:"Emp. salud (viejo)", ico:"➕", c:"#8A9A97", bg:"#EEF1F0", viejo:true,
-     desc:"Rubro que se retira: adentro hay SAMCO, centros de salud y sanatorios mezclados. Hay que repartirlo."},
-  ];
-  const RUBRO_META = {}; RUBROS.concat(RUBROS_VIEJOS).forEach(r=>RUBRO_META[r.v]=r);
+  const RUBROS_VIEJOS = [];   // ya no hay valores a retirar: los traduce RUBRO_ALIAS
+  /* Valores de la etapa de nueve rubros → el rubro que les corresponde ahora. */
+  const RUBRO_ALIAS = {
+    "EMPRESAS DE SALUD":"INSTITUCIONES", "SANATORIOS Y CLINICAS":"INSTITUCIONES",
+    "CENTROS DE SALUD":"INSTITUCIONES",  "OBRAS SOCIALES Y MUTUALES":"INSTITUCIONES",
+    "SECTOR PUBLICO":"SAMCO",
+  };
+  const RUBRO_META = {}; RUBROS.forEach(r=>RUBRO_META[r.v]=r);
   /* Etiqueta vieja → rubro. Incluye ids de etiquetas que ya no existen en Odoo
-     pero que pueden seguir colgadas de fichas viejas. La 32 se mapea a
-     "sanatorios" porque así se la mostraba el panel al comercial ("Sanatorio /
-     Clínica"), aunque en Odoo la etiqueta se llame "CENTROS DE SALUD": vale lo
-     que vio la persona cuando la eligió. */
+     pero que pueden seguir colgadas de fichas viejas. */
   const TAG_RUBRO = {
     28:"FARMACIAS", 29:"FARMACIAS", 30:"FARMACIAS",
     8:"VETERINARIAS", 35:"VETERINARIAS",
     7:"DISTRIBUIDORAS", 34:"DISTRIBUIDORAS",
-    20:"SANATORIOS Y CLINICAS", 32:"SANATORIOS Y CLINICAS",
-    37:"CENTROS DE SALUD",
-    62:"SECTOR PUBLICO",
-    31:"OBRAS SOCIALES Y MUTUALES", 33:"OBRAS SOCIALES Y MUTUALES", 36:"OBRAS SOCIALES Y MUTUALES",
+    62:"SAMCO",
+    20:"INSTITUCIONES", 32:"INSTITUCIONES", 37:"INSTITUCIONES",
+    31:"INSTITUCIONES", 33:"INSTITUCIONES", 36:"INSTITUCIONES",
   };
+  const rubroNorm = v => (v ? (RUBRO_ALIAS[v] || v) : "");
   /* Rubro efectivo de una ficha: manda el campo; si está vacío, la etiqueta. */
   function rubroDe(p){
     if(!p) return "";
-    if(p[RUBRO_FIELD]) return p[RUBRO_FIELD];
+    if(p[RUBRO_FIELD]) return rubroNorm(p[RUBRO_FIELD]);
     for(const t of (p.category_id||[])) if(TAG_RUBRO[t]) return TAG_RUBRO[t];
     return "";
   }
-  /* <option>s del desplegable, con el valor actual siempre presente. */
+  /* <option>s del desplegable, con el valor actual siempre seleccionado. */
   function rubroOpts(sel, ph){
-    sel = sel || "";
-    let lista = RUBROS.slice();
-    const viejo = RUBROS_VIEJOS.find(r=>r.v===sel);
-    if(viejo) lista = lista.concat([viejo]);
+    sel = rubroNorm(sel||"");
     return `<option value="">${esc(ph||"— elegir rubro —")}</option>`+
-      lista.map(r=>`<option value="${esc(r.v)}"${sel===r.v?" selected":""}>${esc(r.l)}</option>`).join("");
+      RUBROS.map(r=>`<option value="${esc(r.v)}"${sel===r.v?" selected":""}>${esc(r.l)}</option>`).join("");
   }
   function rubroStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-rubro-css")) return;
     const s=document.createElement("style"); s.id="eyg-rubro-css";
@@ -1501,7 +1497,7 @@ window.EYG = (function(){
     document.head.appendChild(s); }
   function rubroBadge(r){
     rubroStyles();
-    const m=RUBRO_META[r];
+    const m=RUBRO_META[rubroNorm(r)];
     if(!m) return '<span class="eyg-rub" style="background:#F3F5F4;color:#8A9A97" title="Todavía no se le puso rubro a este cliente.">Sin rubro</span>';
     return `<span class="eyg-rub" style="background:${m.bg};color:${m.c}" title="${esc(m.desc||m.l)}">${m.ico} ${esc(m.ab)}</span>`;
   }
@@ -1916,7 +1912,7 @@ window.EYG = (function(){
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
     creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
-    RUBRO_FIELD, RUBROS, RUBROS_VIEJOS, RUBRO_META, TAG_RUBRO, rubroDe, rubroOpts, rubroBadge,
+    RUBRO_FIELD, RUBROS, RUBROS_VIEJOS, RUBRO_META, RUBRO_ALIAS, TAG_RUBRO, rubroNorm, rubroDe, rubroOpts, rubroBadge,
     conquistarLeer, conquistarGuardar, conquistarAsignar, conquistarDeComercial, conquistarSetPartner, conquistarQuitar, conquistarPatch, notificarRoles,
     padNorm, padTitulo, padLocKey, padClave, padCoincide, padClaveDir, padCoincideDir, padCargar, padCruzar, padPunto, padTk, PAD_GENERICO,
     mapaBase, mapaPuntos, mapaStyles,
