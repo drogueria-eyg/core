@@ -95,7 +95,8 @@ window.EYGHome = (function(){
   let HOY, MES_INI, SEM_INI, ANO_INI;
   let ORD8=[], ORD8_OK=false;   // pedidos de los últimos 8 días (hoy / hora x hora / sparkline)
   let MG=null;                  // resumen de margen (se cachea entre refrescos)
-  let MODO="ventas";            // métrica del gráfico de evolución: ventas | margen
+  let MODO="ventas";            // métrica del gráfico de evolución: ventas | margen | canales
+  let CAN_FOCO=null;            // canal aislado en el gráfico (null = todos apilados)
   /* Las olas 2 y 3 arrancan en paralelo con la 1, pero algunos números ("compraron
      hoy", "quién vendió hoy") salen de ORD8, que llena la ola 1. Sin esta espera
      mostraban 0 según quién ganara la carrera. */
@@ -126,6 +127,43 @@ window.EYGHome = (function(){
     if(k==="semana") return "semana del "+dm(s)+" al "+dm(addD(s,6));
     if(k==="mes")    return MES[+s.slice(5,7)-1]+" de "+s.slice(0,4);
     return "año "+s.slice(0,4);
+  }
+
+  /* ---------- canales de venta ---------- */
+  /* Odoo no tiene un campo "canal": todo lo que entra por la API queda firmado
+     por el usuario del conector. La marca real la ponen los que crean el pedido
+     — el portal deja `website_id`, el Core y el asistente estampan `origin` —
+     y lo que no trae ninguna marca se cargó a mano adentro de Odoo. Es la misma
+     lógica de comercial/panel.html (`origenDe`), acá escrita como DOMINIO para
+     poder pedirle a Odoo el total de cada canal ya agrupado por fecha.
+     El respaldo por `create_uid` cubre los pedidos que el Core cargó ANTES de
+     empezar a estampar el origen (1/9/2026): son del conector y llevan otro
+     vendedor, así que no se confunden con una carga manual de administración. */
+  const CONECTOR_UID=520;
+  const CANALES=[
+    {k:"core", ic:"📱", lab:"Core (la app)", corto:"Core", col:"#04635F",
+     dom:["&",["website_id","=",false],"|",["origin","ilike","Core"],
+          "&","&",["origin","=",false],["create_uid","=",CONECTOR_UID],["user_id","!=",CONECTOR_UID]],
+     ayuda:"Pedidos que carga un comercial desde “Cargar venta”, acá en el Core."},
+    {k:"web",  ic:"🌐", lab:"Portal EyG 24/7", corto:"Portal", col:"#0AA89F",
+     dom:[["website_id","!=",false]],
+     ayuda:"El cliente los armó solo en el portal web, sin que nadie se los cargue."},
+    {k:"bot",  ic:"🤖", lab:"Asistente WhatsApp", corto:"WhatsApp", col:"#25D366",
+     dom:[["website_id","=",false],["origin","ilike","WhatsApp"]],
+     ayuda:"Los tomó el asistente de WhatsApp charlando con el cliente."},
+    {k:"odoo", ic:"✍️", lab:"Odoo (a mano)", corto:"Odoo", col:"#93A8A4", resto:true,
+     ayuda:"Cargados a mano adentro de Odoo, casi siempre por administración. Es lo que queda cuando el pedido no trae ninguna marca."},
+  ];
+  const CAN_MAP={}; CANALES.forEach(c=>CAN_MAP[c.k]=c);
+  /* Versión cliente de lo mismo, para clasificar pedidos ya leídos (vista por hora). */
+  function canalDe(o){
+    if(o.website_id && o.website_id[0]) return "web";
+    const og=String(o.origin||"");
+    if(/whatsapp|asistente/i.test(og)) return "bot";
+    if(/core/i.test(og)) return "core";
+    const cu=o.create_uid&&o.create_uid[0], vd=o.user_id&&o.user_id[0];
+    if(cu===CONECTOR_UID && vd!==CONECTOR_UID) return "core";
+    return "odoo";
   }
 
   /* ---------- ámbito por rol ---------- */
@@ -444,7 +482,7 @@ window.EYGHome = (function(){
 
       const [ord, sem, semAnt, mes, mesAnt, ano, FAC, FACMG] = await Promise.all([
         rpc("sale.order","search_read",[domVentas([["date_order",">=",uDesde(addD(HOY,-7))]]),
-            ["name","partner_id","date_order","amount_untaxed","user_id"]],Object.assign({limit:0,order:"date_order desc"},CTX)),
+            ["name","partner_id","date_order","amount_untaxed","user_id","website_id","origin","create_uid"]],Object.assign({limit:0,order:"date_order desc"},CTX)),
         sumaVentas(SEM_INI), sumaVentas(semAntIni,semAntFin),
         sumaVentas(MES_INI),  sumaVentas(mAntIni,mAntFin),
         sumaVentas(ANO_INI),
@@ -459,24 +497,28 @@ window.EYGHome = (function(){
       if(V.margen) MG=FACMG;
       ORD8 = ord.map(o=>Object.assign({
         id:o.id, name:o.name, cli:o.partner_id?o.partner_id[1]:"—",
-        vend:o.user_id?o.user_id[1]:"", amt:o.amount_untaxed||0
+        vend:o.user_id?o.user_id[1]:"", amt:o.amount_untaxed||0, canal:canalDe(o)
       }, EYG.argParts(o.date_order)));
       ORD8_OK=true;
 
       /* por día (8 días) y por hora (hoy / ayer) */
       const porDia={}; for(let i=7;i>=0;i--) porDia[addD(HOY,-i)]=0;
       const hHoy=new Array(24).fill(0), hAyer=new Array(24).fill(0);
+      /* El mismo reparto por hora, abierto por canal: la vista "Canales · Hora"
+         sale de acá y no cuesta ni una consulta más (ORD8 ya está leído). */
+      const cHoy={}, cHoyN={}; CANALES.forEach(c=>{ cHoy[c.k]=new Array(24).fill(0); cHoyN[c.k]=new Array(24).fill(0); });
       const AYER=addD(HOY,-1); let nHoy=0, cliHoy=new Set();
       for(const o of ORD8){
         if(o.date in porDia) porDia[o.date]+=o.amt;
-        if(o.date===HOY){ hHoy[o.hour]+=o.amt; nHoy++; cliHoy.add(o.cli); }
+        if(o.date===HOY){ hHoy[o.hour]+=o.amt; nHoy++; cliHoy.add(o.cli);
+          cHoy[o.canal][o.hour]+=o.amt; cHoyN[o.canal][o.hour]++; }
         if(o.date===AYER) hAyer[o.hour]+=o.amt;
       }
       const nf=EYG.argNowFrac();
       const totHoy=hHoy.reduce((a,b)=>a+b,0);
       const ayerAhora=hAyer.reduce((a,v,h)=>a+(h<=nf?v:0),0);
       const ayerTot=hAyer.reduce((a,b)=>a+b,0);
-      CACHE.hora={hHoy,hAyer,totHoy,ayerAhora,ayerTot,nHoy,nf};
+      CACHE.hora={hHoy,hAyer,cHoy,cHoyN,totHoy,ayerAhora,ayerTot,nHoy,nf};
 
       const dias=Object.keys(porDia), maxD=Math.max(...dias.map(d=>porDia[d]),1);
       const spark=dias.map(d=>`<i class="${d===HOY?"now":""}" style="height:${Math.max(4,Math.round(porDia[d]/maxD*100))}%;animation-delay:${dias.indexOf(d)*45}ms" title="${DIA3[dow(d)]} ${dm(d)}: ${M(porDia[d])}"></i>`).join("");
@@ -545,7 +587,8 @@ window.EYGHome = (function(){
     modo = modo||MODO;
     const ck = modo+"|"+k;
     if(CACHE[ck]) return CACHE[ck];
-    if(modo==="margen") return (CACHE[ck]=await serieMargen(k));
+    if(modo==="margen")  return (CACHE[ck]=await serieMargen(k));
+    if(modo==="canales") return (CACHE[ck]=await serieCanales(k));
 
     const g=GRAN[k], N=g.n, fin=bkt(k,HOY), ini=g.prev(fin, 2*N-1);
     const raw=await rpc("sale.order","read_group",
@@ -580,12 +623,49 @@ window.EYGHome = (function(){
     return {pts, N, margen:true, sinComparacion:true};
   }
 
+  /* Canales: el TOTAL lo manda la serie de ventas y los canales se reparten
+     adentro. Se le piden a Odoo los tres canales que dejan marca (Core, portal,
+     asistente) y "Odoo a mano" sale POR RESTA. Dos razones: el apilado suma
+     siempre exactamente lo mismo que muestra la pestaña Ventas, y un pedido con
+     una marca nueva que todavía no conozca no se cae del gráfico — aparece
+     dentro de "a mano", que es justamente lo que hay que ir a mirar. */
+  async function serieCanales(k){
+    const base=await serie(k,"ventas");
+    const g=GRAN[k], N=base.N, fin=bkt(k,HOY), ini=g.prev(fin, 2*N-1);
+    const marcados=CANALES.filter(c=>!c.resto);
+    const mapas=await Promise.all(marcados.map(async c=>{
+      const raw=await rpc("sale.order","read_group",
+        [domVentas([["date_order",">=",uDesde(ini)]]).concat(c.dom),["amount_untaxed:sum"],["date_order:"+g.g]],
+        Object.assign({lazy:false},CTX));
+      const m={};
+      for(const r of raw){
+        const rg=r.__range&&r.__range["date_order:"+g.g];
+        const from=rg?rg.from:r["date_order:"+g.g];
+        if(!from) continue;
+        const key=bkt(k,String(from)), o=m[key]||(m[key]={v:0,n:0});
+        o.v+=r.amount_untaxed||0; o.n+=r.__count||0;
+      }
+      return m;
+    }));
+    const pts=base.pts.map(p=>{
+      const seg={}; let sv=0, sn=0;
+      marcados.forEach((c,i)=>{ const o=mapas[i][p.key]||{v:0,n:0}; seg[c.k]={v:o.v,n:o.n}; sv+=o.v; sn+=o.n; });
+      seg.odoo={v:Math.max(0,(p.v||0)-sv), n:Math.max(0,(p.n||0)-sn)};
+      return {key:p.key, v:p.v, n:p.n, seg};
+    });
+    return {pts, N, canales:true};
+  }
+
   function serieHora(){
     const c=CACHE.hora; if(!c) return null;
     let lo=7, hi=21;
     c.hHoy.forEach((v,h)=>{ if(v>0){ lo=Math.min(lo,h); hi=Math.max(hi,h); } });
     hi=Math.max(hi,Math.ceil(c.nf));
-    const pts=[]; for(let h=lo;h<=hi;h++) pts.push({key:String(h), v:c.hHoy[h], prev:c.hAyer[h], n:0});
+    const pts=[];
+    for(let h=lo;h<=hi;h++){
+      const seg={}; CANALES.forEach(x=>{ seg[x.k]={v:(c.cHoy[x.k]||[])[h]||0, n:(c.cHoyN[x.k]||[])[h]||0}; });
+      pts.push({key:String(h), v:c.hHoy[h], prev:c.hAyer[h], n:0, seg});
+    }
     return {pts, N:pts.length, hora:true, tot:c.totHoy, prevTot:c.ayerAhora};
   }
 
@@ -606,22 +686,45 @@ window.EYGHome = (function(){
     if(m==="margen" && GRA==="hora") GRA="mes";
     ver(GRA);
   }
+  /* Tocar un canal de la leyenda lo AÍSLA en el gráfico (y de paso enciende la
+     vista de canales si estabas mirando el total). Volver a tocarlo los muestra
+     apilados otra vez. */
+  function verCanal(k){
+    if(MODO!=="canales"){ MODO="canales"; CAN_FOCO=k; ver(GRA); return; }
+    CAN_FOCO = (CAN_FOCO===k) ? null : k;
+    pintarEvo();
+  }
+  /* La leyenda de canales también se muestra en la pestaña Ventas, pero ahí los
+     datos no se piden hasta tener el gráfico pintado: primero lo que el usuario
+     fue a ver, después el detalle. Por hora no cuesta nada (sale de ORD8). */
+  function asegurarCanales(){
+    if(GRA==="hora" || CACHE["canales|"+GRA]) return;
+    const gra=GRA;
+    serie(gra,"canales").then(()=>{
+      if(GRA!==gra || MODO==="margen") return;
+      if(MODO==="canales") pintarEvo(); else pintarLeyenda(gra);
+    }).catch(()=>{});
+  }
 
   function pintarEvo(soloSiHora){
     const z=document.getElementById("dz-evo"); if(!z) return;
     if(soloSiHora && GRA!=="hora") return;
-    const esMg = MODO==="margen";
+    const esMg = MODO==="margen", esCan = MODO==="canales";
 
-    /* "Hora" sólo existe para ventas (ver verModo). */
+    /* "Hora" existe para ventas y canales; para margen no (ver verModo). */
     const grans = Object.keys(GRAN).filter(k=>!(esMg && k==="hora"));
-    const ctrl = (V.margen?`<div class="pills mini">
-        <button class="${esMg?"":"on"}" onclick="EYGHome.verModo('ventas')">Ventas</button>
-        <button class="${esMg?"on":""}" onclick="EYGHome.verModo('margen')">Margen</button>
-      </div>`:"")+
+    const ctrl = `<div class="pills mini">
+        <button class="${MODO==="ventas"?"on":""}" onclick="EYGHome.verModo('ventas')" title="Cuánto se vendió en cada período.">Ventas</button>
+        ${V.margen?`<button class="${esMg?"on":""}" onclick="EYGHome.verModo('margen')" title="Qué margen dejó la venta de cada período.">Margen</button>`:""}
+        <button class="${esCan?"on":""}" onclick="EYGHome.verModo('canales')" title="La misma venta, apilada según por dónde entró cada pedido.">Canales</button>
+      </div>`+
       `<div class="pills">${grans.map(k=>
         `<button data-k="${k}" class="${k===GRA?"on":""}" onclick="EYGHome.ver('${k}')">${GRAN[k].lab}</button>`).join("")}</div>`;
+    const focoC = (esCan && CAN_FOCO) ? CAN_MAP[CAN_FOCO] : null;
     const titulo = esMg
       ? `<h2>📐 Evolución del margen</h2><div class="hint">margen sobre venta de pedidos confirmados, sin IVA</div>`
+      : esCan
+      ? `<h2>🧭 Ventas por canal</h2><div class="hint">${focoC?`solo <b>${focoC.ic} ${esc(focoC.lab)}</b> · tocá la tarjeta de nuevo para ver todos`:"los mismos pedidos confirmados, apilados según por dónde entraron · sin IVA"}</div>`
       : `<h2>📈 Evolución de ventas</h2><div class="hint">pedidos confirmados, sin IVA · por fecha de pedido</div>`;
     if(!z.dataset.armado){
       z.innerHTML=`<div class="cx-h"><div id="evo-tit"></div><div class="evo-ctrl" id="evo-ctrl"></div></div><div id="evo-body"></div>`;
@@ -631,8 +734,15 @@ window.EYGHome = (function(){
     document.getElementById("evo-ctrl").innerHTML=ctrl;
     const body=document.getElementById("evo-body"); if(!body) return;
 
-    const s = (!esMg && GRA==="hora") ? serieHora() : CACHE[MODO+"|"+GRA];
+    let s = (!esMg && GRA==="hora") ? serieHora() : CACHE[MODO+"|"+GRA];
     if(!s){ body.innerHTML=`<div class="skel" style="height:230px;border-radius:12px"></div>`; return; }
+
+    /* Canal aislado: el gráfico muestra SOLO ese canal, pero cada punto se queda
+       con el reparto completo (`seg`) para que la leyenda siga mostrando todo. */
+    if(focoC) s=Object.assign({},s,{pts:s.pts.map(p=>{
+      const g=(p.seg&&p.seg[focoC.k])||{v:0,n:0};
+      return {key:p.key, v:g.v, n:g.n, seg:p.seg};
+    })});
 
     const fmtV = esMg ? p1 : mc;
     let vis, comp, tot, compTot, cmpTxt="vs período anterior";
@@ -641,7 +751,9 @@ window.EYGHome = (function(){
       ? (arr.reduce((a,p)=>a+p.s,0) ? arr.reduce((a,p)=>a+p.m,0)/arr.reduce((a,p)=>a+p.s,0)*100 : 0)
       : arr.reduce((a,p)=>a+p.v,0);
 
-    if(s.hora){ vis=s.pts; comp=null; tot=s.tot; compTot=s.prevTot; cmpTxt="vs ayer a esta hora"; }
+    if(s.hora){ vis=s.pts; comp=null;
+      tot=focoC?agrega(vis):s.tot; compTot=focoC?0:s.prevTot;
+      cmpTxt=focoC?"sin comparación por canal":"vs ayer a esta hora"; }
     else if(s.sinComparacion){ vis=s.pts; comp=null; tot=agrega(vis); compTot=0; }
     else{
       vis=s.pts.slice(s.N); comp=s.pts.slice(0,s.N);
@@ -652,7 +764,8 @@ window.EYGHome = (function(){
       if(comp.filter(p=>p.v>0).length < Math.ceil(s.N*0.6)){ compTot=0; cmpTxt="sin historial comparable"; }
     }
 
-    if(!tot && !compTot){ body.innerHTML=`<div class="evo-empty">Todavía no hay ${esMg?"margen registrado":"ventas registradas"} en este período.</div>`; return; }
+    if(!tot && !compTot){ body.innerHTML=`<div class="evo-empty">Todavía no hay ${esMg?"margen registrado":(focoC?"ventas por "+esc(focoC.lab):"ventas registradas")} en este período.</div>`
+        + `<div id="evo-can">${esMg?"":leyendaCanales(ventanaCanales(vis,comp,false), GRA)}</div>`; return; }
 
     const conDato=vis.filter(p=>p.v>0);
     const prom = esMg ? tot : (conDato.length?tot/conDato.length:0);   // en margen, promedio = el total ponderado
@@ -662,9 +775,14 @@ window.EYGHome = (function(){
     const mgTot= esMg?vis.reduce((a,p)=>a+p.m,0):0;
     const vtTot= esMg?vis.reduce((a,p)=>a+p.s,0):0;
 
+    /* Reparto por canal de la ventana visible. En "Ventas" los datos están en
+       otro lado que en "Canales": lo resuelve ventanaCanales(). */
+    _cmpOK = !!compTot;
+    const vc = esMg ? null : ventanaCanales(vis, comp, _cmpOK);
+
     body.innerHTML=`
       <div class="evo-stats">
-        <div class="es"><div class="l">${esMg?"Margen del período":(s.hora?"Acumulado de hoy":"Total del período")}</div>
+        <div class="es"><div class="l">${focoC?esc(focoC.lab):esMg?"Margen del período":(s.hora?"Acumulado de hoy":"Total del período")}</div>
           <div class="v" data-to="${tot}" data-fmt="${esMg?"p1":"mc"}" title="${esMg?p1(tot):M(tot)}">${esMg?"0%":"$0"}</div></div>
         ${esMg
           ? `<div class="es sm"><div class="l">Margen en pesos</div><div class="v" data-to="${mgTot}" title="${M(mgTot)}">$0</div></div>
@@ -675,15 +793,75 @@ window.EYGHome = (function(){
           ? (MG&&MG.ok&&MG.ref!=null?`<div class="es sm"><div class="l">vs promedio 12 meses</div><div class="v">${deltaPts(tot,MG.ref,"")}</div></div>`:"")
           : `<div class="es sm"><div class="l">${esc(cmpTxt)}</div><div class="v">${compTot?delta(tot,compTot,""):'<span class="delta flat">—</span>'}</div></div>`}
         ${(!esMg&&nPed)?`<div class="es sm"><div class="l">Pedidos</div><div class="v">${ent(nPed)}</div></div>`:""}
+        ${focoC?"":`<div class="es sm" id="evo-lider" hidden title="El canal por el que entró la mayor parte de la plata en el período que estás mirando."></div>`}
         ${s.hora?`<div class="es sm"><div class="l">&nbsp;</div><div class="v" style="font-size:12px"><span class="chip-live" style="padding:5px 10px"><span class="dot"></span>en vivo</span></div></div>`:""}
       </div>
-      <div class="chartwrap" id="evo-chart">${svgBarras(vis, prom, s.hora, fmtV)}<div class="tt" id="evo-tt"></div></div>`;
+      <div class="chartwrap" id="evo-chart">${svgBarras(vis, prom, s.hora, fmtV, {segs:(esCan&&!focoC)?CANALES:null, color:focoC?focoC.col:null})}<div class="tt" id="evo-tt"></div></div>
+      <div id="evo-can">${esMg?"":leyendaCanales(vc, GRA)}</div>`;
     paintNums(body);
-    engancharTooltip(vis, s.hora, esMg);
+    if(!focoC) pintarLider(vc);
+    engancharTooltip(vis, s.hora, esMg, esCan&&!focoC);
+    if(!esMg) asegurarCanales();
   }
 
-  function svgBarras(pts, prom, esHora, fmtV){
-    fmtV = fmtV || mc;
+  /* ---------- leyenda de canales (debajo del gráfico, en Ventas y en Canales) ---------- */
+  const sumaCanal  = (arr,k)=>arr.reduce((a,p)=>a+((((p.seg||{})[k])||{}).v||0),0);
+  const cuentaCanal= (arr,k)=>arr.reduce((a,p)=>a+((((p.seg||{})[k])||{}).n||0),0);
+
+  /* De dónde sale el reparto por canal de la ventana que se está viendo:
+     · por hora y en la vista Canales, los puntos ya lo traen adentro;
+     · en la vista Ventas, de la serie de canales, que se pide aparte y llega
+       un rato después (mismas claves y mismo largo: nacen de la misma serie). */
+  let _cmpOK=false;             // ¿el período anterior sirve para comparar?
+  function ventanaCanales(vis, comp, usarComp){
+    if(vis && vis.length && vis[0].seg) return {vis, comp:(usarComp&&comp&&comp.length&&comp[0].seg)?comp:null};
+    const sc=CACHE["canales|"+GRA];
+    if(!sc) return null;
+    return {vis:sc.pts.slice(sc.N), comp:usarComp?sc.pts.slice(0,sc.N):null};
+  }
+  /* Repinta sólo la leyenda y el "canal que más trae" (los usa asegurarCanales
+     cuando el reparto llega tarde y el gráfico que se está viendo es el de
+     Ventas: así no se redibuja el gráfico entero ni se repite la animación). */
+  function pintarLeyenda(gra){
+    const h=document.getElementById("evo-can"); if(!h||gra!==GRA) return;
+    const vc=ventanaCanales(null,null,_cmpOK);
+    h.innerHTML=leyendaCanales(vc, gra);
+    pintarLider(vc);
+  }
+  function pintarLider(vc){
+    const el=document.getElementById("evo-lider"); if(!el) return;
+    const tot = vc ? CANALES.reduce((a,c)=>a+sumaCanal(vc.vis,c.k),0) : 0;
+    if(!tot){ el.hidden=true; return; }
+    const l = CANALES.map(c=>({c, v:sumaCanal(vc.vis,c.k)})).sort((a,b)=>b.v-a.v)[0];
+    el.innerHTML=`<div class="l">Canal que más trae</div><div class="v">${l.c.ic} ${esc(l.c.corto)}<span style="font-size:11px;color:var(--gris2);font-weight:700"> · ${esc(p1(l.v/tot*100))}</span></div>`;
+    el.hidden=false;
+  }
+
+  function leyendaCanales(vc, gra){
+    const cab=`<div class="canleg-h"><span>🧭 ¿Por dónde entran las ventas?</span>
+      <span class="hint">reparto de ${gra==="hora"?"lo que va del día":"todo el período que estás viendo"} · tocá un canal para verlo solo a él</span></div>`;
+    if(!vc) return `${cab}<div class="canleg">${CANALES.map(()=>`<div class="cnl"><div class="skel s" style="width:60%"></div><div class="skel t" style="margin-top:10px"></div></div>`).join("")}</div>`;
+    const tot=CANALES.reduce((a,c)=>a+sumaCanal(vc.vis,c.k),0);
+    return `${cab}<div class="canleg">${CANALES.map(c=>{
+      const v=sumaCanal(vc.vis,c.k), n=cuentaCanal(vc.vis,c.k);
+      const vb=vc.comp?sumaCanal(vc.comp,c.k):0;
+      const sh=tot?v/tot*100:0, on=CAN_FOCO===c.k;
+      const ayuda=`${c.ayuda} · ${M(v)} en el período que estás viendo (${p1(sh)} de la venta). Tocá para ver solo este canal en el gráfico.`;
+      return `<div class="cnl${on?" on":""}${v?"":" cero"}" style="--c:${c.col}" role="button" tabindex="0"
+          onclick="EYGHome.verCanal('${c.k}')"
+          onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();EYGHome.verCanal('${c.k}')}"
+          title="${esc(ayuda)}">
+        <div class="cnl-h"><i></i><span>${c.ic} ${esc(c.lab)}</span></div>
+        <div class="cnl-v" title="${M(v)}">${mc(v)}</div>
+        <div class="cnl-bar"><i style="width:${sh.toFixed(1)}%"></i></div>
+        <div class="cnl-s">${esc(p1(sh))} de la venta · ${ent(n)} pedido${n===1?"":"s"}</div>
+        ${vb?`<div class="cnl-d">${delta(v,vb,"vs "+(gra==="hora"?"ayer":"el período anterior"))}</div>`:""}
+      </div>`; }).join("")}</div>`;
+  }
+
+  function svgBarras(pts, prom, esHora, fmtV, opt){
+    fmtV = fmtV || mc; opt = opt || {};
+    const segs = opt.segs;
     /* El SVG escala uniforme, así que el viewBox define el tamaño REAL del texto:
        con 1000 de ancho metido en un celular de 340px, las etiquetas quedan en 3px.
        Por eso en pantalla chica se usa un lienzo más angosto y alto. */
@@ -718,16 +896,30 @@ window.EYGHome = (function(){
         const yp=Y(p.prev);
         bars+=`<rect x="${(x-2).toFixed(1)}" y="${yp.toFixed(1)}" width="${(bw+4).toFixed(1)}" height="${Math.max(y1-yp,2).toFixed(1)}" rx="3" fill="#DDE9E7" opacity=".8"/>`;
       }
-      bars+=`<rect class="bar bar-in" data-i="${i}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="4"
-        fill="${activa?"#EC8B5E":"url(#bg1)"}" style="animation-delay:${Math.min(i*22,500)}ms"/>`;
+      if(segs && p.seg){
+        /* Barra apilada: un tramo por canal, de abajo hacia arriba en el mismo
+           orden que la leyenda. Sin esquinas redondeadas y con 1px de aire entre
+           tramos: pegados y redondeados quedan muescas raras. */
+        let acc=0;
+        segs.forEach(c=>{
+          const sv=((p.seg[c.k])||{}).v||0; if(sv<=0) return;
+          const yT=Y(acc+sv), yB=Y(acc);
+          bars+=`<rect class="bar seg" data-i="${i}" x="${x.toFixed(1)}" y="${yT.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(yB-yT-1,1).toFixed(1)}" fill="${c.col}"/>`;
+          acc+=sv;
+        });
+      }else{
+        bars+=`<rect class="bar bar-in" data-i="${i}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="4"
+          fill="${opt.color || (activa?"#EC8B5E":"url(#bg1)")}" style="animation-delay:${Math.min(i*22,500)}ms"/>`;
+      }
       hits+=`<rect class="hit" data-i="${i}" x="${(x0+slot*i).toFixed(1)}" y="${y0}" width="${slot.toFixed(1)}" height="${(y1-y0).toFixed(1)}" fill="transparent"/>`;
       const paso=Math.ceil(pts.length/(chico?5:(pts.length>26?9:16)));
       if(i%paso===0||i===pts.length-1)
         labs+=`<text x="${(x0+slot*i+slot/2).toFixed(1)}" y="${H-9}" text-anchor="middle" font-size="${fs}" font-weight="700" fill="${activa?"#C9743F":"#9AACA8"}">${esc(esHora?p.key+"h":etiqueta(GRA,p.key))}</text>`;
     });
     /* Línea de tendencia sobre las barras. En la vista por hora NO: los huecos
-       del mediodía la hacen caer a cero y se lee como ruido, no como tendencia. */
-    const linea = (!esHora && pts.length>2) ? `<path class="trend" d="${pts.map((p,i)=>(i?"L":"M")+(x0+slot*i+slot/2).toFixed(1)+" "+Y(p.v).toFixed(1)).join(" ")}"
+       del mediodía la hacen caer a cero y se lee como ruido, no como tendencia.
+       Apilado tampoco: encima de los colores ensucia más de lo que explica. */
+    const linea = (!esHora && !segs && pts.length>2) ? `<path class="trend" d="${pts.map((p,i)=>(i?"L":"M")+(x0+slot*i+slot/2).toFixed(1)+" "+Y(p.v).toFixed(1)).join(" ")}"
         fill="none" stroke="#04635F" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity=".55"/>` : "";
 
     return `<svg viewBox="0 0 ${W} ${H}" style="height:auto;max-height:360px" role="img" aria-label="Evolución de ventas">
@@ -736,7 +928,7 @@ window.EYGHome = (function(){
     </svg>`;
   }
 
-  function engancharTooltip(pts, esHora, esMg){
+  function engancharTooltip(pts, esHora, esMg, esCan){
     const wrap=document.getElementById("evo-chart"), tt=document.getElementById("evo-tt");
     if(!wrap||!tt) return;
     const svg=wrap.querySelector("svg");
@@ -747,15 +939,24 @@ window.EYGHome = (function(){
       const i=+t.dataset.i, p=pts[i]; if(!p) return;
       wrap.classList.add("hov");
       wrap.querySelectorAll(".bar.sel").forEach(b=>b.classList.remove("sel"));
-      const bar=wrap.querySelector('.bar[data-i="'+i+'"]'); if(bar) bar.classList.add("sel");
+      /* Apilado: la barra son varios rectángulos con el mismo data-i. */
+      wrap.querySelectorAll('.bar[data-i="'+i+'"]').forEach(b=>b.classList.add("sel"));
       const r=t.getBoundingClientRect(), wr=wrap.getBoundingClientRect();
       const t1 = esHora ? `${p.key}:00 a ${p.key}:59` : etiquetaLarga(GRA,p.key);
-      const extra = esMg
-        ? (p.s?`${M(p.m)} de margen sobre ${M(p.s)}`:"sin ventas en el período")
-        : esHora
-        ? (p.prev?`ayer a esta hora: ${M(p.prev)}`:"ayer no hubo ventas en esta hora")
-        : (p.n?`${ent(p.n)} pedido${p.n===1?"":"s"} · ticket ${M(p.v/p.n)}`:"sin pedidos");
-      tt.innerHTML=`<div class="t1">${esc(t1)}</div><div>${esc(esMg?p1(p.v):M(p.v))}</div><div class="t3">${esc(extra)}</div>`;
+      let pie;
+      if(esCan){
+        const filas=CANALES.filter(c=>((((p.seg||{})[c.k])||{}).v||0)>0)
+          .map(c=>`<div class="t3"><b style="color:${c.col}">■</b> ${esc(c.corto)} · ${esc(M(p.seg[c.k].v))} <span style="opacity:.7">(${esc(p1(p.seg[c.k].v/(p.v||1)*100))})</span></div>`);
+        pie = filas.length?filas.join(""):`<div class="t3">sin pedidos</div>`;
+      }else{
+        const extra = esMg
+          ? (p.s?`${M(p.m)} de margen sobre ${M(p.s)}`:"sin ventas en el período")
+          : esHora
+          ? (p.prev?`ayer a esta hora: ${M(p.prev)}`:"ayer no hubo ventas en esta hora")
+          : (p.n?`${ent(p.n)} pedido${p.n===1?"":"s"} · ticket ${M(p.v/p.n)}`:"sin pedidos");
+        pie=`<div class="t3">${esc(extra)}</div>`;
+      }
+      tt.innerHTML=`<div class="t1">${esc(t1)}</div><div>${esc(esMg?p1(p.v):M(p.v))}</div>${pie}`;
       tt.style.left=(r.left-wr.left+r.width/2)+"px";
       tt.style.top =(r.top -wr.top +r.height*0.35)+"px";
       tt.classList.add("on");
@@ -996,5 +1197,5 @@ window.EYGHome = (function(){
       :`<div class="nodata">Todavía no hay pedidos registrados.</div>`}`);
   }
 
-  return { main, init, ver, verModo, verMargen, refrescar };
+  return { main, init, ver, verModo, verMargen, verCanal, refrescar };
 })();
