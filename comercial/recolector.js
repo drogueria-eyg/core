@@ -78,14 +78,30 @@
     var to = setTimeout(function () { ctrl.abort(); }, ms || RITMO.cortar);
     var t0 = Date.now();
     return fetch(url, { signal: ctrl.signal, credentials: "same-origin" })
-      .then(function (r) { return r.text(); })
+      .then(function (r) { ST.urlFinal = r.url || ""; return r.text(); })
       .then(function (txt) { clearTimeout(to); ST.ultimoMs = Date.now() - t0; return txt; })
       .catch(function (e) { clearTimeout(to); ST.ultimoMs = Date.now() - t0; throw e; });
   }
 
   /* Si Bionexo nos devolvió el login, la sesión se cerró: no tiene sentido seguir
-     (y seguir golpeando la puerta es justo lo que no hay que hacer). */
-  function esLogin(html) { return /jsp\/login\/login\.jsp|name="clave"|Bienvenido a/i.test(html.slice(0, 4000)); }
+     (y seguir golpeando la puerta es justo lo que no hay que hacer).
+
+     SE MIRA LA URL FINAL, no sólo el HTML. Cuando la sesión cae, Bionexo redirige
+     a login.jsp y el fetch sigue el redirect: el texto que llega es el del login,
+     pero sus marcas pueden caer más allá del pedazo que se revisaba, y entonces
+     pasaba por una página normal y vacía. Resultado: decía «no hay pedidos de la
+     zona» cuando en realidad estábamos afuera. La URL final no miente. */
+  function esLogin(html) {
+    if (/\/login\/|sign_in|bioidcallback/i.test(ST.urlFinal || "")) return true;
+    return /jsp\/login\/login\.jsp|name=["']clave["']|Bienvenido a|type=["']password["']/i.test(String(html || ""));
+  }
+
+  /* La sesión se cae seguido. Volver a entrar no exige tipear nada mientras el
+     SSO siga vivo: al abrir la pantalla de ingreso, redirige solo y la renueva. */
+  function reabrirSesion() {
+    window.open("https://bioid-shared.bionexo.com/users/sign_in?locale=es-AR", "_blank");
+    nota("Abrí la pestaña de ingreso. Cuando estés adentro, volvé acá y probá de nuevo.", "warn");
+  }
 
   /* ================= parseo ================= */
   /* Los IDs y títulos del índice NO son texto de la celda: vienen adentro de un
@@ -234,7 +250,8 @@
       .then(ciclo)
       .catch(function (e) {
         if (String(e.message) === "SESION") {
-          nota("Se cerró la sesión de Bionexo. Volvé a entrar y arrancá de nuevo: lo leído está guardado.", "err");
+          nota("Se cerró la sesión de Bionexo. Lo leído está guardado.", "err");
+          reabrirSesion();
           parar(); return;
         }
         ST.fallos++; ST.seguidos++;
@@ -350,7 +367,16 @@
         mios.push({ id: c[2], vence: c[1], titulo: (c[4] || "").slice(0, 200),
                     cliente: (c[3] || "").slice(0, 200), tipo: c[5] || "", ciudad: loc });
       });
-      if (!mios.length) { nota("No hay pedidos de la zona en las últimas 24 horas.", "warn"); parar(); return; }
+      if (!mios.length) {
+        // distinguir «no hay» de «no pude leer»: sin esto, una cartelera vacía y
+        // una sesión caída se veían iguales
+        var filasTotales = doc.querySelectorAll("tr").length;
+        nota(filasTotales < 3
+          ? "La cartelera vino vacía: casi seguro se cerró la sesión. Reabrila y probá de nuevo."
+          : "Leí " + filasTotales + " pedidos y ninguno es de la zona. Puede pasar a esta hora.",
+          "warn");
+        parar(); return;
+      }
       nota("Hay " + mios.length + " pedidos de la zona. Voy a buscar qué piden…", "ok");
 
       // cabeceras primero: si algo se corta, al menos la lista queda
@@ -378,7 +404,7 @@
       }
       nota("Listo. Abrí «Plataformas → Abiertos» en el Core para verlos.", "ok");
     } catch (e) {
-      nota(String(e.message) === "SESION" ? "Se cerró la sesión de Bionexo. Entrá de nuevo." : ("Error: " + e.message), "err");
+      if(String(e.message) === "SESION"){ nota("Se cerró la sesión de Bionexo.", "err"); reabrirSesion(); } else nota("Error: " + e.message, "err");
     }
     parar();
   }
@@ -476,7 +502,7 @@
       .catch(function (err) {
         var m = String(err.message);
         nota(
-          m === "SESION" ? "La sesión de Bionexo está cerrada: entrá con tu usuario y volvé a tocar Empezar."
+          m === "SESION" ? (reabrirSesion(), "La sesión estaba cerrada. Te abrí el ingreso: entrá y volvé a tocar Empezar.")
           : m === "VACIO" ? "No pude leer ninguna cotización. Fijate que estés dentro de Bionexo y con la sesión abierta (probá entrar a Transacciones de Venta y ver si aparece el listado)."
           : ("Error: " + m), "err");
         parar();
