@@ -278,6 +278,92 @@
     return m ? m[1] : "";
   }
 
+  /* ============ PEDIDOS ABIERTOS DE LA ZONA ============
+     EyG vende sólo en Santa Fe: de los ~229 pedidos que se publican por día,
+     unos 17 caen acá. Esto trae esos —cabecera y renglones— al Core, para
+     poder mirar qué piden y armar la cotización sin ir y venir a Bionexo.
+     Como son pocos, se pueden traer con el detalle completo sin forzar nada. */
+  var PROVINCIAS = ["SFE"];   // si algún día se vende en otra, se agrega acá
+
+  /* ¿POR QUÉ NO HAY UN BOTÓN EN EL CORE QUE HAGA ESTO?
+     Porque el navegador no deja que un sitio (drogueriaeyg.com.ar) lea las
+     páginas de otro (bionexo-ar.bionexo.com), ni le preste la sesión abierta.
+     Es una defensa del navegador contra el robo de sesiones, y está bien que
+     exista. Por eso el código tiene que correr DENTRO de Bionexo.
+     Lo más cerca del botón soñado es esto: dejar la pestaña de Bionexo abierta
+     —que igual se tiene abierta todo el día— y que sincronice sola cada tanto.
+     La otra opción sería una extensión de Chrome propia; se puede, pero hay
+     que instalarla en cada máquina y mantenerla. */
+  var AUTO_MIN = 30;
+  var _auto = null;
+  function autoEncendido(){ try{ return localStorage.getItem("bx_auto")==="1"; }catch(e){ return false; } }
+  function prenderAuto(on){
+    try{ localStorage.setItem("bx_auto", on?"1":"0"); }catch(e){}
+    if(_auto){ clearInterval(_auto); _auto=null; }
+    if(on){
+      _auto = setInterval(function(){
+        if(ST.activo) return;                       // no pisar una corrida en curso
+        nota("Sincronización automática…");
+        traerAbiertos();
+      }, AUTO_MIN*60000);
+      nota("Listo: sincroniza solo cada "+AUTO_MIN+" minutos mientras esta pestaña siga abierta.", "ok");
+    } else {
+      nota("Sincronización automática apagada.");
+    }
+    pintar();
+  }
+  function esDeLaZona(txtFila) {
+    return PROVINCIAS.some(function (p) { return new RegExp("/\\s*" + p + "\\s*$", "i").test(txtFila.trim()); });
+  }
+
+  async function traerAbiertos() {
+    if (!EN_BIONEXO) { nota("Esto se toca estando dentro de Bionexo.", "err"); return; }
+    if (!KEY) { alert("Falta la clave. Rearmá el favorito desde el Core."); return; }
+    ST.activo = true; pintar();
+    try {
+      nota("Leyendo la cartelera…");
+      var html = await traer("/jsp/vender/CarteleraVentas24h.jsp");
+      if (esLogin(html)) throw new Error("SESION");
+      var doc = new DOMParser().parseFromString(html, "text/html");
+      var mios = [];
+      Array.prototype.forEach.call(doc.querySelectorAll("tr"), function (tr) {
+        var c = Array.prototype.map.call(tr.cells || [], T);
+        if (c.length < 7) return;
+        var loc = c[c.length - 1] || "";
+        if (!esDeLaZona(loc)) return;
+        mios.push({ id: c[2], vence: c[1], titulo: (c[4] || "").slice(0, 200),
+                    cliente: (c[3] || "").slice(0, 200), tipo: c[5] || "", ciudad: loc });
+      });
+      if (!mios.length) { nota("No hay pedidos de la zona en las últimas 24 horas.", "warn"); parar(); return; }
+      nota("Hay " + mios.length + " pedidos de la zona. Voy a buscar qué piden…", "ok");
+
+      // cabeceras primero: si algo se corta, al menos la lista queda
+      await ingesta({ op: "indice", filas: mios.map(function (m) {
+        return { id: m.id, cliente: m.cliente + " · " + m.ciudad, titulo: m.titulo, tipo: m.tipo,
+                 vence: m.vence, estado: "Abierta", renglones: 0 };
+      })});
+
+      for (var i = 0; i < mios.length; i++) {
+        if (!ST.activo) break;
+        var m = mios[i];
+        try {
+          var d = await window.__detalle(m.id);
+          await ingesta({ op: "detalle", id: m.id, renglones: d });
+          ST.hechos++;
+          nota("#" + m.id + " · " + d.length + " renglones · " + m.titulo.slice(0, 32), "ok");
+        } catch (e) {
+          if (String(e.message) === "SESION") throw e;
+          nota("No pude leer #" + m.id, "err");
+        }
+        await dormir(jitter(RITMO.pausa));
+      }
+      nota("Listo. Abrí «Plataformas → Abiertos» en el Core para verlos.", "ok");
+    } catch (e) {
+      nota(String(e.message) === "SESION" ? "Se cerró la sesión de Bionexo. Entrá de nuevo." : ("Error: " + e.message), "err");
+    }
+    parar();
+  }
+
   /* ============ LLENAR EL FORMULARIO ============
      Toma el paquete que arma el Core y completa precio, marca y presentación
      de cada renglón, tildando los que se cotizan. Los renglones que el Core no
@@ -405,6 +491,11 @@
         '<div style="flex:1"><div style="font-size:10px;letter-spacing:.6px;color:#8A9A97;font-weight:800">RITMO</div>' +
           '<div style="font-size:21px;font-weight:800">' + (RITMO.pausa / 1000).toFixed(0) + 's</div></div>' +
       "</div>" +
+      (ST.activo ? "" :
+        '<div style="padding:10px 14px 0"><button id="bx-zona" style="width:100%;background:#0AA89F;color:#fff;border:0;border-radius:9px;padding:10px;font:inherit;font-weight:700;cursor:pointer">Traer pedidos de Santa Fe al Core</button>' +
+        '<label style="display:flex;gap:7px;align-items:center;margin-top:9px;font-size:12px;color:#5F716E;cursor:pointer">' +
+          '<input type="checkbox" id="bx-auto"' + (autoEncendido() ? " checked" : "") + ' style="width:15px;height:15px;accent-color:#048782">' +
+          'Sincronizar solo cada ' + AUTO_MIN + ' min (dejando esta pestaña abierta)</label></div>') +
       '<div style="padding:10px 14px;display:flex;gap:8px">' + b +
         (/v_rpdc/.test(location.pathname)
           ? '<button id="bx-cot" style="flex:1;background:#fff;color:#04635F;border:1px solid #DCE8E6;border-radius:9px;padding:10px;font:inherit;font-weight:700;cursor:pointer">Copiar renglones</button>' +
@@ -426,10 +517,15 @@
     if (cot) cot.onclick = copiarRenglones;
     var fill = document.getElementById("bx-fill");
     if (fill) fill.onclick = pedirPaquete;
+    var zona = document.getElementById("bx-zona");
+    if (zona) zona.onclick = traerAbiertos;
+    var au = document.getElementById("bx-auto");
+    if (au) au.onchange = function () { prenderAuto(au.checked); };
     if (g) g.onclick = arrancar;
     if (s) s.onclick = function () { nota("Frenado a mano. Lo leído está guardado."); parar(); };
     if (x) x.onclick = function () { parar(); caja.remove(); window.__BX_CORRIENDO = false; };
   }
 
   pintar();
+  if (autoEncendido() && EN_BIONEXO) prenderAuto(true);   // quedó activado de antes
 })();

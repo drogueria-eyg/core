@@ -108,6 +108,12 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(async perfil=>{
   document.body.innerHTML = EYG.layout(perfil,"plataformas", pantalla(), "Cotizar pedido de plataforma");
   enganchar();
   try{
+    // Si se llega desde «Abiertos», los renglones ya están en la base: no hay
+    // que pegar nada.
+    const id = new URLSearchParams(location.search).get("id");
+    if(id) cargarDeLaBase(id);
+  }catch(e){}
+  try{
     ST.listas = await EYG.rpc("product.pricelist","search_read",[[["active","=",true]]],{fields:["id","name"],limit:30,context:ES});
     const tx = await EYG.rpc("account.tax","search_read",[[["type_tax_use","=","sale"]]],{fields:["id","name","amount","amount_type","price_include"],limit:100});
     (tx||[]).forEach(t=>{ const inc = !!t.price_include || /imp\.?\s*inc|inclu/i.test(t.name||"");
@@ -149,6 +155,29 @@ function pintarListas(){
 
 function enganchar(){
   const b=document.getElementById("analizar"); if(b) b.onclick=analizar;
+}
+
+/* Viene de «Plataformas → Abiertos»: los renglones ya los trajo el favorito y
+   están guardados, así que se arma solo. */
+async function cargarDeLaBase(id){
+  const ta = document.getElementById("pegado");
+  const res = document.getElementById("res");
+  res.innerHTML = `<div class="spin"></div><p class="cargando">Trayendo el pedido ${esc(id)}…</p>`;
+  try{
+    const { data, error } = await EYG.supa().from("bionexo_renglones")
+      .select("seq,cod_bionexo,producto,cantidad,marca_pedida")
+      .eq("cotizacion_id", id).order("seq").limit(500);
+    if(error) throw new Error(error.message);
+    if(!data || !data.length){
+      res.innerHTML = `<div class="nota aviso"><b>No tengo los renglones de ese pedido.</b>
+        Traelos con el favorito («Traer pedidos de Santa Fe al Core») y volvé.</div>`;
+      return;
+    }
+    ta.value = "# pedido "+id+"\n" + data.map(r=>`${r.cod_bionexo||""} · ${r.producto||""} · ${Math.round(Number(r.cantidad)||0)}`).join("\n");
+    await analizar();
+  }catch(e){
+    res.innerHTML = `<div class="nota aviso"><b>No pude traer el pedido.</b> ${esc(String(e.message||e))}</div>`;
+  }
 }
 
 /* Acepta lo que copia el favorito (código · producto · cantidad) y también

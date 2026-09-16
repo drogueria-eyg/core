@@ -190,6 +190,17 @@ async function leerDatos(){
 
 /* ---------------- cálculo ---------------- */
 function armar(cab, rens){
+  /* Los pedidos ABIERTOS (los que trae el favorito desde la cartelera) todavía
+     no se cotizaron: si entraran en las cuentas, hundirían la tasa de respuesta
+     con renglones que nadie dejó pasar — simplemente no llegó el momento.
+     Se separan y se miran aparte. */
+  const esAbierta = c => /abierta/i.test(c.estado||"");
+  const abiertas = cab.filter(esAbierta);
+  cab = cab.filter(c=>!esAbierta(c));
+  const idsAbiertas = new Set(abiertas.map(a=>a.id));
+  const rensAbiertas = rens.filter(r=>idsAbiertas.has(r.cotizacion_id));
+  rens = rens.filter(r=>!idsAbiertas.has(r.cotizacion_id));
+
   const conDetalle = cab.filter(c=>c.detalle_leido);
   const esConf = e => /^confirm/i.test(e||"");
   const N = v => Number(v)||0;
@@ -233,9 +244,26 @@ function armar(cab, rens){
     monto:N(c.monto_ganado), leido:!!c.detalle_leido
   })).sort((a,b)=>String(b.vence).localeCompare(String(a.vence)));
 
+  /* Los abiertos, con lo que piden y cuánto falta para que venza. */
+  const porPedido = {};
+  rensAbiertas.forEach(r=>{ (porPedido[r.cotizacion_id]=porPedido[r.cotizacion_id]||[]).push(r); });
+  const ahora = Date.now();
+  const abiertos = abiertas.map(a=>{
+    const rs = porPedido[a.id]||[];
+    const vence = a.vence ? new Date(a.vence).getTime() : 0;
+    const horas = vence ? Math.round((vence-ahora)/36e5) : null;
+    return {
+      id:a.id, cliente:a.cliente||"", titulo:a.titulo||"", tipo:a.tipo||"", vence:a.vence||"",
+      horas, vencido: horas!=null && horas<0,
+      ren: rs.length || N(a.renglones),
+      productos: rs.map(r=>({cod:r.cod_bionexo, prod:r.producto, cant:N(r.cantidad), pref:r.marca_pedida||""}))
+    };
+  }).sort((a,b)=>String(a.vence).localeCompare(String(b.vence)));
+
   const suma = (a,f)=>a.reduce((s,x)=>s+(f(x)||0),0);
   return {
-    hayDatos: cab.length>0,
+    hayDatos: cab.length>0 || abiertos.length>0,
+    abiertos,
     totales: {
       cotizaciones: cab.length, conDetalle: conDetalle.length,
       renglones: suma(cab,c=>N(c.renglones)),
@@ -271,7 +299,7 @@ function render(){
       <a href="catalogo-plataformas.html"><b>Armar el catálogo para subir →</b></a><br><b>¿Querés cotizar un pedido ahora?</b> No hace falta el catálogo subido: <a href="cotizar-plataforma.html"><b>Cotizar pedido de plataforma →</b></a>
     </div>
     <div class="tabs" id="tabs">
-      ${["resumen","productos","clientes","cotizaciones"].map(v=>`
+      ${["abiertos","resumen","productos","clientes","cotizaciones"].map(v=>`
         <button class="tab ${ST.vista===v?"on":""}" data-v="${v}">${v[0].toUpperCase()+v.slice(1)}${
           cnt[v]!=null?`<span class="c">${nf(cnt[v])}</span>`:""}</button>`).join("")}
       <button class="tab" disabled title="Todavía no relevado">Portada Salud</button>
@@ -317,11 +345,67 @@ function cabecera(T){
 /* ---------------- vistas ---------------- */
 function pintarVista(){
   const v = document.getElementById("vista");
-  if(ST.vista==="resumen")           v.innerHTML = vistaResumen();
+  if(ST.vista==="abiertos")          v.innerHTML = vistaAbiertos();
+  else if(ST.vista==="resumen")      v.innerHTML = vistaResumen();
   else if(ST.vista==="productos")    v.innerHTML = vistaTabla("productos");
   else if(ST.vista==="clientes")     v.innerHTML = vistaTabla("clientes");
   else                               v.innerHTML = vistaTabla("cotizaciones");
   enganchar();
+}
+
+/* Los pedidos de la zona que están esperando respuesta. Ordenados por lo que
+   vence primero, porque acá lo que se pierde no se recupera: pasada la hora,
+   el renglón no se puede cotizar más. */
+function vistaAbiertos(){
+  const A = D.abiertos||[];
+  const vivos = A.filter(a=>!a.vencido);
+  if(!A.length) return `
+    <div class="nota aviso">
+      <b>Todavía no hay pedidos abiertos cargados.</b><br><br>
+      Entrá a Bionexo, tocá el favorito y apretá <b>«Traer pedidos de Santa Fe al Core»</b>.
+      Trae los de las últimas 24 horas con el detalle de qué piden. Son unos 17 por día:
+      tarda un par de minutos.
+    </div>`;
+  const urgente = a => a.horas!=null && a.horas<=12;
+  return `
+    <div class="nota">
+      <b>${nf(vivos.length)} pedidos esperando respuesta.</b> Ordenados por el que vence primero.
+      Acá lo que se pierde no se recupera: pasada la hora, el renglón no se puede cotizar más.
+      Para actualizar la lista, tocá <b>«Traer pedidos de Santa Fe»</b> en el favorito.
+    </div>
+    ${A.map(a=>`
+      <div class="card pad" style="margin-bottom:13px;${a.vencido?'opacity:.5':''}${urgente(a)&&!a.vencido?'border-left:4px solid var(--bad)':''}">
+        <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+          <div style="flex:1;min-width:230px">
+            <div style="font-size:15px;font-weight:700;line-height:1.35">${esc(a.titulo||"(sin título)")}</div>
+            <div style="font-size:12.5px;color:var(--gris);margin-top:4px">${esc(a.cliente)}</div>
+            <div style="font-size:11.5px;color:var(--gris2);margin-top:3px">
+              #${esc(a.id)} · ${nf(a.ren)} renglones
+              ${/urgenc/i.test(a.tipo)?` · <span class="pill warn">urgencia</span>`:""}
+            </div>
+          </div>
+          <div style="text-align:right;flex:none">
+            ${a.vencido
+              ? `<span class="pill neu">vencido</span>`
+              : `<div style="font-size:19px;font-weight:900;color:${urgente(a)?"var(--bad)":"var(--ink)"};font-variant-numeric:tabular-nums">${a.horas!=null?(a.horas+" h"):"—"}</div>
+                 <div style="font-size:11px;color:var(--gris2)">para responder</div>`}
+          </div>
+        </div>
+        ${a.productos.length ? `
+          <details style="margin-top:12px">
+            <summary style="cursor:pointer;font-size:12.5px;font-weight:700;color:var(--teal-deep)">Ver qué piden (${nf(a.productos.length)})</summary>
+            <div style="margin-top:10px;font-size:12.5px;line-height:1.7">
+              ${a.productos.map(p=>`<div style="padding:5px 0;border-top:1px solid #F2F7F6;display:flex;gap:10px">
+                <span style="color:var(--gris2);font-family:ui-monospace,monospace;font-size:11px;flex:none;width:58px">${esc(p.cod||"—")}</span>
+                <span style="flex:1">${esc(p.prod||"")}${p.pref && !/^-$|acept/i.test(p.pref)?` <span style="color:var(--gris2)">· pide ${esc(p.pref)}</span>`:""}</span>
+                <b style="flex:none;font-variant-numeric:tabular-nums">${nf(p.cant)}</b>
+              </div>`).join("")}
+            </div>
+          </details>` : `<p style="font-size:12.5px;color:var(--gris2);margin:10px 0 0">Todavía no traje el detalle de este pedido.</p>`}
+        ${!a.vencido && a.productos.length ? `<div style="margin-top:13px">
+          <a class="tab on" style="display:inline-block;text-decoration:none" href="cotizar-plataforma.html?id=${encodeURIComponent(a.id)}">Armar la cotización →</a>
+        </div>`:""}
+      </div>`).join("")}`;
 }
 
 function vistaResumen(){
