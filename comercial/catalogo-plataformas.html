@@ -137,7 +137,13 @@ const ST = {
   lista: 3, descuento: 0, colchon: 70, tope: 300,
   mapCat: {}, mapUom: {},
   prods: [], precios: {}, comprometido: {}, taxmap: {},
-  cats: [], uoms: [], listas: []
+  cats: [], uoms: [], listas: [],
+  /* Lo que HOY está cargado en Bionexo (se sube el archivo de «Descargar
+     Catálogo»). Sin esto no se pueden generar bajas: los productos viejos
+     que no entren en el archivo nuevo se quedan ofreciéndose con lo que
+     tengan cargado. Medido el 15/9/2026: de 1.950 productos cargados, sólo
+     2 tenían precio y ninguno stock ni marca. */
+  bionexo: [], bajarSinStock: false
 };
 
 /* ---------------- arranque ---------------- */
@@ -275,6 +281,14 @@ function ivaDe(p){
   return 0;
 }
 
+/* Lo que hay en Bionexo, por código. El código de Bionexo ES el nuestro
+   (columna «Codigo Producto»), así que el cruce es directo. */
+function mapaBionexo(){
+  const m = {};
+  ST.bionexo.forEach(b=>{ if(b.codigo) m[String(b.codigo).trim()] = b; });
+  return m;
+}
+
 function armarFilas(){
   const filas=[], fuera={sinCodigo:0, sinPrecio:0, sinStock:0, comprometido:0};
   ST.prods.forEach(p=>{
@@ -303,13 +317,46 @@ function armarFilas(){
     });
   });
   filas.sort((a,b)=>a.nombre.localeCompare(b.nombre,"es"));
-  return {filas, fuera};
+
+  /* ---- altas, actualizaciones y bajas ---- */
+  const enBionexo = mapaBionexo();
+  const hayComparacion = ST.bionexo.length > 0;
+  let altas = 0, actualiza = 0;
+  filas.forEach(f=>{ if(enBionexo[f.codigo]) actualiza++; else altas++; });
+
+  // Baja = está cargado en Bionexo y no entra en el archivo nuevo.
+  // Se separan los dos motivos porque el riesgo es distinto: el que no existe
+  // en Odoo hay que apagarlo sí o sí; el que sólo se quedó sin stock hoy
+  // conviene pensarlo — apagarlo y prenderlo todo el tiempo nos borra de la
+  // vista del comprador.
+  const codigosNuevos = new Set(filas.map(f=>f.codigo));
+  const codigosOdoo = new Set(ST.prods.map(p=>String(p.default_code||"").trim()).filter(Boolean));
+  const bajas = { noExiste: [], sinStock: [] };
+  if(hayComparacion){
+    ST.bionexo.forEach(b=>{
+      const cod = String(b.codigo||"").trim();
+      if(!cod || codigosNuevos.has(cod)) return;
+      (codigosOdoo.has(cod) ? bajas.sinStock : bajas.noExiste).push(b);
+    });
+  }
+  return {filas, fuera, hayComparacion, altas, actualiza, bajas};
+}
+
+/* Las bajas viajan en el mismo archivo, con Estado N: Bionexo las desactiva. */
+function filasDeBaja(bajas){
+  const lista = [...bajas.noExiste, ...(ST.bajarSinStock ? bajas.sinStock : [])];
+  return lista.map(b=>({
+    estado:"N", codigo:String(b.codigo), nombre:b.nombre||"", cat:b.cat||200, gtin:"", uom:b.uom||6,
+    precio:0, iva:0, conIva:0, descuento:0, stock:0, disp:0, fisico:0, comp:0, catNombre:""
+  }));
 }
 
 /* ---------------- pantalla ---------------- */
 function render(){
-  const {filas, fuera} = armarFilas();
+  const R = armarFilas();
+  const {filas, fuera} = R;
   ST._filas = filas;
+  ST._bajas = filasDeBaja(R.bajas);
   const lista = (ST.listas.find(l=>l.id===ST.lista)||{}).name || ("lista "+ST.lista);
   document.getElementById("cap").innerHTML = `
     <div class="nota">
@@ -327,6 +374,35 @@ function render(){
       <div class="e"><div class="n x">${nf(fuera.comprometido)}</div><div class="t">Stock ya comprometido</div><div class="p">hay unidades, pero tienen dueño</div></div>
       <div class="e"><div class="n x">${nf(fuera.sinCodigo)}</div><div class="t">Sin código interno</div><div class="p">Bionexo los necesita</div></div>
     </div>
+
+    <h2 class="sec">Contra lo que ya está cargado en Bionexo <span class="ayuda">para poder dar de baja lo que sobra</span></h2>
+    ${R.hayComparacion ? `
+      <div class="emb" style="margin-bottom:14px">
+        <div class="e"><div class="n t">${nf(R.altas)}</div><div class="t">Altas</div><div class="p">no estaban en Bionexo</div></div>
+        <div class="e"><div class="n">${nf(R.actualiza)}</div><div class="t">Se actualizan</div><div class="p">ya estaban cargados</div></div>
+        <div class="e"><div class="n" style="color:var(--bad)">${nf(R.bajas.noExiste.length)}</div><div class="t">Se dan de baja</div><div class="p">están en Bionexo y no en Odoo</div></div>
+        <div class="e"><div class="n x">${nf(R.bajas.sinStock.length)}</div><div class="t">Sin stock hoy</div><div class="p">existen, pero no hay para entregar</div></div>
+      </div>
+      <div class="card pad">
+        <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer">
+          <input type="checkbox" id="bajarSS" ${ST.bajarSinStock?"checked":""} style="width:17px;height:17px;accent-color:var(--teal);margin-top:2px">
+          <span style="font-size:13.5px;line-height:1.55;color:var(--gris)">
+            <b style="color:var(--ink)">Dar de baja también los ${nf(R.bajas.sinStock.length)} que se quedaron sin stock.</b><br>
+            Pensalo: apagarlos evita que nos pidan algo que no podemos entregar, pero también nos borra
+            de la vista del comprador hasta la próxima subida. Si el archivo se sube seguido, conviene
+            dejarlos prendidos.
+          </span>
+        </label>
+        <p style="font-size:12.5px;color:var(--gris2);margin:12px 0 0">
+          El archivo va a llevar <b>${nf(filas.length)}</b> productos activos y <b>${nf(ST._bajas.length)}</b> bajas.
+        </p>
+      </div>`
+    : `<div class="nota aviso">
+        <b>Todavía no comparé contra Bionexo.</b> Sin esto, los productos que ya están cargados allá y no
+        entren en este archivo <b>se quedan ofreciéndose</b> con lo que tengan — precios viejos incluidos.<br><br>
+        Bajá el archivo desde Bionexo (Catálogo de Productos → solapa <b>Activos</b> → Descargar Catálogo) y cargalo acá:
+        <div style="margin-top:12px"><input type="file" id="fileBx" accept=".xlsx,.xls" style="font-family:inherit;font-size:13px"></div>
+      </div>`}
 
     <h2 class="sec">Ajustes</h2>
     <div class="card pad">
@@ -427,6 +503,35 @@ function enganchar(){
   });
   const g=document.getElementById("gen"); if(g) g.onclick = ()=>bajarExcel();
   const v=document.getElementById("csv"); if(v) v.onclick = ()=>bajarCsv();
+  const ss=document.getElementById("bajarSS");
+  if(ss) ss.onchange = ()=>{ ST.bajarSinStock = ss.checked; render(); };
+  const fb=document.getElementById("fileBx");
+  if(fb) fb.onchange = e=>leerCatalogoBionexo(e.target.files[0]);
+}
+
+/* Lee el archivo que exporta Bionexo. Trae las mismas 20 columnas de la
+   plantilla y, al final, unas filas de leyenda que NO son productos: por eso
+   sólo se toman las que tienen un código con forma de código. */
+function leerCatalogoBionexo(file){
+  if(!file) return;
+  const fr = new FileReader();
+  fr.onload = ev => {
+    try{
+      const libro = XLSX.read(new Uint8Array(ev.target.result), {type:"array"});
+      const hoja = libro.Sheets[libro.SheetNames[0]];
+      const filas = XLSX.utils.sheet_to_json(hoja, {defval:""});
+      ST.bionexo = filas.map(r=>({
+        codigo: String(r["Codigo Producto"]||"").trim(),
+        nombre: String(r["Descripcion Producto"]||"").trim(),
+        cat: Math.round(parseFloat(r["ID Categoria"])||0) || 200,
+        uom: Math.round(parseFloat(r["ID Unidad de Medida"])||0) || 6,
+        precio: parseFloat(r["Precio Unitario"])||0
+      })).filter(b=>b.codigo && /^[A-Za-z0-9._\/-]+$/.test(b.codigo));
+      if(!ST.bionexo.length){ alert("No encontré productos en ese archivo. ¿Es el que baja Bionexo en Catálogo de Productos → Descargar Catálogo?"); return; }
+      render();
+    }catch(err){ alert("No pude leer el archivo: "+err.message); }
+  };
+  fr.readAsArrayBuffer(file);
 }
 
 /* ---------------- el archivo ---------------- */
@@ -444,7 +549,7 @@ function nombreArchivo(ext){
 }
 
 function bajarExcel(){
-  const filas = ST._filas||[];
+  const filas = [...(ST._filas||[]), ...(ST._bajas||[])];   // las bajas van en el mismo archivo
   if(!filas.length) return;
   const datos = [CABECERA, ...filas.map(aFila)];
   const hoja = XLSX.utils.aoa_to_sheet(datos);
@@ -454,7 +559,7 @@ function bajarExcel(){
 }
 
 function bajarCsv(){
-  const filas = ST._filas||[];
+  const filas = [...(ST._filas||[]), ...(ST._bajas||[])];   // las bajas van en el mismo archivo
   const q = s => '"'+String(s==null?"":s).replace(/"/g,'""')+'"';
   const txt = [CABECERA.map(q).join(";"), ...filas.map(f=>aFila(f).map(q).join(";"))].join("\n");
   const blob = new Blob(["﻿"+txt], {type:"text/csv;charset=utf-8;"});
