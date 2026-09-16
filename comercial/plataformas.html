@@ -75,16 +75,23 @@
   .btn:hover{border-color:var(--teal);color:var(--teal-deep)}
   .cuenta{font-size:12.5px;color:var(--gris2);font-weight:600;white-space:nowrap}
 
-  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow);max-height:78vh;overflow-y:auto}
-  table{border-collapse:collapse;width:100%;font-size:13px;min-width:640px}
-  th{font-size:10.5px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:var(--gris2);text-align:left;padding:11px 13px;border-bottom:1px solid var(--line);white-space:nowrap;background:#FAFDFC;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none}
-  th:hover{color:var(--teal-deep)}
+  /* Sin scroll propio: la tabla fluye con la página. Un recuadro con barra de
+     deslizamiento adentro de otra obliga a cazar la barra correcta y es incómodo
+     (pedido del usuario, 15/9/2026). El encabezado queda pegado arriba mientras
+     se baja — eso sólo funciona si NINGÚN contenedor recorta el alto, por eso acá
+     no hay max-height ni overflow-y. El overflow-x aparece únicamente en pantallas
+     angostas, donde no queda otra. */
+  .scroll{border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow)}
+  table{border-collapse:collapse;width:100%;font-size:13px;table-layout:auto}
+  th{font-size:10.5px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:var(--gris2);text-align:left;padding:11px 13px;white-space:nowrap;background:#F4FAF9;position:sticky;top:0;z-index:3;cursor:pointer;user-select:none;box-shadow:inset 0 -1px 0 var(--line)}
+  th:hover{color:var(--teal-deep);background:#EAF5F3}
   th .ord{opacity:.45;font-size:9px;margin-left:3px}
   th.r,td.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
   td{padding:9px 13px;border-bottom:1px solid var(--line);vertical-align:middle}
   tbody tr:last-child td{border-bottom:0}
   tbody tr:hover{background:#FAFDFC}
-  td.nm{font-weight:600;line-height:1.35;min-width:230px}
+  td.nm{font-weight:600;line-height:1.35}
+  @media(max-width:860px){ .scroll{overflow-x:auto} table{min-width:700px} }
   td.cod{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:var(--gris2);white-space:nowrap}
   .mini{height:6px;border-radius:99px;background:#EEF4F3;overflow:hidden;min-width:50px}
   .mini i{display:block;height:100%;border-radius:99px;background:var(--teal)}
@@ -93,6 +100,7 @@
   .pill.ok{background:var(--okbg);color:var(--ok)} .pill.bad{background:var(--badbg);color:var(--bad)}
   .pill.neu{background:#EEF2F1;color:var(--gris)} .pill.warn{background:var(--warnbg);color:var(--warn)}
   .vacio{text-align:center;color:var(--gris2);padding:34px 12px;font-size:13.5px}
+  .mas{text-align:center;color:var(--gris2);font-size:12.5px;padding:14px 10px 4px}
 
   .corte{font-size:11.5px;color:var(--gris2);margin-top:22px;text-align:center;line-height:1.6}
   .spin{width:30px;height:30px;border:4px solid var(--line);border-top-color:var(--teal);border-radius:50%;animation:sp 1s linear infinite;margin:34px auto}
@@ -138,7 +146,11 @@ const fpct = (a,b) => b ? (Math.round(a*1000/b)/10).toString().replace(".",",")+
 const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 
 let D = null;
-const ST = { vista:"resumen", q:"", filtro:"todos", ord:{}, };
+/* `tope` = cuántas filas hay dibujadas. NO es un recorte de datos: al llegar al final
+   de la página se agranda solo y sigue apareciendo el resto. Dibujar 3.000 filas de
+   una deja el navegador pegajoso al ordenar y al escribir en el buscador. */
+const PASO = 300;
+const ST = { vista:"resumen", q:"", filtro:"todos", ord:{}, tope:PASO };
 
 EYG.guard(["lider","admin","direccion"]).then(async perfil=>{
   document.body.innerHTML = EYG.layout(perfil,"plataformas",
@@ -409,13 +421,14 @@ const TABLAS = {
 function vistaTabla(nombre){
   const def = TABLAS[nombre];
   const filas = filtrar(nombre);
+  const visibles = filas.slice(0, ST.tope);
   return `
     <h2 class="sec">${esc(def.titulo)} <span class="ayuda">${esc(def.ayuda)}</span></h2>
     <div class="tools">
       <label class="busca">🔎 <input id="q" placeholder="Buscar…" value="${esc(ST.q)}" autocomplete="off"></label>
       <div class="filtros">${def.filtros.map(f=>`
         <button class="f ${ST.filtro===f.k?"on":""}" data-f="${f.k}">${esc(f.t)}</button>`).join("")}</div>
-      <span class="cuenta">${nf(filas.length)} de ${nf(D[nombre].length)}</span>
+      <span class="cuenta" id="cuenta">${nf(filas.length)} de ${nf(D[nombre].length)}</span>
       <button class="btn" id="csv">Descargar Excel</button>
     </div>
     ${filas.length ? `<div class="scroll"><table>
@@ -424,9 +437,15 @@ function vistaTabla(nombre){
         const flecha = o && o.k===c.k ? (o.desc?"▼":"▲") : "";
         return `<th class="${c.cls==='r'?'r':''}" data-k="${c.k}">${esc(c.t)}<span class="ord">${flecha}</span></th>`;
       }).join("")}</tr></thead>
-      <tbody>${filas.map(x=>`<tr>${def.cols.map(c=>`<td class="${c.cls||""}">${c.v(x)}</td>`).join("")}</tr>`).join("")}</tbody>
-    </table></div>` : `<div class="card"><p class="vacio">No hay filas que coincidan con la búsqueda.</p></div>`}`;
+      <tbody id="tb">${visibles.map(x=>fila(def,x)).join("")}</tbody>
+    </table></div>
+    <div id="mas" class="mas">${filas.length>visibles.length
+      ? `Mostrando ${nf(visibles.length)} de ${nf(filas.length)} · seguí bajando para ver el resto`
+      : `${nf(filas.length)} ${filas.length===1?"fila":"filas"} · eso es todo`}</div>`
+    : `<div class="card"><p class="vacio">No hay filas que coincidan con la búsqueda.</p></div>`}`;
 }
+
+const fila = (def,x) => `<tr>${def.cols.map(c=>`<td class="${c.cls||""}">${c.v(x)}</td>`).join("")}</tr>`;
 
 function filtrar(nombre){
   const def = TABLAS[nombre];
@@ -447,30 +466,49 @@ function filtrar(nombre){
   return filas;
 }
 
+let _obs = null;
 function enganchar(){
   const q = document.getElementById("q");
-  if(q) q.oninput = EYG.debounce ? EYG.debounce(()=>{ ST.q=q.value.trim(); repintarTabla(); },220)
-                                 : ()=>{ ST.q=q.value.trim(); repintarTabla(); };
-  document.querySelectorAll(".f[data-f]").forEach(b=>b.onclick=()=>{ ST.filtro=b.dataset.f; pintarVista(); });
+  if(q) q.oninput = EYG.debounce ? EYG.debounce(()=>{ ST.q=q.value.trim(); ST.tope=PASO; repintarTabla(); },220)
+                                 : ()=>{ ST.q=q.value.trim(); ST.tope=PASO; repintarTabla(); };
+  document.querySelectorAll(".f[data-f]").forEach(b=>b.onclick=()=>{ ST.filtro=b.dataset.f; ST.tope=PASO; pintarVista(); });
   document.querySelectorAll("th[data-k]").forEach(th=>th.onclick=()=>{
     const n=ST.vista, k=th.dataset.k, o=ST.ord[n];
     ST.ord[n] = (o&&o.k===k) ? {k, desc:!o.desc} : {k, desc:true};
+    ST.tope = PASO;
     pintarVista();
   });
   const csv = document.getElementById("csv");
-  if(csv) csv.onclick = ()=>bajarCsv(ST.vista);
+  if(csv) csv.onclick = ()=>bajarCsv(ST.vista);   // el Excel sale COMPLETO, no sólo lo dibujado
+
+  /* Al acercarse al final de la página se dibuja el próximo tramo. */
+  if(_obs) _obs.disconnect();
+  const pie = document.getElementById("mas");
+  if(pie && window.IntersectionObserver){
+    _obs = new IntersectionObserver(es=>{
+      if(!es[0].isIntersecting) return;
+      const total = filtrar(ST.vista).length;
+      if(ST.tope >= total) return;
+      ST.tope += PASO;
+      repintarTabla();
+    }, {rootMargin:"600px"});
+    _obs.observe(pie);
+  }
 }
 
-/* Repinta sólo la tabla para no perder el foco del buscador mientras se escribe. */
+/* Repinta sólo el cuerpo para no perder el foco del buscador mientras se escribe. */
 function repintarTabla(){
-  const cont = document.getElementById("vista");
-  const sc = cont.querySelector(".scroll");
   const def = TABLAS[ST.vista], filas = filtrar(ST.vista);
-  const cuenta = cont.querySelector(".cuenta");
+  const tb = document.getElementById("tb");
+  if(!tb){ pintarVista(); return; }
+  const visibles = filas.slice(0, ST.tope);
+  tb.innerHTML = visibles.map(x=>fila(def,x)).join("");
+  const cuenta = document.getElementById("cuenta");
   if(cuenta) cuenta.textContent = `${nf(filas.length)} de ${nf(D[ST.vista].length)}`;
-  if(!sc) { pintarVista(); return; }
-  const tb = sc.querySelector("tbody");
-  if(tb) tb.innerHTML = filas.map(x=>`<tr>${def.cols.map(c=>`<td class="${c.cls||""}">${c.v(x)}</td>`).join("")}</tr>`).join("");
+  const pie = document.getElementById("mas");
+  if(pie) pie.textContent = filas.length>visibles.length
+    ? `Mostrando ${nf(visibles.length)} de ${nf(filas.length)} · seguí bajando para ver el resto`
+    : `${nf(filas.length)} ${filas.length===1?"fila":"filas"} · eso es todo`;
 }
 
 /* Excel de verdad: BOM + punto y coma, que es lo que espera Excel en español.
