@@ -113,9 +113,31 @@ const CATEGORIAS = [
 const UNIDADES = [
   {id:6,t:"Unidades"},{id:7,t:"Caja"},{id:3,t:"Bolsa"},{id:4,t:"Botella"},{id:2,t:"Blisters"},{id:8,t:"Piezas"},
   {id:11,t:"Docenas"},{id:12,t:"Frascos"},{id:14,t:"Gramos"},{id:16,t:"Kilogramos"},{id:17,t:"Litros"},
-  {id:19,t:"Mililitros"},{id:21,t:"Paquetes"},{id:22,t:"Pares"},{id:23,t:"Resma"},{id:26,t:"Rollos"},
+  {id:18,t:"Grageas"},{id:19,t:"Mililitros"},{id:21,t:"Paquetes"},{id:22,t:"Pares"},{id:23,t:"Resma"},{id:26,t:"Rollos"},
   {id:28,t:"Ampollas"},{id:29,t:"Comprimidos"},{id:32,t:"Envase"},{id:34,t:"Tiras"},{id:35,t:"Sobre"},
   {id:36,t:"Tabletas"},{id:37,t:"Bobinas"},{id:38,t:"Tubos"},{id:39,t:"Sachet"}
+];
+
+/* LA UNIDAD SALE DEL MAESTRO, NO DE UNA GENERALIZACIÓN. En el Maestro de
+   productos cada ficha tiene su unidad de venta real en `x_unidad` («hay de
+   todo: cajas, tiras, ampollas…»). Acá sólo se traduce esa clave a la unidad
+   que entiende Bionexo. Si un producto no la tiene cargada, NO se inventa:
+   se lista aparte para completarlo en el Maestro. */
+const UNIDAD_EYG = [
+  {k:"unidad",    lbl:"unidad",         bx:6},
+  {k:"caja",      lbl:"caja (cerrada)", bx:7},
+  {k:"tira",      lbl:"tira",           bx:34},
+  {k:"blister",   lbl:"blister",        bx:2},
+  {k:"amp",       lbl:"ampolla",        bx:28},
+  {k:"comp",      lbl:"comprimido",     bx:29},
+  {k:"caps",      lbl:"cápsula",        bx:29},
+  {k:"jeringa",   lbl:"jeringa",        bx:6},
+  {k:"frasco",    lbl:"frasco",         bx:12},
+  {k:"frascoamp", lbl:"frasco ampolla", bx:12},
+  {k:"sobre",     lbl:"sobre",          bx:35},
+  {k:"ml",        lbl:"ml",             bx:19},
+  {k:"g",         lbl:"gramo",          bx:14},
+  {k:"gotas",     lbl:"gotas",          bx:6}
 ];
 /* Primera adivinanza por el nombre de la familia de Odoo. El usuario corrige
    en pantalla y la corrección queda guardada: nunca se pisa lo que él eligió. */
@@ -135,7 +157,7 @@ const PISTAS = [
 const LS = "eyg_catplat";
 const ST = {
   lista: 3, descuento: 0, colchon: 70, tope: 300,
-  mapCat: {}, mapUom: {},
+  mapCat: {}, mapUom: {}, maestro: {}, limpiarNombres: true,
   prods: [], precios: {}, comprometido: {}, taxmap: {},
   cats: [], uoms: [], listas: [],
   /* Lo que HOY está cargado en Bionexo (se sube el archivo de «Descargar
@@ -165,12 +187,13 @@ function restaurar(){
     const g = JSON.parse(localStorage.getItem(LS)||"{}");
     if(g.lista) ST.lista = g.lista;
     if(g.descuento!=null) ST.descuento = g.descuento;
+    if(g.limpiarNombres!=null) ST.limpiarNombres = g.limpiarNombres;
     if(g.colchon!=null) ST.colchon = g.colchon;
     ST.mapCat = g.mapCat||{}; ST.mapUom = g.mapUom||{};
   }catch(e){}
 }
 function guardar(){
-  try{ localStorage.setItem(LS, JSON.stringify({lista:ST.lista,descuento:ST.descuento,colchon:ST.colchon,mapCat:ST.mapCat,mapUom:ST.mapUom})); }catch(e){}
+  try{ localStorage.setItem(LS, JSON.stringify({lista:ST.lista,descuento:ST.descuento,colchon:ST.colchon,mapCat:ST.mapCat,mapUom:ST.mapUom,limpiarNombres:ST.limpiarNombres})); }catch(e){}
 }
 const paso = t => { const p=document.getElementById("paso"); if(p) p.textContent=t; };
 
@@ -206,27 +229,110 @@ async function cargar(){
   paso("Viendo qué stock ya está comprometido…");
   await cargarComprometido();
 
-  // Familias y unidades que existen de verdad en el catálogo, para mapear.
-  const cats={}, uoms={};
-  prods.forEach(p=>{
-    if(p.categ_id){ const k=p.categ_id[0]; (cats[k]=cats[k]||{id:k,nm:p.categ_id[1],n:0}).n++; }
-    if(p.uom_id){ const k=p.uom_id[0]; (uoms[k]=uoms[k]||{id:k,nm:p.uom_id[1],n:0}).n++; }
-  });
-  ST.cats = Object.values(cats).sort((a,b)=>b.n-a.n);
-  ST.uoms = Object.values(uoms).sort((a,b)=>b.n-a.n);
-  ST.cats.forEach(c=>{ if(ST.mapCat[c.id]==null) ST.mapCat[c.id] = adivinarCat(c.nm); });
-  ST.uoms.forEach(u=>{ if(ST.mapUom[u.id]==null) ST.mapUom[u.id] = adivinarUom(u.nm); });
+  paso("Leyendo el árbol de categorías…");
+  await cargarCategorias();
+
+  paso("Leyendo la unidad de venta de cada producto (Maestro)…");
+  await cargarMaestro();
+
+  UNIDAD_EYG.forEach(u=>{ if(ST.mapUom[u.k]==null) ST.mapUom[u.k] = u.bx; });
   guardar();
+}
+
+/* La unidad de venta y el laboratorio viven en product.template (es donde los
+   edita el Maestro), no en la variante. Se traen aparte y se cruzan. */
+async function cargarMaestro(){
+  const tmpls = [...new Set(ST.prods.map(p=>p.product_tmpl_id && p.product_tmpl_id[0]).filter(Boolean))];
+  const m = {};
+  for(let i=0;i<tmpls.length;i+=3000){
+    const t = await EYG.rpc("product.template","search_read",
+      [[["id","in",tmpls.slice(i,i+3000)]]],
+      {fields:["id","x_unidad","x_laboratorio"], limit:3000, context:ES});
+    (t||[]).forEach(r=>{ m[r.id] = { unidad:(r.x_unidad||"").trim(), lab:(r.x_laboratorio||"").trim() }; });
+    paso("Leyendo el Maestro… "+nf(Object.keys(m).length));
+  }
+  ST.maestro = m;
+}
+
+/* Las categorías son un ÁRBOL, igual que en el motor de precios: familias que
+   cuelgan de ALL y subcategorías adentro. Agrupar por la categoría hoja de cada
+   producto dejaba cientos de entradas sueltas y desordenadas. Acá se mapea a
+   nivel de FAMILIA y las subcategorías heredan — con la misma regla que el
+   motor: si una subcategoría tiene su propio mapeo, ese pisa al del padre. */
+const JUNK_CATS = [1,2,4,294];   // ALL, Varios, Envíos, Redondeo: de sistema, no de productos
+async function cargarCategorias(){
+  const cats = await EYG.rpc("product.category","search_read",[[["id","child_of",1]]],
+    {fields:["id","name","parent_id","complete_name"], limit:5000, context:ES});
+  const T = {};
+  (cats||[]).forEach(c=>{
+    if(JUNK_CATS.includes(c.id)) return;
+    T[c.id] = { id:c.id, nm:c.name, pid:(c.parent_id && c.parent_id[0]) || null,
+                ruta:c.complete_name || c.name, n:0, total:0, hijos:[] };
+  });
+  Object.values(T).forEach(c=>{ if(c.pid && T[c.pid]) T[c.pid].hijos.push(c.id); else c.pid = null; });
+
+  // cuántos productos cuelgan de cada rama (propios y acumulados)
+  ST.prods.forEach(p=>{ const k = p.categ_id && p.categ_id[0]; if(T[k]) T[k].n++; });
+  const acumular = id => { const c=T[id]; c.total = c.n + c.hijos.reduce((s,h)=>s+acumular(h),0); return c.total; };
+  const raices = Object.values(T).filter(c=>!c.pid).map(c=>c.id);
+  raices.forEach(acumular);
+
+  ST.catTree = T;
+  ST.raices = raices.filter(id=>T[id].total>0).sort((a,b)=>T[b].total-T[a].total);
+  // La adivinanza se hace sólo en las familias; las subcategorías heredan.
+  ST.raices.forEach(id=>{ if(ST.mapCat[id]==null) ST.mapCat[id] = adivinarCat(T[id].nm); });
+}
+
+/* Mismo criterio de herencia que el motor de precios: la regla propia manda;
+   si no hay, se sube al padre hasta encontrar una. */
+function catBionexoDe(catId){
+  const T = ST.catTree||{};
+  let c = T[catId], saltos = 0;
+  while(c && saltos++ < 12){
+    if(ST.mapCat[c.id]!=null) return ST.mapCat[c.id];
+    c = c.pid ? T[c.pid] : null;
+  }
+  return 200;
 }
 
 function adivinarCat(nombre){
   for(const [re,id] of PISTAS) if(re.test(nombre||"")) return id;
   return 200;   // el cajón más grande: insumos médicos
 }
-function adivinarUom(nombre){
-  const n=(nombre||"").toLowerCase();
-  const hit = UNIDADES.find(u=>n.includes(u.t.toLowerCase().slice(0,5)));
-  return hit ? hit.id : 6;   // por defecto, Unidades
+/* ---------- el nombre que ve el comprador ----------
+   El nombre de Odoo carga cosas que a Bionexo no le sirven y encima ensucian
+   la búsqueda del hospital: el código interno entre corchetes, la ubicación de
+   depósito (H-12), notas entre paréntesis («COD. 6264») y, sobre todo, el
+   BULTO comercial («Caja x 100 unidades», «se vende por caja cerrada»). El
+   bulto no es parte del producto: va en las columnas Embalaje y Unidad de
+   Medida, que para eso están.
+
+   OJO: se saca el bulto, NO la presentación. «AMP X 10 ML» o «x 500 MTS» son
+   el producto y se quedan. Por eso los patrones son estrechos y anclados al
+   final: es preferible limpiar de menos que romper un nombre. */
+const CONTENEDORES_RE = "caja|pack|kit|bulto|estuche|display|bols[oó]n|caj[oó]n";
+function nombreParaBionexo(raw){
+  let s = String(raw||"");
+  s = s.replace(/^\s*\[[^\]]*\]\s*/,"");                  // [15346] al principio
+  s = s.replace(/\(([^)]*)\)/g," ");                       // (COD. 6264), (troquel anulado)…
+  s = s.replace(/@/g," ");
+  s = s.replace(/\b[HB]-\d+(-\d+)?\b/gi," ");              // ubicación de depósito
+  // bulto comercial al final: "- Caja x 100 u.", "caja cerrada x 50", "x 100 unidades"
+  s = s.replace(new RegExp("\\s*[-–]?\\s*(" + CONTENEDORES_RE + ")\\s*(cerrad[ao])?\\s*x\\s*\\d+\\s*(u\\.?|unid\\.?|unidades)?\\s*$","i")," ");
+  s = s.replace(/\s+x\s*\d+\s*(u\.|unid\.?|unidades)\s*$/i," ");
+  s = s.replace(/\s*[-–]\s*$/,"");                         // guión colgando
+  s = s.replace(/\s+/g," ").replace(/\s+([.,])/g,"$1").trim();
+  return s;
+}
+
+/* La unidad sale del Maestro. Si el producto no la tiene cargada devuelve
+   vacío a propósito: preferimos avisar que falta antes que inventarla. */
+function unidadDe(p){
+  const m = (ST.maestro||{})[p.product_tmpl_id && p.product_tmpl_id[0]];
+  const k = m && m.unidad;
+  if(!k) return null;
+  const bx = ST.mapUom[k];
+  return bx!=null ? {clave:k, bx} : {clave:k, bx:6};
 }
 
 /* Precio de la lista elegida. Mismo criterio que el Cotizador: ítems por
@@ -291,6 +397,7 @@ function mapaBionexo(){
 
 function armarFilas(){
   const filas=[], fuera={sinCodigo:0, sinPrecio:0, sinStock:0, comprometido:0};
+  const sinUnidad = [];
   ST.prods.forEach(p=>{
     const precio = ST.precios[p.id];
     const disp = dispDe(p);
@@ -300,13 +407,20 @@ function armarFilas(){
     const iva = ivaDe(p);
     const publicar = Math.floor(disp * (ST.colchon/100));
     if(publicar<1) { fuera.sinStock++; return; }
+    const uni = unidadDe(p);
+    if(!uni) sinUnidad.push(p);   // entra igual, pero queda avisado
+    const original = (p.name||"").trim();
+    const limpio = ST.limpiarNombres===false ? original : nombreParaBionexo(original);
     filas.push({
       estado:"S",
       codigo:String(p.default_code),
-      nombre:(p.name||"").trim(),
-      cat: ST.mapCat[p.categ_id && p.categ_id[0]] || 200,
+      nombre: limpio || original,
+      nombreOdoo: original,
+      cat: catBionexoDe(p.categ_id && p.categ_id[0]),
       gtin: p.barcode || "",
-      uom: ST.mapUom[p.uom_id && p.uom_id[0]] || 6,
+      uom: uni ? uni.bx : 6,
+      uniClave: uni ? uni.clave : "",
+      lab: ((ST.maestro||{})[p.product_tmpl_id && p.product_tmpl_id[0]]||{}).lab || "",
       precio: Math.round(precio*100)/100,
       iva,
       conIva: Math.round(precio*(1+iva/100)*100)/100,
@@ -339,7 +453,8 @@ function armarFilas(){
       (codigosOdoo.has(cod) ? bajas.sinStock : bajas.noExiste).push(b);
     });
   }
-  return {filas, fuera, hayComparacion, altas, actualiza, bajas};
+  return {filas, fuera, hayComparacion, altas, actualiza, bajas, sinUnidad,
+          cambiados: filas.filter(f=>f.nombre!==f.nombreOdoo)};
 }
 
 /* Las bajas viajan en el mismo archivo, con Estado N: Bionexo las desactiva. */
@@ -435,8 +550,42 @@ function render(){
       los compradores no encuentran el producto. Lo que elijas queda guardado.</div>
     ${tablaMapa("cat")}
 
-    <h2 class="sec">Unidades de medida</h2>
+    <h2 class="sec">Unidades de venta <span class="ayuda">salen del Maestro, una por producto</span></h2>
+    <div class="nota">Cada producto lleva <b>su</b> unidad, la que tiene cargada en el Maestro
+      (unidad, caja cerrada, tira, ampolla, frasco ampolla…). Acá sólo se dice cómo se llama esa
+      unidad en Bionexo. No se generaliza por categoría.</div>
+    ${R.sinUnidad.length ? `<div class="nota aviso">
+      <b>${nf(R.sinUnidad.length)} productos no tienen unidad de venta cargada.</b>
+      Entran al archivo como «Unidades», que puede no ser lo que se vende.
+      Conviene completarlos en el <a href="../inventario/nombres.html"><b>Maestro de productos</b></a>.
+      <details style="margin-top:9px"><summary style="cursor:pointer;font-weight:700">Ver cuáles son</summary>
+        <div style="margin-top:8px;font-size:12.5px;line-height:1.7;max-height:260px;overflow:auto">
+          ${R.sinUnidad.slice(0,120).map(p=>`<div>· <b>${esc(p.default_code||"")}</b> ${esc((p.name||"").slice(0,70))}</div>`).join("")}
+          ${R.sinUnidad.length>120?`<div style="margin-top:6px;color:var(--gris2)">…y ${nf(R.sinUnidad.length-120)} más (están en el Excel)</div>`:""}
+        </div></details>
+    </div>` : `<div class="nota"><b>Todos los productos tienen su unidad de venta cargada.</b></div>`}
     ${tablaMapa("uom")}
+
+    <h2 class="sec">Nombres <span class="ayuda">cómo los va a ver el comprador</span></h2>
+    <div class="card pad">
+      <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;margin-bottom:14px">
+        <input type="checkbox" id="limpiar" ${ST.limpiarNombres===false?"":"checked"} style="width:17px;height:17px;accent-color:var(--teal);margin-top:2px">
+        <span style="font-size:13.5px;line-height:1.55;color:var(--gris)">
+          <b style="color:var(--ink)">Limpiar los nombres antes de subirlos.</b><br>
+          Saca el código interno, la ubicación de depósito, las notas entre paréntesis y el bulto
+          comercial («Caja x 100 unidades»). El bulto no es parte del producto: va en las columnas
+          Embalaje y Unidad. <b>La presentación no se toca</b> — «AMP X 10 ML» o «x 500 MTS» se quedan.
+        </span>
+      </label>
+      ${R.cambiados.length ? `
+        <p style="font-size:12.5px;color:var(--gris);margin:0 0 10px"><b>${nf(R.cambiados.length)}</b> nombres cambian. Muestra de cómo quedan:</p>
+        <div style="font-size:12.5px;line-height:1.65;max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:12px">
+          ${R.cambiados.slice(0,40).map(f=>`<div style="padding:5px 0;border-bottom:1px solid #F2F7F6">
+            <span style="color:var(--gris2);text-decoration:line-through">${esc(f.nombreOdoo.slice(0,80))}</span><br>
+            <b style="color:var(--teal-deep)">${esc(f.nombre.slice(0,80))}</b></div>`).join("")}
+        </div>`
+      : `<p style="font-size:13px;color:var(--gris);margin:0">Ningún nombre necesita limpieza.</p>`}
+    </div>
 
     <h2 class="sec">Vista previa <span class="ayuda">lo que va a tener el archivo</span></h2>
     ${tablaPrevia(filas)}
@@ -448,17 +597,53 @@ function render(){
   enganchar();
 }
 
-function tablaMapa(tipo){
-  const filas = tipo==="cat" ? ST.cats : ST.uoms;
-  const opts  = tipo==="cat" ? CATEGORIAS : UNIDADES;
-  const mapa  = tipo==="cat" ? ST.mapCat : ST.mapUom;
+/* El árbol de categorías tal como está armado en Odoo. Las familias se mapean;
+   las subcategorías dicen «igual que la familia» salvo que se les ponga otra
+   cosa — misma herencia que las reglas del motor de precios. */
+function tablaCategorias(){
+  const T = ST.catTree||{}, filas=[];
+  const bajar = (id, nivel) => {
+    const c = T[id];
+    if(!c || !c.total) return;
+    filas.push({...c, nivel});
+    c.hijos.map(h=>T[h]).filter(h=>h && h.total)
+      .sort((a,b)=>b.total-a.total)
+      .forEach(h=>bajar(h.id, nivel+1));
+  };
+  (ST.raices||[]).forEach(id=>bajar(id,0));
+  if(!filas.length) return `<div class="card pad"><p class="cargando" style="margin:0">No pude leer las categorías.</p></div>`;
+
   return `<div class="scroll"><table>
-    <thead><tr><th>${tipo==="cat"?"Familia en Odoo":"Unidad en Odoo"}</th><th class="r">Productos</th><th>Va a Bionexo como</th></tr></thead>
-    <tbody>${filas.map(f=>`<tr>
-      <td class="nm">${esc(f.nm)}</td>
-      <td class="r">${nf(f.n)}</td>
-      <td><select data-tipo="${tipo}" data-id="${f.id}">${opts.map(o=>
-        `<option value="${o.id}" ${String(mapa[f.id])===String(o.id)?"selected":""}>${o.id} · ${esc(o.t)}</option>`).join("")}</select></td>
+    <thead><tr><th>Categoría en Odoo</th><th class="r">Productos</th><th>Va a Bionexo como</th></tr></thead>
+    <tbody>${filas.map(f=>{
+      const propio = ST.mapCat[f.id];
+      const efectivo = catBionexoDe(f.id);
+      const esRaiz = f.nivel===0;
+      const nombre = esRaiz
+        ? `<b>${esc(f.nm)}</b>`
+        : `<span style="color:var(--gris2)">${"&nbsp;".repeat(f.nivel*4)}└ </span>${esc(f.nm)}`;
+      const opciones = (esRaiz ? "" : `<option value="">↑ igual que la familia (${efectivo})</option>`) +
+        CATEGORIAS.map(o=>`<option value="${o.id}" ${String(propio)===String(o.id)?"selected":""}>${o.id} · ${esc(o.t)}</option>`).join("");
+      return `<tr${esRaiz?' style="background:#F7FBFA"':''}>
+        <td class="nm" style="font-weight:${esRaiz?700:500}">${nombre}</td>
+        <td class="r">${f.total ? nf(f.total) : ""}${f.n && f.n!==f.total ? ` <span style="color:var(--gris2)">(${nf(f.n)} propios)</span>`:""}</td>
+        <td><select data-tipo="cat" data-id="${f.id}">${opciones}</select></td>
+      </tr>`;
+    }).join("")}</tbody></table></div>`;
+}
+
+function tablaMapa(tipo){
+  if(tipo==="cat") return tablaCategorias();
+  const cuenta = {};
+  ST.prods.forEach(p=>{ const m=(ST.maestro||{})[p.product_tmpl_id && p.product_tmpl_id[0]];
+    if(m && m.unidad) cuenta[m.unidad]=(cuenta[m.unidad]||0)+1; });
+  return `<div class="scroll"><table>
+    <thead><tr><th>Unidad de venta (Maestro)</th><th class="r">Productos</th><th>Se llama en Bionexo</th></tr></thead>
+    <tbody>${UNIDAD_EYG.map(u=>`<tr${cuenta[u.k]?"":' style="opacity:.5"'}>
+      <td class="nm">${esc(u.lbl)}</td>
+      <td class="r">${cuenta[u.k]?nf(cuenta[u.k]):"—"}</td>
+      <td><select data-tipo="uom" data-id="${u.k}">${UNIDADES.map(o=>
+        `<option value="${o.id}" ${String(ST.mapUom[u.k])===String(o.id)?"selected":""}>${o.id} · ${esc(o.t)}</option>`).join("")}</select></td>
     </tr>`).join("")}</tbody></table></div>`;
 }
 
@@ -498,13 +683,17 @@ function enganchar(){
   const c=document.getElementById("colchon");
   if(c) c.onchange = ()=>{ ST.colchon = Math.max(10, Math.min(100, +c.value||100)); guardar(); render(); };
   document.querySelectorAll("select[data-tipo]").forEach(s=>s.onchange=()=>{
-    (s.dataset.tipo==="cat" ? ST.mapCat : ST.mapUom)[s.dataset.id] = +s.value;
+    const mapa = s.dataset.tipo==="cat" ? ST.mapCat : ST.mapUom;
+    if(s.value==="") delete mapa[s.dataset.id];        // vuelve a heredar de la familia
+    else mapa[s.dataset.id] = +s.value;
     guardar(); render();
   });
   const g=document.getElementById("gen"); if(g) g.onclick = ()=>bajarExcel();
   const v=document.getElementById("csv"); if(v) v.onclick = ()=>bajarCsv();
   const ss=document.getElementById("bajarSS");
   if(ss) ss.onchange = ()=>{ ST.bajarSinStock = ss.checked; render(); };
+  const lm=document.getElementById("limpiar");
+  if(lm) lm.onchange = ()=>{ ST.limpiarNombres = lm.checked; guardar(); render(); };
   const fb=document.getElementById("fileBx");
   if(fb) fb.onchange = e=>leerCatalogoBionexo(e.target.files[0]);
 }
@@ -541,7 +730,10 @@ const CABECERA = ["Estado","Codigo Producto","Descripcion Producto","ID Categori
   "ID Unidad de Medida","Embalaje","Forma Farmaceutica","Sustancia","Marca ","Comentario",
   "Precio Unitario","Tasa IVA","Unitario con IVA","Referencia Proveedor","Descuento","Stock Disponible"];
 
-const aFila = f => [f.estado, f.codigo, f.nombre, f.cat, f.gtin, "", "", f.uom, "", "", "", "", "",
+/* Orden de la plantilla: Estado · Codigo · Descripcion · Categoria · GTIN · GLN ·
+   CUFE · Unidad · Embalaje · Forma Farmaceutica · Sustancia · Marca · Comentario ·
+   Precio · IVA · Con IVA · Referencia Proveedor · Descuento · Stock */
+const aFila = f => [f.estado, f.codigo, f.nombre, f.cat, f.gtin, "", "", f.uom, "", "", "", f.lab||"", "",
                     f.precio, f.iva, f.conIva, f.codigo, f.descuento, f.stock];
 
 function nombreArchivo(ext){
