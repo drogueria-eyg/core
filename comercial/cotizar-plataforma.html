@@ -155,7 +155,10 @@ function enganchar(){
    pegados sueltos: se toma el primer número largo como código y el último
    como cantidad. Mejor aceptar de más que pelear con el formato. */
 function parsearPegado(txt){
-  return String(txt||"").split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{
+  ST.pedido = "";
+  const cab = String(txt||"").match(/#\s*pedido\s*(\d{6,12})/i);
+  if(cab) ST.pedido = cab[1];
+  return String(txt||"").split(/\r?\n/).map(l=>l.trim()).filter(l=>l && !/^#/.test(l)).map(l=>{
     let p = l.split(/\s*·\s*|\t|\s*\|\s*/).map(x=>x.trim()).filter(Boolean);
     if(p.length>=3) return {cod:p[0], prod:p.slice(1,-1).join(" "), cant:parseInt(String(p[p.length-1]).replace(/\D/g,""),10)||0};
     const m = l.match(/^(\d{3,9})\s+(.+?)\s+(\d+)$/);
@@ -263,6 +266,20 @@ async function preciar(){
     (g||[]).forEach(x=>{ if(!x.product_id) return; const c=(x.product_uom_qty||0)-(x.qty_delivered||0); if(c>0.001) ST.comprometido[x.product_id[0]]=c; });
   }catch(e){}
 
+  /* La unidad de venta y el laboratorio viven en la plantilla (los edita el
+     Maestro). Se usan para llenar Marca y Presentación en Bionexo: hoy esos
+     campos se escriben a mano cada vez. */
+  try{
+    const ts = [...new Set(tmpls)];
+    const ms = await EYG.rpc("product.template","search_read",[[["id","in",ts]]],
+      {fields:["id","x_unidad","x_laboratorio"], limit:500, context:ES});
+    const m={}; (ms||[]).forEach(x=>m[x.id]={u:(x.x_unidad||"").trim(), l:(x.x_laboratorio||"").trim()});
+    ST.renglones.forEach(r=>(r.cands||[]).forEach(c=>{
+      const d = m[c.product_tmpl_id && c.product_tmpl_id[0]];
+      if(d){ c._unidad = d.u; c._lab = d.l; }
+    }));
+  }catch(e){}
+
   ST.renglones.forEach(r=>(r.cands||[]).forEach(c=>{
     const t = c.product_tmpl_id && c.product_tmpl_id[0];
     const src = (porV[c.id] && porV[c.id].length) ? porV[c.id] : (porT[t]||[]);
@@ -294,13 +311,24 @@ function render(){
     </div>
     ${R.map((r,i)=>renglon(r,i)).join("")}
 
-    <h2 class="sec">3 · Copiá a Bionexo <span class="ayuda">la oferta la cargás y la enviás vos</span></h2>
+    <h2 class="sec">3 · Llevalo a Bionexo <span class="ayuda">el formulario se llena solo; enviar lo hacés vos</span></h2>
     <div class="card pad">
-      <textarea class="salida" id="salida" readonly>${esc(textoSalida())}</textarea>
-      <div class="acciones">
-        <button class="btn" id="copiar">Copiar</button>
-        <span style="font-size:12.5px;color:var(--gris)">Pegá cada precio en su renglón del formulario de Bionexo.</span>
+      <div class="nota" style="margin-bottom:14px">
+        <b>Copiá esto, volvé al pedido en Bionexo y tocá «Llenar formulario» en el favorito.</b>
+        Se completan precio, marca y presentación de cada renglón, y se tildan los que cotizamos.
+        Los que quedaron sin resolver <b>no se tocan</b>.<br>
+        <b style="color:var(--bad)">El botón de enviar no se aprieta solo.</b> Revisás en pantalla y enviás vos.
       </div>
+      <div class="acciones" style="margin-top:0;margin-bottom:14px">
+        <button class="btn" id="copiarPaq">Copiar para llenar en Bionexo</button>
+        <span style="font-size:12.5px;color:var(--gris)">${nf(listos.length)} de ${nf(R.length)} renglones listos</span>
+      </div>
+      <details>
+        <summary style="cursor:pointer;font-size:12.5px;font-weight:700;color:var(--gris)">Ver el detalle en texto (por si preferís cargarlo a mano)</summary>
+        <textarea class="salida" id="salida" readonly style="margin-top:10px">${esc(textoSalida())}</textarea>
+        <div class="acciones"><button class="btn sec" id="copiar">Copiar el texto</button></div>
+      </details>
+      <textarea id="paquete" readonly style="position:absolute;left:-9999px;top:0">${esc(paquete())}</textarea>
     </div>`;
   document.querySelectorAll(".opt[data-r]").forEach(o=>o.onclick=()=>{
     ST.renglones[+o.dataset.r].elegido = +o.dataset.c; render();
@@ -323,6 +351,39 @@ function render(){
   });
   const c=document.getElementById("copiar");
   if(c) c.onclick=()=>{ const s=document.getElementById("salida"); s.select(); document.execCommand("copy"); toast("Copiado"); };
+  const cp=document.getElementById("copiarPaq");
+  if(cp) cp.onclick=()=>{
+    const s=document.getElementById("paquete");
+    s.style.position="static"; s.select(); document.execCommand("copy"); s.style.position="absolute";
+    toast("Copiado. Volvé al pedido en Bionexo y tocá «Llenar formulario».");
+  };
+}
+
+/* El paquete que entiende el favorito. Va con el id del pedido adentro para que
+   el favorito pueda avisar si lo estás pegando en OTRO pedido — es el error
+   fácil de cometer y el más caro: cargar precios de un pedido en otro.
+   El precio viaja con coma decimal, que es como lo muestra y lo espera Bionexo. */
+function paquete(){
+  const r = {};
+  ST.renglones.forEach(x=>{
+    const c = x.elegido>=0 ? x.cands[x.elegido] : null;
+    if(!c || !(c._precio>0) || !x.cod) return;
+    r[x.cod] = {
+      pr: String(Math.round(c._precio*10000)/10000).replace(".",","),
+      ma: marcaDe(c),
+      em: (c._unidad||"").toUpperCase(),
+      nu: c.default_code||""
+    };
+  });
+  return "BXQ1"+JSON.stringify({p:ST.pedido||"", r});
+}
+
+/* La marca que ve el comprador. En EyG el nombre termina en « - LABORATORIO»,
+   así que el laboratorio del Maestro manda y, si no está, se usa esa cola. */
+function marcaDe(c){
+  if(c._lab) return c._lab;
+  const partes = String(c.name||"").split(" - ");
+  return partes.length>1 ? partes[partes.length-1].trim() : "";
 }
 
 function renglon(r,i){

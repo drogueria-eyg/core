@@ -261,7 +261,9 @@
       var cant = entre(b, "Cantidad: ", "Programación").replace(/\./g, "");
       return cod + " · " + prod + " · " + (parseInt(cant, 10) || 0);
     });
-    var salida = lineas.join("\n");
+    // El id del pedido viaja adelante: así el Core puede avisar después si se
+    // está por llenar OTRO pedido con estos precios.
+    var salida = "# pedido " + idPedido() + "\n" + lineas.join("\n");
     var ta = document.createElement("textarea");
     ta.value = salida;
     ta.style.cssText = "position:fixed;left:-9999px;top:0";
@@ -269,6 +271,88 @@
     try { document.execCommand("copy"); nota("Copiados " + lineas.length + " renglones. Pegalos en el Core → Cotizar pedido.", "ok"); }
     catch (e) { nota("No pude copiar solo. Copiá esto a mano: " + salida.slice(0, 120), "err"); }
     ta.remove();
+  }
+
+  function idPedido() {
+    var m = location.search.match(/[?&]id=(\d+)/);
+    return m ? m[1] : "";
+  }
+
+  /* ============ LLENAR EL FORMULARIO ============
+     Toma el paquete que arma el Core y completa precio, marca y presentación
+     de cada renglón, tildando los que se cotizan. Los renglones que el Core no
+     resolvió NO se tocan: quedan como estaban.
+
+     LO QUE NO HACE, A PROPÓSITO: no aprieta enviar. Enviar una oferta es
+     firmar un compromiso con un hospital — eso lo mira y lo decide una persona.
+
+     Cada campo se llena disparando los eventos que la página espera (input y
+     change): estos formularios viejos calculan totales al vuelo y si el valor
+     se mete «a la fuerza» quedan mostrando una cosa y enviando otra. */
+  function llenarFormulario(texto) {
+    var t = String(texto || "").trim();
+    var i = t.indexOf("BXQ1");
+    if (i < 0) { nota("Eso no es lo que copia el Core. Volvé a «Cotizar pedido» y usá «Copiar para llenar en Bionexo».", "err"); return; }
+    var paq;
+    try { paq = JSON.parse(t.slice(i + 4)); } catch (e) { nota("El texto copiado está incompleto. Copialo de nuevo.", "err"); return; }
+
+    var aqui = idPedido();
+    if (paq.p && aqui && String(paq.p) !== String(aqui)) {
+      if (!confirm("Ojo: esos precios se prepararon para el pedido " + paq.p + " y estás en el " + aqui + ".\n\n¿Los cargo igual?")) {
+        nota("No llené nada. Abrí el pedido " + paq.p + " o preparalo de nuevo.", "err"); return;
+      }
+    }
+
+    var puestos = 0, faltantes = [], n = 0;
+    while (true) {
+      n++;
+      var cod = document.querySelector('input[name="codigo' + n + '"]');
+      if (!cod) break;
+      var datos = paq.r[String(cod.value).trim()];
+      if (!datos) { faltantes.push(String(cod.value).trim()); continue; }
+      poner('cotiz' + n, datos.pr);
+      poner('marca' + n, datos.ma);
+      poner('embalagem' + n, datos.em);
+      var chk = document.querySelector('input[name="selec' + n + '"]');
+      if (chk && chk.type === "checkbox" && !chk.checked) { chk.click(); }
+      puestos++;
+    }
+    if (!puestos) { nota("No pude emparejar ningún renglón. ¿Es el pedido correcto?", "err"); return; }
+    nota("Listos " + puestos + " renglones" + (faltantes.length ? " · " + faltantes.length + " quedaron vacíos (sin resolver)" : "") +
+         ". REVISÁ en pantalla y enviá vos.", "ok");
+  }
+
+  function poner(nombre, valor) {
+    var el = document.querySelector('[name="' + nombre + '"]');
+    if (!el || valor == null || valor === "") return;
+    el.value = valor;
+    try {
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
+    } catch (e) {}
+  }
+
+  /* Se pide pegar a mano en vez de leer el portapapeles solo: leerlo pide un
+     permiso que el navegador no siempre da, y fallar en silencio acá sería peor
+     que un paso de más. */
+  function pedirPaquete() {
+    var caja = document.createElement("div");
+    caja.style.cssText = "position:fixed;inset:0;background:rgba(6,65,62,.35);z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:20px";
+    caja.innerHTML =
+      '<div style="background:#fff;border-radius:14px;padding:20px;max-width:460px;width:100%;font-family:system-ui,sans-serif">' +
+        '<b style="font-size:15px;color:#0E1F1D">Pegá lo que copiaste del Core</b>' +
+        '<p style="font-size:12.5px;color:#5F716E;line-height:1.5;margin:8px 0 10px">Hacé clic en el recuadro y apretá Ctrl+V.</p>' +
+        '<textarea id="bx-paste" style="width:100%;height:110px;border:1px solid #DCE8E6;border-radius:9px;padding:10px;font-family:ui-monospace,monospace;font-size:11.5px" placeholder="BXQ1{...}"></textarea>' +
+        '<div style="display:flex;gap:9px;margin-top:12px">' +
+          '<button id="bx-ok" style="flex:1;background:#048782;color:#fff;border:0;border-radius:9px;padding:11px;font:inherit;font-weight:700;cursor:pointer">Llenar</button>' +
+          '<button id="bx-no" style="background:#EEF2F1;color:#5F716E;border:0;border-radius:9px;padding:11px 16px;font:inherit;font-weight:700;cursor:pointer">Cancelar</button>' +
+        "</div></div>";
+    document.body.appendChild(caja);
+    var ta = caja.querySelector("#bx-paste");
+    ta.focus();
+    caja.querySelector("#bx-no").onclick = function () { caja.remove(); };
+    caja.querySelector("#bx-ok").onclick = function () { var v = ta.value; caja.remove(); llenarFormulario(v); };
   }
 
   function arrancar() {
@@ -323,7 +407,8 @@
       "</div>" +
       '<div style="padding:10px 14px;display:flex;gap:8px">' + b +
         (/v_rpdc/.test(location.pathname)
-          ? '<button id="bx-cot" style="flex:1;background:#fff;color:#04635F;border:1px solid #DCE8E6;border-radius:9px;padding:10px;font:inherit;font-weight:700;cursor:pointer">Copiar renglones</button>'
+          ? '<button id="bx-cot" style="flex:1;background:#fff;color:#04635F;border:1px solid #DCE8E6;border-radius:9px;padding:10px;font:inherit;font-weight:700;cursor:pointer">Copiar renglones</button>' +
+            '<button id="bx-fill" style="flex:1;background:#04635F;color:#fff;border:0;border-radius:9px;padding:10px;font:inherit;font-weight:700;cursor:pointer">Llenar formulario</button>'
           : "") +
       "</div>" +
       '<div style="padding:0 14px 12px;overflow:auto;flex:1">' +
@@ -339,6 +424,8 @@
     var g = document.getElementById("bx-go"), s = document.getElementById("bx-stop"), x = document.getElementById("bx-x");
     var cot = document.getElementById("bx-cot");
     if (cot) cot.onclick = copiarRenglones;
+    var fill = document.getElementById("bx-fill");
+    if (fill) fill.onclick = pedirPaquete;
     if (g) g.onclick = arrancar;
     if (s) s.onclick = function () { nota("Frenado a mano. Lo leído está guardado."); parar(); };
     if (x) x.onclick = function () { parar(); caja.remove(); window.__BX_CORRIENDO = false; };
