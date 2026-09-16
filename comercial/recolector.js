@@ -363,13 +363,16 @@
         if (!ST.activo) break;
         var m = mios[i];
         try {
-          var d = await window.__detalle(m.id);
+          var htmlDet = await traer("/jsp/vender/v_rpdc.jsp?nivel=1&id=" + m.id);
+          if (esLogin(htmlDet)) throw new Error("SESION");
+          var d = parseDetalle(htmlDet);
           await ingesta({ op: "detalle", id: m.id, renglones: d });
           ST.hechos++;
           nota("#" + m.id + " · " + d.length + " renglones · " + m.titulo.slice(0, 32), "ok");
         } catch (e) {
           if (String(e.message) === "SESION") throw e;
-          nota("No pude leer #" + m.id, "err");
+          // el motivo va SIEMPRE: un «no pude» a secas obliga a adivinar
+          nota("No pude leer #" + m.id + ": " + String(e && e.message || e).slice(0, 70), "err");
         }
         await dormir(jitter(RITMO.pausa));
       }
