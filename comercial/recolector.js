@@ -248,6 +248,29 @@
       });
   }
 
+  /* Copiar los renglones del pedido que se está mirando, para pegarlos en
+     «Cotizar pedido de plataforma» del Core. Es solo lectura de la pantalla
+     actual: no consulta nada, así que no molesta a Bionexo. */
+  function copiarRenglones() {
+    var txt = (document.body.textContent || "").replace(/\s+/g, " ");
+    var partes = txt.split("Código: ").slice(1);
+    if (!partes.length) { nota("Esta pantalla no es un pedido. Abrí una cotización y probá de nuevo.", "err"); return; }
+    var lineas = partes.map(function (b) {
+      var cod = (b.match(/^(\d+)/) || ["", ""])[1];
+      var prod = entre(b, "Producto: ", "Marca(s)");
+      var cant = entre(b, "Cantidad: ", "Programación").replace(/\./g, "");
+      return cod + " · " + prod + " · " + (parseInt(cant, 10) || 0);
+    });
+    var salida = lineas.join("\n");
+    var ta = document.createElement("textarea");
+    ta.value = salida;
+    ta.style.cssText = "position:fixed;left:-9999px;top:0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); nota("Copiados " + lineas.length + " renglones. Pegalos en el Core → Cotizar pedido.", "ok"); }
+    catch (e) { nota("No pude copiar solo. Copiá esto a mano: " + salida.slice(0, 120), "err"); }
+    ta.remove();
+  }
+
   function arrancar() {
     if (!EN_BIONEXO) {
       nota("Estás en " + location.hostname + ", no en Bionexo. Abrí bionexo-ar.bionexo.com, entrá con tu usuario y recién ahí tocá el favorito.", "err");
@@ -298,7 +321,11 @@
         '<div style="flex:1"><div style="font-size:10px;letter-spacing:.6px;color:#8A9A97;font-weight:800">RITMO</div>' +
           '<div style="font-size:21px;font-weight:800">' + (RITMO.pausa / 1000).toFixed(0) + 's</div></div>' +
       "</div>" +
-      '<div style="padding:10px 14px;display:flex;gap:8px">' + b + "</div>" +
+      '<div style="padding:10px 14px;display:flex;gap:8px">' + b +
+        (/v_rpdc/.test(location.pathname)
+          ? '<button id="bx-cot" style="flex:1;background:#fff;color:#04635F;border:1px solid #DCE8E6;border-radius:9px;padding:10px;font:inherit;font-weight:700;cursor:pointer">Copiar renglones</button>'
+          : "") +
+      "</div>" +
       '<div style="padding:0 14px 12px;overflow:auto;flex:1">' +
         ST.log.map(function (l) {
           var c = l.tipo === "err" ? "#B0413E" : l.tipo === "ok" ? "#1E7D46" : l.tipo === "warn" ? "#B7791F" : "#5F716E";
@@ -310,6 +337,8 @@
           : '<div style="color:#B0413E;padding:14px 0;line-height:1.5"><b>Estás en ' + location.hostname + ', no en Bionexo.</b><br>Este botón se toca <b>estando dentro de bionexo-ar.bionexo.com</b>, con la sesión abierta. Abrí Bionexo en otra pestaña y tocalo ahí.</div>')) +
       "</div>";
     var g = document.getElementById("bx-go"), s = document.getElementById("bx-stop"), x = document.getElementById("bx-x");
+    var cot = document.getElementById("bx-cot");
+    if (cot) cot.onclick = copiarRenglones;
     if (g) g.onclick = arrancar;
     if (s) s.onclick = function () { nota("Frenado a mano. Lo leído está guardado."); parar(); };
     if (x) x.onclick = function () { parar(); caja.remove(); window.__BX_CORRIENDO = false; };
