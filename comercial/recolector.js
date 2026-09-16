@@ -402,6 +402,39 @@
         }
         await dormir(jitter(RITMO.pausa));
       }
+      /* La cartelera sólo muestra las últimas 24 horas. Un pedido publicado
+         anteayer sigue abierto (vence más adelante) pero ya no aparece ahí: si
+         su detalle no se alcanzó a leer, queda para siempre sin renglones y en
+         el Core se ve vacío. Por eso, al final, se completan los que quedaron a
+         medias. Pasó con el 18780542. */
+      if (ST.activo) {
+        var pendientes = [];
+        try {
+          var rp = await ingesta({ op: "pendientes", limite: 40 });
+          pendientes = (rp.pendientes || []).filter(function (p) {
+            return !mios.some(function (m) { return String(m.id) === String(p.id); });
+          });
+        } catch (e) {}
+        if (pendientes.length) {
+          nota("Completo " + pendientes.length + " pedidos que habían quedado sin detalle…");
+          for (var k = 0; k < pendientes.length; k++) {
+            if (!ST.activo) break;
+            var p = pendientes[k];
+            try {
+              var h2 = await traer("/jsp/vender/v_rpdc.jsp?nivel=1&id=" + p.id);
+              if (esLogin(h2)) throw new Error("SESION");
+              var d2 = parseDetalle(h2);
+              await ingesta({ op: "detalle", id: p.id, renglones: d2 });
+              ST.hechos++;
+              nota("#" + p.id + " · " + d2.length + " renglones (atrasado)", "ok");
+            } catch (e) {
+              if (String(e.message) === "SESION") throw e;
+              nota("No pude leer #" + p.id + ": " + String(e && e.message || e).slice(0, 60), "err");
+            }
+            await dormir(jitter(RITMO.pausa));
+          }
+        }
+      }
       nota("Listo. Abrí «Plataformas → Abiertos» en el Core para verlos.", "ok");
     } catch (e) {
       if(String(e.message) === "SESION"){ nota("Se cerró la sesión de Bionexo.", "err"); reabrirSesion(); } else nota("Error: " + e.message, "err");
