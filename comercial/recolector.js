@@ -285,6 +285,22 @@
      Como son pocos, se pueden traer con el detalle completo sin forzar nada. */
   var PROVINCIAS = ["SFE"];   // si algún día se vende en otra, se agrega acá
 
+  /* Bionexo escribe la fecha de DOS maneras según la pantalla: la cartelera usa
+     «16/09/2026 11:00» (año de 4 dígitos) y Transacciones «16/09/26 10:00» (de
+     2). El servidor espera la corta, y al mandarle la larga leía «20» como año
+     y «26» como hora → «2020-09-16T26:00:00», que Postgres rechaza entero y
+     tira TODO el lote. Se normaliza acá antes de mandar. */
+  function fechaCorta(v) {
+    var m = String(v || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2}))?/);
+    if (!m) return "";
+    var dd = ("0" + m[1]).slice(-2), mm = ("0" + m[2]).slice(-2);
+    var aa = m[3].length === 4 ? m[3].slice(2) : ("0" + m[3]).slice(-2);
+    var hh = m[4] != null ? ("0" + m[4]).slice(-2) : "00";
+    var mi = m[5] != null ? m[5] : "00";
+    if (+hh > 23 || +mi > 59) { hh = "00"; mi = "00"; }   // antes que una fecha imposible, sin hora
+    return dd + "/" + mm + "/" + aa + " " + hh + ":" + mi;
+  }
+
   /* ¿POR QUÉ NO HAY UN BOTÓN EN EL CORE QUE HAGA ESTO?
      Porque el navegador no deja que un sitio (drogueriaeyg.com.ar) lea las
      páginas de otro (bionexo-ar.bionexo.com), ni le preste la sesión abierta.
@@ -340,7 +356,7 @@
       // cabeceras primero: si algo se corta, al menos la lista queda
       await ingesta({ op: "indice", filas: mios.map(function (m) {
         return { id: m.id, cliente: m.cliente + " · " + m.ciudad, titulo: m.titulo, tipo: m.tipo,
-                 vence: m.vence, estado: "Abierta", renglones: 0 };
+                 vence: fechaCorta(m.vence), estado: "Abierta", renglones: 0 };
       })});
 
       for (var i = 0; i < mios.length; i++) {
