@@ -130,6 +130,28 @@
   .ofbitem{padding:8px 11px;font-size:13px;cursor:pointer;border-top:1px solid var(--line)}
   .ofbitem:hover{background:#f2faf8}
   .oftgtsel{font-weight:700;color:var(--teal-deep);display:flex;align-items:center;gap:10px;padding:8px 0}
+  /* ---- tabla del armador de combos ---- */
+  .cbt{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
+  .cbt th{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--gris2);font-weight:800;text-align:right;padding:5px 7px;border-bottom:1px solid var(--line)}
+  .cbt th.l{text-align:left}
+  .cbt td{padding:6px 7px;border-bottom:1px solid #eef3f2;text-align:right;font-variant-numeric:tabular-nums}
+  .cbt td.l{text-align:left}
+  .cbt input{width:78px;border:1px solid var(--line);border-radius:7px;padding:5px 7px;font-family:inherit;font-size:12.5px;text-align:right}
+  .cbt input.q{width:64px}
+  .cbt .nom{font-weight:700;line-height:1.25}
+  .cbt .sku{font-size:10.5px;color:var(--gris2);font-weight:600}
+  .cbt .del{cursor:pointer;color:var(--gris2);font-weight:800;padding:0 4px}
+  .cbt .del:hover{color:var(--bad)}
+  .cbt .mrg{font-weight:800}
+  .cbt .mrg.ok{color:var(--ok)} .cbt .mrg.low{color:var(--gold)} .cbt .mrg.neg{color:var(--bad)}
+  .cbt .caro{color:var(--bad);font-weight:700}
+  .cbtot{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-top:10px;padding:11px 13px;background:var(--agua);border-radius:10px}
+  .cbtot .b{display:flex;flex-direction:column;min-width:96px}
+  .cbtot .b .k{font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--gris);font-weight:800}
+  .cbtot .b .v{font-size:15px;font-weight:800;font-variant-numeric:tabular-nums}
+  .cbavisos{margin-top:8px;display:flex;flex-direction:column;gap:5px}
+  .cbav{font-size:12px;padding:7px 11px;border-radius:8px;background:#FFF4F2;border:1px solid #F0C9C4;color:#b0322f;font-weight:600}
+  .cbav.warn{background:#FFF8EC;border-color:#F0DCB4;color:#8a6212}
   .rentbox{margin:2px 0 4px;padding:10px 13px;border-radius:10px;font-size:13px;background:#f3f8f7;border:1px solid var(--line);color:var(--ink);line-height:1.5}
   .rentbox.ok{background:#e7f6ec;border-color:#bfe6cc} .rentbox.low{background:#fdf4e3;border-color:#f0dcae} .rentbox.neg{background:#fbeceb;border-color:#f2c9c6}
   .rentbox b{font-weight:800} .rentbox .sub2{color:var(--gris2);font-size:11.5px;font-weight:600}
@@ -615,8 +637,9 @@ function filaOpoStock(o,arch){
 
 /* --- oferta o combo del panel de comerciales --- */
 function filaOferta(o){
-  const its=(o.items||[]), n=its.length, ag=!!o._agotada, m=mrgOferta(o);
-  const chips=[o.tipo===`combo`?`<span class="chip c-teal">🎁 combo · ${n} prod.</span>`:`<span class="chip c-teal">🏷️ oferta</span>`,
+  const its=(o.items||[]), lin=(o.lineas||[]), ag=!!o._agotada, m=mrgOferta(o);
+  const n=lin.length||its.length;
+  const chips=[o.tipo===`combo`?`<span class="chip c-teal">🎁 combo · ${n} prod.${o.codigo?" · "+esc(o.codigo):""}</span>`:`<span class="chip c-teal">🏷️ oferta</span>`,
     ag?`<span class="chip c-bad">⛔ agotada</span>`:"", o._venc?`<span class="chip c-gris">vencida</span>`:"",
     m!=null&&m<0?`<span class="chip c-bad">pierde plata</span>`:""].filter(Boolean).join(" ");
   const cols=(o.precioAntes?col("antes",money(o.precioAntes),"tach"):"")+col("precio",money(o.precio))
@@ -624,7 +647,9 @@ function filaOferta(o){
   const acts=`<button class="btn ghost sm" onclick="rgEditarCombo('${o.id}')">Editar</button>`
     +`<button class="btn warn sm" onclick="eliminarOferta('${o.id}')">Eliminar</button>`;
   const nom=esc(o.titulo||its.map(i=>i.nombre).join(" + "));
-  const meta=(o.tipo===`combo`?"":catBadge(o._cat))+chips+(n?` <span>${esc(its.map(i=>i.nombre).join(" + "))}</span>`:"");
+  // en los combos nuevos se listan los renglones con su cantidad; en los viejos, los productos sueltos
+  const detalle = lin.length ? lin.map(l=>l.qty+" × "+l.nombre).join(" · ") : its.map(i=>i.nombre).join(" + ");
+  const meta=(o.tipo===`combo`?"":catBadge(o._cat))+chips+(n?` <span>${esc(detalle)}</span>`:"");
   return fila("of"+(m!=null&&m<0?" mala":"")+(ag||o._venc?" gris":""), nom, meta, cols, acts);
 }
 
@@ -826,48 +851,186 @@ function rgFormHTML(){
   </div>`;
 }
 /* sub-formulario de combo (varios productos, precio total → eyg.ofertas / panel del comercial) */
+/* ===================== ARMADOR DE COMBOS =====================
+   Un combo acá es un PRODUCTO de verdad: se crea en Odoo como KIT (mrp.bom tipo phantom).
+   Al venderse se explota solo y descuenta el stock de cada componente, y Odoo le calcula el
+   stock como "cuántos combos se pueden armar" (el mínimo entre los componentes) — por eso
+   aparece en el catálogo de Cargar venta como cualquier otro producto.
+   Vive en la categoría COMBOS, que está AFUERA de las familias del motor de precios: el precio
+   lo fija esta pantalla y el motor no se lo toca.
+   EL DESCUENTO se mide contra el precio de lista DEL TRAMO QUE CORRESPONDE A LA CANTIDAD, no
+   contra el de una unidad suelta: así el % que se muestra es el descuento REAL contra lo que la
+   farmacia pagaría igual comprando esa cantidad. */
+const COMBO_CAT = 447;        // ALL / COMBOS
+const COMBO_PREFIJO = "CB";   // los códigos van CB0001, CB0002…
+
+function rgLineas(){ return (rgDraft && rgDraft.lineas) || []; }
+/* precio de lista que le toca a esa cantidad: el tramo más alto que no la supera */
+function rgTramo(l){
+  const t=(l.tramos||[]).filter(x=>x.q<=(l.qty||1));
+  return t.length ? t[t.length-1].p : (((l.tramos||[])[0]||{}).p || 0);
+}
+function rgSugerido(l){
+  const base=rgTramo(l), d=(rgDraft.desc||0)/100;
+  return base>0 ? Math.round(base*(1-d)) : 0;
+}
+function rgTotales(){
+  const ls=rgLineas();
+  let combo=0, lista=0, costo=0, listo=ls.length>0;
+  ls.forEach(l=>{
+    const q=l.qty||0, p=l.precio||0;
+    if(!(q>0)||!(p>0)) listo=false;
+    combo += q*p; lista += q*rgTramo(l); costo += q*(l.costoEf||0);
+  });
+  return {combo, lista, costo, listo, n:ls.length};
+}
+/* cuántos combos se pueden armar con el stock de hoy (lo mismo que después calcula Odoo) */
+function rgArmables(){
+  const ls=rgLineas(); if(!ls.length) return "—";
+  let m=null;
+  for(const l of ls){ if(l.stock==null||!(l.qty>0)) return "…"; const k=Math.floor(l.stock/l.qty); m=(m==null)?k:Math.min(m,k); }
+  return m==null?"—":String(m);
+}
+function rgAvisosHTML(){
+  const ls=rgLineas(), av=[];
+  const imp=[...new Set(ls.filter(l=>l.exento!=null).map(l=>l.exento?"exento":"iva"))];
+  if(imp.length>1) av.push(["mal","El combo mezcla productos <b>exentos</b> con productos <b>al 21%</b>. Un kit factura con un solo impuesto, así que saldría mal: hay que separarlo en dos combos."]);
+  ls.forEach(l=>{
+    const p=l.precio||0, c=l.costoEf||0, t=rgTramo(l);
+    if(p>0 && c>0 && p<c) av.push(["mal","<b>"+esc(l.nombre||"")+"</b> queda por <b>debajo del costo</b>: "+money(p)+" contra "+money(c)+"."]);
+    else if(p>0 && t>0 && p>t) av.push(["warn","<b>"+esc(l.nombre||"")+"</b> sale <b>más caro que la lista</b> a esa cantidad: "+money(p)+" contra "+money(t)+"."]);
+    if(l.stock!=null && l.qty>0 && l.stock<l.qty) av.push(["warn","<b>"+esc(l.nombre||"")+"</b>: no alcanza el stock ni para un combo ("+l.stock+" contra "+l.qty+")."]);
+  });
+  if(!av.length) return "";
+  return '<div class="cbavisos">'+av.map(a=>'<div class="cbav '+(a[0]==="warn"?"warn":"")+'">'+(a[0]==="warn"?"⚠️ ":"⛔ ")+a[1]+'</div>').join("")+'</div>';
+}
 function rgComboFormHTML(){
-  const d=rgDraft;
-  const chosen=(d.items||[]).map(i=>`<span>${esc(i.nombre)} <b class="x" onclick="rgQuitarItem(${i.id})">✕</b></span>`).join("");
-  const results=(rgBusq.length)?`<div class="ofbusq">${rgBusq.filter(r=>r.k==='p').map(r=>`<div class="ofbitem" onclick="rgAddCombo(${r.id},'${esc((r.sku||'')).replace(/'/g,'')}','${esc((r.name||'').replace(/'/g,''))}')">🔖 ${esc(r.name)}${r.sku?(" · "+esc(r.sku)):""}</div>`).join("")}</div>`:"";
+  const d=rgDraft, ls=rgLineas();
+  const results=(rgBusq.length)?`<div class="ofbusq">${rgBusq.filter(r=>r.k==="p").map(r=>`<div class="ofbitem" onclick="rgAddCombo(${r.id}, \'${esc((r.sku||"")).replace(/'/g,"")}\', \'${esc((r.name||"").replace(/'/g,""))}\')">🔖 ${esc(r.name)}${r.sku?(" · "+esc(r.sku)):""}</div>`).join("")}</div>`:"";
+  const filas = ls.map(l=>{
+    const q=l.qty||0, tramo=rgTramo(l), p=l.precio||0;
+    const sub=q*p, costo=l.costoEf||0;
+    const mrg = p>0 ? Math.round((1-costo/p)*100) : null;
+    const cls = mrg==null?"":(mrg<0?"neg":mrg<15?"low":"ok");
+    const caro = (tramo>0 && p>tramo);
+    const off = (tramo>0 && p<tramo) ? ("−"+Math.round((1-p/tramo)*100)+"%") : (caro?"más caro":"—");
+    return `<tr>
+      <td class="l"><div class="nom">${esc(l.nombre||"")}</div><div class="sku">${esc(l.sku||"")} · stock ${l.stock!=null?l.stock:"…"}${l.exento===false?" · vende con IVA":""}</div></td>
+      <td><input class="q" type="number" min="1" step="1" value="${q||""}" onchange="rgSetQty(${l.id},this.value)"></td>
+      <td>${tramo?money(tramo):"…"}</td>
+      <td><input type="number" min="0" step="0.01" value="${p||""}" onchange="rgSetPrecio(${l.id},this.value)"></td>
+      <td class="${caro?"caro":""}">${off}</td>
+      <td>${sub?money(sub):"—"}</td>
+      <td class="mrg ${cls}">${mrg==null?"—":(mrg+"%")}</td>
+      <td><span class="del" onclick="rgQuitarItem(${l.id})">✕</span></td>
+    </tr>`;
+  }).join("");
+  const T=rgTotales();
+  const ahorro = T.lista>0 ? Math.round((1-T.combo/T.lista)*100) : 0;
+  const mrgT = T.combo>0 ? Math.round((1-T.costo/T.combo)*100) : null;
+  const tabla = ls.length ? `<table class="cbt">
+      <tr><th class="l">Producto</th><th>Cant.</th><th>Precio de lista</th><th>Precio del combo</th><th>Dif.</th><th>Subtotal</th><th>Margen</th><th></th></tr>
+      ${filas}</table>
+    <div class="cbtot">
+      <div class="b"><span class="k">Precio del combo</span><span class="v">${money(T.combo)}</span></div>
+      <div class="b"><span class="k">Comprado por lista</span><span class="v" style="color:var(--gris)">${money(T.lista)}</span></div>
+      <div class="b"><span class="k">Ahorro real</span><span class="v" style="color:${ahorro>0?"var(--ok)":"var(--bad)"}">${ahorro>0?("−"+ahorro+"%"):(ahorro<0?("+"+(-ahorro)+"% más caro"):"—")}</span></div>
+      <div class="b"><span class="k">Costo</span><span class="v" style="color:var(--gris)">${money(T.costo)}</span></div>
+      <div class="b"><span class="k">Margen del combo</span><span class="v" style="color:${mrgT==null?"var(--gris)":mrgT<0?"var(--bad)":mrgT<15?"var(--gold)":"var(--ok)"}">${mrgT==null?"—":(mrgT+"%")}</span></div>
+      <div class="b"><span class="k">Se pueden armar</span><span class="v">${rgArmables()}</span></div>
+    </div>${rgAvisosHTML()}` : '<div class="hint2" style="margin-top:8px">Buscá productos arriba y poné la cantidad de cada uno.</div>';
   return `
-    <div class="fld2" style="margin-bottom:10px"><label>Título del combo</label><input type="text" id="rg-tit" value="${esc(d.titulo||'')}" placeholder="Ej: Combo primeros auxilios" oninput="rgDraft.titulo=this.value"></div>
-    <div class="fld2" style="margin-bottom:10px"><label>Productos del combo</label>
+    <div class="grid4" style="margin-bottom:10px">
+      <div class="fld2" style="grid-column:span 2"><label>Nombre del combo</label><input type="text" id="rg-tit" value="${esc(d.titulo||"")}" placeholder="Ej: Combo analgésicos" oninput="rgDraft.titulo=this.value"></div>
+      <div class="fld2"><label>Código</label><input type="text" id="rg-cod" value="${esc(d.codigo||"")}" placeholder="CB0001" oninput="rgDraft.codigo=this.value.toUpperCase()"><div class="hint2">se propone solo</div></div>
+      <div class="fld2"><label>Descuento general</label><div class="inpu"><input type="number" id="rg-desc" min="0" max="95" step="1" value="${d.desc||""}" onchange="rgDescGlobal(this.value)"><span class="suf">%</span></div><div class="hint2">sobre el precio de lista</div></div>
+    </div>
+    <div class="fld2" style="margin-bottom:6px"><label>Productos del combo</label>
       <input type="text" id="rg-cbusq" placeholder="Buscar por nombre o SKU…" value="${esc(rgBusqQ)}" oninput="rgBuscar(this.value)" autocomplete="off">${results}
-      <div class="chosen" style="margin-top:8px">${chosen||'<span style="background:none;color:var(--gris2)">Ninguno todavía</span>'}</div>
     </div>
-    <div class="grid4">
-      <div class="fld2"><label>Precio del combo</label><div class="inpu"><input type="number" id="rg-precio" step="0.01" value="${d.precio||''}" oninput="rgDraft.precio=parseFloat(this.value)||0;rgComboMargen()"><span class="suf">$</span></div><div class="hint2">precio total del combo</div></div>
-      <div class="fld2"><label>Precio de lista (antes)</label><div class="inpu"><input type="number" id="rg-antes" step="0.01" value="${d.precioAntes||''}" oninput="rgDraft.precioAntes=parseFloat(this.value)||0"><span class="suf">$</span></div><div class="hint2">opcional · para el tachado</div></div>
-      <div class="fld2"><label>Vigencia hasta</label><input type="date" id="rg-hasta" value="${esc(d.hasta||'')}"><div class="hint2">vacío = sin vencimiento</div></div>
-      <div class="fld2"><label>Stock a ofertar</label><input type="number" id="rg-stock" min="0" value="${d.stock||''}"><div class="hint2">informativo</div></div>
+    ${tabla}
+    <div class="grid4" style="margin-top:12px">
+      <div class="fld2"><label>Vigencia hasta</label><input type="date" id="rg-hasta" value="${esc(d.hasta||"")}"><div class="hint2">vacío = sin vencimiento</div></div>
+      <div class="fld2" style="grid-column:span 3"><label>Nota (opcional)</label><input type="text" id="rg-nota" value="${esc(d.nota||"")}" placeholder="Condiciones, aclaraciones…" oninput="rgDraft.nota=this.value"></div>
     </div>
-    <div class="fld2" style="margin-top:4px"><label>Margen del combo en vivo</label><div id="rg-cmargen" class="rentbox">Elegí productos y precio…</div><div class="hint2">suma de costos de los productos (neto, sin IVA)</div></div>
-    <div class="fld2" style="margin-top:8px"><label>Nota (opcional)</label><textarea id="rg-nota" rows="2" placeholder="Condiciones, aclaraciones…" oninput="rgDraft.nota=this.value" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13.5px">${esc(d.nota||'')}</textarea></div>
-    <div class="acts2"><button class="cancel" onclick="rgDraft=null;render()">Cancelar</button><button class="ok" onclick="rgGuardarCombo()">Guardar combo</button></div>`;
+    <div class="acts2"><button class="cancel" onclick="rgDraft=null;render()">Cancelar</button><button class="ok" onclick="rgGuardarCombo()">${d._tmplOdoo?"Guardar cambios":"Crear el combo en Odoo"}</button></div>`;
 }
-window.rgSetClase=c=>{ if(!rgDraft) return; rgDraft.clase=c; if(c==='combo'){ rgDraft.items=rgDraft.items||[]; rgDraft.tipo='combo'; } else { rgDraft.tipo=null; rgDraft.target=null; rgDraft.targetName=""; } rgBusq=[];rgBusqQ=""; render(); };
-window.rgAddCombo=(id,sku,nombre)=>{ if(!rgDraft.items) rgDraft.items=[]; if(!rgDraft.items.some(i=>i.id===id)) rgDraft.items.push({id,sku,nombre}); rgBusq=[];rgBusqQ=""; render(); rgCargarComboCosto(); };
-window.rgQuitarItem=id=>{ rgDraft.items=(rgDraft.items||[]).filter(i=>i.id!==id); render(); rgCargarComboCosto(); };
-async function rgCargarComboCosto(){
-  const ids=(rgDraft.items||[]).map(i=>i.id);
-  if(!ids.length){ rgDraft._costoCombo=null; rgComboMargen(); return; }
-  try{ const rows=await EYG.rpc("product.product","read",[ids,["standard_price"]],LANG); rgDraft._costoCombo=rows.reduce((a,r)=>a+(r.standard_price||0),0); }
-  catch(e){ rgDraft._costoCombo=null; }
-  rgComboMargen();
+window.rgSetClase=async c=>{ if(!rgDraft) return; rgDraft.clase=c;
+  if(c==='combo'){ rgDraft.lineas=rgDraft.lineas||[]; rgDraft.tipo='combo'; if(!rgDraft.codigo){ rgDraft.codigo=await rgProximoCodigo(); } }
+  else { rgDraft.tipo=null; rgDraft.target=null; rgDraft.targetName=""; }
+  rgBusq=[];rgBusqQ=""; render(); };
+window.rgAddCombo=(id,sku,nombre)=>{
+  if(!rgDraft.lineas) rgDraft.lineas=[];
+  if(!rgDraft.lineas.some(l=>l.id===id)) rgDraft.lineas.push({id,sku,nombre,qty:1,precio:0,tramos:[],stock:null,costoEf:0,exento:null,manual:false});
+  rgBusq=[];rgBusqQ=""; render(); rgCargarDatosCombo();
+};
+window.rgQuitarItem=id=>{ rgDraft.lineas=rgLineas().filter(l=>l.id!==id); render(); };
+window.rgSetQty=(id,v)=>{
+  const l=rgLineas().find(x=>x.id===id); if(!l) return;
+  l.qty=Math.max(1, Math.round(parseFloat(v)||0));
+  if(!l.manual) l.precio=rgSugerido(l);   // cambia la cantidad -> cambia el tramo -> cambia el sugerido
+  render();
+};
+window.rgSetPrecio=(id,v)=>{
+  const l=rgLineas().find(x=>x.id===id); if(!l) return;
+  l.precio=Math.round((parseFloat(v)||0)*100)/100; l.manual=true;   // lo puso a mano: el descuento general no lo pisa solo
+  render();
+};
+window.rgDescGlobal=v=>{
+  rgDraft.desc=Math.min(95, Math.max(0, Math.round(parseFloat(v)||0)));
+  rgLineas().forEach(l=>{ l.precio=rgSugerido(l); l.manual=false; });   // el descuento general reescribe TODAS las líneas
+  render();
+};
+/* trae de Odoo lo que necesita cada línea: escalera de la lista Farmacias, costo efectivo,
+   impuesto de venta y stock. El costo sale de la MISMA regla que el motor (EYG.costoEfectivo). */
+async function rgCargarDatosCombo(){
+  const ls=rgLineas(); const ids=ls.map(l=>l.id);
+  if(!ids.length){ render(); return; }
+  try{
+    const [prods, tasas] = await Promise.all([
+      EYG.rpc("product.product","read",[ids,["default_code","name","product_tmpl_id","x_costo_motor","x_iva_compra","taxes_id","qty_available"]],LANG),
+      EYG.tasasVenta()
+    ]);
+    const tmpls=[...new Set(prods.map(p=>p.product_tmpl_id[0]))];
+    const items=await EYG.rpc("product.pricelist.item","search_read",
+      [[["pricelist_id","=",3],["product_tmpl_id","in",tmpls],["compute_price","=","fixed"]],["product_tmpl_id","min_quantity","fixed_price"]],
+      {limit:3000,context:{lang:"es_AR"}});
+    const porT={};
+    items.forEach(it=>{ const t=it.product_tmpl_id[0]; (porT[t]=porT[t]||[]).push({q:it.min_quantity||1,p:it.fixed_price}); });
+    Object.keys(porT).forEach(t=>{
+      const a=porT[t].sort((x,y)=>x.q-y.q);
+      // Quirk EyG: el 1er tramo (min<=1) que repite el precio del 2do es el "precio general" oculto -> se fusiona
+      if(a.length>=2 && a[0].q<=1 && Math.round(a[0].p)===Math.round(a[1].p)){ a.shift(); a[0]={q:1,p:a[0].p}; }
+      if(a.length && a[0].q<1) a[0]={q:1,p:a[0].p};
+      porT[t]=a;
+    });
+    prods.forEach(p=>{
+      const l=ls.find(x=>x.id===p.id); if(!l) return;
+      l.nombre=p.name||l.nombre; l.sku=p.default_code||"";
+      l.tmpl=p.product_tmpl_id[0];
+      l.stock=Math.floor(p.qty_available||0);
+      l.taxes=p.taxes_id||[];
+      l.exento=EYG.vendeExento(p.taxes_id, tasas);
+      l.costoEf=EYG.costoEfectivo(p.x_costo_motor||0, p.x_iva_compra||0, p.taxes_id, tasas);
+      l.tramos=porT[l.tmpl]||[];
+      if(!(l.precio>0)) l.precio=rgSugerido(l);
+    });
+  }catch(e){ toast("No pude leer precios y costos: "+e.message); }
+  render();
 }
-function rgComboMargen(){
-  const box=document.getElementById("rg-cmargen"); if(!box||!rgDraft) return;
-  const precio=parseFloat((document.getElementById("rg-precio")||{}).value)||rgDraft.precio||0;
-  const costo=rgDraft._costoCombo;
-  if(costo==null){ box.className="rentbox"; box.innerHTML="Elegí productos para calcular el costo del combo."; return; }
-  if(!(precio>0)){ box.className="rentbox"; box.innerHTML=`Poné el precio del combo. <span class="sub2">costo ${money(costo)}</span>`; return; }
-  const abs=Math.round(precio-costo), pct=Math.round((precio-costo)/precio*100);
-  box.className="rentbox "+(pct<0?"neg":pct<15?"low":"ok");
-  box.innerHTML=`Margen <b>${pct<0?'':'+'}${pct}%</b> · ${money(abs)} <span class="sub2">(costo ${money(costo)})</span>${pct<0?' ⚠️ perdés plata':(pct<15?' · ajustado':'')}`;
+/* el próximo código libre: CB0001, CB0002… (cuenta también los archivados, para no repetir) */
+async function rgProximoCodigo(){
+  try{
+    const r=await EYG.rpc("product.product","search_read",[[["default_code","=like",COMBO_PREFIJO+"%"]],["default_code"]],
+      {limit:1000,context:{lang:"es_AR",active_test:false}});
+    let max=0;
+    r.forEach(p=>{ const m=/^CB(\d+)$/.exec(String(p.default_code||"").trim().toUpperCase()); if(m) max=Math.max(max,parseInt(m[1],10)); });
+    return COMBO_PREFIJO+String(max+1).padStart(4,"0");
+  }catch(e){ return COMBO_PREFIJO+"0001"; }
 }
 window.rgNueva=(clase)=>{ COLAPSA['ofertas']=false;
-  rgDraft={id:"of"+Date.now(),clase:clase||'desc',tipo:(clase==='combo'?'combo':null),target:null,targetName:"",modo:"pct",valor:"",reemplaza:true,hasta:"",stock:"",pausada:false,items:[],titulo:"",precio:0,precioAntes:0,nota:""};
+  rgDraft={id:"of"+Date.now(),clase:clase||'desc',tipo:(clase==='combo'?'combo':null),target:null,targetName:"",modo:"pct",valor:"",reemplaza:true,hasta:"",stock:"",pausada:false,items:[],lineas:[],desc:0,codigo:"",titulo:"",precio:0,precioAntes:0,nota:""};
+  if(clase==='combo') rgProximoCodigo().then(c=>{ if(rgDraft&&!rgDraft.codigo){ rgDraft.codigo=c; render(); } });
   rgBusq=[];rgBusqQ="";rgCosto=null;rgTramos=null;rgTramosBase=null;rgApplied=null;
   render(); const el=document.querySelector('.rgform'); if(el) el.scrollIntoView({behavior:'smooth',block:'center'}); };
 window.rgEditar=async id=>{ const o=SYNC_OF.find(x=>x.id===id); if(!o)return; COLAPSA['ofertas']=false; rgDraft=JSON.parse(JSON.stringify(o)); rgDraft.clase='desc'; rgDraft._edit=true; rgBusq=[];rgBusqQ="";rgCosto=null;rgTramos=null;rgTramosBase=null;
@@ -885,7 +1048,11 @@ window.rgDesde=(o, sug, desdeKey, desdeId)=>{ COLAPSA['ofertas']=false;
 /* editar un combo existente (vive en eyg.ofertas / OFERTAS) */
 window.rgEditarCombo=id=>{ const o=OFERTAS.find(x=>x.id===id); if(!o) return; COLAPSA['ofertas']=false;
   rgDraft=JSON.parse(JSON.stringify(o)); rgDraft.clase='combo'; rgDraft.tipo='combo'; rgDraft._edit=true;
-  rgBusq=[];rgBusqQ=""; render(); rgCargarComboCosto();
+  // los combos nuevos guardan sus renglones; los viejos (sin cantidades) se abren con cantidad 1
+  rgDraft.lineas = (o.lineas && o.lineas.length) ? o.lineas.map(l=>({...l, qty:l.qty||1, manual:true, tramos:[], stock:null, costoEf:0, exento:null}))
+                 : (o.items||[]).map(i=>({id:i.id, sku:i.sku, nombre:i.nombre, qty:1, precio:0, manual:false, tramos:[], stock:null, costoEf:0, exento:null}));
+  rgDraft._tmplOdoo = o.tmpl||0;
+  rgBusq=[];rgBusqQ=""; render(); rgCargarDatosCombo();
   const el=document.querySelector('.rgform'); if(el) el.scrollIntoView({behavior:'smooth',block:'center'}); };
 window.rgBuscar=EYG.debounce(async q=>{
   q=(q||"").trim(); rgBusqQ=q;
@@ -1171,29 +1338,75 @@ async function rgAplicar(rule, d){
   }catch(e){ toast("Error: "+e.message); }
 }
 /* guardar combo → eyg.ofertas (panel del comercial). No pisa la escalera del motor. */
+/* Crea (o actualiza) el combo EN ODOO y publica la tarjeta del panel.
+   Son tres piezas: la ficha del producto, el KIT (mrp.bom phantom) con las cantidades, y la
+   tarjeta en eyg.ofertas apuntando al producto del combo — así el comercial lo ve en la pestaña
+   Ofertas de Cargar venta y lo carga como cualquier otro producto. */
 window.rgGuardarCombo=async()=>{
   const d=rgDraft; if(!d) return;
-  const titulo=(document.getElementById("rg-tit").value||"").trim();
-  const precio=parseFloat(document.getElementById("rg-precio").value)||0;
-  if(!(d.items&&d.items.length)){ toast("Elegí al menos un producto"); return; }
-  if(!(precio>0)){ toast("Poné el precio del combo"); return; }
-  const clean={ id:d.id, tipo:'combo', titulo:(titulo||d.items.map(i=>i.nombre).join(" + ")),
-    items:d.items.map(i=>({id:i.id,sku:i.sku,nombre:i.nombre})), precio,
-    precioAntes:parseFloat(document.getElementById("rg-antes").value)||0,
-    stock:parseFloat(document.getElementById("rg-stock").value)||0,
-    hasta:(document.getElementById("rg-hasta").value||""),
-    nota:(document.getElementById("rg-nota").value||"").trim(),
-    creada:d.creada||new Date().toISOString().slice(0,19).replace("T"," ") };
-  const desdeOpo=d._desdeOpo, desdeStock=d._desdeStock;
-  const i=OFERTAS.findIndex(o=>o.id===clean.id);
-  if(i>=0) OFERTAS[i]=clean; else OFERTAS.push(clean);
-  rgDraft=null;
+  const ls=rgLineas();
+  const titulo=(d.titulo||"").trim();
+  const codigo=(d.codigo||"").trim().toUpperCase();
+  if(!titulo){ toast("Poné el nombre del combo"); return; }
+  if(!codigo){ toast("Falta el código del combo"); return; }
+  if(!ls.length){ toast("Elegí al menos un producto"); return; }
+  const T=rgTotales();
+  if(!T.listo){ toast("Cada producto necesita cantidad y precio"); return; }
+  const imp=[...new Set(ls.filter(l=>l.exento!=null).map(l=>l.exento?1:0))];
+  if(imp.length>1){ toast("No se puede: el combo mezcla exentos con productos al 21%. Un kit factura con un solo impuesto."); return; }
+  const bajoCosto=ls.filter(l=>(l.precio||0)>0 && (l.costoEf||0)>0 && l.precio<l.costoEf);
+  if(bajoCosto.length && !confirm("Hay "+bajoCosto.length+" producto(s) por debajo del costo:\n\n"+bajoCosto.map(l=>"· "+l.nombre+": "+money(l.precio)+" contra "+money(l.costoEf)+" de costo").join("\n")+"\n\n¿Lo creás igual?")) return;
+  const btn=document.querySelector(".acts2 .ok"); if(btn){ btn.disabled=true; btn.textContent="Creando en Odoo…"; }
   try{
+    // el código no se puede repetir (mira también los archivados)
+    const dom=[["default_code","=",codigo]];
+    const ya=await EYG.rpc("product.product","search_read",[dom,["product_tmpl_id"]],{limit:5,context:{lang:"es_AR",active_test:false}});
+    const choca=ya.filter(p=>!d._tmplOdoo || p.product_tmpl_id[0]!==d._tmplOdoo);
+    if(choca.length){ toast("El código "+codigo+" ya está usado por otro producto"); if(btn){btn.disabled=false;btn.textContent="Crear el combo en Odoo";} return; }
+    const vals={
+      name:titulo, default_code:codigo, categ_id:COMBO_CAT, type:"product",
+      sale_ok:true, purchase_ok:false, invoice_policy:"order",
+      list_price:Math.round(T.combo*100)/100,
+      standard_price:Math.round(T.costo*100)/100,
+      taxes_id:[[6,0,(ls[0].taxes||[])]],
+      description_sale:"Contiene: "+ls.map(l=>l.qty+" × "+(l.nombre||"")).join(" · ")
+    };
+    let tmpl=d._tmplOdoo||0;
+    if(tmpl) await EYG.rpc("product.template","write",[[tmpl],vals],LANG);
+    else tmpl=await EYG.rpc("product.template","create",[vals],LANG);
+    // el KIT: se rehace entero (así editar el combo es siempre lo mismo)
+    const boms=await EYG.rpc("mrp.bom","search",[[["product_tmpl_id","=",tmpl]]],{});
+    if(boms && boms.length) await EYG.rpc("mrp.bom","unlink",[boms],{});
+    await EYG.rpc("mrp.bom","create",[{
+      product_tmpl_id:tmpl, product_qty:1, type:"phantom",
+      bom_line_ids: ls.map(l=>[0,0,{product_id:l.id, product_qty:l.qty}])
+    }],LANG);
+    // la variante del combo: es la que se vende y la que va en la tarjeta
+    const vs=await EYG.rpc("product.product","search_read",[[["product_tmpl_id","=",tmpl]],["id"]],{limit:1,context:{lang:"es_AR"}});
+    const varId=(vs[0]||{}).id;
+    const armables=parseInt(rgArmables(),10)||0;
+    const clean={
+      id:d.id, tipo:"combo", titulo, codigo, tmpl, producto:varId,
+      items:[{id:varId, sku:codigo, nombre:titulo}],
+      lineas: ls.map(l=>({id:l.id, sku:l.sku, nombre:l.nombre, qty:l.qty, precio:l.precio})),
+      precio: Math.round(T.combo*100)/100,
+      precioAntes: Math.round(T.lista*100)/100,
+      desc: d.desc||0,
+      stock: armables,
+      hasta:((document.getElementById("rg-hasta")||{}).value||""),
+      nota:(d.nota||"").trim(),
+      creada:d.creada||new Date().toISOString().slice(0,19).replace("T"," ")
+    };
+    const i=OFERTAS.findIndex(o=>o.id===clean.id);
+    if(i>=0) OFERTAS[i]=clean; else OFERTAS.push(clean);
     await setParam("eyg.ofertas", JSON.stringify(OFERTAS.filter(o=>o.tipo).map(o=>{const c={...o};delete c._venc;delete c._cat;delete c._agotada;return c;})));
-    if(desdeOpo){ try{ await EYG.rpc("product.product","write",[[desdeOpo],{x_oportunidad:false,x_oportunidad_archivada:false}],LANG);}catch(e){} OPOS=OPOS.filter(x=>x.id!==desdeOpo); ARCH=ARCH.filter(x=>x.id!==desdeOpo); }
-    if(desdeStock){ OPORT_STOCK=OPORT_STOCK.filter(x=>x.id!==desdeStock); ESTADO.arch=ESTADO.arch.filter(x=>x.id!==desdeStock); ESTADO.ignora=ESTADO.ignora.filter(x=>x!==desdeStock); await guardarEstado(); }
-    toast("Combo guardado ✓ — ya aparece en el panel de comerciales"); render();
-  }catch(e){ toast("Error: "+e.message); }
+    rgDraft=null;
+    toast("Combo "+codigo+" creado en Odoo ✓ — se arman "+armables+" con el stock de hoy", true);
+    render();
+  }catch(e){
+    if(btn){btn.disabled=false;btn.textContent="Crear el combo en Odoo";}
+    toast("Error creando el combo: "+e.message);
+  }
 };
 window.rgPausar=async id=>{ const o=SYNC_OF.find(x=>x.id===id); if(!o)return; o.pausada=!o.pausada; await rgSave(o.tipo==='p'?o.target:null); render(); toast(o.pausada?"Oferta pausada ✓":"Oferta reanudada ✓"); };
 window.rgEliminar=async id=>{ const o=SYNC_OF.find(x=>x.id===id); if(!o)return; if(!confirm("¿Eliminar esta oferta? Vuelve la escalera normal.")) return; const tgt=o.tipo==='p'?o.target:null; SYNC_OF=SYNC_OF.filter(x=>x.id!==id); await rgSave(tgt); render(); toast("Oferta eliminada ✓"); };
