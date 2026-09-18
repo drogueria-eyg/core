@@ -614,7 +614,18 @@ window.EYG = (function(){
     const path = (typeof location!=="undefined" ? location.pathname : "");
     const file = (path.split("/").pop()||"").toLowerCase();
     let key = "";
-    MODULOS.forEach(m=>{ try{ const pp=String(m.path({})).split("?")[0].split("/").pop().toLowerCase(); if(pp && file===pp) key=m.key; }catch(e){} });
+    /* Un mismo módulo puede llevar a VARIAS pantallas según el rol: "panel" abre
+       comerciales.html a gerencia y administración, lider.html al líder y
+       panel.html al comercial. Probando sólo con perfil vacío se reconocía una
+       sola, y en las otras la clave salía vacía —lo que dejaba sin efecto los
+       permisos por persona (modulos_extra/quita) de esas páginas. */
+    const perfiles = [{},{rol:"admin"},{rol:"direccion"},{rol:"finanzas"},{rol:"lider"},
+                      {rol:"comercial"},{rol:"inventario"},{rol:"maestro"},{rol:"cobranzas"}];
+    MODULOS.forEach(m=>{
+      for(const p0 of perfiles){
+        try{ const pp=String(m.path(p0)).split("?")[0].split("/").pop().toLowerCase(); if(pp && file===pp){ key=m.key; break; } }catch(e){}
+      }
+    });
     return key;
   }
   function rail(perfil){
