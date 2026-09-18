@@ -1916,7 +1916,45 @@ window.EYG = (function(){
     return { baseline, meta, meses, nUsados:nums.length };
   }
 
-  return { supa, rpc, rpcHead, gate, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
+  /* ===== COSTO EFECTIVO — la MISMA regla que el motor (acción 1213) =====
+     Cambio del 17/9/2026 (Dirección): lo que decide si el IVA de compra se suma al costo es
+     CÓMO SE VENDE el producto, no una tilde por categoría:
+       · se vende EXENTO  → ese IVA no vuelve nunca → costo = neto + el IVA de esa compra
+       · se vende GRAVADO → el IVA se recupera      → costo neto
+     Y si el costo se cargó A MANO ya es FINAL: el motor le deja x_iva_compra en 0, así que la
+     cuenta sale sola. Ya no hay tilde por categoría ni excepción por producto.
+     POR QUÉ VIVE ACÁ: la fórmula estaba copiada en cuatro módulos (Precios, Motor de precios,
+     Oportunidades y Stock) y se desincronizaron — el 18/9 el Core mostraba un costo distinto del
+     que usaba el motor. Una sola copia: si la regla cambia, se cambia en un solo lugar. */
+  let _tasasVentaCache=null;
+  async function tasasVenta(){
+    if(_tasasVentaCache) return _tasasVentaCache;
+    try{
+      const rows=await rpc("account.tax","search_read",[[["type_tax_use","=","sale"]],["id","amount","amount_type"]],{limit:300});
+      const m={}; rows.forEach(t=>{ m[t.id] = (t.amount_type==="percent" ? (t.amount||0) : 0); });
+      _tasasVentaCache=m;
+    }catch(e){ return {}; }   // si falla, NO se cachea: un error pasajero no puede dejar toda la sesión con la regla mal
+    return _tasasVentaCache;
+  }
+  // tasa 0 (exento / no gravado / 0%) = exento. Cualquier tasa > 0 = gravado.
+  function vendeExento(taxesIds, tasas){
+    const t=taxesIds||[], m=tasas||_tasasVentaCache||{};
+    for(let i=0;i<t.length;i++){ if((m[t[i]]||0)>0) return false; }
+    return true;
+  }
+  // el costo con el que hay que medir margen y piso: el mismo número que usa el motor
+  function costoEfectivo(costoMotor, ivaCompra, taxesIds, tasas){
+    const c=+costoMotor||0;
+    return vendeExento(taxesIds, tasas) ? c*(1+(+ivaCompra||0)) : c;
+  }
+  // de dónde salió el costo. Sirve para explicar en pantalla por qué el IVA de compra dice 0:
+  // no es que se compre sin IVA, es que ese número se cargó a mano y ya viene con el IVA adentro.
+  function costoEsManual(costoManual, costoMotor){
+    const m=+costoManual||0, c=+costoMotor||0;
+    return m>0 && Math.abs(m-c)<0.01;
+  }
+
+  return { supa, rpc, rpcHead, gate, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,

@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../assets/core.css?v=79">
+<link rel="stylesheet" href="../assets/core.css?v=80">
 <style>
   .intro{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:15px 18px;box-shadow:var(--shadow);margin-bottom:16px;font-size:13.5px;color:var(--gris);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
   .intro b{color:var(--ink)}
@@ -174,7 +174,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=79"></script>
+<script src="../assets/core.js?v=80"></script>
 <script src="../assets/inventario-oportunidades.js"></script>
 <script>
 /* ============ EyG Core · Inventario · Oportunidades y Ofertas ============ */
@@ -187,26 +187,23 @@ function masDias(n){ const d=new Date(); d.setDate(d.getDate()+n); return d.toIS
 function fmtF(s){ if(!s) return ""; const [y,m,d]=String(s).slice(0,10).split("-"); return d+"/"+m; }
 let OPOS=[], ARCH=[], OFERTAS=[], OPORT_STOCK=[], ESTADO={ignora:[],arch:[]}, stockLoading=true, UMBRAL=0.10, SYNC_OF=[];
 let STOCK_T={};   // stock real por plantilla (para marcar "Agotada" en los descuentos por regla)
-let COSTO_T={};   // costo EFECTIVO por plantilla (x_costo_motor + IVA de compra si la tilde está puesta)
+let COSTO_T={};   // costo EFECTIVO por plantilla (x_costo_motor + IVA de compra si se vende exento)
 let COSTO_V={};   // idem por variante (los combos guardan ids de variante)
 /* Reglas del motor por categoría (eyg.sync_precios_flat, ya resuelto por categoría). De acá salen
    dos cosas que el margen necesita: la TILDE "IVA al costo" -sin ella el costo sale corto y el
    margen optimista- y el PISO de margen de la categoría. */
 let REGLA_CAT={};
 function reglaCat(catId){ return REGLA_CAT[catId]||null; }
-function tildeIvaDe(tildeProp, catId){
-  const v=String(tildeProp||"").trim().toLowerCase();
-  if(v==="si") return 1;
-  if(v==="no") return 0;
-  const r=reglaCat(catId);
-  return (r&&r.tilde)?1:0;
-}
-/* Costo con el que compara el MOTOR: el neto más el IVA de compra cuando la tilde está puesta. */
+let TASAS_VENTA={};
+/* Si al costo hay que sumarle el IVA de la compra: lo decide CÓMO SE VENDE el producto
+   (17/9/2026). Misma regla que el motor, escrita una sola vez en core.js. */
+function tildeIvaDe(taxesIds){ return EYG.vendeExento(taxesIds, TASAS_VENTA) ? 1 : 0; }
+/* Costo con el que compara el MOTOR: el neto más el IVA de compra cuando el producto se vende exento. */
 function costoEfectivo(p){
   const c=p.x_costo_motor||0;
   if(!(c>0)) return 0;
   const cat=(p.categ_id&&p.categ_id[0])||0;
-  return tildeIvaDe(p.x_iva_costo, cat) ? c*(1+(p.x_iva_compra||0)) : c;
+  return tildeIvaDe(p.taxes_id) ? c*(1+(p.x_iva_compra||0)) : c;
 }
 function pisoDe(costo, catId){
   const r=reglaCat(catId);
@@ -215,6 +212,7 @@ function pisoDe(costo, catId){
 }
 async function cargarReglasMotor(){
   REGLA_CAT={};
+  TASAS_VENTA = await EYG.tasasVenta();   // la regla del costo sale del impuesto de venta
   const flat=String(await getParam("eyg.sync_precios_flat","")||"");
   flat.replace(/\r/g,"").split("\n").forEach(l=>{
     l=l.trim(); if(!l||l[0]==="#") return;
@@ -349,7 +347,7 @@ async function cargar(){
   const cont=document.getElementById("cont"); cont.innerHTML='<div class="spin"></div>';
   try{
     STOCK_T={};
-    await cargarReglasMotor();   // tilde de IVA al costo y piso de margen por categoría
+    await cargarReglasMotor();   // impuestos de venta (regla del costo) y piso de margen por categoría
     UMBRAL=parseFloat(await getParam("eyg.oferta.umbral","0.10"))||0.10;
     STOCK_MAX=parseInt(await getParam("eyg.oportunidades_stock_max","5"))||5;
     try{ const dsc=JSON.parse(await getParam("eyg.oportunidades_desc","")||"null"); if(dsc&&dsc.vence!=null) STOCK_DESC=dsc; }catch(e){}
@@ -387,11 +385,11 @@ async function cargar(){
       const tIds=[...new Set(SYNC_OF.filter(o=>o.tipo===`p`&&o.target).map(o=>o.target))];
       const vIds=[...new Set(OFERTAS.flatMap(o=>((o&&o.items)||[]).map(it=>it&&it.id)).filter(Boolean))];
       if(tIds.length){
-        const rows=await EYG.rpc("product.product","search_read",[[["product_tmpl_id","in",tIds]],["product_tmpl_id","x_costo_motor","x_iva_compra","x_iva_costo","categ_id"]],{limit:5000,context:{lang:"es_AR"}});
+        const rows=await EYG.rpc("product.product","search_read",[[["product_tmpl_id","in",tIds]],["product_tmpl_id","x_costo_motor","x_iva_compra","taxes_id","categ_id"]],{limit:5000,context:{lang:"es_AR"}});
         for(const r of rows){ const c=costoEfectivo(r); if(c>0) COSTO_T[r.product_tmpl_id[0]]=c; }
       }
       if(vIds.length){
-        const rows=await EYG.rpc("product.product","read",[vIds,["x_costo_motor","x_iva_compra","x_iva_costo","categ_id"]],LANG);
+        const rows=await EYG.rpc("product.product","read",[vIds,["x_costo_motor","x_iva_compra","taxes_id","categ_id"]],LANG);
         for(const r of rows){ const c=costoEfectivo(r); if(c>0) COSTO_V[r.id]=c; }
       }
     }catch(e){}
@@ -905,7 +903,7 @@ window.rgCargarCatSim=async(catId)=>{
   if(rgCatSim.catId===catId && rgCatSim.estado==="ok") return;
   rgCatSim={estado:"cargando", filas:[], catId:catId}; render();
   try{
-    const rs=await EYG.rpc("product.product","search_read",[[["categ_id","child_of",catId],["active","=",true]],["default_code","name","product_tmpl_id","categ_id","x_costo_motor","x_iva_compra","x_iva_costo","qty_available"]],{limit:800,context:{lang:"es_AR"}});
+    const rs=await EYG.rpc("product.product","search_read",[[["categ_id","child_of",catId],["active","=",true]],["default_code","name","product_tmpl_id","categ_id","x_costo_motor","x_iva_compra","taxes_id","qty_available"]],{limit:800,context:{lang:"es_AR"}});
     const tIds=[...new Set(rs.map(r=>r.product_tmpl_id&&r.product_tmpl_id[0]).filter(Boolean))];
     const its=tIds.length?await EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",tIds]],["product_tmpl_id","fixed_price"]],{limit:5000,context:{lang:"es_AR"}}):[];
     const mx={}, mn={};
@@ -936,9 +934,9 @@ async function rgCargarRent(tmplId){
     const vid=th.product_variant_id&&th.product_variant_id[0];
     let costo=0; rgCostoFuente=""; rgPiso=0; rgCatId=(th.categ_id&&th.categ_id[0])||0;
     if(vid){
-      const pv=await EYG.rpc("product.product","read",[[vid],["x_costo_manual","x_costo_manual_date","standard_price","x_costo_motor","x_iva_compra","x_iva_costo","categ_id"]],LANG);
+      const pv=await EYG.rpc("product.product","read",[[vid],["x_costo_manual","x_costo_manual_date","standard_price","x_costo_motor","x_iva_compra","taxes_id","categ_id"]],LANG);
       const p=(pv&&pv[0])||{};
-      rgIvaCompra=p.x_iva_compra||0; rgTildeIva=tildeIvaDe(p.x_iva_costo, rgCatId);
+      rgIvaCompra=p.x_iva_compra||0; rgTildeIva=tildeIvaDe(p.taxes_id);
       /* x_costo_motor = el costo con el que el MOTOR calcula el precio (su regla de 3 fuentes:
          costo manual / última compra / standard_price, el más reciente). Usar el mismo número es
          lo único que garantiza que el margen de acá y el precio que sale sean la misma cuenta. */

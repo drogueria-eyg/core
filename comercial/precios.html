@@ -7,9 +7,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../assets/core.css?v=79">
+<link rel="stylesheet" href="../assets/core.css?v=80">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=79"></script>
+<script src="../assets/core.js?v=80"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF; --agua:#E2F1EF;
@@ -104,21 +104,14 @@
 <script>
 const RPC="https://yxotopoklgjowcudveoj.supabase.co/functions/v1/odoo-rpc";
 const LISTA=3; // LISTA 1 EyG (web)
-// ===== Regla "IVA al costo" (misma que usa el motor, no se recalcula acá) =====
-// El motor guarda en cada producto el costo real neto (x_costo_motor) y el IVA que trajo la
-// compra de la que salió ese costo (x_iva_compra). La TILDE decide si ese IVA se suma al costo:
-// se tilda cuando el producto se vende EXENTO (ese IVA no se recupera, es costo). Descartables y
-// Perfumería NO se tildan: venden con IVA discriminado y lo trasladan al cliente.
-// La tilde vive en la categoría (param del motor) y el producto la pisa con x_iva_costo 'si'/'no'.
-let CATPAR={}, TILDECAT={};
-const RAIZ_SIN_TILDE=[51,11];   // DESCARTABLES y PERFUMERIA
-function raizDe(catId){ let r=catId,g=0; while(CATPAR[r]&&CATPAR[r]!==1&&g++<25) r=CATPAR[r]; return r; }
-function tildeHeredada(catId){
-  let c=catId,g=0;
-  while(c&&g++<25){ if(TILDECAT[c]!==undefined) return TILDECAT[c]; c=CATPAR[c]; }
-  return RAIZ_SIN_TILDE.indexOf(raizDe(catId))>=0 ? 0 : 1;
-}
-function tildeEfectiva(it){ const v=String(it.tildeProp||"").trim().toLowerCase(); if(v==="si") return 1; if(v==="no") return 0; return tildeHeredada(it.catId); }
+// ===== Regla del costo (la MISMA que el motor, no se recalcula acá) =====
+// El motor guarda el costo real neto (x_costo_motor) y el IVA que trajo esa compra (x_iva_compra).
+// Desde el 17/9/2026 lo que decide si ese IVA se suma es CÓMO SE VENDE el producto: exento → el
+// IVA no vuelve nunca y es costo; gravado → se recupera y el costo va neto. Ya NO hay tilde por
+// categoría ni excepción por producto: la regla vive UNA sola vez, en EYG.vendeExento (core.js).
+// Y si el costo se cargó a mano, el motor le deja x_iva_compra en 0: ese número ya es final.
+let TASAS={};   // id de impuesto de venta -> tasa
+function sumaIva(it){ return EYG.vendeExento(it.taxesId, TASAS) ? 1 : 0; }
 const money=n=>"$"+Math.round(n||0).toLocaleString("es-AR");
 const esc=s=>(s||"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
 async function rpc(model,method,args,kwargs={},intentos=3){
@@ -147,10 +140,10 @@ function badge(m){
 }
 function bucket(m){ return m==null?null: m>=40?'ok2': m>=33?'ok': m>=27?'warn':'bad'; }
 // costo efectivo: gana el más reciente entre el costo manual y la última compra (una compra posterior pisa al manual).
-// PARENTERALES: al costo de COMPRA se le suma 21% (IVA no descontable); el manual NO se toca (ya se carga con el 21%).
+// Si se vende exento, se le suma el IVA que trajo esa compra (no se recupera). El costo manual ya viene con el IVA adentro.
 function costoEfectivo(it){
   const m=it.manualC||0, md=it.manualD||null, uf=it.ucF||null;
-  const iv = tildeEfectiva(it) ? (it.ivaCompra||0) : 0;
+  const iv = sumaIva(it) ? (it.ivaCompra||0) : 0;
   const base = (it.costoMotor>0) ? it.costoMotor : (it.std||0);
   let fuente='odoo';
   if(it.costoMotor>0) fuente = (m>0 && (!uf || (md && md>=uf))) ? 'manual' : 'compra';
@@ -170,8 +163,8 @@ function costoTip(x){ const p=[];
   if(x.ucC>0) p.push('Última compra: '+money(x.ucC)+' ('+fmtDT(x.ucF)+')');
   p.push('Costo neto del motor: '+money(x.costoMotor));
   if(x.ivaCompra>0) p.push('La compra vino con IVA '+Math.round(x.ivaCompra*100)+'%');
-  p.push(x.ivaAplicado ? ('IVA al costo TILDADO: se vende exento, ese IVA no se recupera → '+money(x.costoMotor)+' + '+Math.round(x.ivaAplicado*100)+'% = '+money(x.costo)) : 'IVA al costo destildado: el costo va neto (el IVA se le traslada al cliente)');
-  p.push(String(x.tildeProp||'')?('Tilde puesta a mano en este producto: '+x.tildeProp.toUpperCase()):'Tilde heredada de la categoría');
+  p.push(x.ivaAplicado ? ('Se vende EXENTO: ese IVA no se recupera, es costo → '+money(x.costoMotor)+' + '+Math.round(x.ivaAplicado*100)+'% = '+money(x.costo)) : 'Se vende con IVA: se recupera, el costo va neto');
+  if(EYG.costoEsManual(x.manualC, x.costoMotor)) p.push('El costo se cargó a mano: ya viene con el IVA adentro, por eso el IVA de compra figura en 0');
   p.push('Fuente en uso: '+(x.fuente==='manual'?'costo manual':x.fuente==='compra'?'última compra':'costo Odoo')+' — gana el más reciente');
   return p.join(' · '); }
 let ST={items:[], q:"", cat:"todos", sub:"todos", salud:"todos", sinStock:false, conStock:false, sinEsc:false};
@@ -186,19 +179,14 @@ async function cargar(){
     for(const it of raw){ if(!it.product_tmpl_id) continue; const t=it.product_tmpl_id[0];
       (porT[t]=porT[t]||[]).push({q:it.min_quantity||0, p:it.fixed_price, tipo:it.compute_price}); }
     const conEsc=Object.keys(porT).map(Number);
-    // árbol de categorías + tildes "IVA al costo" que usa el motor (mismo param que lee el cron)
-    const [_cats,_flat]=await Promise.all([
-      rpc("product.category","search_read",[[]],{fields:["parent_id"],limit:0}),
-      rpc("ir.config_parameter","get_param",["eyg.sync_precios_flat"])
-    ]);
-    CATPAR={}; _cats.forEach(c=>{ CATPAR[c.id]= c.parent_id?c.parent_id[0]:null; });
-    TILDECAT={}; String(_flat||"").split("\n").forEach(l=>{ const f=l.trim().split("~"); if(f.length>7 && f[0]) TILDECAT[+f[0]]=(parseFloat(f[7])>0?1:0); });
+    // impuestos de venta: de ahí sale la regla del costo, igual que en el motor
+    TASAS = await EYG.tasasVenta();
     // 2) Hosp(24)+Farma(10)+Descart(51)+Perfum(11)+Equipos(369) completos + Éticos(12) SOLO con stock o con escalera
     //    (los éticos son 17k del catálogo Alfabeta; sin este filtro colgaría el navegador)
     const domBase=["|","|","|","|",["categ_id","child_of",24],["categ_id","child_of",10],["categ_id","child_of",51],["categ_id","child_of",11],["categ_id","child_of",369]];
     const domEticos=["&",["categ_id","child_of",12],"|",["qty_available",">",0],["product_tmpl_id","in",conEsc]];
     const prods=await rpc("product.product","search_read",[["|"].concat(domBase,domEticos)],
-      {fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","qty_available","x_costo_manual","x_costo_manual_date","x_costo_motor","x_iva_compra","x_iva_costo"], context:ES, limit:8000});
+      {fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","qty_available","x_costo_manual","x_costo_manual_date","x_costo_motor","x_iva_compra","taxes_id"], context:ES, limit:8000});
     if(!prods.length){ document.getElementById("app").innerHTML='<div class="empty">No hay productos para mostrar.</div>'; return; }
     // 3) última compra de TODOS (para el margen y para comparar contra el costo manual)
     const pid2=prods.map(p=>p.id);
@@ -224,7 +212,7 @@ async function cargar(){
       const it={
         id:p.id, tmpl, sku:p.default_code, name:p.name,
         cat:catFull, catTop, catSub, catId:(p.categ_id?p.categ_id[0]:0),
-        costoMotor:(p.x_costo_motor||0), ivaCompra:(p.x_iva_compra||0), tildeProp:(p.x_iva_costo||""),
+        costoMotor:(p.x_costo_motor||0), ivaCompra:(p.x_iva_compra||0), taxesId:(p.taxes_id||[]),
         stock:(p.qty_available!=null?p.qty_available:0),
         sinEscalera:!tramosRaw.length, tramoBase, tramosRaw, std:(p.standard_price||0),
         manualC:(p.x_costo_manual||0), manualD:(p.x_costo_manual_date||null),
@@ -294,7 +282,7 @@ function render(){
         }).join("");
     return `<tr class="${alerta?'rowalert':''}">
       <td><div class="pn">${esc(x.name)}</div><div class="pmeta">${esc(x.sku||"")} · ${(x.stock||0)<=0?'<b style="color:var(--m-bad)">sin stock</b>':('stock '+x.stock+' u')}</div><span class="cat">${esc(x.cat||"—")}</span>${x.tramoBase?'<span class="cat" style="background:#fff4ed;color:#c2410c;margin-left:5px" title="Tenía un precio unitario base (min 1) que coincidía con el 1er tramo y se oculta en la web. Se fusionó para mostrar la escala real.">✓ base fusionado</span>':''}</td>
-      <td class="costo" title="${esc(costoTip(x))}"><div class="cv">${money(x.costo)}</div><div class="cd ${dias>180?'old':''}">${fuenteLbl(x,dias)}${dias>180?' ⚠':''}</div><div class="costedit"><input type="number" step="0.01" id="cm-${x.id}" placeholder="manual" value="${x.manualC>0?(Math.round(x.manualC*100)/100):''}"><button onclick="guardarCosto(${x.id})" title="Guardar costo manual (pisa la última compra)">💾</button></div><label style="display:flex;align-items:center;justify-content:flex-end;gap:4px;font-size:11px;color:var(--gris);cursor:pointer;margin-top:3px" title="Tildado = el producto se vende exento y el IVA de la compra es costo. Destildado = el IVA se le traslada al cliente, el costo va neto."><input type="checkbox" ${tildeEfectiva(x)?'checked':''} onchange="guardarTilde(${x.id},this.checked)" style="margin:0"> IVA al costo${String(x.tildeProp||'')?'':' <span style="color:var(--gris2)">(hereda)</span>'}</label></td>
+      <td class="costo" title="${esc(costoTip(x))}"><div class="cv">${money(x.costo)}</div><div class="cd ${dias>180?'old':''}">${fuenteLbl(x,dias)}${dias>180?' ⚠':''}</div><div class="costedit"><input type="number" step="0.01" id="cm-${x.id}" placeholder="manual" value="${x.manualC>0?(Math.round(x.manualC*100)/100):''}"><button onclick="guardarCosto(${x.id})" title="Guardar costo manual (pisa la última compra)">💾</button></div><div style="font-size:10.5px;color:var(--gris2);margin-top:3px;text-align:right">${x.ivaAplicado?("exento · +"+Math.round(x.ivaAplicado*100)+"% IVA al costo"):"con IVA · costo neto"}</div></td>
       ${celdas}
     </tr>`;
   }).join("");
@@ -345,17 +333,6 @@ async function releerEscalera(p){
   p.tramosRaw=tr; p.tramoBase=base; p.sinEscalera=!tr.length;
   aplicarCosto(p);
 }
-window.guardarTilde = async (id,on) => {
-  const p=ST.items.find(x=>x.id===id); if(!p) return;
-  try{
-    await rpc("product.product","write",[[id],{x_iva_costo:(on?"si":"no")}],{context:ES});
-    p.tildeProp = on?"si":"no";
-    // re-sincroniza ESTE producto con el motor (action 1213) y relee la escalera -> impacto al instante
-    await rpc("ir.actions.server","run",[[1213]],{context:{...ES, eyg_solo_producto:id}});
-    await releerEscalera(p);
-    toast("IVA al costo "+(on?"activado":"desactivado")+" · precios recalculados ✓", true); render();
-  }catch(e){ toast("Error: "+e.message); render(); }
-};
 window.guardarCosto = async id => {
   const p=ST.items.find(x=>x.id===id); if(!p) return;
   const el=document.getElementById("cm-"+id); const val=parseFloat(el&&el.value);

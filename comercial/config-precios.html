@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../assets/core.css?v=79">
+<link rel="stylesheet" href="../assets/core.css?v=80">
 <style>
   .intro{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow);margin-bottom:16px;font-size:13.5px;color:var(--gris)}
   .intro b{color:var(--ink)}
@@ -146,7 +146,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=79"></script>
+<script src="../assets/core.js?v=80"></script>
 <script>
 const KEY="eyg.sync_precios_config";      // JSON (para este editor)
 const KEY_FLAT="eyg.sync_precios_flat";    // texto plano que lee el cron (una regla por linea)
@@ -200,6 +200,7 @@ async function cargar(){
   const cont=document.getElementById("cont");
   cont.innerHTML='<div class="empty">Cargando categorías y configuración…</div>';
   try{
+    TASAS_VENTA = await EYG.tasasVenta();   // la regla del costo sale del impuesto de venta (igual que el motor)
     // TODAS las categorías: todo lo que cuelga de ALL (incluye Éticos y cualquier categoría nueva a futuro)
     CATS=await rpc("product.category","search_read",[[["id","child_of",1]]],{fields:["id","name","parent_id","complete_name"],limit:5000,context:{lang:"es_AR"}});
     const JUNK_IDS=[1,2,4,294];   // ALL, Varios (default Odoo), Envíos, Redondeo: categorías de sistema, no de productos
@@ -487,7 +488,7 @@ window.capaRevisar=async ()=>{
     });
     const tmpls=Object.keys(set).map(Number);
     if(!tmpls.length){ _capaChk={estado:"ok", porTmpl:{}, porLab:{}, bajoCosto:0, bajoPiso:0, prods:0, cuando:_ahoraHM(), msg:""}; render(); return; }
-    const vs=await rpc("product.product","search_read",[[["product_tmpl_id","in",tmpls]],["default_code","name","product_tmpl_id","categ_id","x_costo_motor","x_iva_compra","x_iva_costo","qty_available"]],{limit:0,context:{lang:"es_AR"}});
+    const vs=await rpc("product.product","search_read",[[["product_tmpl_id","in",tmpls]],["default_code","name","product_tmpl_id","categ_id","x_costo_motor","x_iva_compra","taxes_id","qty_available"]],{limit:0,context:{lang:"es_AR"}});
     const its=await rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",tmpls]],["product_tmpl_id","fixed_price"]],{limit:0});
     const minP={};
     its.forEach(i=>{ const t=i.product_tmpl_id&&i.product_tmpl_id[0]; if(!t) return; if(minP[t]==null||i.fixed_price<minP[t]) minP[t]=i.fixed_price; });
@@ -495,7 +496,7 @@ window.capaRevisar=async ()=>{
     vs.forEach(v=>{
       const t=v.product_tmpl_id&&v.product_tmpl_id[0]; if(!t) return;
       const pr=minP[t]; if(!(pr>0)) return;
-      const p={catId:(v.categ_id?v.categ_id[0]:0), costo:v.x_costo_motor||0, ivaCompra:v.x_iva_compra||0, tilde:v.x_iva_costo||""};
+      const p={catId:(v.categ_id?v.categ_id[0]:0), costo:v.x_costo_motor||0, ivaCompra:v.x_iva_compra||0, taxesId:v.taxes_id||[]};
       const costo=(p.costo||0)*(1+(tildeDeProd(p)?(p.ivaCompra||0):0));
       if(!(costo>0)) return;
       const r=reglaMotor(p.catId);
@@ -714,8 +715,11 @@ function reglaMotor(catId){
   const r=resolver(catId);
   return (r&&r.rule&&r.rule.genera)?Object.assign({},r.rule,{base:(r.rule.base||"costo")}):null;
 }
-/* La tilde "IVA al costo" que le toca a un producto: la suya si la tiene, si no la de su categoría. */
-function tildeDeProd(p){ const v=String(p.tilde||"").trim().toLowerCase(); if(v==="si") return 1; if(v==="no") return 0; return iva1(p.catId); }
+/* Si al costo hay que sumarle el IVA de la compra. Desde el 17/9/2026 lo decide CÓMO SE VENDE el
+   producto (exento = ese IVA no vuelve, es costo), no una tilde. Es la misma regla que el motor;
+   vive una sola vez en core.js. */
+let TASAS_VENTA={};
+function tildeDeProd(p){ return EYG.vendeExento(p.taxesId, TASAS_VENTA) ? 1 : 0; }
 /* Precio del ÚLTIMO escalón con la misma cuenta que hace el motor:
    base = costo×(1+recargo)  ·  éticos: base = PVP×(1−desc de la escala)
    con descuento máximo cargado -> ese descuento (en éticos va SOBRE el PVP)
@@ -753,12 +757,12 @@ window.fijoCargarLabSim=async (tipo,id)=>{
     const dom = tipo==="M"
       ? [["x_costo_motor",">",0],["x_studio_many2one_field_6o_1if0l6ud2","=",id]]
       : [["x_costo_motor",">",0],["categ_id","child_of",id]];
-    const rs=await rpc("product.product","search_read",[dom,["default_code","name","categ_id","product_tmpl_id","x_costo_motor","x_iva_compra","x_iva_costo","list_price","qty_available"]],{limit:600,context:{lang:"es_AR"}});
+    const rs=await rpc("product.product","search_read",[dom,["default_code","name","categ_id","product_tmpl_id","x_costo_motor","x_iva_compra","taxes_id","list_price","qty_available"]],{limit:600,context:{lang:"es_AR"}});
     // los que YA tienen su propia línea en la capa: a esos el laboratorio no los toca (manda lo individual)
     const propias={}; FIJOS.forEach(f=>{ if(f.tmpl) propias[f.tmpl]=f; });
     _labSim.filas=rs.map(r=>({sku:r.default_code||"", nombre:r.name||"", catId:(r.categ_id?r.categ_id[0]:0),
       tmpl:(r.product_tmpl_id?r.product_tmpl_id[0]:0), propia:!!propias[r.product_tmpl_id&&r.product_tmpl_id[0]],
-      costo:r.x_costo_motor||0, ivaCompra:r.x_iva_compra||0, tilde:r.x_iva_costo||"", pvp:r.list_price||0, stock:r.qty_available||0}));
+      costo:r.x_costo_motor||0, ivaCompra:r.x_iva_compra||0, taxesId:r.taxes_id||[], pvp:r.list_price||0, stock:r.qty_available||0}));
     _labSim.estado="ok";
   }catch(e){ _labSim.estado="error"; _labSim.msg=e.message; }
   fijoPreview();
@@ -778,7 +782,7 @@ window.fijoElegir=async (id,nombre,prefill)=>{
   _fijoEdit=prefill||null;
   _fijoSel={tmpl:id, nombre:nombre, loading:true}; render();
   try{
-    const vs=await rpc("product.product","search_read",[[["product_tmpl_id","=",id]],["x_costo_motor","standard_price","x_iva_compra","x_iva_costo","categ_id","qty_available","default_code"]],{limit:1});
+    const vs=await rpc("product.product","search_read",[[["product_tmpl_id","=",id]],["x_costo_motor","standard_price","x_iva_compra","taxes_id","categ_id","qty_available","default_code"]],{limit:1});
     const tp=await rpc("product.template","read",[[id],["taxes_id","list_price"]]);
     const its=await rpc("product.pricelist.item","search_read",[[["product_tmpl_id","=",id],["pricelist_id","=",3],["min_quantity","<=",1]],["fixed_price"]],{limit:1});
     let iva=0; const taxes=(tp[0]&&tp[0].taxes_id)||[];
@@ -789,7 +793,7 @@ window.fijoElegir=async (id,nombre,prefill)=>{
     const v0=vs[0]||{};
     // fila con la misma forma que usa la simulación por laboratorio, para poder chequearlo igual
     const fila={sku:v0.default_code||"", nombre:nombre, catId:(v0.categ_id?v0.categ_id[0]:0), tmpl:id,
-      costo:v0.x_costo_motor||0, ivaCompra:v0.x_iva_compra||0, tilde:v0.x_iva_costo||"",
+      costo:v0.x_costo_motor||0, ivaCompra:v0.x_iva_compra||0, taxesId:v0.taxes_id||[],
       pvp:lp, ivaVenta:iva, stock:v0.qty_available||0};
     _fijoSel={tmpl:id, nombre:nombre, cost:cost, base:base, pvp:lp, iva:iva, etico:(lp>1), fila:fila};
     render();
@@ -1086,7 +1090,7 @@ function formPvpHTML(r, idp, saveCall, cancelCall, titulo, conIva){
   r=r||{};
   // La tilde "IVA al costo" va SOLO en las reglas generales de escala (A/B): los laboratorios
   // la heredan de su escala, no se define por subcategoría.
-  const ivaFld = conIva ? `<div class="fld2"><label>IVA al costo</label><label class="chk" style="margin:0"><input type="checkbox" id="${idp}-iva" ${r.ivaCosto?"checked":""}> <span>sumarlo al costo</span></label><div class="hint">Tildar si estos productos se venden <b>exentos</b>: ese IVA de compra no se recupera, es costo. El motor suma <b>el que dice la factura</b>, no se carga ningún %. Lo toman todos los laboratorios de la escala.</div></div>` : "";
+  const ivaFld = conIva ? `<div class="fld2"><label>IVA al costo</label><label class="chk" style="margin:0"><input type="checkbox" id="${idp}-iva" ${r.ivaCosto?"checked":""} disabled> <span style="color:var(--gris2)">sumarlo al costo</span></label><div class="hint">Ya <b>no se define acá</b>: desde el 17/9/2026 lo decide el <b>impuesto de venta de cada producto</b> — si se vende exento, el IVA de la compra es costo; si se vende con IVA, el costo va neto. Se muestra sólo para referencia y queda guardado por si Dirección apaga la regla nueva (parámetro <code>eyg.regimen_venta_activo</code>).</div></div>` : "";
   return `<div class="form" onclick="event.stopPropagation()">
     <label class="chk"><input type="checkbox" id="${idp}-genera" ${r.genera?"checked":""}> <span>Genera escalera de precios (${esc(titulo||'')})</span></label>
     <div class="grid" style="grid-template-columns:repeat(2,1fr)">
@@ -1160,7 +1164,7 @@ function formHTML(c){
       <div class="fld2"><label>Recargo sobre costo</label><div class="inpu"><input type="number" id="f-recargo" step="1" value="${pct(r.recargo)}"><span class="suf">%</span></div><div class="hint">markup neto · 80 = ×1,80</div></div>
       <div class="fld2"><label>Piso de margen</label><div class="inpu"><input type="number" id="f-piso" step="1" value="${pct(r.piso)}"><span class="suf">%</span></div><div class="hint">margen mínimo · el último tramo llega justo acá</div></div>
       <div class="fld2"><label>Cantidad de tramos</label><input type="number" id="f-ncortes" min="1" max="8" value="${nT}"><div class="hint">escalones de precio · las cantidades y la unidad salen del Maestro</div></div>
-      <div class="fld2"><label>IVA al costo</label><label class="chk" style="margin:0"><input type="checkbox" id="f-iva" ${r.ivaCosto?"checked":""}> <span>sumarlo al costo</span></label><div class="hint">Tildar cuando el producto se vende <b>exento</b>: ese IVA no se recupera, es costo. El motor le suma <b>el IVA que dice la factura de compra</b> — no se carga ningún %. Destildado = costo neto (Descartables y Perfumería, que trasladan el IVA al cliente). <b>Vale para las tres listas</b>: SAMCOs e Instituciones heredan lo que se tilde acá.</div></div>
+      <div class="fld2"><label>IVA al costo</label><label class="chk" style="margin:0"><input type="checkbox" id="f-iva" ${r.ivaCosto?"checked":""} disabled> <span style="color:var(--gris2)">sumarlo al costo</span></label><div class="hint">Ya <b>no se define acá</b>: desde el 17/9/2026 lo decide el <b>impuesto de venta de cada producto</b> — si se vende exento, el IVA de la compra es costo; si se vende con IVA, el costo va neto. Se muestra sólo para referencia y queda guardado por si Dirección apaga la regla nueva (parámetro <code>eyg.regimen_venta_activo</code>).</div></div>
     </div>
     <div class="acts"><button class="cancel" onclick="editId=null;render()">Cancelar</button><button class="ok" onclick="guardarRegla(${c.id})">Aplicar regla</button></div>
   </div>`;

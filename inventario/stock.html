@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../assets/core.css?v=79">
+<link rel="stylesheet" href="../assets/core.css?v=80">
 <style>
   /* colores de rotación / urgencia (específicos del módulo) */
   :root{
@@ -338,7 +338,7 @@
 <body></body>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=79"></script>
+<script src="../assets/core.js?v=80"></script>
 <script>
 const rpc=(m,me,a,k)=>EYG.rpc(m,me,a,k);
 const money=EYG.money, esc=EYG.esc;
@@ -404,12 +404,9 @@ let cfil={q:"",fam:"",lab:"",prov:"",stock:"",sortK:"name",dir:1};
 function labDe(categ){ if(!categ) return ""; const p=categ[1].split("/").map(s=>s.trim());
   const i=p.findIndex(s=>s.toUpperCase()==="ETICOS"); return (i>=0&&p[i+1])?p[i+1]:""; }
 // ===== Costo REAL del motor (idéntico a Costos y Rentabilidad) — NO es standard_price =====
-// Base = x_costo_motor (última compra/manual que ya resolvió el motor); +IVA al costo si el producto se vende EXENTO.
-let CATPAR={}, TILDECAT={};
-const RAIZ_SIN_TILDE=[51,11];   // DESCARTABLES y PERFUMERIA: venden con IVA discriminado (no se suma al costo)
-function raizDe(catId){ let r=catId,g=0; while(CATPAR[r]&&CATPAR[r]!==1&&g++<25) r=CATPAR[r]; return r; }
-function tildeHeredada(catId){ let c=catId,g=0; while(c&&g++<25){ if(TILDECAT[c]!==undefined) return TILDECAT[c]; c=CATPAR[c]; } return RAIZ_SIN_TILDE.indexOf(raizDe(catId))>=0 ? 0 : 1; }
-function tildeEfectiva(r){ const v=String(r.tildeProp||"").trim().toLowerCase(); if(v==="si") return 1; if(v==="no") return 0; return tildeHeredada(r.catId); }
+// Base = x_costo_motor (última compra/manual que ya resolvió el motor); +IVA de la compra si el producto se vende EXENTO.
+let TASAS_VENTA={};   // id de impuesto de venta -> tasa (la regla del costo sale de acá, como en el motor)
+function tildeEfectiva(r){ return EYG.vendeExento(r.taxesId, TASAS_VENTA) ? 1 : 0; }
 function costoReal(r){ const base=(r.xCostoMotor>0)?r.xCostoMotor:(r.std||0); const iv=tildeEfectiva(r)?(r.ivaCompra||0):0; return base*(1+iv); }
 
 const B_DEF=[["Sano","menos de 3 meses",0,3,"green"],["Elevado","3 a 6 meses",3,6,"lime"],["Alto","6 a 12 meses",6,12,"yel"],["Sobrestock","1 a 3 años",12,36,"org"],["Muerto / crítico","más de 3 años o sin venta",36,1e12,"red"]];
@@ -421,7 +418,7 @@ async function cargar(){
     const ini3=new Date(HOY.getFullYear(),HOY.getMonth()-3,1);
 
     prog("stock, ventas y compras…");
-    const [stock, ventas, ventas3, so, po, cad, comprasF, modoParam, pedidosOC, pedidoManParam, descartParam, cartsParam, cats, flatParam] = await Promise.all([
+    const [stock, ventas, ventas3, so, po, cad, comprasF, modoParam, pedidosOC, pedidoManParam, descartParam, cartsParam] = await Promise.all([
       rpc("stock.quant","read_group",[[["location_id.usage","=","internal"],["quantity","!=",0]],["value:sum","quantity:sum"],["product_id"]],{lazy:false,limit:6000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini12)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini3)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
@@ -434,12 +431,9 @@ async function cargar(){
       rpc("ir.config_parameter","get_param",["eyg.stock_pedido_manual"]).catch(()=>null),
       rpc("ir.config_parameter","get_param",["eyg.stock_descartados"]).catch(()=>null),
       rpc("ir.config_parameter","get_param",["eyg.stock_carritos"]).catch(()=>null),
-      rpc("product.category","search_read",[[]],{fields:["parent_id"],limit:0}).catch(()=>[]),
-      rpc("ir.config_parameter","get_param",["eyg.sync_precios_flat"]).catch(()=>null),
     ]);
-    // árbol de categorías + tildes "IVA al costo" del motor (para el costo real, igual a Costos y Rentabilidad)
-    CATPAR={}; (cats||[]).forEach(c=>{ CATPAR[c.id]=c.parent_id?c.parent_id[0]:null; });
-    TILDECAT={}; String(flatParam||"").split("\n").forEach(l=>{ const f=l.trim().split("~"); if(f.length>7 && f[0]) TILDECAT[+f[0]]=(parseFloat(f[7])>0?1:0); });
+    // impuestos de venta: de ahí sale la regla del costo (igual que en el motor y en Costos y Rentabilidad)
+    TASAS_VENTA = await EYG.tasasVenta();
 
     const CF={}; for(const c of comprasF){ if(c.product_id) CF[c.product_id[0]]=c.__count||0; }   // veces que EyG compró cada producto en 12m
     try{ const mo=modoParam?JSON.parse(modoParam):{}; STOCK_CRIT=new Set(mo.crit||[]); STOCK_PED=new Set(mo.ped||[]); }catch(e){ STOCK_CRIT=new Set(); STOCK_PED=new Set(); }
@@ -462,7 +456,7 @@ async function cargar(){
 
     prog("categorías, proveedores y en camino…");
     const [meta, quantsLote] = await Promise.all([
-      rpc("product.product","read",[allIds,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","incoming_qty","seller_ids","uom_po_id","active","qty_available","x_costo_manual","x_costo_manual_date","x_costo_motor","x_iva_compra","x_iva_costo","x_oportunidad"]]),
+      rpc("product.product","read",[allIds,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","incoming_qty","seller_ids","uom_po_id","active","qty_available","x_costo_manual","x_costo_manual_date","x_costo_motor","x_iva_compra","taxes_id","x_oportunidad"]]),
       rpc("stock.quant","search_read",[[["location_id.usage","=","internal"],["quantity",">",0],["lot_id","!=",false]],["product_id","lot_id","quantity","value"]],{limit:5000}),
     ]);
     const M={}; for(const m of meta) M[m.id]=m;
@@ -510,12 +504,12 @@ async function cargar(){
       const pvp=m.list_price||0;
       // COSTO REAL DEL MOTOR (igual a Costos y Rentabilidad), NO standard_price
       const std=cost, catId=m.categ_id?m.categ_id[0]:0;
-      const costoU=costoReal({xCostoMotor:m.x_costo_motor||0, std, ivaCompra:m.x_iva_compra||0, tildeProp:m.x_iva_costo||"", catId});
+      const costoU=costoReal({xCostoMotor:m.x_costo_motor||0, std, ivaCompra:m.x_iva_compra||0, taxesId:m.taxes_id||[]});
       return {id, code:m.default_code||"", archivado:m.active===false, valRoto, qa, xop:!!m.x_oportunidad, manualC:m.x_costo_manual||0, manualD:m.x_costo_manual_date||null, name:(s?s.product_id[1]:(m.name||("#"+id))), fam:familia(m.categ_id),
         categ:m.categ_id?m.categ_id[1]:"", catId, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, val, qty, ventaU, venta3, freq, compraFreq:Math.round(CF[id]||0),
         incoming:Math.round(m.incoming_qty||0),
         meses: meses>900?999:Math.round(meses*10)/10,
-        std, xCostoMotor:m.x_costo_motor||0, ivaCompra:m.x_iva_compra||0, tildeProp:m.x_iva_costo||"", ivaAlCosto:tildeEfectiva({tildeProp:m.x_iva_costo||"",catId})?(m.x_iva_compra||0):0,
+        std, xCostoMotor:m.x_costo_motor||0, ivaCompra:m.x_iva_compra||0, taxesId:m.taxes_id||[], ivaAlCosto:tildeEfectiva({taxesId:m.taxes_id||[]})?(m.x_iva_compra||0):0,
         costoU, pvp, margenU:Math.max(0,pvp-costoU), margenPct:pvp>0?(pvp-costoU)/pvp*100:null,
         margenAnual: (ventaU>0 && pvp>costoU) ? ventaU*(pvp-costoU) : 0,
         provId:formal?formal.partner_id[0]:null, provName:formal?formal.partner_id[1]:null,
@@ -1413,7 +1407,7 @@ async function loadCatalogo(){
   CAT.loading=true;
   try{
     const [prods, si] = await Promise.all([
-      rpc("product.product","search_read",[[["active","=",true]]],{fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","list_price","x_costo_motor","x_iva_compra","x_iva_costo"],limit:100000}),
+      rpc("product.product","search_read",[[["active","=",true]]],{fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","list_price","x_costo_motor","x_iva_compra","taxes_id"],limit:100000}),
       rpc("product.supplierinfo","search_read",[[]],{fields:["product_tmpl_id","product_id","partner_id","price","min_qty"],limit:100000}),
     ]);
     const byTmpl={};
@@ -1424,9 +1418,9 @@ async function loadCatalogo(){
     CAT.rows=prods.map(p=>{ const t=p.product_tmpl_id?p.product_tmpl_id[0]:null;
       const provs=t&&byTmpl[t]?Object.values(byTmpl[t]):[];
       const catId=p.categ_id?p.categ_id[0]:0, std=p.standard_price||0;
-      const costoU=costoReal({xCostoMotor:p.x_costo_motor||0, std, ivaCompra:p.x_iva_compra||0, tildeProp:p.x_iva_costo||"", catId}), pvp=p.list_price||0;
+      const costoU=costoReal({xCostoMotor:p.x_costo_motor||0, std, ivaCompra:p.x_iva_compra||0, taxesId:p.taxes_id||[]}), pvp=p.list_price||0;
       return {id:p.id, code:p.default_code||"", name:cleanName(p.name||""), fam:familia(p.categ_id), lab:labDe(p.categ_id), catId,
-        std, xCostoMotor:p.x_costo_motor||0, ivaCompra:p.x_iva_compra||0, tildeProp:p.x_iva_costo||"", ivaAlCosto:tildeEfectiva({tildeProp:p.x_iva_costo||"",catId})?(p.x_iva_compra||0):0,
+        std, xCostoMotor:p.x_costo_motor||0, ivaCompra:p.x_iva_compra||0, taxesId:p.taxes_id||[], ivaAlCosto:tildeEfectiva({taxesId:p.taxes_id||[]})?(p.x_iva_compra||0):0,
         qty:Math.round(stQty[p.id]||0), costoU, pvp, margenPct:pvp>0?(pvp-costoU)/pvp*100:null,
         provs, provName:provs.length?provs[0].name:"", provId:provs.length?provs[0].id:null, provPrice:provs.length?provs[0].price:0}; });
     CAT.fams=[...new Set(CAT.rows.map(r=>r.fam).filter(Boolean))].sort();
