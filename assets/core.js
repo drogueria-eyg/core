@@ -202,7 +202,15 @@ window.EYG = (function(){
     const p = await perfil();
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso", accesoMsg(p,s), false); return; }
     if(comercialLock(p)) return;   // comercial fuera de su panel → a su panel
-    const ok = esSuper(p._h) || p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
+    /* Permisos por persona, igual que en guard(): una concesión (modulos_extra)
+       habilita el módulo aunque no sea del rol, y una quita lo bloquea aunque el
+       rol lo traiga. Sin esto, habilitarle un módulo a alguien desde "Usuarios y
+       accesos" no tenía ningún efecto en las páginas que entran por acá. */
+    const mk = railActiveKey();
+    const extra = !esSuper(p._h) && !!mk && (p.modulos_extra||[]).includes(mk);
+    const quita = !esSuper(p._h) && !!mk && (p.modulos_quita||[]).includes(mk);
+    let ok = esSuper(p._h) || p.rol==="admin" || p.rol==="direccion" || !roles.length || roles.includes(p.rol);
+    if(quita) ok=false; else if(!ok && extra) ok=true;
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return; }
     if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return; }
     document.body.innerHTML = "";
