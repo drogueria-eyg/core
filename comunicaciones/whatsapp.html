@@ -427,6 +427,9 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
   let cfg={activo:false,numeros:[],pausadas:[],asignadas:{},voz:"espejo"};
   let convs=[], sel=null, msgs=[], ficha=null, comerciales=[];
   let cargando=false, filtro="", vistoId=0, primeraCarga=true;
+  /* Desde Cobranzas se llega con ?canal=123 para leer la charla de ese pago. */
+  const canalPedido=Number(new URLSearchParams(location.search).get("canal"))||0;
+  let yaAbriPedido=false;
   /* "todo" | "interesados" — ver el comentario del CSS .filint */
   let verSolo="todo";
   let firmaConvs="", firmaMsgs="", firmaFicha="";
@@ -962,7 +965,12 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
         ? [["channel_type","=","whatsapp"],["active","=",false]]
         : [["channel_type","=","whatsapp"]];
       const r=await EYG.rpc("discuss.channel","search_read",[dominio],
-        {fields:["name","whatsapp_number","whatsapp_partner_id","whatsapp_channel_valid_until","write_date"],order:"write_date desc",limit:60});
+        /* TODAS, sin tope. Traía las 60 más recientes y hay 105: las que no
+           tuvieron movimiento esta semana quedaban afuera de la lista y no se
+           podían ni buscar — Farmacia Toscanelli, que pagó $212.769 el 14/09,
+           era invisible. Un tope en una bandeja es una trampa: el día que haya
+           más chats que el número, vuelve a pasar sin que nadie se entere. */
+        {fields:["name","whatsapp_number","whatsapp_partner_id","whatsapp_channel_valid_until","write_date"],order:"write_date desc",limit:0});
       let nuevas=r||[];
       for(const v of nuevas) vivosOdoo.add(v.id);
       /* Se refresca si está vacío, si hay algún chat que todavía no resolvimos
@@ -1005,6 +1013,11 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     }catch(e){ /* se reintenta en el próximo ciclo */ }
     primeraCarga=false;
     pintarConvs(); pintarBot();
+    /* Una sola vez, y solo si esa conversación está entre las que puede ver. */
+    if(canalPedido && !yaAbriPedido && convs.some(v=>v.id===canalPedido)){
+      yaAbriPedido=true;
+      abrir(canalPedido);
+    }
   }
   function pintarConvs(){
     const f=filtro.trim().toLowerCase();
