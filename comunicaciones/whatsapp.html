@@ -80,6 +80,7 @@
   .pin.bot{background:rgba(37,211,102,.13);color:var(--wsp)}
   .pin.eq{background:rgba(236,139,94,.13);color:var(--hud-coral)}
   .pin.asig{background:rgba(159,140,255,.14);color:var(--hud-lila)}
+  .pin.p-cob{background:rgba(255,107,107,.13);color:var(--hud-err)}
   /* Gente de casa: sin relleno, solo un contorno tenue. No compite con el resto. */
   .pin.casa{background:transparent;border:1px solid var(--hud-line2);color:var(--hud-txt2);letter-spacing:1px;padding:1px 6px}
   /* Un color por área. Sombreados suaves a propósito: el nombre tiene que
@@ -357,6 +358,7 @@
     <div class="filint" id="filInt">
       <button data-v="todo" class="on">TODAS</button>
       <button data-v="interesados" title="Escribieron, no son clientes y no le aparecen a ningún comercial. Son altas posibles.">INTERESADOS<span class="cu" id="nInt"></span></button>
+      <button data-v="cobranzas" title="Conversaciones donde se le reclamó una deuda: vencimiento próximo, vence hoy o factura vencida.">COBRANZAS<span class="cu" id="nCob"></span></button>
     </div>
     <div class="convs" id="convs"><div class="vacio">CARGANDO…</div></div>
   </aside>
@@ -465,6 +467,37 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
       firmaConvs=""; firmaFicha="";
     }catch(e){}
   }
+  /* QUÉ SE LE RECLAMÓ A CADA UNO. Sale de wsp_vencimientos_avisados, que llena
+     wsp-vencimientos cada vez que manda un recordatorio de cobranza. Se guarda
+     por los últimos 8 dígitos del teléfono porque el mismo número aparece
+     escrito de mil formas (con 54, con 9, con 0 adelante). Se mira el ÚLTIMO día
+     reclamado: lo anterior ya se cobró o se volvió a reclamar. */
+  let cobro={}, cobroAl=0;
+  const clave8=t=>String(t||"").replace(/\D/g,"").slice(-8);
+  async function cargarCobros(){
+    try{
+      const desde=new Date(Date.now()-45*86400000).toISOString().slice(0,10);
+      const {data}=await EYG.supa().from("wsp_vencimientos_avisados")
+        .select("telefono,importe,dia,tipo").gte("dia",desde);
+      const porDia={};
+      for(const r of data||[]){
+        const k=clave8(r.telefono); if(!k) continue;
+        porDia[k]=porDia[k]||{};
+        porDia[k][r.dia]=porDia[k][r.dia]||{total:0,tipo:r.tipo};
+        porDia[k][r.dia].total+=Number(r.importe)||0;
+      }
+      const m={};
+      for(const k in porDia){
+        const dias=Object.keys(porDia[k]).sort();
+        const ult=dias[dias.length-1];
+        m[k]={dia:ult, total:porDia[k][ult].total, tipo:porDia[k][ult].tipo, veces:dias.length};
+      }
+      cobro=m; cobroAl=Date.now();
+      firmaConvs=""; firmaFicha="";
+    }catch(e){}
+  }
+  const ROTULO_COBRO={previo:"vence pronto",dia:"vence hoy",vencida:"vencida"};
+
   /* Los teléfonos del equipo, para distinguir en la bandeja quién es de casa */
   let EQUIPO={};
   const ROTULO_NIVEL={direccion:"DIRECCIÓN",lider:"LÍDER",comercial:"COMERCIAL",finanzas:"COBRANZAS",deposito:"DEPÓSITO",tecnica:"DIR. TÉCNICA"};
@@ -939,6 +972,7 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
          pantalla seguía diciendo "no cliente" hasta recargar la página. */
       const faltaAlguno = nuevas.some(v=>!dueno[v.id]);
       if(!Object.keys(dueno).length || faltaAlguno || Date.now()-duenoAl > 120000) await cargarDuenos();
+      if(!cobroAl || Date.now()-cobroAl > 120000) await cargarCobros();
       /* El recorte de verdad ya lo hizo el servidor; acá solo se aplica su
          respuesta. Si no la pudo dar, no se muestra nada. */
       if(SOLO_MIRA){
@@ -978,20 +1012,24 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
        El dato ya está en el mapa "dueno" (wsp_canal_dueno), que se carga igual
        para pintar la lista: no cuesta una consulta más. */
     const esInteresado=v=>!delEquipo(v.whatsapp_number) && !((dueno[v.id]||{}).cliente);
+    /* COBRANZA = a ese teléfono se le reclamó una deuda en los últimos 45 días. */
+    const esCobranza=v=>Boolean(cobro[clave8(v.whatsapp_number)]);
     const lista=convs.filter(v=>{
       if(verSolo==="interesados" && !esInteresado(v)) return false;
+      if(verSolo==="cobranzas" && !esCobranza(v)) return false;
       if(!f) return true;
       return ((nom1(v.whatsapp_partner_id)||v.name||"")+" "+(v.whatsapp_number||"")).toLowerCase().includes(f);
     });
     const cuantosInt=convs.filter(esInteresado).length;
     const elInt=$("nInt"); if(elInt) elInt.textContent=cuantosInt||"";
+    const elCob=$("nCob"); if(elCob) elCob.textContent=convs.filter(esCobranza).length||"";
     $("nConv").textContent=lista.length?lista.length:"";
     /* sin parpadeo: si nada cambió, no se toca el DOM */
-    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.ultimo||v.write_date}|${enLinea(v)?1:0}|${(dueno[v.id]||{}).cliente?1:0}|${cfg.pausadas.includes(v.id)?1:0}|${(asignadaDe(v.id)||{}).nombre||""}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0)+"|"+verSolo;
+    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.ultimo||v.write_date}|${enLinea(v)?1:0}|${(dueno[v.id]||{}).cliente?1:0}|${cfg.pausadas.includes(v.id)?1:0}|${(asignadaDe(v.id)||{}).nombre||""}|${(cobro[clave8(v.whatsapp_number)]||{}).total||0}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0)+"|"+verSolo;
     if(firma===firmaConvs) return;
     firmaConvs=firma;
     const c=$("convs");
-    if(!lista.length){ c.innerHTML=`<div class="vacio">${f?"NADA COINCIDE":(verSolo==="interesados"?"NADIE ESPERANDO<br>—<br>TODOS LOS QUE ESCRIBIERON<br>YA SON CLIENTES":(modo==="guardadas"?"TODAVÍA NO HAY NADA GUARDADO":(verArchivadas?"NO HAY NADA ARCHIVADO":"SIN CONVERSACIONES<br>—<br>APARECEN SOLAS CUANDO<br>UN CLIENTE ESCRIBE")))}</div>`; return; }
+    if(!lista.length){ c.innerHTML=`<div class="vacio">${f?"NADA COINCIDE":(verSolo==="cobranzas"?"NINGÚN RECLAMO<br>—<br>ACÁ APARECEN LAS CHARLAS<br>DONDE SE RECLAMÓ UNA DEUDA":(verSolo==="interesados"?"NADIE ESPERANDO<br>—<br>TODOS LOS QUE ESCRIBIERON<br>YA SON CLIENTES":(modo==="guardadas"?"TODAVÍA NO HAY NADA GUARDADO":(verArchivadas?"NO HAY NADA ARCHIVADO":"SIN CONVERSACIONES<br>—<br>APARECEN SOLAS CUANDO<br>UN CLIENTE ESCRIBE"))))}</div>`; return; }
     c.innerHTML=lista.map(v=>{
       const eq=cfg.pausadas.includes(v.id), asig=asignadaDe(v.id);
       /* Para el comercial vale el nombre del CLIENTE, no el que la persona tiene
@@ -1021,9 +1059,15 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
           <div class="t"><span>${v.mensajes} mensajes · ${v.aprendido} aprendido${v.aprendido===1?"":"s"}</span><span>${esc(dia(v.ultimo))}</span></div>
         </div>`;
       }
+      /* Lo que se le reclamó, a la vista en la fila: es el dato que se busca
+         cuando el cliente contesta "ya pagué". */
+      const rec=cobro[clave8(v.whatsapp_number)];
+      const pinCob=rec
+        ? `<span class="pin p-cob" title="Se le reclamó ${plata(rec.total)} el ${String(rec.dia).slice(5).split("-").reverse().join("/")} · ${ROTULO_COBRO[rec.tipo]||rec.tipo}${rec.veces>1?" · "+rec.veces+" días":""}">${plata(rec.total)}</span>`
+        : "";
       const vivo=enLinea(v)?'<i class="vivo" title="Conversación en curso ahora mismo"></i>':"";
       return `<div class="conv ${sel&&sel.id===v.id?"act":""}${vivo?" viva":""}" data-id="${v.id}" data-nom="${esc(nom)}">
-        <div class="n">${vivo}<b>${esc(nom)}</b>${marca}</div>
+        <div class="n">${vivo}<b>${esc(nom)}</b>${marca}${pinCob}</div>
         <div class="t"><span>${esc(v.whatsapp_number||"")}</span><span>${esc(dia(v.ultimo||v.write_date))}</span></div>
         ${SOLO_MIRA?"":`<div class="cvacc">
           <button class="cvb" data-a="${verArchivadas?"desarchivar":"archivar"}" title="${verArchivadas?"Devolver a la bandeja":"Archivar: sale de la bandeja y se puede recuperar"}">${verArchivadas?"↩":"📁"}</button>
