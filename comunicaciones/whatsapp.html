@@ -81,7 +81,6 @@
   .pin.eq{background:rgba(236,139,94,.13);color:var(--hud-coral)}
   .pin.asig{background:rgba(159,140,255,.14);color:var(--hud-lila)}
   .pin.p-cob{background:rgba(255,107,107,.13);color:var(--hud-err)}
-  .pin.p-pag{background:rgba(37,211,102,.14);color:var(--wsp)}
   /* Gente de casa: sin relleno, solo un contorno tenue. No compite con el resto. */
   .pin.casa{background:transparent;border:1px solid var(--hud-line2);color:var(--hud-txt2);letter-spacing:1px;padding:1px 6px}
   /* Un color por área. Sombreados suaves a propósito: el nombre tiene que
@@ -226,8 +225,8 @@
      ningún comercial. Medido el 3/9/2026: eran 10, tres habían escrito ese
      mismo día y uno llevaba 26 mensajes de ida y vuelta. Nadie los estaba
      mirando — no por un error del recorte, sino porque no existía dónde verlos. */
-  .filint{display:flex;flex-wrap:wrap;gap:6px;padding:0 13px 9px}
-  .filint button{flex:1 1 44%;font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:1px;
+  .filint{display:flex;gap:6px;padding:0 13px 9px}
+  .filint button{flex:1;font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:1px;
       border-radius:8px;padding:6px 8px;cursor:pointer;transition:.14s;
       background:transparent;color:var(--hud-txt2);border:1px solid rgba(95,200,191,.16)}
   .filint button:hover{border-color:rgba(95,200,191,.34);color:var(--hud-aqua)}
@@ -360,7 +359,6 @@
       <button data-v="todo" class="on">TODAS</button>
       <button data-v="interesados" title="Escribieron, no son clientes y no le aparecen a ningún comercial. Son altas posibles.">INTERESADOS<span class="cu" id="nInt"></span></button>
       <button data-v="cobranzas" title="Conversaciones donde se le reclamó una deuda: vencimiento próximo, vence hoy o factura vencida.">COBRANZAS<span class="cu" id="nCob"></span></button>
-      <button data-v="pagos" title="Mandaron un comprobante o hablaron de un pago. Hay que chequearlos contra la cuenta.">PAGOS<span class="cu" id="nPag"></span></button>
     </div>
     <div class="convs" id="convs"><div class="vacio">CARGANDO…</div></div>
   </aside>
@@ -499,59 +497,6 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     }catch(e){}
   }
   const ROTULO_COBRO={previo:"vence pronto",dia:"vence hoy",vencida:"vencida"};
-
-  /* PAGOS Y COMPROBANTES. Dos señales, las dos del propio chat:
-       1. el asistente derivó el caso a Cobranzas — queda la nota "🛒 El asistente
-          pasa esto al equipo (cobranzas)". Es la señal FUERTE: la escribe cuando
-          reconoce un comprobante o una consulta de saldo, y trae el importe.
-       2. el cliente habló de un pago con sus palabras.
-     NO se busca solo por la palabra "comprobante": nuestros propios
-     recordatorios de cobranza la dicen en el cierre, así que por palabra suelta
-     se marcaba TODO. Y el prefiltro de Odoo es amplio a propósito —`pagu`,
-     `transfer`— pero después se pasa un tamiz fino acá: sin los bordes de
-     palabra, "jabones" entraba como "abone". */
-  let pago={}, pagoAl=0;
-  /* Se comparan las palabras SIN TILDE: el corte de palabra de JavaScript no
-     reconoce la vocal acentuada, así que "pagué" y "transferí" no entraban. */
-  const sinTildes=t=>String(t||"").normalize("NFD").replace(/[̀-ͯ]/g,"");
-  const RE_PAGO=/\b(comprobantes?(?!\s+de\s+entrega)|transferencias?|transferi|transfirio|pague|pagamos|pagado|abonad[oa]s?|abone)\b/i;
-  /* "Depósito" solo cuenta si viene con un importe: si no, es el depósito de
-     mercadería y entra cualquier cosa (una propuesta de logística, alguien
-     buscando trabajo). El importe se reconoce por el signo $ o por los puntos
-     de mil, no por cualquier número: "septiembre de 2026" no es plata. */
-  const RE_DEPO=/\b(depositamos|deposit[eo])\b/i;
-  const RE_PLATA=/\$\s?\d|\d{1,3}(\.\d{3})+/;
-  const hablaDePago=t=>RE_PAGO.test(t)||(RE_DEPO.test(t)&&RE_PLATA.test(t));
-  async function cargarPagos(){
-    try{
-      const desde=new Date(Date.now()-45*86400000).toISOString().slice(0,19).replace("T"," ");
-      const [deriv,dicen]=await Promise.all([
-        EYG.rpc("mail.message","search_read",
-          [[["model","=","discuss.channel"],["date",">",desde],["body","ilike","pasa esto al equipo (cobranzas)"]]],
-          {fields:["res_id","date","body"],order:"date desc",limit:300}),
-        EYG.rpc("mail.message","search_read",
-          [[["model","=","discuss.channel"],["date",">",desde],["message_type","=","whatsapp_message"],
-            "|","|","|",["body","ilike","comprobante"],["body","ilike","transfer"],["body","ilike","pagu"],["body","ilike","deposit"]]],
-          {fields:["res_id","date","body"],order:"date desc",limit:400}),
-      ]);
-      const m={};
-      const poner=(id,cuando,texto,fuerte)=>{
-        const a=m[id];
-        if(!a){ m[id]={cuando,texto,fuerte:!!fuerte}; return; }
-        if(fuerte&&!a.fuerte){ m[id]={cuando,texto,fuerte:true}; return; }   /* la derivación manda */
-        if(fuerte===a.fuerte&&cuando>a.cuando){ a.cuando=cuando; a.texto=texto; }
-      };
-      for(const x of deriv||[]) poner(x.res_id,x.date,limpiar(x.body).replace(/^🛒[^:]*:\s*/,""),true);
-      for(const x of dicen||[]){
-        if(String(x.body||"").includes(FIRMA)) continue;   /* eso lo escribimos nosotros */
-        const t=limpiar(x.body);
-        if(!hablaDePago(sinTildes(t))) continue;
-        poner(x.res_id,x.date,t,false);
-      }
-      pago=m; pagoAl=Date.now();
-      firmaConvs=""; firmaFicha="";
-    }catch(e){}
-  }
 
   /* Los teléfonos del equipo, para distinguir en la bandeja quién es de casa */
   let EQUIPO={};
@@ -1028,7 +973,6 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
       const faltaAlguno = nuevas.some(v=>!dueno[v.id]);
       if(!Object.keys(dueno).length || faltaAlguno || Date.now()-duenoAl > 120000) await cargarDuenos();
       if(!cobroAl || Date.now()-cobroAl > 120000) await cargarCobros();
-      if(!pagoAl || Date.now()-pagoAl > 120000) await cargarPagos();
       /* El recorte de verdad ya lo hizo el servidor; acá solo se aplica su
          respuesta. Si no la pudo dar, no se muestra nada. */
       if(SOLO_MIRA){
@@ -1073,21 +1017,19 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     const lista=convs.filter(v=>{
       if(verSolo==="interesados" && !esInteresado(v)) return false;
       if(verSolo==="cobranzas" && !esCobranza(v)) return false;
-      if(verSolo==="pagos" && !pago[v.id]) return false;
       if(!f) return true;
       return ((nom1(v.whatsapp_partner_id)||v.name||"")+" "+(v.whatsapp_number||"")).toLowerCase().includes(f);
     });
     const cuantosInt=convs.filter(esInteresado).length;
     const elInt=$("nInt"); if(elInt) elInt.textContent=cuantosInt||"";
     const elCob=$("nCob"); if(elCob) elCob.textContent=convs.filter(esCobranza).length||"";
-    const elPag=$("nPag"); if(elPag) elPag.textContent=convs.filter(v=>pago[v.id]).length||"";
     $("nConv").textContent=lista.length?lista.length:"";
     /* sin parpadeo: si nada cambió, no se toca el DOM */
-    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.ultimo||v.write_date}|${enLinea(v)?1:0}|${(dueno[v.id]||{}).cliente?1:0}|${cfg.pausadas.includes(v.id)?1:0}|${(asignadaDe(v.id)||{}).nombre||""}|${(cobro[clave8(v.whatsapp_number)]||{}).total||0}|${(pago[v.id]||{}).cuando||""}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0)+"|"+verSolo;
+    const firma=lista.map(v=>`${delEquipo(v.whatsapp_number)?"C":""}${v.id}|${v.ultimo||v.write_date}|${enLinea(v)?1:0}|${(dueno[v.id]||{}).cliente?1:0}|${cfg.pausadas.includes(v.id)?1:0}|${(asignadaDe(v.id)||{}).nombre||""}|${(cobro[clave8(v.whatsapp_number)]||{}).total||0}`).join(";")+"|"+(sel?sel.id:0)+"|"+(cfg.activo?1:0)+"|"+verSolo;
     if(firma===firmaConvs) return;
     firmaConvs=firma;
     const c=$("convs");
-    if(!lista.length){ c.innerHTML=`<div class="vacio">${f?"NADA COINCIDE":(verSolo==="pagos"?"NINGÚN PAGO POR CHEQUEAR<br>—<br>ACÁ APARECEN LOS QUE MANDARON<br>UN COMPROBANTE O HABLARON DE PAGO":(verSolo==="cobranzas"?"NINGÚN RECLAMO<br>—<br>ACÁ APARECEN LAS CHARLAS<br>DONDE SE RECLAMÓ UNA DEUDA":(verSolo==="interesados"?"NADIE ESPERANDO<br>—<br>TODOS LOS QUE ESCRIBIERON<br>YA SON CLIENTES":(modo==="guardadas"?"TODAVÍA NO HAY NADA GUARDADO":(verArchivadas?"NO HAY NADA ARCHIVADO":"SIN CONVERSACIONES<br>—<br>APARECEN SOLAS CUANDO<br>UN CLIENTE ESCRIBE")))))}</div>`; return; }
+    if(!lista.length){ c.innerHTML=`<div class="vacio">${f?"NADA COINCIDE":(verSolo==="cobranzas"?"NINGÚN RECLAMO<br>—<br>ACÁ APARECEN LAS CHARLAS<br>DONDE SE RECLAMÓ UNA DEUDA":(verSolo==="interesados"?"NADIE ESPERANDO<br>—<br>TODOS LOS QUE ESCRIBIERON<br>YA SON CLIENTES":(modo==="guardadas"?"TODAVÍA NO HAY NADA GUARDADO":(verArchivadas?"NO HAY NADA ARCHIVADO":"SIN CONVERSACIONES<br>—<br>APARECEN SOLAS CUANDO<br>UN CLIENTE ESCRIBE"))))}</div>`; return; }
     c.innerHTML=lista.map(v=>{
       const eq=cfg.pausadas.includes(v.id), asig=asignadaDe(v.id);
       /* Para el comercial vale el nombre del CLIENTE, no el que la persona tiene
@@ -1123,15 +1065,9 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
       const pinCob=rec
         ? `<span class="pin p-cob" title="Se le reclamó ${plata(rec.total)} el ${String(rec.dia).slice(5).split("-").reverse().join("/")} · ${ROTULO_COBRO[rec.tipo]||rec.tipo}${rec.veces>1?" · "+rec.veces+" días":""}">${plata(rec.total)}</span>`
         : "";
-      /* 💸 = mandó un comprobante o habló de un pago. Es para chequearlo
-         contra la cuenta, por eso el detalle va en el título. */
-      const pg=pago[v.id];
-      const pinPag=pg
-        ? `<span class="pin p-pag" title="${esc(String(pg.texto||"").slice(0,220))}">💸 ${pg.fuerte?"PAGO":"¿PAGO?"}</span>`
-        : "";
       const vivo=enLinea(v)?'<i class="vivo" title="Conversación en curso ahora mismo"></i>':"";
       return `<div class="conv ${sel&&sel.id===v.id?"act":""}${vivo?" viva":""}" data-id="${v.id}" data-nom="${esc(nom)}">
-        <div class="n">${vivo}<b>${esc(nom)}</b>${marca}${pinPag}${pinCob}</div>
+        <div class="n">${vivo}<b>${esc(nom)}</b>${marca}${pinCob}</div>
         <div class="t"><span>${esc(v.whatsapp_number||"")}</span><span>${esc(dia(v.ultimo||v.write_date))}</span></div>
         ${SOLO_MIRA?"":`<div class="cvacc">
           <button class="cvb" data-a="${verArchivadas?"desarchivar":"archivar"}" title="${verArchivadas?"Devolver a la bandeja":"Archivar: sale de la bandeja y se puede recuperar"}">${verArchivadas?"↩":"📁"}</button>
