@@ -95,8 +95,8 @@ window.EYGHome = (function(){
   let HOY, MES_INI, SEM_INI, ANO_INI;
   let ORD8=[], ORD8_OK=false;   // pedidos de los últimos 8 días (hoy / hora x hora / sparkline)
   let MG=null;                  // resumen de margen (se cachea entre refrescos)
-  let MODO="ventas";            // métrica del gráfico de evolución: ventas | margen | canales
-  let CAN_FOCO=null;            // canal aislado en el gráfico (null = todos apilados)
+  let MODO="ventas";            // qué muestra el gráfico: ventas | margen | canales | rubros
+  const FOCO={canales:null, rubros:null};   // ítem aislado en el gráfico, por corte
   /* Las olas 2 y 3 arrancan en paralelo con la 1, pero algunos números ("compraron
      hoy", "quién vendió hoy") salen de ORD8, que llena la ola 1. Sin esta espera
      mostraban 0 según quién ganara la carrera. */
@@ -154,7 +154,6 @@ window.EYGHome = (function(){
     {k:"odoo", ic:"✍️", lab:"Odoo (a mano)", corto:"Odoo", col:"#93A8A4", resto:true,
      ayuda:"Cargados a mano adentro de Odoo, casi siempre por administración. Es lo que queda cuando el pedido no trae ninguna marca."},
   ];
-  const CAN_MAP={}; CANALES.forEach(c=>CAN_MAP[c.k]=c);
   /* Versión cliente de lo mismo, para clasificar pedidos ya leídos (vista por hora). */
   function canalDe(o){
     if(o.website_id && o.website_id[0]) return "web";
@@ -165,6 +164,39 @@ window.EYGHome = (function(){
     if(cu===CONECTOR_UID && vd!==CONECTOR_UID) return "core";
     return "odoo";
   }
+
+  /* ---------- rubros del cliente ----------
+     La lista la define core.js (EYG.RUBROS), que es la misma que usan el módulo
+     de Rentabilidad, Contactos y Cobranzas: si mañana se agrega o se saca un
+     rubro, acá aparece solo.
+
+     El filtro va por `partner_id.commercial_partner_id`: ese campo es el cliente
+     FISCAL (el padre si el pedido salió a nombre de una dirección de entrega, y
+     él mismo si es una empresa), así que el rubro se hereda sin hacer nada.
+     Verificado sobre los pedidos reales: de 2.244, sólo 3 quedan sin rubro. */
+  const RUB_FIELD = EYG.RUBRO_FIELD;
+  const RUBROS = EYG.RUBROS.map(r=>({
+    k:r.v, ic:r.ico, lab:r.l, corto:r.ab, col:r.c, ayuda:r.desc||r.l,
+    dom:[["partner_id.commercial_partner_id."+RUB_FIELD,"=",r.v]],
+  })).concat([{k:"__sin", ic:"❔", lab:"Sin rubro", corto:"Sin rubro", col:"#93A8A4", resto:true,
+     ayuda:"Clientes a los que todavía nadie les puso rubro. Se catalogan en Contactos → Rubros."}]);
+
+  /* ---------- los dos CORTES de la misma venta ----------
+     Canales = por dónde entró el pedido. Rubros = qué tipo de cliente lo hizo.
+     Los dos funcionan igual: una consulta por ítem y el último sale por resta,
+     así el apilado siempre suma exactamente lo mismo que la pestaña Ventas. */
+  const CORTES={
+    canales:{ k:"canales", lab:"Canales", items:CANALES, ico:"🧭",
+      tit:"Ventas por canal", h2:"🧭 ¿Por dónde entran las ventas?",
+      sub:"los mismos pedidos confirmados, apilados según por dónde entraron · sin IVA",
+      lider:"Canal que más trae", pie:"tocá un canal para verlo solo a él" },
+    rubros:{ k:"rubros", lab:"Rubros", items:RUBROS, ico:"🏷️",
+      tit:"Ventas por rubro", h2:"🏷️ ¿Qué tipo de cliente compra más?",
+      sub:"los mismos pedidos confirmados, apilados según el rubro del cliente · sin IVA",
+      lider:"Rubro que más vende", pie:"tocá un rubro para verlo solo a él" },
+  };
+  Object.values(CORTES).forEach(c=>{ c.map={}; c.items.forEach(i=>c.map[i.k]=i); });
+  const esCorte = m => !!CORTES[m];
 
   /* ---------- ámbito por rol ---------- */
   function scope(p){
@@ -497,7 +529,8 @@ window.EYGHome = (function(){
       if(V.margen) MG=FACMG;
       ORD8 = ord.map(o=>Object.assign({
         id:o.id, name:o.name, cli:o.partner_id?o.partner_id[1]:"—",
-        vend:o.user_id?o.user_id[1]:"", amt:o.amount_untaxed||0, canal:canalDe(o)
+        vend:o.user_id?o.user_id[1]:"", amt:o.amount_untaxed||0, canal:canalDe(o),
+        pid:o.partner_id?o.partner_id[0]:0
       }, EYG.argParts(o.date_order)));
       ORD8_OK=true;
 
@@ -588,7 +621,7 @@ window.EYGHome = (function(){
     const ck = modo+"|"+k;
     if(CACHE[ck]) return CACHE[ck];
     if(modo==="margen")  return (CACHE[ck]=await serieMargen(k));
-    if(modo==="canales") return (CACHE[ck]=await serieCanales(k));
+    if(esCorte(modo))    return (CACHE[ck]=await serieCorte(k,modo));
 
     const g=GRAN[k], N=g.n, fin=bkt(k,HOY), ini=g.prev(fin, 2*N-1);
     const raw=await rpc("sale.order","read_group",
@@ -623,19 +656,21 @@ window.EYGHome = (function(){
     return {pts, N, margen:true, sinComparacion:true};
   }
 
-  /* Canales: el TOTAL lo manda la serie de ventas y los canales se reparten
-     adentro. Se le piden a Odoo los tres canales que dejan marca (Core, portal,
-     asistente) y "Odoo a mano" sale POR RESTA. Dos razones: el apilado suma
-     siempre exactamente lo mismo que muestra la pestaña Ventas, y un pedido con
-     una marca nueva que todavía no conozca no se cae del gráfico — aparece
-     dentro de "a mano", que es justamente lo que hay que ir a mirar. */
-  async function serieCanales(k){
+  /* Un CORTE de la venta (canales o rubros): el TOTAL lo manda la serie de
+     ventas y los ítems se reparten adentro. Se le pide a Odoo cada ítem por
+     separado y el último sale POR RESTA. Dos razones: el apilado suma siempre
+     exactamente lo mismo que muestra la pestaña Ventas, y un pedido que no entre
+     en ningún ítem conocido no se cae del gráfico — aparece en el de resta, que
+     es justamente lo que hay que ir a mirar. */
+  async function serieCorte(k, corteK){
+    const C=CORTES[corteK];
     const base=await serie(k,"ventas");
     const g=GRAN[k], N=base.N, fin=bkt(k,HOY), ini=g.prev(fin, 2*N-1);
-    const marcados=CANALES.filter(c=>!c.resto);
-    const mapas=await Promise.all(marcados.map(async c=>{
+    const pedidos=C.items.filter(i=>!i.resto);
+    const resto=C.items.find(i=>i.resto);
+    const mapas=await Promise.all(pedidos.map(async i=>{
       const raw=await rpc("sale.order","read_group",
-        [domVentas([["date_order",">=",uDesde(ini)]]).concat(c.dom),["amount_untaxed:sum"],["date_order:"+g.g]],
+        [domVentas([["date_order",">=",uDesde(ini)]]).concat(i.dom),["amount_untaxed:sum"],["date_order:"+g.g]],
         Object.assign({lazy:false},CTX));
       const m={};
       for(const r of raw){
@@ -649,21 +684,53 @@ window.EYGHome = (function(){
     }));
     const pts=base.pts.map(p=>{
       const seg={}; let sv=0, sn=0;
-      marcados.forEach((c,i)=>{ const o=mapas[i][p.key]||{v:0,n:0}; seg[c.k]={v:o.v,n:o.n}; sv+=o.v; sn+=o.n; });
-      seg.odoo={v:Math.max(0,(p.v||0)-sv), n:Math.max(0,(p.n||0)-sn)};
+      pedidos.forEach((i,ix)=>{ const o=mapas[ix][p.key]||{v:0,n:0}; seg[i.k]={v:o.v,n:o.n}; sv+=o.v; sn+=o.n; });
+      if(resto) seg[resto.k]={v:Math.max(0,(p.v||0)-sv), n:Math.max(0,(p.n||0)-sn)};
       return {key:p.key, v:p.v, n:p.n, seg};
     });
-    return {pts, N, canales:true};
+    return {pts, N, corte:corteK};
   }
 
-  function serieHora(){
+  /* Mapa cliente → rubro, para poder repartir por rubro la vista POR HORA sin
+     pedirle nada más a Odoo (los pedidos de hoy ya están en ORD8). Se trae una
+     sola vez, la primera vez que alguien mira rubros. */
+  let RUB_MAPA=null, _rubCargando=null;
+  function cargarMapaRubros(){
+    if(RUB_MAPA) return Promise.resolve(RUB_MAPA);
+    if(_rubCargando) return _rubCargando;
+    _rubCargando = rpc("res.partner","search_read",[[["customer_rank",">",0]]],
+        Object.assign({fields:["id","parent_id","category_id",RUB_FIELD],limit:0},CTX))
+      .then(ps=>{
+        const m={};
+        ps.forEach(p=>{ m[p.id]=EYG.rubroDe(p)||null; });
+        ps.forEach(p=>{ if(!m[p.id] && p.parent_id) m[p.id]=m[p.parent_id[0]]||null; });
+        RUB_MAPA=m; return m;
+      }).catch(()=>{ RUB_MAPA={}; return RUB_MAPA; });
+    return _rubCargando;
+  }
+  const rubroDeOrden = o => (RUB_MAPA && RUB_MAPA[o.pid]) || "__sin";
+
+  /* La vista por HORA se arma con los pedidos de hoy, que ya están leídos: el
+     reparto por canal y por rubro se calcula acá, sin una consulta más. */
+  function serieHora(corteK){
     const c=CACHE.hora; if(!c) return null;
     let lo=7, hi=21;
     c.hHoy.forEach((v,h)=>{ if(v>0){ lo=Math.min(lo,h); hi=Math.max(hi,h); } });
     hi=Math.max(hi,Math.ceil(c.nf));
+    /* por rubro se calcula al vuelo; por canal ya viene sumado desde la ola 1 */
+    let rHoy=null, rHoyN=null;
+    if(corteK==="rubros" && RUB_MAPA){
+      rHoy={}; rHoyN={};
+      RUBROS.forEach(r=>{ rHoy[r.k]=new Array(24).fill(0); rHoyN[r.k]=new Array(24).fill(0); });
+      ORD8.forEach(o=>{ if(o.date!==HOY) return; const r=rubroDeOrden(o);
+        if(!rHoy[r]){ rHoy[r]=new Array(24).fill(0); rHoyN[r]=new Array(24).fill(0); }
+        rHoy[r][o.hour]+=o.amt; rHoyN[r][o.hour]++; });
+    }
     const pts=[];
     for(let h=lo;h<=hi;h++){
-      const seg={}; CANALES.forEach(x=>{ seg[x.k]={v:(c.cHoy[x.k]||[])[h]||0, n:(c.cHoyN[x.k]||[])[h]||0}; });
+      const seg={};
+      if(rHoy) RUBROS.forEach(x=>{ seg[x.k]={v:(rHoy[x.k]||[])[h]||0, n:(rHoyN[x.k]||[])[h]||0}; });
+      else CANALES.forEach(x=>{ seg[x.k]={v:(c.cHoy[x.k]||[])[h]||0, n:(c.cHoyN[x.k]||[])[h]||0}; });
       pts.push({key:String(h), v:c.hHoy[h], prev:c.hAyer[h], n:0, seg});
     }
     return {pts, N:pts.length, hora:true, tot:c.totHoy, prevTot:c.ayerAhora};
@@ -671,6 +738,9 @@ window.EYGHome = (function(){
 
   async function ver(k){
     GRA=k;
+    /* Los rubros de la vista por hora salen del mapa de clientes: si todavía no
+       llegó, se espera, porque sin él todo caería en "sin rubro". */
+    if(MODO==="rubros") await cargarMapaRubros();
     if(k!=="hora" && !CACHE[MODO+"|"+k]){
       const w=document.getElementById("evo-body");
       if(w) w.innerHTML=`<div class="skel" style="height:230px;border-radius:12px"></div>`;
@@ -678,7 +748,7 @@ window.EYGHome = (function(){
     }
     pintarEvo();
   }
-  /* Cambia la métrica del gráfico. "Hora" no existe para margen: el margen de
+  /* Cambia lo que muestra el gráfico. "Hora" no existe para margen: el margen de
      una hora suelta es ruido, y cada barra de margen cuesta una consulta. */
   function verModo(m){
     if(MODO===m) return;
@@ -686,45 +756,56 @@ window.EYGHome = (function(){
     if(m==="margen" && GRA==="hora") GRA="mes";
     ver(GRA);
   }
-  /* Tocar un canal de la leyenda lo AÍSLA en el gráfico (y de paso enciende la
-     vista de canales si estabas mirando el total). Volver a tocarlo los muestra
-     apilados otra vez. */
-  function verCanal(k){
-    if(MODO!=="canales"){ MODO="canales"; CAN_FOCO=k; ver(GRA); return; }
-    CAN_FOCO = (CAN_FOCO===k) ? null : k;
+  /* Tocar un ítem de una leyenda lo AÍSLA en el gráfico (y de paso enciende la
+     pestaña de ese corte si estabas mirando el total). Tocarlo de nuevo vuelve
+     a mostrarlos apilados. */
+  function verSeg(corteK, k){
+    if(MODO!==corteK){ MODO=corteK; FOCO[corteK]=k; ver(GRA); return; }
+    FOCO[corteK] = (FOCO[corteK]===k) ? null : k;
     pintarEvo();
   }
-  /* La leyenda de canales también se muestra en la pestaña Ventas, pero ahí los
-     datos no se piden hasta tener el gráfico pintado: primero lo que el usuario
-     fue a ver, después el detalle. Por hora no cuesta nada (sale de ORD8). */
-  function asegurarCanales(){
-    if(GRA==="hora" || CACHE["canales|"+GRA]) return;
+  /* Las leyendas también se muestran en la pestaña Ventas, pero ahí los datos no
+     se piden hasta tener el gráfico pintado: primero lo que el usuario fue a
+     ver, después el detalle. Por hora no cuesta ninguna consulta (sale de los
+     pedidos de hoy, que ya están leídos). */
+  function asegurarCortes(){
     const gra=GRA;
-    serie(gra,"canales").then(()=>{
-      if(GRA!==gra || MODO==="margen") return;
-      if(MODO==="canales") pintarEvo(); else pintarLeyenda(gra);
-    }).catch(()=>{});
+    cortesVisibles().forEach(c=>{
+      if(gra==="hora"){
+        if(c==="rubros" && !RUB_MAPA)
+          cargarMapaRubros().then(()=>{ if(GRA!==gra) return; MODO==="rubros"?pintarEvo():pintarLeyenda(gra); });
+        return;
+      }
+      if(CACHE[c+"|"+gra]) return;
+      serie(gra,c).then(()=>{
+        if(GRA!==gra || MODO==="margen") return;
+        if(MODO===c) pintarEvo(); else pintarLeyenda(gra);
+      }).catch(()=>{});
+    });
   }
 
   function pintarEvo(soloSiHora){
     const z=document.getElementById("dz-evo"); if(!z) return;
     if(soloSiHora && GRA!=="hora") return;
-    const esMg = MODO==="margen", esCan = MODO==="canales";
+    const esMg = MODO==="margen";
+    const corteK = esCorte(MODO) ? MODO : null;      // canales | rubros | null
+    const C = corteK ? CORTES[corteK] : null;
 
-    /* "Hora" existe para ventas y canales; para margen no (ver verModo). */
+    /* "Hora" existe para ventas y para los cortes; para margen no (ver verModo). */
     const grans = Object.keys(GRAN).filter(k=>!(esMg && k==="hora"));
     const ctrl = `<div class="pills mini">
         <button class="${MODO==="ventas"?"on":""}" onclick="EYGHome.verModo('ventas')" title="Cuánto se vendió en cada período.">Ventas</button>
         ${V.margen?`<button class="${esMg?"on":""}" onclick="EYGHome.verModo('margen')" title="Qué margen dejó la venta de cada período.">Margen</button>`:""}
-        <button class="${esCan?"on":""}" onclick="EYGHome.verModo('canales')" title="La misma venta, apilada según por dónde entró cada pedido.">Canales</button>
+        <button class="${MODO==="canales"?"on":""}" onclick="EYGHome.verModo('canales')" title="La misma venta, apilada según por dónde entró cada pedido.">Canales</button>
+        <button class="${MODO==="rubros"?"on":""}" onclick="EYGHome.verModo('rubros')" title="La misma venta, apilada según el rubro del cliente que compró.">Rubros</button>
       </div>`+
       `<div class="pills">${grans.map(k=>
         `<button data-k="${k}" class="${k===GRA?"on":""}" onclick="EYGHome.ver('${k}')">${GRAN[k].lab}</button>`).join("")}</div>`;
-    const focoC = (esCan && CAN_FOCO) ? CAN_MAP[CAN_FOCO] : null;
+    const focoC = (C && FOCO[corteK]) ? C.map[FOCO[corteK]] : null;
     const titulo = esMg
       ? `<h2>📐 Evolución del margen</h2><div class="hint">margen sobre venta de pedidos confirmados, sin IVA</div>`
-      : esCan
-      ? `<h2>🧭 Ventas por canal</h2><div class="hint">${focoC?`solo <b>${focoC.ic} ${esc(focoC.lab)}</b> · tocá la tarjeta de nuevo para ver todos`:"los mismos pedidos confirmados, apilados según por dónde entraron · sin IVA"}</div>`
+      : C
+      ? `<h2>${C.ico} ${esc(C.tit)}</h2><div class="hint">${focoC?`solo <b>${focoC.ic} ${esc(focoC.lab)}</b> · tocá la tarjeta de nuevo para ver todos`:esc(C.sub)}</div>`
       : `<h2>📈 Evolución de ventas</h2><div class="hint">pedidos confirmados, sin IVA · por fecha de pedido</div>`;
     if(!z.dataset.armado){
       z.innerHTML=`<div class="cx-h"><div id="evo-tit"></div><div class="evo-ctrl" id="evo-ctrl"></div></div><div id="evo-body"></div>`;
@@ -734,11 +815,11 @@ window.EYGHome = (function(){
     document.getElementById("evo-ctrl").innerHTML=ctrl;
     const body=document.getElementById("evo-body"); if(!body) return;
 
-    let s = (!esMg && GRA==="hora") ? serieHora() : CACHE[MODO+"|"+GRA];
+    let s = (!esMg && GRA==="hora") ? serieHora(corteK) : CACHE[MODO+"|"+GRA];
     if(!s){ body.innerHTML=`<div class="skel" style="height:230px;border-radius:12px"></div>`; return; }
 
-    /* Canal aislado: el gráfico muestra SOLO ese canal, pero cada punto se queda
-       con el reparto completo (`seg`) para que la leyenda siga mostrando todo. */
+    /* Ítem aislado: el gráfico muestra SÓLO ese canal (o rubro), pero cada punto
+       se queda con el reparto completo (`seg`) para que la leyenda siga entera. */
     if(focoC) s=Object.assign({},s,{pts:s.pts.map(p=>{
       const g=(p.seg&&p.seg[focoC.k])||{v:0,n:0};
       return {key:p.key, v:g.v, n:g.n, seg:p.seg};
@@ -753,7 +834,7 @@ window.EYGHome = (function(){
 
     if(s.hora){ vis=s.pts; comp=null;
       tot=focoC?agrega(vis):s.tot; compTot=focoC?0:s.prevTot;
-      cmpTxt=focoC?"sin comparación por canal":"vs ayer a esta hora"; }
+      cmpTxt=focoC?"sin comparación aparte":"vs ayer a esta hora"; }
     else if(s.sinComparacion){ vis=s.pts; comp=null; tot=agrega(vis); compTot=0; }
     else{
       vis=s.pts.slice(s.N); comp=s.pts.slice(0,s.N);
@@ -765,7 +846,7 @@ window.EYGHome = (function(){
     }
 
     if(!tot && !compTot){ body.innerHTML=`<div class="evo-empty">Todavía no hay ${esMg?"margen registrado":(focoC?"ventas por "+esc(focoC.lab):"ventas registradas")} en este período.</div>`
-        + `<div id="evo-can">${esMg?"":leyendaCanales(ventanaCanales(vis,comp,false), GRA)}</div>`; return; }
+        + `<div id="evo-can">${cortesVisibles().map(c=>leyendaCorte(ventanaCorte(vis,comp,false,c), GRA, c)).join("")}</div>`; return; }
 
     const conDato=vis.filter(p=>p.v>0);
     const prom = esMg ? tot : (conDato.length?tot/conDato.length:0);   // en margen, promedio = el total ponderado
@@ -775,10 +856,12 @@ window.EYGHome = (function(){
     const mgTot= esMg?vis.reduce((a,p)=>a+p.m,0):0;
     const vtTot= esMg?vis.reduce((a,p)=>a+p.s,0):0;
 
-    /* Reparto por canal de la ventana visible. En "Ventas" los datos están en
-       otro lado que en "Canales": lo resuelve ventanaCanales(). */
+    /* Reparto de la ventana visible, para cada corte que se vaya a mostrar. En
+       "Ventas" los datos están en otro lado que en la pestaña del corte: lo
+       resuelve ventanaCorte(). */
     _cmpOK = !!compTot;
-    const vc = esMg ? null : ventanaCanales(vis, comp, _cmpOK);
+    const visibles = cortesVisibles();
+    const VC={}; visibles.forEach(c=>VC[c]=ventanaCorte(vis, comp, _cmpOK, c));
 
     body.innerHTML=`
       <div class="evo-stats">
@@ -793,65 +876,80 @@ window.EYGHome = (function(){
           ? (MG&&MG.ok&&MG.ref!=null?`<div class="es sm"><div class="l">vs promedio 12 meses</div><div class="v">${deltaPts(tot,MG.ref,"")}</div></div>`:"")
           : `<div class="es sm"><div class="l">${esc(cmpTxt)}</div><div class="v">${compTot?delta(tot,compTot,""):'<span class="delta flat">—</span>'}</div></div>`}
         ${(!esMg&&nPed)?`<div class="es sm"><div class="l">Pedidos</div><div class="v">${ent(nPed)}</div></div>`:""}
-        ${focoC?"":`<div class="es sm" id="evo-lider" hidden title="El canal por el que entró la mayor parte de la plata en el período que estás mirando."></div>`}
+        ${focoC?"":visibles.map(c=>`<div class="es sm" id="evo-lider-${c}" hidden title="${esc(CORTES[c].lider)}: el que se llevó la mayor parte de la plata en el período que estás mirando."></div>`).join("")}
         ${s.hora?`<div class="es sm"><div class="l">&nbsp;</div><div class="v" style="font-size:12px"><span class="chip-live" style="padding:5px 10px"><span class="dot"></span>en vivo</span></div></div>`:""}
       </div>
-      <div class="chartwrap" id="evo-chart">${svgBarras(vis, prom, s.hora, fmtV, {segs:(esCan&&!focoC)?CANALES:null, color:focoC?focoC.col:null})}<div class="tt" id="evo-tt"></div></div>
-      <div id="evo-can">${esMg?"":leyendaCanales(vc, GRA)}</div>`;
+      <div class="chartwrap" id="evo-chart">${svgBarras(vis, prom, s.hora, fmtV, {segs:(C&&!focoC)?C.items:null, color:focoC?focoC.col:null})}<div class="tt" id="evo-tt"></div></div>
+      <div id="evo-can">${visibles.map(c=>leyendaCorte(VC[c], GRA, c)).join("")}</div>`;
     paintNums(body);
-    if(!focoC) pintarLider(vc);
-    engancharTooltip(vis, s.hora, esMg, esCan&&!focoC);
-    if(!esMg) asegurarCanales();
+    if(!focoC) visibles.forEach(c=>pintarLider(VC[c], c));
+    engancharTooltip(vis, s.hora, esMg, (C&&!focoC)?C.items:null);
+    if(!esMg) asegurarCortes();
   }
 
-  /* ---------- leyenda de canales (debajo del gráfico, en Ventas y en Canales) ---------- */
+  /* ---------- leyendas de los cortes (debajo del gráfico) ----------
+     En la pestaña Ventas se muestran LAS DOS —por dónde entró y qué tipo de
+     cliente compró— porque son las dos preguntas que se hacen mirando el
+     gráfico. En la pestaña de un corte se muestra sólo la suya. */
   const sumaCanal  = (arr,k)=>arr.reduce((a,p)=>a+((((p.seg||{})[k])||{}).v||0),0);
   const cuentaCanal= (arr,k)=>arr.reduce((a,p)=>a+((((p.seg||{})[k])||{}).n||0),0);
 
-  /* De dónde sale el reparto por canal de la ventana que se está viendo:
-     · por hora y en la vista Canales, los puntos ya lo traen adentro;
-     · en la vista Ventas, de la serie de canales, que se pide aparte y llega
+  /* De dónde sale el reparto de la ventana que se está viendo:
+     · en la pestaña del corte (y por hora), los puntos ya lo traen adentro;
+     · en la pestaña Ventas, de la serie del corte, que se pide aparte y llega
        un rato después (mismas claves y mismo largo: nacen de la misma serie). */
   let _cmpOK=false;             // ¿el período anterior sirve para comparar?
-  function ventanaCanales(vis, comp, usarComp){
-    if(vis && vis.length && vis[0].seg) return {vis, comp:(usarComp&&comp&&comp.length&&comp[0].seg)?comp:null};
-    const sc=CACHE["canales|"+GRA];
+  function ventanaCorte(vis, comp, usarComp, corteK){
+    if(MODO===corteK && vis && vis.length && vis[0].seg)
+      return {vis, comp:(usarComp&&comp&&comp.length&&comp[0].seg)?comp:null};
+    if(GRA==="hora"){ const s=serieHora(corteK); return s?{vis:s.pts, comp:null}:null; }
+    const sc=CACHE[corteK+"|"+GRA];
     if(!sc) return null;
     return {vis:sc.pts.slice(sc.N), comp:usarComp?sc.pts.slice(0,sc.N):null};
   }
-  /* Repinta sólo la leyenda y el "canal que más trae" (los usa asegurarCanales
-     cuando el reparto llega tarde y el gráfico que se está viendo es el de
-     Ventas: así no se redibuja el gráfico entero ni se repite la animación). */
+  /* Qué cortes se muestran debajo del gráfico según la pestaña que esté activa. */
+  function cortesVisibles(){
+    if(MODO==="margen") return [];
+    if(esCorte(MODO)) return [MODO];
+    return ["canales","rubros"];
+  }
+  /* Repinta sólo las leyendas y los "quién más trae" (los usa asegurarCortes
+     cuando el reparto llega tarde: así no se redibuja el gráfico entero ni se
+     repite la animación de las barras). */
   function pintarLeyenda(gra){
     const h=document.getElementById("evo-can"); if(!h||gra!==GRA) return;
-    const vc=ventanaCanales(null,null,_cmpOK);
-    h.innerHTML=leyendaCanales(vc, gra);
-    pintarLider(vc);
+    h.innerHTML=cortesVisibles().map(c=>leyendaCorte(ventanaCorte(null,null,_cmpOK,c), gra, c)).join("");
+    cortesVisibles().forEach(c=>pintarLider(ventanaCorte(null,null,_cmpOK,c), c));
   }
-  function pintarLider(vc){
-    const el=document.getElementById("evo-lider"); if(!el) return;
-    const tot = vc ? CANALES.reduce((a,c)=>a+sumaCanal(vc.vis,c.k),0) : 0;
+  function pintarLider(vc, corteK){
+    const el=document.getElementById("evo-lider-"+corteK); if(!el) return;
+    const C=CORTES[corteK];
+    const tot = vc ? C.items.reduce((a,i)=>a+sumaCanal(vc.vis,i.k),0) : 0;
     if(!tot){ el.hidden=true; return; }
-    const l = CANALES.map(c=>({c, v:sumaCanal(vc.vis,c.k)})).sort((a,b)=>b.v-a.v)[0];
-    el.innerHTML=`<div class="l">Canal que más trae</div><div class="v">${l.c.ic} ${esc(l.c.corto)}<span style="font-size:11px;color:var(--gris2);font-weight:700"> · ${esc(p1(l.v/tot*100))}</span></div>`;
+    const l = C.items.map(i=>({i, v:sumaCanal(vc.vis,i.k)})).sort((a,b)=>b.v-a.v)[0];
+    el.innerHTML=`<div class="l">${esc(C.lider)}</div><div class="v">${l.i.ic} ${esc(l.i.corto)}<span style="font-size:11px;color:var(--gris2);font-weight:700"> · ${esc(p1(l.v/tot*100))}</span></div>`;
     el.hidden=false;
   }
 
-  function leyendaCanales(vc, gra){
-    const cab=`<div class="canleg-h"><span>🧭 ¿Por dónde entran las ventas?</span>
-      <span class="hint">reparto de ${gra==="hora"?"lo que va del día":"todo el período que estás viendo"} · tocá un canal para verlo solo a él</span></div>`;
-    if(!vc) return `${cab}<div class="canleg">${CANALES.map(()=>`<div class="cnl"><div class="skel s" style="width:60%"></div><div class="skel t" style="margin-top:10px"></div></div>`).join("")}</div>`;
-    const tot=CANALES.reduce((a,c)=>a+sumaCanal(vc.vis,c.k),0);
-    return `${cab}<div class="canleg">${CANALES.map(c=>{
-      const v=sumaCanal(vc.vis,c.k), n=cuentaCanal(vc.vis,c.k);
-      const vb=vc.comp?sumaCanal(vc.comp,c.k):0;
-      const sh=tot?v/tot*100:0, on=CAN_FOCO===c.k;
-      const ayuda=`${c.ayuda} · ${M(v)} en el período que estás viendo (${p1(sh)} de la venta). Tocá para ver solo este canal en el gráfico.`;
-      return `<div class="cnl${on?" on":""}${v?"":" cero"}" style="--c:${c.col}" role="button" tabindex="0"
-          onclick="EYGHome.verCanal('${c.k}')"
-          onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();EYGHome.verCanal('${c.k}')}"
+  function leyendaCorte(vc, gra, corteK){
+    const C=CORTES[corteK], foco=FOCO[corteK];
+    const cab=`<div class="canleg-h"><span>${C.h2}</span>
+      <span class="hint">reparto de ${gra==="hora"?"lo que va del día":"todo el período que estás viendo"} · ${esc(C.pie)}</span></div>`;
+    if(!vc) return `${cab}<div class="canleg">${C.items.map(()=>`<div class="cnl"><div class="skel s" style="width:60%"></div><div class="skel t" style="margin-top:10px"></div></div>`).join("")}</div>`;
+    const tot=C.items.reduce((a,i)=>a+sumaCanal(vc.vis,i.k),0);
+    /* De mayor a menor: la pregunta es "quién vende más", así que el orden lo
+       tiene que dar la plata, no el orden en que están escritos. */
+    const orden=C.items.slice().sort((a,b)=>sumaCanal(vc.vis,b.k)-sumaCanal(vc.vis,a.k));
+    return `${cab}<div class="canleg">${orden.map(i=>{
+      const v=sumaCanal(vc.vis,i.k), n=cuentaCanal(vc.vis,i.k);
+      const vb=vc.comp?sumaCanal(vc.comp,i.k):0;
+      const sh=tot?v/tot*100:0, on=foco===i.k;
+      const ayuda=`${i.ayuda} · ${M(v)} en el período que estás viendo (${p1(sh)} de la venta). Tocá para verlo solo a él en el gráfico.`;
+      return `<div class="cnl${on?" on":""}${v?"":" cero"}" style="--c:${i.col}" role="button" tabindex="0"
+          onclick="EYGHome.verSeg('${corteK}','${i.k}')"
+          onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();EYGHome.verSeg('${corteK}','${i.k}')}"
           title="${esc(ayuda)}">
-        <div class="cnl-h"><i></i><span>${c.ic} ${esc(c.lab)}</span></div>
+        <div class="cnl-h"><i></i><span>${i.ic} ${esc(i.lab)}</span></div>
         <div class="cnl-v" title="${M(v)}">${mc(v)}</div>
         <div class="cnl-bar"><i style="width:${sh.toFixed(1)}%"></i></div>
         <div class="cnl-s">${esc(p1(sh))} de la venta · ${ent(n)} pedido${n===1?"":"s"}</div>
@@ -928,7 +1026,7 @@ window.EYGHome = (function(){
     </svg>`;
   }
 
-  function engancharTooltip(pts, esHora, esMg, esCan){
+  function engancharTooltip(pts, esHora, esMg, items){
     const wrap=document.getElementById("evo-chart"), tt=document.getElementById("evo-tt");
     if(!wrap||!tt) return;
     const svg=wrap.querySelector("svg");
@@ -944,8 +1042,9 @@ window.EYGHome = (function(){
       const r=t.getBoundingClientRect(), wr=wrap.getBoundingClientRect();
       const t1 = esHora ? `${p.key}:00 a ${p.key}:59` : etiquetaLarga(GRA,p.key);
       let pie;
-      if(esCan){
-        const filas=CANALES.filter(c=>((((p.seg||{})[c.k])||{}).v||0)>0)
+      if(items){
+        const filas=items.filter(c=>((((p.seg||{})[c.k])||{}).v||0)>0)
+          .sort((a,b)=>p.seg[b.k].v-p.seg[a.k].v)
           .map(c=>`<div class="t3"><b style="color:${c.col}">■</b> ${esc(c.corto)} · ${esc(M(p.seg[c.k].v))} <span style="opacity:.7">(${esc(p1(p.seg[c.k].v/(p.v||1)*100))})</span></div>`);
         pie = filas.length?filas.join(""):`<div class="t3">sin pedidos</div>`;
       }else{
@@ -1197,5 +1296,5 @@ window.EYGHome = (function(){
       :`<div class="nodata">Todavía no hay pedidos registrados.</div>`}`);
   }
 
-  return { main, init, ver, verModo, verMargen, verCanal, refrescar };
+  return { main, init, ver, verModo, verMargen, verSeg, refrescar };
 })();
