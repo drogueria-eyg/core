@@ -55,6 +55,18 @@
   .cardsec{border-radius:var(--radius);padding:13px 15px 15px;margin-bottom:14px;border:1px solid var(--line)}
   .cardsec.sec-mora{background:#F2F7F6;border-color:#DDE9E7}
   .cardsec.sec-rubro{background:#E8F3F1;border-color:#CFE6E2}
+  .cardsec.sec-pagos{background:#EFFAF3;border-color:#BFE6CE}
+  .pagoit{display:grid;grid-template-columns:92px 1fr 130px 210px;gap:10px;align-items:center;
+      background:#fff;border:1px solid #CFE6D9;border-radius:10px;padding:9px 12px;margin-bottom:7px}
+  .pagoit .cua{font-size:11.5px;color:var(--gris)}
+  .pagoit .qui{font-weight:700;font-size:13.5px}
+  .pagoit .det{font-size:11.5px;color:var(--gris);margin-top:2px;line-height:1.45}
+  .pagoit .imp{font-weight:800;font-size:14px;text-align:right;color:#1B7F4C}
+  .pagoit .acc{display:flex;gap:6px;justify-content:flex-end}
+  .pagoit .acc button{font-family:inherit;font-size:11px;font-weight:700;border-radius:8px;padding:6px 9px;cursor:pointer;border:1px solid var(--line);background:#fff}
+  .pagoit .acc .ok{background:#1B7F4C;color:#fff;border-color:#1B7F4C}
+  .pagoit .acc .no:hover{border-color:#C0403C;color:#C0403C}
+  @media(max-width:900px){ .pagoit{grid-template-columns:1fr;gap:4px} .pagoit .imp,.pagoit .acc{text-align:left;justify-content:flex-start} }
   .cardsec .sectitle{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--teal-deep);margin-bottom:12px}
   .cardsec .sectitle .secclr{font-size:11.5px;font-weight:700;letter-spacing:0;text-transform:none;color:var(--teal);cursor:pointer;white-space:nowrap}
   .cardsec .sectitle .secclr:hover{text-decoration:underline}
@@ -328,6 +340,62 @@ function fmtContacto(utc){ if(!utc) return null; const d=new Date(utc.replace(" 
   const p=n=>String(n).padStart(2,"0"); const hora=p(d.getHours())+":"+p(d.getMinutes());
   return {esHoy:d>=h0, texto:(d>=h0?"hoy":p(d.getDate())+"/"+p(d.getMonth()+1))+" "+hora}; }
 
+/* PAGOS POR IMPUTAR. Los detecta wsp-pagos leyendo lo que el asistente escribe
+   cuando un cliente manda un comprobante, y quedan acá hasta que alguien los
+   resuelve. La lista NO se recalcula sola: el estado lo pone una persona. */
+let PAGOS=[], PERFIL=null;
+async function cargarPagos(){
+  try{
+    const {data}=await EYG.supa().from("wsp_pagos")
+      .select("clave,canal,cliente,telefono,cuando,fecha_pago,importe,importes,medio,operacion,texto,estado")
+      .eq("estado","pendiente").order("cuando",{ascending:false});
+    PAGOS=data||[];
+  }catch(e){ PAGOS=[]; }
+}
+/* Lo resuelve una persona y queda su nombre: si mañana aparece un pago imputado
+   dos veces, se sabe quién lo marcó y cuándo. */
+async function resolverPago(clave,estado){
+  const p=PAGOS.find(x=>x.clave===clave); if(!p) return;
+  const que=estado==="imputado"?"imputado":"descartado";
+  if(!confirm(que==="imputado"
+      ? `¿Marcar como imputado el pago de ${p.cliente}${p.importe?" por "+money(p.importe):""}?`
+      : `¿Sacar de la lista el pago de ${p.cliente}? Usalo cuando no era un pago.`)) return;
+  try{
+    await EYG.supa().from("wsp_pagos")
+      .update({estado:que, quien:(PERFIL&&(PERFIL.nombre||PERFIL.email))||"", resuelto:new Date().toISOString()})
+      .eq("clave",clave);
+    PAGOS=PAGOS.filter(x=>x.clave!==clave);
+    render();
+  }catch(e){ alert("No pude guardarlo: "+(e.message||e)); }
+}
+function cardPagos(){
+  if(!PAGOS.length) return "";
+  const total=PAGOS.reduce((a,p)=>a+(Number(p.importe)||0),0);
+  const filas=PAGOS.map(p=>{
+    const imp=p.importe!=null ? money(p.importe)
+      : (p.importes||[]).map(x=>money(x)).join(" · ")||"—";
+    const cuando=new Date(p.cuando).toLocaleString("es-AR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
+    const datos=[p.medio,p.operacion?"op "+p.operacion:"",p.fecha_pago?"fecha "+p.fecha_pago:""].filter(Boolean).join(" · ");
+    return `<div class="pagoit">
+      <div class="cua">${esc(cuando)}</div>
+      <div>
+        <div class="qui">${esc(p.cliente||"sin identificar")}</div>
+        <div class="det">${esc(datos||"sin datos del medio de pago")}<br>${esc(String(p.texto||"").slice(0,190))}</div>
+      </div>
+      <div class="imp">${imp}</div>
+      <div class="acc">
+        <button class="ok" onclick="resolverPago('${p.clave}','imputado')">✓ Imputado</button>
+        <button class="no" onclick="resolverPago('${p.clave}','descartado')">✕ No era un pago</button>
+      </div>
+    </div>`;
+  }).join("");
+  return `<div class="cardsec sec-pagos">
+    <div class="sectitle"><span>💸 Pagos por imputar · ${PAGOS.length}</span><span class="cap" style="font-weight:800;color:#1B7F4C">${money(total)}</span></div>
+    <div class="hint" style="background:#fff;border-color:#CFE6D9;color:#2A5C44;margin-bottom:10px">
+      Comprobantes que los clientes mandaron por WhatsApp. El importe es el que leyó el asistente: <b>hay que verificarlo contra el banco</b> antes de imputar. Cuando lo imputás, sale de la lista.</div>
+    ${filas}
+  </div>`;
+}
 async function cargar(silent){
   try{
     // 1) TODA la cuenta corriente real: líneas del receivable sin conciliar, con saldo.
@@ -495,6 +563,7 @@ async function cargar(silent){
       };
     });
     try{ await cargarBloqueos(); }catch(e){ console.warn("No pude cargar bloqueos", e); }
+    await cargarPagos();
     const _sy = silent ? window.scrollY : 0;
     render();
     if(silent) window.scrollTo(0, _sy);
@@ -933,6 +1002,7 @@ function render(){
   const estadoActive = _estados.includes(filtro.tramo) || filtro.boveda || filtro.migrada;
 
   app.innerHTML=`
+    ${cardPagos()}
     ${healthCard(A)}
 
     <div class="cardsec sec-mora">
@@ -1044,6 +1114,7 @@ function mensajeCobro(c){
 
 window.onSearch = EYG.buscador(v => { filtro.q=v; renderLista(); });
 function setTramo(k){filtro.boveda=false;filtro.tramo=filtro.tramo===k?"":k;render();}
+window.resolverPago=resolverPago;
 function setRubro(v){filtro.rubro=filtro.rubro===v?"":v;render();}
 function toggleBoveda(){filtro.boveda=!filtro.boveda;filtro.migrada=false;filtro.tramo="";render();}
 function toggleMigrada(){filtro.migrada=!filtro.migrada;filtro.boveda=false;filtro.tramo="";render();}
@@ -1531,7 +1602,10 @@ function botonAsistente(perfil){
   document.body.appendChild(a);
 }
 
-EYG.guard(["finanzas","lider","admin","direccion","cobranzas"]).then(perfil=>{ botonAsistente(perfil); cargar().then(()=>{ _ultimoFull=Date.now(); autoRefrescar(); }); });
+EYG.guard(["finanzas","lider","admin","direccion","cobranzas"]).then(perfil=>{
+  PERFIL=perfil; botonAsistente(perfil);
+  cargar().then(()=>{ _ultimoFull=Date.now(); autoRefrescar(); });
+});
 </script>
 </body>
 </html>
