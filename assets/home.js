@@ -430,8 +430,8 @@ window.EYGHome = (function(){
       </div>
     </div>
     <div id="dz-aviso"></div>
-    ${V.salud?`<div id="dz-salud" class="cx rise" style="animation-delay:.02s">${saludSkel()}</div>`:""}
     ${V.ventas?`<div id="dz-kpi" class="rise" style="animation-delay:.04s">${kpiSkel()}</div>`:""}
+    ${V.salud?`<div id="dz-salud" class="cx" hidden></div>`:""}
     ${V.ventas?`<div id="dz-evo" class="cx evo rise" style="animation-delay:.08s">${evoSkel()}</div>`:""}
     ${fila("cols3",[
       V.cobranza?tarjeta("dz-cob","💳 Cobranza"):"",
@@ -574,7 +574,8 @@ window.EYGHome = (function(){
       const contra = (etq,val) => FAC.ok ? `<div class="ksplit"><span>${etq}</span><b title="${M(val)}">${mc(val)}</b></div>` : "";
       const tt = FAC.ok ? ` title="${AYUDA}"` : "";
 
-      put("dz-kpi",`<div class="kgrid${V.margen?"":" sin-margen"}">
+      put("dz-kpi",`<div class="kgrid${V.margen?"":" sin-margen"}${V.salud?" con-salud":""}">
+        ${V.salud?tileSalud():""}
         <div class="ktile big"${tt}>
           <div class="kl">⚡ ${V.propio?"Tus pedidos":"Pedidos"} de hoy</div>
           <div class="kv" data-to="${totHoy}" data-fmt="mc" title="${M(totHoy)}">$0</div>
@@ -627,67 +628,189 @@ window.EYGHome = (function(){
 
   /* ===== SALUD DE LA DROGUERÍA · el corazón =====================================
      Un número de 0 a 100 que dice, de un vistazo, cómo viene el negocio HOY.
+     Vive como una tarjeta chica arriba, al lado de los pedidos del día y del
+     margen; al tocarla se despliega el detalle con todos los signos.
 
-     NO es un promedio mágico ni una estimación: son SEIS SIGNOS VITALES, cada
-     uno con una regla escrita que se puede leer en el texto de ayuda, y el
-     puntaje es su promedio ponderado. Cada signo se toca y lleva a la tarjeta
-     que lo explica, así ningún número queda sin respaldo.
+     NO es un promedio mágico: son NUEVE SIGNOS VITALES, cada uno con una regla
+     escrita que se lee en su texto de ayuda, y el puntaje es su promedio
+     ponderado. Cada signo se toca y lleva a la tarjeta que lo explica.
 
-     CUATRO DE LOS SEIS SE COMPARAN CONTRA LA PROPIA HISTORIA de la droguería
-     (mes anterior, promedio de 12 meses, semana pasada) y dos contra un ideal
-     que no admite discusión (cero vencido, cero mercadería por vencerse). El
-     único con una escala elegida a mano es la cobertura de cartera, y está
-     dicho en su ayuda para poder recalibrarla.
+     SEIS DE LOS NUEVE se comparan contra la propia historia de la droguería o
+     contra un ideal que no admite discusión (cero vencido, cero por vencerse).
+     Los tres con umbral elegido a mano —cobertura de cartera, meses de stock y
+     concentración— lo dicen en su ayuda, para poder recalibrarlos.
 
      LATE CON LO QUE EL TABLERO YA TRAE: cada ola deposita su parte en SALUD y
-     la tarjeta se vuelve a pintar sola. No cuesta ni una consulta más.
+     la tarjeta se repinta sola. Sólo la última ola agrega unas pocas consultas
+     para lo que nadie más mira (lo que debemos, la rotación y la concentración).
 
-     Si a un rol le falta un signo, o su ola todavía no llegó, el puntaje sale
-     con los que hay y la tarjeta dice cuántos entraron: nunca inventa. */
+     Si falta un signo, los pesos se reparten entre los que llegaron y se dice
+     cuántos entraron: nunca inventa. */
   const SALUD={};
+  let SALUD_ABIERTA=false;
+  /* La tarjeta se repinta con cada ola. El anillo se llena y el número sube UNA
+     sola vez: si se reanimaran en cada ola, el puntaje estaría cuatro veces
+     saltando de cero mientras se lee el resto del tablero. */
+  let SALUD_VISTA=false;
   const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  /* escala lineal: en `malo` da 0 y en `bueno` da 100, para los dos sentidos */
+  const escala=(v,malo,bueno)=>clamp((v-malo)/(bueno-malo)*100,0,100);
+
   const VITALES=[
-    {k:"ventas", peso:25, ico:"📈", lab:"Ventas del mes", ir:"#dz-evo",
+    {k:"ventas", peso:18, ico:"📈", lab:"Ventas del mes", ir:"#dz-evo",
      ayuda:"Lo vendido en lo que va del mes contra el mismo tramo del mes pasado. 50 puntos es empatar; +25% o más da 100, −25% o menos da 0.",
      calc(){ const d=SALUD.ventas; if(!d||!d.mesAnt) return null;
        const v=(d.mes-d.mesAnt)/d.mesAnt*100;
        return {p:clamp(50+v*2,0,100), det:delta(d.mes,d.mesAnt,"vs mes pasado")}; }},
-    {k:"margen", peso:25, ico:"📐", lab:"Margen", ir:"margen",
+
+    {k:"margen", peso:18, ico:"📐", lab:"Margen", ir:"margen",
      ayuda:"El margen del mes contra el promedio de los últimos 12 meses cerrados. 50 puntos es estar en el promedio; 5 puntos por encima da 100, 5 por debajo da 0.",
      calc(){ const d=SALUD.margen; if(!d||!d.ok||d.ref==null||d.pct==null) return null;
        return {p:clamp(50+(d.pct-d.ref)*10,0,100), det:deltaPts(d.pct,d.ref,"vs 12 meses")}; }},
-    {k:"cobranza", peso:20, ico:"💳", lab:"Cobranza", ir:"#dz-cob",
-     ayuda:"Qué parte de lo que te deben ya venció. Sin nada vencido da 100; con el 20% o más de la deuda vencida da 0.",
+
+    {k:"cobranza", peso:15, ico:"💳", lab:"Nos deben", ir:"#dz-cob",
+     ayuda:"Qué parte de lo que nos deben los clientes ya venció. Sin nada vencido da 100; con el 20% o más de la deuda vencida da 0.",
      calc(){ const d=SALUD.cob; if(!d) return null;
        if(d.saldo<=0) return {p:100, det:"sin deuda abierta"};
        const pc=d.venc/d.saldo;
-       return {p:clamp(100*(1-pc/0.20),0,100), det:p1(pc*100)+" de la deuda vencida"}; }},
-    {k:"clientes", peso:15, ico:"👥", lab:"Clientes activos", ir:"#dz-cli",
-     ayuda:"Qué parte de la cartera compró en los últimos 60 días. La escala está puesta a mano: 20% da 0 y 65% da 100. Es el único signo con un umbral elegido, así que es el primero a recalibrar si no representa bien a la casa.",
+       return {p:escala(pc,0.20,0), det:mc(d.venc)+" vencido · "+p1(pc*100)}; }},
+
+    {k:"deuda", peso:12, ico:"🏦", lab:"Debemos", ir:"#dz-salud",
+     ayuda:"Qué parte de lo que la droguería debe a proveedores y bancos ya venció. Sin nada vencido da 100; con el 15% o más vencido da 0. Es el espejo de la cobranza: se puede estar cobrando bien y pagando mal.",
+     calc(){ const d=SALUD.deuda; if(!d||!d.total) return null;
+       const pc=d.venc/d.total;
+       return {p:escala(pc,0.15,0), det:mc(d.total)+" · "+p1(pc*100)+" vencido"}; }},
+
+    {k:"clientes", peso:10, ico:"👥", lab:"Clientes activos", ir:"#dz-cli",
+     ayuda:"Qué parte de la cartera compró en los últimos 60 días. Escala puesta a mano: 20% da 0 y 65% da 100. Recalibrable.",
      calc(){ const d=SALUD.cli; if(!d||!d.tot) return null;
        const cob=d.activos/d.tot;
-       return {p:clamp((cob-0.20)/0.45*100,0,100), det:ent(d.activos)+" de "+ent(d.tot)+" ("+p1(cob*100)+")"}; }},
-    {k:"stock", peso:10, ico:"📦", lab:"Stock sano", ir:"#dz-stk",
+       return {p:escala(cob,0.20,0.65), det:ent(d.activos)+" de "+ent(d.tot)+" ("+p1(cob*100)+")"}; }},
+
+    {k:"vencer", peso:8, ico:"⏳", lab:"Stock sin vencer", ir:"#dz-stk",
      ayuda:"Qué parte de la plata parada en depósito está vencida o se vence dentro de 6 meses. Sin nada en riesgo da 100; con el 15% o más da 0.",
      calc(){ const d=SALUD.stk; if(!d||!d.val) return null;
-       return {p:clamp(100*(1-d.riesgo/0.15),0,100), det:p1(d.riesgo*100)+" en riesgo de vencer"}; }},
+       return {p:escala(d.riesgo,0.15,0), det:p1(d.riesgo*100)+" en riesgo de vencer"}; }},
+
+    {k:"rotacion", peso:8, ico:"🔄", lab:"Rotación del stock", ir:"#dz-stk",
+     ayuda:"Cuántos meses de venta hay parados en el depósito: el stock a costo dividido por lo que se despacha por mes (costo de la mercadería vendida, promedio de los últimos 3 meses). Escala puesta a mano: 1,5 meses o menos da 100, 4 meses o más da 0. Es lo que muestra el SOBRESTOCK aunque nada esté por vencerse.",
+     calc(){ const s=SALUD.stk, r=SALUD.rot; if(!s||!s.val||!r||!r.costoMes) return null;
+       const meses=s.val/r.costoMes;
+       return {p:escala(meses,4,1.5), det:meses.toFixed(1).replace(".",",")+" meses de stock"}; }},
+
+    {k:"concentracion", peso:6, ico:"🎯", lab:"Concentración", ir:"#dz-top",
+     ayuda:"Cuánto pesan los 5 clientes más grandes en la venta de los últimos 12 meses. Cuanto más repartida está la venta, menos duele perder a uno. Escala puesta a mano: 15% o menos da 100, 40% o más da 0.",
+     calc(){ const d=SALUD.conc; if(!d||!d.total) return null;
+       const pc=d.top5/d.total;
+       return {p:escala(pc,0.40,0.15), det:"los 5 más grandes son el "+p1(pc*100)}; }},
+
     {k:"ritmo", peso:5, ico:"⚡", lab:"Ritmo de 7 días", ir:"#dz-evo",
      ayuda:"Los últimos 7 días completos (hasta ayer) contra los 7 anteriores. Se toman días enteros a propósito: comparar lo que va de hoy contra un día completo daría siempre negativo a la mañana. Manda poco: una semana suelta se mueve mucho.",
      calc(){ const d=SALUD.sem; if(!d||!d.semAnt) return null;
        const v=(d.sem-d.semAnt)/d.semAnt*100;
        return {p:clamp(50+v*2,0,100), det:delta(d.sem,d.semAnt,"vs los 7 previos")}; }},
   ];
+
   /* El corazón late más rápido cuanto peor está: es literal, no decorativo. */
   const ESTADOS=[
     {min:80, ico:"💚", nom:"Fuerte",  col:"#1E7D46", bpm:"2.0s", txt:"El negocio viene bien en casi todo lo que se mide."},
     {min:65, ico:"💛", nom:"Estable", col:"#5A8F2E", bpm:"1.7s", txt:"Va bien, con algún signo para mirar de cerca."},
-    {min:50, ico:"🧡", nom:"Atento",  col:"#B7791F", bpm:"1.3s", txt:"Hay más de un signo flojo. Conviene mirar los de abajo."},
+    {min:50, ico:"🧡", nom:"Atento",  col:"#B7791F", bpm:"1.3s", txt:"Hay más de un signo flojo. Conviene abrir el detalle."},
     {min:35, ico:"❤️", nom:"Débil",   col:"#C4602A", bpm:"1.0s", txt:"Varios signos en rojo al mismo tiempo."},
     {min:-1, ico:"💔", nom:"Alerta",  col:"#B0322F", bpm:"0.75s", txt:"El negocio está en problemas en casi todo lo que se mide."},
   ];
   const estadoDe = p => ESTADOS.find(e=>p>=e.min);
   const colorVital = p => p>=70?"#1E7D46" : p>=50?"#B7791F" : p>=35?"#C4602A" : "#B0322F";
 
+  /* Puntaje: promedio ponderado SÓLO con los signos que llegaron. Los pesos se
+     reparten entre ellos, así el número no se hunde por lo que todavía falta. */
+  function saludCalc(){
+    const filas=VITALES.map(v=>({v, r:v.calc()}));
+    const listos=filas.filter(f=>f.r);
+    if(!listos.length) return null;
+    const pesoT=listos.reduce((a,f)=>a+f.v.peso,0);
+    const score=Math.round(listos.reduce((a,f)=>a+f.r.p*f.v.peso,0)/pesoT);
+    return {filas, listos, score, E:estadoDe(score)};
+  }
+
+  function anilloSalud(score, col, R, W, anim){
+    const C=2*Math.PI*R, c=R+W/2+2;
+    const off=C*(1-clamp(score/100,0,1));
+    return `<svg class="ring" viewBox="0 0 ${c*2} ${c*2}" role="img" aria-label="Salud ${score} de 100">
+      <circle cx="${c}" cy="${c}" r="${R}" fill="none" stroke="#EDF2F1" stroke-width="${W}"/>
+      <circle class="arc${anim?" anim":""}" cx="${c}" cy="${c}" r="${R}" fill="none" stroke="${col}" stroke-width="${W}"
+        stroke-linecap="round" transform="rotate(-90 ${c} ${c})"
+        stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" style="--c:${C.toFixed(1)}"/>
+    </svg>`;
+  }
+  const animOK = ()=>{ const q=window.matchMedia&&matchMedia("(prefers-reduced-motion:reduce)").matches;
+    return {arco:!document.hidden&&!q, late:!q}; };
+
+  /* ---- la tarjeta chica, arriba, al lado de pedidos del día y margen ---- */
+  function tileSalud(){
+    const S=saludCalc();
+    if(!S) return `<div class="ktile salud" id="salud-tile"><div class="skel t" style="width:60%"></div></div>`;
+    const A=animOK(), primera=!SALUD_VISTA; SALUD_VISTA=true;
+    const faltan=S.filas.length-S.listos.length;
+    return `<div class="ktile salud" id="salud-tile" style="--c:${S.E.col};--bpm:${S.E.bpm}"
+        onclick="EYGHome.saludToggle()" role="button" tabindex="0"
+        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();EYGHome.saludToggle()}"
+        title="Salud de la droguería: ${S.score} de 100. ${esc(S.E.txt)} Es el promedio ponderado de ${S.listos.length} signos vitales. Tocá la tarjeta para ver el detalle de cada uno.">
+      <div class="sring">
+        ${A.late?`<span class="halo"></span>`:""}
+        ${anilloSalud(S.score, S.E.col, 34, 9, A.arco && primera)}
+        <div class="cor-c">
+          <div class="lat${A.late?" late":""}">${S.E.ico}</div>
+          <div class="pts"${primera?` data-to="${S.score}" data-fmt="ent"`:""}>${primera?0:ent(S.score)}</div>
+        </div>
+      </div>
+      <div class="sinfo">
+        <div class="kl">🫀 Salud de la droguería</div>
+        <div class="sest" style="color:${S.E.col}">${esc(S.E.nom)}</div>
+        <div class="ks">${S.listos.length} signos vitales${faltan?` · faltan ${faltan}`:""}</div>
+        <div class="gcta">${SALUD_ABIERTA?"Ocultar el detalle ↑":"Ver el detalle →"}</div>
+      </div>
+    </div>`;
+  }
+
+  /* ---- el detalle, que se despliega debajo ---- */
+  function detalleSalud(){
+    const S=saludCalc(); if(!S) return "";
+    return `<div class="cx-h"><h2>🫀 Signos vitales</h2>
+        <span class="hint">${S.listos.length} de ${S.filas.length} · cada uno con su regla · tocá para ir al detalle</span>
+        <button class="mini-x" onclick="EYGHome.saludToggle()" title="Cerrar el detalle">✕</button></div>
+      <div class="vitales">${S.filas.map(({v,r})=>{
+        if(!r) return `<div class="vt vt-esp" title="${esc(v.ayuda)} — todavía no llegó este dato.">
+            <span class="vt-i">${v.ico}</span><span class="vt-l">${esc(v.lab)}</span>
+            <span class="vt-d">leyendo…</span><div class="vt-bar"><i style="width:0"></i></div><span class="vt-p">—</span></div>`;
+        const c=colorVital(r.p);
+        return `<div class="vt" role="button" tabindex="0" onclick="EYGHome.saludIr('${v.k}')"
+            onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();EYGHome.saludIr('${v.k}')}"
+            title="${esc(v.ayuda)} Pesa ${v.peso} de 100 en el total. Tocá para ir al detalle.">
+          <span class="vt-i">${v.ico}</span>
+          <span class="vt-l">${esc(v.lab)}</span>
+          <span class="vt-d">${r.det}</span>
+          <div class="vt-bar"><i style="width:${r.p.toFixed(0)}%;background:${c}"></i></div>
+          <span class="vt-p" style="color:${c}">${Math.round(r.p)}</span>
+        </div>`;
+      }).join("")}</div>
+      <div class="salud-pie">${esc(S.E.txt)}
+        <span class="hint">La mayoría de los signos se compara contra la propia historia de la droguería. Los tres con umbral elegido a mano (cartera, rotación y concentración) lo dicen en su ayuda.</span></div>`;
+  }
+
+  function pintarSalud(){
+    const t=document.getElementById("salud-tile");
+    if(t){ t.outerHTML=tileSalud(); const n=document.getElementById("salud-tile"); if(n) paintNums(n); }
+    const z=document.getElementById("dz-salud");
+    if(z && SALUD_ABIERTA){ z.innerHTML=detalleSalud(); paintNums(z); }
+  }
+  function saludToggle(){
+    const z=document.getElementById("dz-salud"); if(!z) return;
+    SALUD_ABIERTA=!SALUD_ABIERTA;
+    z.hidden=!SALUD_ABIERTA;
+    if(SALUD_ABIERTA){ z.innerHTML=detalleSalud(); paintNums(z); z.scrollIntoView({behavior:"smooth", block:"nearest"}); }
+    const t=document.getElementById("salud-tile"); if(t){ t.outerHTML=tileSalud(); const n=document.getElementById("salud-tile"); if(n) paintNums(n); }
+  }
   function saludIr(k){
     const v=VITALES.find(x=>x.k===k); if(!v) return;
     if(v.ir==="margen"){ verMargen(); return; }
@@ -695,67 +818,32 @@ window.EYGHome = (function(){
     if(el) el.scrollIntoView({behavior:"smooth", block:"center"});
   }
 
-  function pintarSalud(){
-    const z=document.getElementById("dz-salud"); if(!z) return;
-    const filas=VITALES.map(v=>({v, r:v.calc()}));
-    const listos=filas.filter(f=>f.r);
-    if(!listos.length){ z.innerHTML=saludSkel(); return; }
-    /* Promedio ponderado SOLO con los signos que llegaron: los pesos se
-       reparten entre ellos, así el puntaje no se hunde por lo que falta. */
-    const pesoT=listos.reduce((a,f)=>a+f.v.peso,0);
-    const score=Math.round(listos.reduce((a,f)=>a+f.r.p*f.v.peso,0)/pesoT);
-    const E=estadoDe(score);
-    const quieto = window.matchMedia && matchMedia("(prefers-reduced-motion:reduce)").matches;
-    const anim  = (!document.hidden && !quieto);   // relleno del anillo: una sola vez
-    const late  = !quieto;                          // latido y halo: en bucle
-
-    const R=54, C=2*Math.PI*R, cx=70, cy=70;
-    const off=C*(1-clamp(score/100,0,1));
-    const anillo=`<svg class="ring" viewBox="0 0 140 140" role="img" aria-label="Salud ${score} de 100">
-      <circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="#EDF2F1" stroke-width="13"/>
-      <circle class="arc${anim?" anim":""}" cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="${E.col}" stroke-width="13"
-        stroke-linecap="round" transform="rotate(-90 ${cx} ${cy})"
-        stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" style="--c:${C.toFixed(1)}"/>
-    </svg>`;
-
-    const vitales=filas.map(({v,r})=>{
-      if(!r) return `<div class="vt vt-esp" title="${esc(v.ayuda)} — todavía no llegó este dato.">
-          <span class="vt-i">${v.ico}</span><span class="vt-l">${esc(v.lab)}</span>
-          <span class="vt-d">leyendo…</span><div class="vt-bar"><i style="width:0"></i></div><span class="vt-p">—</span></div>`;
-      const c=colorVital(r.p);
-      return `<div class="vt" role="button" tabindex="0" onclick="EYGHome.saludIr('${v.k}')"
-          onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();EYGHome.saludIr('${v.k}')}"
-          title="${esc(v.ayuda)} Pesa ${v.peso} de 100 en el total. Tocá para ir al detalle.">
-        <span class="vt-i">${v.ico}</span>
-        <span class="vt-l">${esc(v.lab)}</span>
-        <span class="vt-d">${r.det}</span>
-        <div class="vt-bar"><i style="width:${r.p.toFixed(0)}%;background:${c}"></i></div>
-        <span class="vt-p" style="color:${c}">${Math.round(r.p)}</span>
-      </div>`;
-    }).join("");
-
-    const faltan=filas.length-listos.length;
-    z.innerHTML=`
-      <div class="cx-h"><h2>🫀 Salud de la droguería</h2>
-        <span class="hint">${listos.length} de ${filas.length} signos vitales${faltan?` · faltan ${faltan}`:""} · se actualiza solo</span></div>
-      <div class="salud">
-        <div class="corazon" style="--c:${E.col};--bpm:${E.bpm}" title="Promedio ponderado de los signos vitales de la derecha. ${esc(E.txt)}">
-          ${late?`<span class="halo"></span>`:""}
-          ${anillo}
-          <div class="cor-c">
-            <div class="lat${late?" late":""}">${E.ico}</div>
-            <div class="pts" data-to="${score}" data-fmt="ent">0</div>
-            <div class="est">${esc(E.nom)}</div>
-          </div>
-        </div>
-        <div class="vitales">${vitales}</div>
-      </div>
-      <div class="salud-pie">${esc(E.txt)} <span class="hint">Cada signo se calcula contra la propia historia de la droguería, salvo la cobertura de cartera. Tocá cualquiera para ver de dónde sale.</span></div>`;
-    paintNums(z);
+  /* Lo que ninguna otra tarjeta mira: lo que DEBEMOS, la rotación del stock y
+     cuánto dependemos de pocos clientes. Va en la última ola para no demorar
+     nada de lo que se ve primero. */
+  async function cargarSaludExtra(){
+    const pagDom=[["account_id.account_type","=","liability_payable"],["parent_state","=","posted"],
+                  ["full_reconcile_id","=",false],["amount_residual","!=",0]];
+    const [pag, pagV, cst, cli] = await Promise.all([
+      rpc("account.move.line","read_group",[pagDom,["amount_residual:sum"],[]],Object.assign({lazy:false},CTX)),
+      rpc("account.move.line","read_group",[pagDom.concat([["date_maturity","<",HOY]]),["amount_residual:sum"],[]],Object.assign({lazy:false},CTX)),
+      /* Costo de la mercadería vendida = venta − margen. Se toman los TRES MESES
+         CERRADOS anteriores, no los tres desde hoy: incluir el mes en curso son
+         tres meses y monedas divididos por tres, y la rotación saldría más
+         rápida de lo que es. */
+      rpc("sale.order.line","read_group",[domLineas([["order_id.date_order",">=",uDesde(addM(MES_INI,-3))],["order_id.date_order","<",uDesde(MES_INI)],["purchase_price",">",0]]),
+          ["margin:sum","price_subtotal:sum"],[]],Object.assign({lazy:false},CTX)),
+      rpc("sale.order","read_group",[domVentas([["date_order",">=",uDesde(addM(MES_INI,-12))]]),["amount_untaxed:sum"],["partner_id"]],
+          Object.assign({lazy:false,limit:6000},CTX)),
+    ]);
+    const total=-(((pag[0]||{}).amount_residual)||0), venc=-(((pagV[0]||{}).amount_residual)||0);
+    SALUD.deuda={total:Math.max(0,total), venc:Math.max(0,venc)};
+    const v=((cst[0]||{}).price_subtotal)||0, m=((cst[0]||{}).margin)||0;
+    SALUD.rot={costoMes:(v-m)/3};
+    const arr=cli.map(x=>x.amount_untaxed||0).sort((a,b)=>b-a);
+    SALUD.conc={top5:arr.slice(0,5).reduce((a,b)=>a+b,0), total:arr.reduce((a,b)=>a+b,0)};
+    pintarSalud();
   }
-  const saludSkel = ()=>`<div class="cx-h"><h2>🫀 Salud de la droguería</h2></div>
-    <div class="salud"><div class="corazon"><div class="skel" style="width:140px;height:140px;border-radius:50%"></div></div>
-    <div class="vitales">${VITALES.map(()=>`<div class="vt vt-esp"><div class="skel s" style="width:100%"></div></div>`).join("")}</div></div>`;
 
   /* ======================= gráfico de evolución ======================= */
   /* Una serie por (métrica, granularidad). Se piden 2N períodos y se grafican
@@ -1294,6 +1382,7 @@ window.EYGHome = (function(){
 
   /* ======================= OLA 3 · stock, tops, novedades ======================= */
   function ola3(){
+    if(V.salud) cargarSaludExtra().catch(()=>{});   // si no llega, esos signos quedan en "leyendo…"
     if(V.stock) cargarStock().catch(e=>fail("dz-stk",e,"el stock"));
     if(V.ventas){
       cargarProductos().catch(e=>fail("dz-prod",e,"los productos"));
@@ -1443,5 +1532,5 @@ window.EYGHome = (function(){
       :`<div class="nodata">Todavía no hay pedidos registrados.</div>`}`);
   }
 
-  return { main, init, ver, verModo, verMargen, verSeg, saludIr, refrescar };
+  return { main, init, ver, verModo, verMargen, verSeg, saludIr, saludToggle, refrescar };
 })();
