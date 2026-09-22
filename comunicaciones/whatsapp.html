@@ -215,6 +215,13 @@
   .conv.guardada{opacity:.86}
   .conv.guardada:hover{opacity:1}
   .pin.borrado{border-color:rgba(214,92,84,.55);color:#d65c54}
+  .m .adj{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px}
+  .m .adj .nomb{font-size:11px;opacity:.8;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .m .adj button{font-family:var(--mono);font-size:9px;letter-spacing:.5px;cursor:pointer;
+                 border:1px solid currentColor;border-radius:20px;padding:2px 9px;
+                 background:transparent;color:inherit;opacity:.8}
+  .m .adj button:hover{opacity:1;background:rgba(255,255,255,.08)}
+  .m .adj button[disabled]{opacity:.45;cursor:default}
   .m .dicho{font-style:italic;opacity:.94}
   .m .pendiente{font-style:italic;opacity:.5;font-size:11px}
 
@@ -1183,6 +1190,49 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
     return cs.find(c=>c!=="audio") || cs[0];
   };
 
+  /* EL ARCHIVO, DE VERDAD. Viene por el mismo camino que todo lo demás
+     (odoo-rpc) en base64, se arma un Blob y de ahí sale tanto el Ver como el
+     Descargar. Se guarda en memoria por si lo miran y después lo bajan: son
+     archivos de 60 a 150 KB, no hay motivo para pedirlos dos veces. */
+  const archivos={};
+  const EXT={"image/jpeg":"jpg","image/png":"png","image/webp":"webp","application/pdf":"pdf",
+             "audio/ogg":"ogg","audio/mpeg":"mp3","video/mp4":"mp4"};
+  function nombreDe(a,fecha){
+    /* En Odoo TODOS se llaman image.jpg. Con el cliente y la fecha adelante,
+       cinco comprobantes en la carpeta de Descargas se distinguen solos. */
+    const cli=((sel&&(sel._cliente||nom1(sel.whatsapp_partner_id)||sel.name))||"cliente")
+      .normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^A-Za-z0-9]+/g,"-")
+      .replace(/^-+|-+$/g,"").slice(0,40).toUpperCase();
+    const dia=String(fecha||"").slice(0,10)||"";
+    const orig=String(a.name||"");
+    const ext=EXT[a.mimetype]||(orig.includes(".")?orig.split(".").pop().toLowerCase():"dat");
+    return [cli,dia,"adj"+a.id].filter(Boolean).join("-")+"."+ext;
+  }
+  async function traerArchivo(id,fecha){
+    if(archivos[id]) return archivos[id];
+    const r=await EYG.rpc("ir.attachment","read",[[Number(id)],["name","mimetype","datas"]]);
+    const a=(r||[])[0];
+    if(!a||!a.datas) throw new Error("el archivo no está en Odoo");
+    const cru=atob(a.datas), bytes=new Uint8Array(cru.length);
+    for(let i=0;i<cru.length;i++) bytes[i]=cru.charCodeAt(i);
+    const blob=new Blob([bytes],{type:a.mimetype||"application/octet-stream"});
+    archivos[id]={url:URL.createObjectURL(blob),nombre:nombreDe({...a,id},fecha),mime:a.mimetype};
+    return archivos[id];
+  }
+  /* La fila va en TODA burbuja con adjunto, tenga texto o no: cuando el cliente
+     mandaba la foto con un comentario, el archivo no aparecía por ningún lado. */
+  function filaAdjuntos(m){
+    const adj=(m.attachment_ids||[]);
+    if(!adj.length) return "";
+    return '<div class="adj">'+adj.map(a=>{
+      const t=tiposAdj[a]||{};
+      const nom=t.nombre?esc(t.nombre):("archivo #"+a);
+      return `<span class="nomb">${nom}</span>`+
+             `<button data-adj="${a}" data-fecha="${esc(String(m.date||""))}" data-que="ver">VER</button>`+
+             `<button data-adj="${a}" data-fecha="${esc(String(m.date||""))}" data-que="bajar">DESCARGAR</button>`;
+    }).join("")+'</div>';
+  }
+
   async function traerTranscripciones(){
     /* Se piden los que no tienen TIPO todavía, no los que no tienen texto: una
        imagen nunca va a tener texto y antes se volvía a pedir para siempre. */
@@ -1365,7 +1415,7 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
               : `<span class="pendiente">${transcribiendo?"pasando a texto…":(cl?"nota de voz (sin transcribir)":"leyendo el adjunto…")}</span>`;
           }
           return `<div class="m ${soyCli?"in":"out"}${esDelBot(m)?" bot":""}">${qn}`+
-                 `<span class="voznota">${rotulo}</span><br>${cuerpo}`+
+                 `<span class="voznota">${rotulo}</span><br>${cuerpo}${filaAdjuntos(m)}`+
                  `<span class="hora">${esc(hora(m.date))}</span></div>`;
         }
         if(!txt) return "";
@@ -1378,11 +1428,28 @@ EYG.guard(["direccion","comercial","lider","cobranzas","admin"],{
         let voz="";
         if(txt.startsWith("🎙️")){ txt=txt.replace(/^🎙️\s*/,""); voz='<span class="voznota">🎙️ NOTA DE VOZ</span><br>'; }
         const quien=!delCliente?`<span class="qui">${delBot?"ASISTENTE":esc(nom1(m.author_id)||"EQUIPO")}</span>`:"";
-        return `<div class="m ${delCliente?"in":"out"}${delBot?" bot":""}">${quien}${voz}${esc(txt)}<span class="hora">${esc(hora(m.date))}</span></div>`;
+        return `<div class="m ${delCliente?"in":"out"}${delBot?" bot":""}">${quien}${voz}${esc(txt)}${filaAdjuntos(m)}<span class="hora">${esc(hora(m.date))}</span></div>`;
       }).join("");
       if(!html) html='<div class="nada"><b>💬</b>SIN MENSAJES</div>';
       if(esperandoRespuesta()) html+='<div class="tipeo"><i></i><i></i><i></i></div>';
       caja.innerHTML=html;
+      /* Se enganchan acá y no con onclick en el HTML: el chat se vuelve a pintar
+         solo cada pocos segundos y así no queda nada colgado. */
+      caja.querySelectorAll(".adj button").forEach(b=>b.onclick=async()=>{
+        const id=b.dataset.adj, antes=b.textContent;
+        b.disabled=true; b.textContent="…";
+        try{
+          const f=await traerArchivo(id,b.dataset.fecha);
+          if(b.dataset.que==="ver"){ window.open(f.url,"_blank"); }
+          else{
+            const a=document.createElement("a");
+            a.href=f.url; a.download=f.nombre;
+            document.body.appendChild(a); a.click(); a.remove();
+          }
+          b.textContent=antes;
+        }catch(e){ b.textContent="NO SE PUDO"; setTimeout(()=>{b.textContent=antes;},2500); }
+        b.disabled=false;
+      });
       if(abajo) caja.scrollTop=caja.scrollHeight;
     }
 

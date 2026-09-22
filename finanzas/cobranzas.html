@@ -73,17 +73,21 @@
       border-radius:9px;padding:6px 12px;white-space:nowrap}
   .cardsec.sec-pagos:hover{box-shadow:0 3px 16px rgba(27,127,76,.2)}
   .pagobody{margin-top:13px;border-top:1px solid #E6F2EA;padding-top:13px}
-  .pagoit{display:grid;grid-template-columns:92px 1fr 130px 210px;gap:10px;align-items:center;
+  .pagoit{display:grid;grid-template-columns:92px 1fr 130px 320px;gap:10px;align-items:center;
       background:#fff;border:1px solid #CFE6D9;border-radius:10px;padding:9px 12px;margin-bottom:7px}
   .pagoit .cua{font-size:11.5px;color:var(--gris)}
   .pagoit .qui{font-weight:700;font-size:13.5px}
   .pagoit .det{font-size:11.5px;color:var(--gris);margin-top:2px;line-height:1.45}
   .pagoit .imp{font-weight:800;font-size:14px;text-align:right;color:#1B7F4C}
-  .pagoit .acc{display:flex;gap:6px;justify-content:flex-end}
+  .pagoit .acc{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
   .pagoit .acc button{font-family:inherit;font-size:11px;font-weight:700;border-radius:8px;padding:6px 9px;cursor:pointer;border:1px solid var(--line);background:#fff}
   .pagoit .acc .ok{background:#1B7F4C;color:#fff;border-color:#1B7F4C}
   .pagoit .acc .ver{font-size:11px;font-weight:700;border:1px solid var(--line);border-radius:8px;padding:6px 9px;color:var(--teal);text-decoration:none;background:#fff}
   .pagoit .acc .no:hover{border-color:#C0403C;color:#C0403C}
+  .pagoit .acc .adjb{border-color:#1B7F4C;color:#1B7F4C;background:#F2F9F5}
+  .pagoit .acc .adjb:hover{background:#E4F2EA}
+  .pagoit .acc .adjb[disabled]{opacity:.5;cursor:default}
+  .pagoit .adjcarga{font-size:11px;color:var(--gris);align-self:center}
   @media(max-width:900px){ .pagoit{grid-template-columns:1fr;gap:4px} .pagoit .imp,.pagoit .acc{text-align:left;justify-content:flex-start} }
   .cardsec .sectitle{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--teal-deep);margin-bottom:12px}
   .cardsec .sectitle .secclr{font-size:11.5px;font-weight:700;letter-spacing:0;text-transform:none;color:var(--teal);cursor:pointer;white-space:nowrap}
@@ -362,7 +366,66 @@ function fmtContacto(utc){ if(!utc) return null; const d=new Date(utc.replace(" 
    cuando un cliente manda un comprobante, y quedan acá hasta que alguien los
    resuelve. La lista NO se recalcula sola: el estado lo pone una persona. */
 let PAGOS=[], PERFIL=null, pagosAbierto=false;
-function togglePagos(){ pagosAbierto=!pagosAbierto; render(); }
+/* Los archivos que llegaron por WhatsApp, por conversación. Se piden recién
+   cuando alguien despliega el panel: mientras está cerrado no se toca Odoo. */
+let ADJ=null, ARCH={};
+function togglePagos(){
+  pagosAbierto=!pagosAbierto;
+  render();
+  if(pagosAbierto && ADJ===null) cargarAdjuntos().then(render);
+}
+const INST=t=>{const x=String(t||"");return new Date(x.replace(" ","T")+(x.endsWith("Z")||x.includes("+")?"":"Z")).getTime();};
+async function cargarAdjuntos(){
+  ADJ=[];
+  try{
+    const canales=[...new Set(PAGOS.map(p=>p.canal).filter(Boolean))];
+    if(!canales.length) return;
+    /* Desde el día anterior al pago más viejo: el comprobante puede haber
+       llegado la noche de antes. */
+    const viejo=PAGOS.map(p=>String(p.clave||"").split(":")[1]).filter(Boolean).sort()[0]||"2026-01-01";
+    const desde=new Date(new Date(viejo+"T00:00:00Z").getTime()-24*3600000).toISOString().slice(0,10);
+    const r=await EYG.rpc("ir.attachment","search_read",
+      [[["res_model","=","discuss.channel"],["res_id","in",canales],["create_date",">=",desde+" 00:00:00"]]],
+      {fields:["name","mimetype","file_size","res_id","create_date"],order:"id asc",limit:400});
+    /* Los stickers y los audios no son comprobantes: ensucian la fila. */
+    ADJ=(r||[]).filter(a=>!String(a.mimetype||"").startsWith("audio/")
+                        && !String(a.name||"").toLowerCase().startsWith("sticker"));
+  }catch(e){ /* si Odoo no contesta, la lista sigue sirviendo sin los archivos */ }
+}
+/* Mismo camino que en el módulo del bot: el archivo viene en base64 por
+   odoo-rpc y de ahí sale tanto el ver como el bajar. En Odoo todos se llaman
+   "image.jpg", así que el nombre se arma con el cliente y la fecha. */
+const EXT_ADJ={"image/jpeg":"jpg","image/png":"png","image/webp":"webp","application/pdf":"pdf","video/mp4":"mp4"};
+async function archivoDe(id,cliente,dia){
+  if(ARCH[id]) return ARCH[id];
+  const r=await EYG.rpc("ir.attachment","read",[[Number(id)],["name","mimetype","datas"]]);
+  const a=(r||[])[0];
+  if(!a||!a.datas) throw new Error("el archivo no está en Odoo");
+  const cru=atob(a.datas), bytes=new Uint8Array(cru.length);
+  for(let i=0;i<cru.length;i++) bytes[i]=cru.charCodeAt(i);
+  const cli=String(cliente||"cliente").normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/[^A-Za-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,40).toUpperCase();
+  const orig=String(a.name||"");
+  const ext=EXT_ADJ[a.mimetype]||(orig.includes(".")?orig.split(".").pop().toLowerCase():"dat");
+  ARCH[id]={url:URL.createObjectURL(new Blob([bytes],{type:a.mimetype||"application/octet-stream"})),
+            nombre:["COMPROBANTE",cli,dia,"adj"+id].filter(Boolean).join("-")+"."+ext};
+  return ARCH[id];
+}
+async function verPago(id,cliente,dia,bajar,btn){
+  const antes=btn?btn.textContent:"";
+  if(btn){ btn.disabled=true; btn.textContent="…"; }
+  try{
+    const f=await archivoDe(id,cliente,dia);
+    if(bajar){ const a=document.createElement("a"); a.href=f.url; a.download=f.nombre;
+               document.body.appendChild(a); a.click(); a.remove(); }
+    else window.open(f.url,"_blank");
+    if(btn) btn.textContent=antes;
+  }catch(e){
+    if(btn){ btn.textContent="no se pudo"; setTimeout(()=>{btn.textContent=antes;},2500); }
+    else alert("No pude traer el archivo: "+(e.message||e));
+  }
+  if(btn) btn.disabled=false;
+}
 async function cargarPagos(){
   try{
     const {data}=await EYG.supa().from("wsp_pagos")
@@ -387,6 +450,26 @@ async function resolverPago(clave,estado){
     render();
   }catch(e){ alert("No pude guardarlo: "+(e.message||e)); }
 }
+/* Los archivos de ESE pago: los que llegaron ese día en esa conversación. Si
+   todavía no volvieron de Odoo se avisa, para que nadie crea que no hay. */
+function archivosDe(p){
+  if(ADJ===null) return '<span class="adjcarga">buscando el comprobante…</span>';
+  /* Del mismo chat y CERCA del momento en que se detectó el pago: 12 horas
+     antes y una después. Cruzar por día no servía —la clave del pago usa el día
+     en UTC, así que un comprobante de las 22 caía en el día siguiente y ese pago
+     se quedaba sin archivo. */
+  const t0=INST(p.cuando);
+  const lista=ADJ.filter(a=>a.res_id===p.canal && INST(a.create_date)>t0-12*3600000 && INST(a.create_date)<t0+3600000);
+  if(!lista.length) return "";
+  const dia=String(p.clave||"").split(":")[1]||"";
+  const cli=String(p.cliente||"").replace(/'/g,"");
+  return lista.map((a,i)=>{
+    const n=lista.length>1?" "+(i+1):"";
+    return `<button class="adjb" onclick="verPago(${a.id},'${esc(cli)}','${dia}',false,this)" `+
+           `title="${esc(a.name||"")} · ${Math.round((a.file_size||0)/1024)} KB">📎 Ver${n}</button>`+
+           `<button class="adjb" onclick="verPago(${a.id},'${esc(cli)}','${dia}',true,this)" title="Bajar el archivo">⬇</button>`;
+  }).join("");
+}
 function cardPagos(){
   if(!PAGOS.length) return "";
   const total=PAGOS.reduce((a,p)=>a+(Number(p.importe)||0),0);
@@ -403,6 +486,7 @@ function cardPagos(){
       </div>
       <div class="imp">${imp}</div>
       <div class="acc">
+        ${archivosDe(p)}
         ${p.canal?`<a class="ver" href="../comunicaciones/whatsapp.html?canal=${p.canal}" target="_blank" title="Abrir la conversación donde llegó el comprobante">💬 Chat</a>`:""}
         <button class="ok" onclick="resolverPago('${p.clave}','imputado')">✓ Imputado</button>
         <button class="no" onclick="resolverPago('${p.clave}','descartado')">✕ No era un pago</button>
@@ -1144,6 +1228,7 @@ function mensajeCobro(c){
 window.onSearch = EYG.buscador(v => { filtro.q=v; renderLista(); });
 function setTramo(k){filtro.boveda=false;filtro.tramo=filtro.tramo===k?"":k;render();}
 window.resolverPago=resolverPago;
+window.verPago=verPago;
 window.togglePagos=togglePagos;
 function setRubro(v){filtro.rubro=filtro.rubro===v?"":v;render();}
 function toggleBoveda(){filtro.boveda=!filtro.boveda;filtro.migrada=false;filtro.tramo="";render();}
