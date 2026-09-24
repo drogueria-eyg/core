@@ -694,7 +694,10 @@ function visibles(){
     if(c.boveda) return false;   // los de bóveda no aparecen en la vista principal
     if(filtro.tramo==='gris'){ if(!c.tieneGris) return false; }
     else if(filtro.tramo==='cubierto'){ if(c.situacion!=='cubierto') return false; }
-    else if(filtro.tramo && c.tramo.k!==filtro.tramo) return false;
+    else if(filtro.tramo){ // tramos de mora (d1..d120) se filtran por el bucket de VENCIDO; los demás (afavor) por tramo
+      const moraKeys=["d1","d21","d30","d60","d90","d120"];
+      const key = moraKeys.includes(filtro.tramo) ? (c.moraBucket||c.tramo.k) : c.tramo.k;
+      if(key!==filtro.tramo) return false; }
     if(filtro.comercial && c.comercial!==filtro.comercial) return false;
     if(filtro.rubro && c.rubro!==filtro.rubro) return false;
     if(filtro.q){const q=filtro.q.toLowerCase(); if(!c.nombre.toLowerCase().includes(q)) return false;}
@@ -1092,6 +1095,11 @@ function render(){
   const totalGris=totalCobradoSinImp+totalBorrador;
   const porTramo={}; TRAMOS.forEach(t=>porTramo[t.k]={n:0,m:0}); porTramo["cubierto"]={n:0,m:0};
   activos.forEach(c=>{ const k=(c.situacion==="cubierto")?"cubierto":c.tramo.k; const b=porTramo[k]||(porTramo[k]={n:0,m:0}); b.n++; b.m+=Math.max(0,c.deudaReal); });
+  // Vencido POR TRAMO (para las tarjetas de "antigüedad de mora"): suma la PORCIÓN VENCIDA de cada cliente,
+  // no la deuda total. La migración impaga (sin fecha, mora=0) va a +120. Σ tramos = Vencida (con mora) exacto.
+  const porTramoV={}; TRAMOS.forEach(t=>porTramoV[t.k]={n:0,m:0});
+  activos.forEach(c=>{ c.moraBucket = c.vencidoReal>1 ? (c.mora>0?c.tramo.k:"d120") : "vencer";
+    if(c.vencidoReal>1){ const b=porTramoV[c.moraBucket]; b.n++; b.m+=c.vencidoReal; } });
   const incob=porTramo["d120"];
   const grisN=activos.filter(c=>c.tieneGris).length;
   const cub=porTramo["cubierto"];
@@ -1119,11 +1127,11 @@ function render(){
     ${cardPagos()}
 
     <div class="cardsec sec-mora">
-      <div class="sectitle"><span>⏱️ Deuda por antigüedad de mora</span>${agingActive?`<a class="secclr" onclick="setTramo(filtro.tramo)">✕ quitar filtro</a>`:''}</div>
+      <div class="sectitle"><span>⏱️ Vencido por antigüedad de mora</span>${agingActive?`<a class="secclr" onclick="setTramo(filtro.tramo)">✕ quitar filtro</a>`:''}</div>
       <div class="kpis">
-        <div class="kpi ${!filtro.tramo&&!filtro.boveda&&!filtro.migrada?'on':''}" onclick="setTramo('')"><div class="n">${activos.length}</div><div class="money">${money(totalReal)}</div><div class="l">Todos</div></div>
-        ${TRAMOS.map(t=>`<div class="kpi ${filtro.tramo===t.k?'on':''}" onclick="setTramo('${t.k}')">
-          <div class="n">${porTramo[t.k].n}</div><div class="money">${money(porTramo[t.k].m)}</div>
+        <div class="kpi ${!filtro.tramo&&!filtro.boveda&&!filtro.migrada?'on':''}" onclick="setTramo('')"><div class="n">${activos.length}</div><div class="money">${money(totalVenc)}</div><div class="l">Todos · vencido</div></div>
+        ${TRAMOS.filter(t=>t.k!=="vencer").map(t=>`<div class="kpi ${filtro.tramo===t.k?'on':''}" onclick="setTramo('${t.k}')" style="${porTramoV[t.k].m>0?'':'opacity:.5'}">
+          <div class="n">${porTramoV[t.k].n}</div><div class="money">${money(porTramoV[t.k].m)}</div>
           <div class="l"><span class="dot" style="background:var(--${t.t})"></span>${t.l}</div></div>`).join("")}
       </div>
     </div>
