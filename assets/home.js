@@ -259,7 +259,7 @@ window.EYGHome = (function(){
   async function facturacion(){
     const porDia = async tipo => {
       const g=await rpc("account.move","read_group",
-        [domCuenta([["move_type","=",tipo],["state","=","posted"],["invoice_date",">=",ANO_INI]]),
+        [domCuenta([["move_type","=",tipo],["state","=","posted"],["invoice_date",">=",ANO_INI],EYG.VENTA_REAL]),
          ["amount_untaxed:sum"],["invoice_date:day"]],
         Object.assign({lazy:false},CTX));
       return g.map(r=>{

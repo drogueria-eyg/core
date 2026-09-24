@@ -71,6 +71,30 @@ window.EYG = (function(){
   }
 
   /* ---- helpers ---- */
+  /* ---- QUÉ CUENTA COMO VENTA ----------------------------------------------
+     No toda factura de venta de Odoo es una venta. El diario **Redondeo**
+     (id 39, tipo caja) emite `out_invoice`/`out_refund` de verdad, pero son
+     ajustes que hace Tesorería para acomodar cuentas de clientes — mover deuda
+     de una farmacia a otra, cerrar diferencias. El producto de esos renglones
+     es "REDONDEO FC" y NO tienen pedido de venta detrás.
+
+     Medido el 24/9/2026: en el mes en curso eran **$24.259.773 = 7,3%** de lo
+     que el Inicio mostraba como facturado. En 12 meses, $37,8M (0,9%).
+     También aparecen sueltos Mercado Pago (27), Cheques Rechazados (17) y
+     Efectivo B (35), con montos chicos.
+
+     La regla es por TIPO de diario, no por id: así se mantiene sola si mañana
+     crean otro diario de ajuste. Los diarios de venta reales son "Ventas AFIP
+     PdV 005" (9), "Proforma EYG" (34) y la Proforma vieja (28, inactiva).
+
+     ⚠️ Va SÓLO donde el número significa "vendimos / facturamos". NO va donde
+     significa deuda o imputación de pagos (cobranzas, cheques, situación
+     crediticia): esas facturas de ajuste SÍ son deuda real del cliente y hay
+     que poder imputarles un cobro. Tampoco hace falta en las consultas que ya
+     se scopean por `sale_line_ids` (facturado por comercial), porque sin pedido
+     detrás esos renglones ya quedan afuera — verificado, 0 de 123. */
+  const VENTA_REAL = ["journal_id.type","=","sale"];
+
   const money = n => "$"+Math.round(n||0).toLocaleString("es-AR");
   const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   const hace = d => { const t=new Date(); t.setDate(t.getDate()-d); return t.toISOString().slice(0,10); };
@@ -1973,7 +1997,7 @@ window.EYG = (function(){
     return m>0 && Math.abs(m-c)<0.01;
   }
 
-  return { supa, rpc, rpcHead, gate, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
+  return { supa, rpc, rpcHead, gate, VENTA_REAL, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
