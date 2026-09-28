@@ -378,11 +378,23 @@
   .dsc-b.restaurar{background:#EAF6F0;color:#1E7D46;border-color:#cfe9d8}
   .dsc-empty{text-align:center;color:var(--gris);font-size:13px;padding:14px}
   @media(max-width:560px){.dsc-item{flex-wrap:wrap}.dsc-act{width:100%;flex-direction:row}.dsc-b{flex:1}}
+  /* Botón flotante: Dirección no vende todos los días, pero cuando lo hace lo tiene a mano,
+     sin que le ocupe media pantalla un panel de ventas que no usa. */
+  .fabwrap{position:fixed;right:22px;bottom:22px;z-index:60;display:flex;flex-direction:column;align-items:flex-end;gap:10px}
+  .fabmenu{display:none;flex-direction:column;gap:8px;align-items:stretch}
+  .fabmenu.on{display:flex}
+  .fabmenu a{display:flex;align-items:center;gap:9px;background:#fff;color:#0E1F1D;text-decoration:none;font-family:inherit;
+    font-size:14px;font-weight:700;border-radius:12px;padding:12px 16px;box-shadow:0 10px 30px rgba(6,65,62,.28);white-space:nowrap}
+  .fabmenu a:hover{background:#EAF6F4}
+  .fabbtn{display:flex;align-items:center;gap:9px;background:var(--gold,#E8B54B);color:#22303A;border:0;border-radius:30px;
+    padding:14px 22px;font-family:inherit;font-size:15px;font-weight:800;cursor:pointer;box-shadow:0 10px 30px rgba(0,0,0,.3)}
+  .fabbtn:hover{filter:brightness(1.05)}
+  @media(max-width:700px){.fabwrap{right:14px;bottom:14px}.fabbtn{font-size:14px;padding:13px 18px}}
 </style>
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=86"></script>
+<script src="../assets/core.js?v=87"></script>
 <script src="../assets/metrics.js?v=5"></script>
 <script src="../assets/liquidacion.js?v=1"></script>
 <script>
@@ -432,10 +444,14 @@ async function resolverLider(name){
   if(!emp.length) throw new Error("No tiene ficha de empleado en Odoo (hace falta para leer su equipo).");
   // GERENCIA (Irene y Germán) conduce a TODA la fuerza de ventas, no sólo a quien le cuelgue
   // en el organigrama: en Odoo cada persona tiene un solo jefe y por eso esto vive en el Core.
-  if(await EYG.esGerencia(u[0].name)){
+  /* DIRECCIÓN (Gerencia, o quien lleva su propio equipo): el alcance lo define EYG.aCargoDe,
+     que ya deja afuera lo que no le corresponde ver a cada uno. */
+  const aCargo=await EYG.aCargoDe(u[0].name);
+  if(aCargo && aCargo.size){
     const fv=await EYG.fuerzaVentas();
-    return {uid:u[0].id, name:u[0].name, empId:emp[0].id, gerencia:true,
-            team:fv.map(x=>({uid:x.uid, name:x.nombre}))};
+    const mios=fv.filter(x=>[...aCargo].some(n=>n===x.nombre));
+    if(mios.length) return {uid:u[0].id, name:u[0].name, empId:emp[0].id, direccion:true,
+                            team:mios.map(x=>({uid:x.uid, name:x.nombre}))};
   }
   const childIds = emp[0].child_ids||[];
   let team=[];
@@ -581,8 +597,30 @@ async function cargarMisVentas(){
   }catch(e){ MIO={err:e.message||"no pude leer tus ventas"}; }
   renderMisVentas();
 }
+/* Acceso rápido para vender de vez en cuando, sin panel de ventas atrás. */
+function montarFab(){
+  if(document.getElementById("fabwrap")) return;
+  const c = (PERFIL && PERFIL.rol!=="comercial" && LIDER) ? ("&c="+encodeURIComponent(LIDER.name)) : "";
+  const w=document.createElement("div");
+  w.className="fabwrap"; w.id="fabwrap";
+  w.innerHTML=`<div class="fabmenu" id="fabmenu">
+      <a href="vender.html?nuevo=1${c}">🧾 Cargar una venta</a>
+      <a href="cotizador.html">🧮 Cotizar</a>
+    </div>
+    <button class="fabbtn" onclick="fabToggle()">🛒 Cotizar o cargar venta</button>`;
+  document.body.appendChild(w);
+  document.addEventListener("click",e=>{ if(!w.contains(e.target)) fabCerrar(); });
+}
+function fabToggle(){ const m=document.getElementById("fabmenu"); if(m) m.classList.toggle("on"); }
+function fabCerrar(){ const m=document.getElementById("fabmenu"); if(m) m.classList.remove("on"); }
+
 function renderMisVentas(){
   const box=document.getElementById("misventas"); if(!box || !LIDER) return;
+  /* A DIRECCIÓN NO SE LE MIDE RENDIMIENTO (decisión del dueño, 28/9/2026): no tienen panel de
+     venta propio ni métricas personales — no hay meta, comisión ni cartera que evaluar. Lo que
+     importa acá son las métricas de los COMERCIALES, que es todo lo que sigue abajo. Para las
+     ventas ocasionales está el botón flotante "Cotizar o cargar venta". */
+  if(LIDER.direccion){ box.innerHTML=""; montarFab(); return; }
   const nrm=s=>(s||"").toString().trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
   /* ¿Es SU propio panel? Comparamos sin acentos ni mayúsculas, y aceptamos que el perfil
      traiga sólo el nombre de pila ("Diego" vs "Diego Velazquez"): si no, a German y a Diego,

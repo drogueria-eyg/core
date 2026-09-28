@@ -931,11 +931,38 @@ window.EYG = (function(){
     g.forEach(x=>{ if(_normNom(x.nombre)!==yo && !out.some(a=>_normNom(a)===_normNom(x.nombre))) out.push(x.nombre); });
     return out;
   }
-  /* A quiénes tiene a cargo: Gerencia ve a TODA la fuerza de ventas; el resto, su subárbol. */
+  /* DIRECCIÓN CON EQUIPO PROPIO: quien conduce comerciales sin ser de Gerencia (hoy, Diego con
+     Lucía y María Emilia). Su equipo queda APARTE y **Gerencia no lo ve** — decisión del dueño
+     del 28/9/2026. Se deduce del organigrama, no hay nombres escritos: es quien figura como
+     jefe de alguien de Ventas y no está en Gerencia. */
+  async function jefesConEquipoPropio(){
+    try{
+      const vent=await rpc("hr.employee","search_read",[[["department_id.name","ilike","venta"],["active","=",true]]],
+        {fields:["id","name","parent_id","user_id"],context:{lang:"es_AR"}});
+      const ventIds=new Set(vent.map(e=>e.id));
+      const g=await gerencia(); const ger=new Set(g.map(x=>x.emp));
+      const pids=[...new Set(vent.map(e=>e.parent_id&&e.parent_id[0]).filter(p=>p&&!ger.has(p)&&!ventIds.has(p)))];
+      if(!pids.length) return [];
+      const jefes=await rpc("hr.employee","read",[pids,["id","name","user_id"]],{context:{lang:"es_AR"}});
+      return jefes.filter(j=>j.user_id).map(j=>({emp:j.id, nombre:j.user_id[1], uid:j.user_id[0],
+        equipo:vent.filter(e=>e.parent_id&&e.parent_id[0]===j.id&&e.user_id).map(e=>e.user_id[1])}));
+    }catch(e){ return []; }
+  }
+  /* A quiénes tiene a cargo cada uno, ya filtrado:
+     · GERENCIA → la fuerza de ventas de la casa, SIN el equipo propio de Dirección.
+     · DIRECCIÓN con equipo propio → ve TODO (los suyos y los de la casa).
+     · cualquier otro → su subárbol del organigrama. */
   async function aCargoDe(nombre){
-    if(await esGerencia(nombre)){
+    const propios=await jefesConEquipoPropio();
+    const yo=_normNom(nombre);
+    if(propios.some(j=>_normNom(j.nombre)===yo)){
       const fv=await fuerzaVentas();
       return new Set(fv.map(x=>x.nombre));
+    }
+    if(await esGerencia(nombre)){
+      const fv=await fuerzaVentas();
+      const ajenos=new Set(propios.flatMap(j=>j.equipo).map(_normNom));
+      return new Set(fv.map(x=>x.nombre).filter(n=>!ajenos.has(_normNom(n))));
     }
     return orgDescendientes(nombre);
   }
@@ -2076,7 +2103,7 @@ window.EYG = (function(){
     RESERVA_DIAS, RESERVA_AVISO, TOPE_RESERVAS, conqEstado, conqOcupado, conqFuera, conqDiasRestantes, conqIndice, conqReservasDe,
     zonasLeer, zonasGuardar, zonaDe, zonaPermite, conquistarTomar, conquistarLiberar, conquistarContacto,
     orgCargar, orgDescendientes, orgAncestros, notificarLideresDe,
-    gerencia, esGerencia, fuerzaVentas, lideresDe, aCargoDe,
+    gerencia, esGerencia, fuerzaVentas, lideresDe, aCargoDe, jefesConEquipoPropio,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA,

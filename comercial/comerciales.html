@@ -189,7 +189,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=86"></script>
+<script src="../assets/core.js?v=87"></script>
 <script src="../assets/liquidacion.js?v=1"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
@@ -222,7 +222,7 @@ EYG.requireAuth(["admin","direccion","finanzas"], perfil=>{
   const verComi = esSuperAdmin || soloComisiones;
   const main = `
     <div id="resumen"></div>
-    <div class="seccion">🏆 Equipos y líderes <span class="hint">tocá una tarjeta: adentro está su equipo y su panel de venta</span></div>
+    <div class="seccion">🏆 Conducción <span class="hint">tocá la tarjeta: adentro están las métricas de los comerciales</span></div>
     <div id="lideres"><div class="loading"><div class="spinner"></div>Leyendo el organigrama y las ventas del equipo…</div></div>
     <div class="seccion" id="com-sec" style="display:none">👥 Comerciales <span class="hint" id="com-hint"></span></div>
     <div id="ov"></div>
@@ -312,7 +312,11 @@ async function cargar(){
   const gerEmpIds=new Set(GER.map(g=>g.emp));
   const leaderIds=new Set([...gerEmpIds, ...EMPS.filter(e=>ventasParents.has(e.id)).map(e=>e.id)]);
   const leaders=EMPS.filter(e=>leaderIds.has(e.id)).sort((a,b)=>a.name.localeCompare(b.name));
-  const comEmps=ventasEmps.filter(e=>!leaderIds.has(e.id));   // comerciales = Ventas que no conducen
+  let comEmps=ventasEmps.filter(e=>!leaderIds.has(e.id));   // comerciales = Ventas que no conducen
+  /* CADA UNO VE LO SUYO: Gerencia ve la fuerza de ventas de la casa pero NO el equipo propio de
+     Dirección; Dirección ve todo. Lo resuelve EYG.aCargoDe, que lee el organigrama. */
+  await cargarMiEquipo();
+  if(MIS_COM && MIS_COM.size) comEmps=comEmps.filter(e=>e.user_id && enMiEquipo(e.user_id[1]));
   const uidLeaderName={};   // uid del comercial -> quién lo conduce
   comEmps.forEach(e=>{
     const L=e.parent_id&&empById[e.parent_id[0]];
@@ -387,6 +391,11 @@ async function cargar(){
   });
 
   lcards.sort((a,b)=>(b.teamN-a.teamN)||((b.cartera+b.ownCartera)-(a.cartera+a.ownCartera))||a.name.localeCompare(b.name));
+  /* Quien mira desde GERENCIA ve UNA sola tarjeta "Dirección" —no una por persona— porque a
+     Dirección no se le mide rendimiento y no tiene sentido mostrar carteras individuales.
+     Quien lleva su propio equipo (Dirección de Sistemas y Procesos) sigue viendo todo. */
+  STATE.soyGerencia = await EYG.esGerencia((PERFIL&&(PERFIL.nombre||PERFIL.comercial_ref))||"").catch(()=>false);
+  STATE.yo = (PERFIL&&(PERFIL.nombre||PERFIL.comercial_ref))||"";
   STATE.leaders=lcards; STATE.coms=coms;
   const dTot=coms.reduce((a,c)=>a+c.deuda,0), vTot=coms.reduce((a,c)=>a+c.venc,0);
   STATE.resumen={ factMes:coms.reduce((a,c)=>a+c.factMes,0), cobMes:coms.reduce((a,c)=>a+c.cobMes,0),
@@ -412,6 +421,26 @@ function renderLideres(){
      detalle (sus ventas propias, las del equipo, mensajería, ofertas, actividad) vive ADENTRO,
      en lider.html, que es además de donde el líder entra a su panel de venta. Antes cada tarjeta
      traía 12 meses de gráfico y ocho métricas: ocupaba media pantalla y repetía lo de adentro. */
+  /* Vista de GERENCIA: una sola tarjeta "Dirección". Irene y Germán conducen juntos y no se
+     evalúan entre sí, así que mostrar una tarjeta por cabeza sólo confundía. Al entrar, cada
+     uno cae en SU vista de conducción con las métricas de los comerciales. */
+  if(STATE.soyGerencia){
+    const n=(STATE.coms||[]).length;
+    const cli=(STATE.coms||[]).reduce((a,c)=>a+(c.cartera||0),0);
+    box.innerHTML=`<div class="lidgrid"><a class="lidcard mini" href="lider.html?lider=${encodeURIComponent(STATE.yo)}">
+      <div class="accent"></div>
+      <div class="lhead"><div class="av">D</div>
+        <div class="who"><div class="role">Conducción</div><div class="nm">Dirección</div></div>
+        <div class="go">→</div></div>
+      <div class="minirow">
+        <div class="mk" title="Los comerciales que conduce Dirección.">
+          <div class="l">A cargo</div><div class="v">${n}<span class="u">comercial${n===1?'':'es'}</span></div></div>
+        <div class="mk" title="Clientes de toda la fuerza de ventas.">
+          <div class="l">Clientes</div><div class="v">${cli.toLocaleString("es-AR")}</div></div>
+      </div>
+    </a></div>`;
+    return;
+  }
   if(!STATE.leaders.length){ box.innerHTML='<div class="lidnote">No hay líderes definidos en el organigrama de Odoo todavía. Los comerciales aparecen abajo.</div>'; return; }
   box.innerHTML=`<div class="lidgrid">${STATE.leaders.map(l=>{
     const ini=(l.name||"?").trim().charAt(0).toUpperCase(); const nombre=esc(l.name.split(" ")[0]);
