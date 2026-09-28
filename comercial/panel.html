@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=87"></script>
+<script src="../assets/core.js?v=88"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -973,7 +973,12 @@ async function cargar(){
       porP[c.id]={ deuda, vencido:Math.max(0,vencido), venc:null, mig, migArch:arch, ncSin:(ncMap[c.id]||0) };
     }
     let porCobrar=0, vencido=0, nDeud=0;
-    for(const pid in porP){ const d=porP[pid].deuda; if(d>1){porCobrar+=d; vencido+=porP[pid].vencido; nDeud++;} }
+    /* El VENCIDO se suma SIEMPRE, tenga o no saldo neto el cliente. Antes se contaba sólo si
+       `deuda>1`, y eso escondía las facturas vencidas de clientes con crédito a favor: una NC
+       grande sin imputar dejaba el neto en cero y la factura vencida desaparecía del número
+       (caso real: Asoc. Empleados de Comercio, −$639.212 de neto y $37.407 vencidos que no se
+       contaban). El crédito sin aplicar se muestra aparte, no tapa lo vencido. */
+    for(const pid in porP){ const d=porP[pid].deuda; if(d>1){porCobrar+=d; nDeud++;} vencido+=porP[pid].vencido; }
     ST.cc={ porP, porCobrar, vencido, cobradoMes:cobrado[0]?.amount||0, aFacturar:afSin, nDeud };
     // ---- DEUDA QUE MIDE LA SALUD: la de SUS ventas, no la de su cartera ----
     // La lista de arriba (por cliente) sigue mostrando lo que debe CADA CLIENTE — es lo que necesita
@@ -992,6 +997,24 @@ async function cargar(){
       ST.cc.saludPorCobrar=(dTot[0]?.amount_residual)||0;
       ST.cc.saludVencido=(dVen[0]?.amount_residual)||0;
     }catch(e){ ST.cc.saludPorCobrar=porCobrar; ST.cc.saludVencido=vencido; }
+    /* DE DÓNDE SALE EL VENCIDO — para que el número se pueda explicar y no sorprenda.
+       Un cliente puede haber cambiado de manos: la deuda de su cartera incluye ventas que hizo
+       OTRO, y sus propias ventas pueden estar hoy en la cartera de un tercero. Odoo no cruza
+       eso (agrupa por el vendedor de la factura); acá se muestra separado. */
+    try{
+      const _ids=Object.keys(porP).map(Number);
+      const MIA=["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",ST.userId];
+      const bruto=[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],
+                   ["amount_residual",">",0],["date_maturity","<",hoyStr.slice(0,10)],["journal_id","not in",[32,33]]];
+      const [deOtro, enOtraCartera]=await Promise.all([
+        rpc("account.move.line","read_group",[[...bruto,["partner_id","in",_ids],"!",MIA],["amount_residual:sum"],[]],{lazy:false}),
+        rpc("account.move.line","read_group",[[...bruto,MIA,"!",["partner_id","in",_ids]],["amount_residual:sum"],[]],{lazy:false})
+      ]);
+      ST.cc.vencDeOtro=(deOtro[0]?.amount_residual)||0;          // en MI cartera, pero lo vendió otro
+      ST.cc.vencEnOtraCartera=(enOtraCartera[0]?.amount_residual)||0;  // lo vendí yo, hoy el cliente es de otro
+      ST.cc.vencMig=Object.values(porP).reduce((a,p)=>a+(p.migArch?0:(p.mig||0)),0);
+      ST.cc.ncSin=Object.values(porP).reduce((a,p)=>a+(p.ncSin||0),0);
+    }catch(e){}
     // Perfil crediticio: historial de pago interno (riesgoCartera) + umbral + cache BCRA. Alimentan
     // el badge abreviado de la lista Y el detalle de la ficha. El BCRA se completa en 2º plano (trickle).
     EYG.riesgoCartera().then(m=>{ ST.riesgos=m||{}; if(document.getElementById("lista")) lista(); refrescarPerfilFicha(); }).catch(()=>{});
@@ -2172,6 +2195,10 @@ function render(){
         <div class="khead" onclick="tk(this.parentNode)"><span class="kic">🩸</span><div class="kmeta"><div class="kl">Por cobrar</div><div class="kv">${money(ST.cc.porCobrar)}</div><div class="ks">Vencido ${money(ST.cc.vencido)}${ST.cc.porCobrar>0?' ('+Math.round(ST.cc.vencido/ST.cc.porCobrar*100)+'%)':''}</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
           <div class="drow"><span>🔴 Vencido · reclamar ya</span><b style="color:var(--coral)">${money(ST.cc.vencido)}</b></div>
+          ${(ST.cc.vencDeOtro>1)?`<div class="drow" style="font-size:12px;color:var(--gris)" title="El cliente hoy es tuyo, pero esas facturas las vendió otro comercial. Te toca cobrarlas, pero NO cuentan en tu Salud."><span>↳ de ventas de otro comercial</span><b>${money(ST.cc.vencDeOtro)}</b></div>`:''}
+          ${(ST.cc.vencMig>1)?`<div class="drow" style="font-size:12px;color:var(--gris)" title="Saldo que venía del sistema anterior, sin fecha de vencimiento. No es venta de nadie."><span>↳ saldo inicial migrado</span><b>${money(ST.cc.vencMig)}</b></div>`:''}
+          ${(ST.cc.vencEnOtraCartera>1)?`<div class="drow" style="font-size:12px;color:var(--gris)" title="Vos hiciste esa venta, pero el cliente hoy está en la cartera de otro comercial. No figura arriba, pero SÍ cuenta en tu Salud."><span>＋ tus ventas en clientes de otro</span><b>${money(ST.cc.vencEnOtraCartera)}</b></div>`:''}
+          ${(ST.cc.ncSin>1)?`<div class="drow" style="font-size:12px;color:var(--gris)" title="Notas de crédito a favor del cliente que todavía no se imputaron a ninguna factura. No descuentan el vencido hasta que Administración las concilie."><span>💳 NC sin aplicar</span><b>${money(ST.cc.ncSin)}</b></div>`:''}
           <div class="drow"><span>📦 Sin facturar (no entregado)</span><b>${money(ST.cc.aFacturar)}</b></div>
           ${(externo||MODO_LIDER)?'':`<div style="font-size:11px;color:var(--gris2);margin-top:7px">Bajar el vencido sube tu Salud (y recuperás tasa de comisión).</div>`}
           <div style="margin-top:9px"><a onclick="verOdoo('action=321&view_type=list&search_default_late=1&search_default_myinvoices=1')" style="color:var(--teal);font-weight:700;cursor:pointer;font-size:12.5px">Ver vencidos en Odoo →</a></div>
