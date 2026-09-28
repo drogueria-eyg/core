@@ -252,7 +252,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=85"></script>
+<script src="../assets/core.js?v=86"></script>
 <script>
 /* ===== EyG Core · Contactos: la base única de contactos de EyG =====
    Una sola casa para TODOS los contactos: los que ya son nuestros (con la ficha completa,
@@ -336,10 +336,30 @@ function optPlazo(sel){
 const plazoTxt=id=>{ const p=PLAZOS.find(x=>x.id===id); return p? (p.name+" · vence a "+p.det) : null; };
 
 const PPAL_TAG="[ENTREGA-PPAL]";   // misma marca que usan el panel del comercial y Cargar Venta para la dirección de entrega principal
-const ROLES={"German Banquero":{label:"Gerente",cls:"gerente"},"Diego Velazquez":{label:"Dirección",cls:"gerente"},"Marcela Carranza":{label:"Líder Comercial",cls:"lider"}};
-const rolRank=n=>(n==="German Banquero"||n==="Diego Velazquez")?0:n==="Marcela Carranza"?1:n==="Sin asignar"?9:2;
+/* Quién es quién: se arma solo con la estructura real (reestructuración 28/9/2026 — se eliminó
+   la figura de líder comercial). GERENCIA sale del departamento Gerencia de Odoo vía
+   EYG.gerencia(); DIRECCIÓN es quien está en Gestión y Procesos por encima de comerciales.
+   Antes esto era una lista de nombres a mano y quedaba vieja con cada cambio de equipo. */
+let ROLES={"Diego Velazquez":{label:"Dirección",cls:"gerente"}};
+async function cargarRoles(){
+  try{
+    const g=await EYG.gerencia();
+    const r=Object.assign({}, {"Diego Velazquez":{label:"Dirección",cls:"gerente"}});
+    (g||[]).forEach(x=>{ r[x.nombre]={label:"Gerencia",cls:"gerente"}; });
+    ROLES=r;
+  }catch(e){}
+}
+const rolRank=n=>ROLES[n]?0:(n==="Sin asignar"?9:2);
 // Equipo comercial: siempre se muestran como tarjeta, aunque tengan 0 contactos (ej. las nuevas Lucía y Marianela).
-const COMERCIALES=["German Banquero","Diego Velazquez","Marcela Carranza","Natividad Sanchez","Claudia Dominguez","Samanta Luna","Ruth Aguayo","Antonella Infanti","Maricruz Finochietti","Lucía Oviedo","Marianela Soto"];
+/* El equipo se lee del organigrama (EYG.fuerzaVentas + EYG.gerencia), no de una lista escrita
+   a mano: así una alta o una baja se refleja sola y no quedan tarjetas de gente que ya no está. */
+let COMERCIALES=[];
+async function cargarEquipo(){
+  try{
+    const [fv,g]=await Promise.all([EYG.fuerzaVentas(), EYG.gerencia()]);
+    COMERCIALES=[...(g||[]).map(x=>x.nombre), ...(fv||[]).map(x=>x.nombre)];
+  }catch(e){ COMERCIALES=[]; }
+}
 
 let PERFIL=null;
 let DATA=[], COMS=[], COMLIST=[], COMROSTER=[], VENTA={}, DUPVAT={}, DUPNAME={};
@@ -413,10 +433,11 @@ async function cargar(silent){
       PROVIDX={}; prov.forEach(p=>{ PROVIDX[NORM(p.name.replace(/\s*\((AR|IT)\)$/,""))]=p.id; });
       // roster de usuarios internos (para reasignar cualquier contacto)
       COMLIST=users.filter(u=>u.id>1).map(u=>({id:u.id,name:u.name})).sort((a,b)=>rolRank(a.name)-rolRank(b.name)||a.name.localeCompare(b.name));
-      // COMERCIALES + LÍDERES para "Enviar a comercial": depto Ventas activo (incluye a Marcela)
-      // + sus jefes de arriba que NO están en Ventas (Germán, Diego). Se limpia solo con el organigrama.
+      // A quién se le puede mandar un potencial: la fuerza de ventas + Gerencia (que también
+      // vende) + los jefes de fuera de Ventas que tengan comerciales a cargo (hoy, Dirección).
       const vf=(vent||[]).filter(e=>e.user_id);
       const rmap={}; vf.forEach(e=>{ rmap[e.user_id[0]]={id:e.user_id[0],name:e.user_id[1]}; });
+      try{ (await EYG.gerencia()).forEach(x=>{ if(x.uid) rmap[x.uid]={id:x.uid,name:x.nombre}; }); }catch(_){}
       const ventEmp=new Set(vf.map(e=>e.id));
       const jefeIds=[...new Set(vf.map(e=>e.parent_id&&e.parent_id[0]).filter(pid=>pid&&!ventEmp.has(pid)))];
       if(jefeIds.length){ try{ const jefes=await rpc("hr.employee","read",[jefeIds],{fields:["user_id"],context:{lang:"es_AR"}}); jefes.forEach(j=>{ if(j.user_id) rmap[j.user_id[0]]={id:j.user_id[0],name:j.user_id[1]}; }); }catch(_){} }
@@ -2425,7 +2446,11 @@ function iniciarAutoRefresco(){
   document.addEventListener("visibilitychange",()=>{ if(!document.hidden && !drawerAbierto() && !editando() && !enMapa() && Date.now()-_lastLoad>60000) cargar(true); });
 }
 
-EYG.guard(["comercial","lider","admin","direccion"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(p=>{ PERFIL=p; cargar(); iniciarAutoRefresco(); });
+EYG.guard(["comercial","lider","admin","direccion"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(async p=>{
+  PERFIL=p;
+  await Promise.all([cargarRoles(), cargarEquipo()]);   // quién es Gerencia y quiénes son los comerciales, del organigrama
+  cargar(); iniciarAutoRefresco();
+});
 </script>
 </body>
 </html>

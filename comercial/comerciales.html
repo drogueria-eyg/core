@@ -189,7 +189,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=85"></script>
+<script src="../assets/core.js?v=86"></script>
 <script src="../assets/liquidacion.js?v=1"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
@@ -296,8 +296,7 @@ async function cargar(){
     ]);
   }catch(e){ document.getElementById("lideres").innerHTML='<div class="errbox">No pude leer el organigrama: '+esc(e.message)+'</div>'; return; }
 
-  // Comercial = empleado del departamento VENTAS. Líder = empleado de Ventas que es jefe de otros
-  // de Ventas (Marcela), más su propio jefe hacia arriba (Germán: dirección, hoy sin comerciales).
+  // Comercial = empleado del departamento VENTAS. La conducción es GERENCIA (ver abajo).
   // El chip de cada comercial sale de su EQUIPO CRM real (Instituciones / Comercial General).
   // Así queda coherente con Odoo: no toma admin/finanzas ni ex-comerciales por colgar del organigrama.
   const empById={}; EMPS.forEach(e=>empById[e.id]=e);
@@ -305,14 +304,21 @@ async function cargar(){
   const isVentas=e=>e.department_id && /ventas/i.test(e.department_id[1]);
   const ventasEmps=EMPS.filter(isVentas);
   const ventasParents=new Set(); ventasEmps.forEach(e=>{ if(e.parent_id) ventasParents.add(e.parent_id[0]); });
-  // Líder = quien es JEFE de un comercial de Ventas, esté o no él mismo en Ventas.
-  // Cubre a Marcela (líder dentro de Ventas) y a jefes fuera de Ventas como Germán y Diego (Gestión).
-  const leaderIds=new Set(EMPS.filter(e=>ventasParents.has(e.id)).map(e=>e.id));
-  [...leaderIds].forEach(id=>{ const L=empById[id]; if(L&&L.parent_id){ const p=empById[L.parent_id[0]]; if(p) leaderIds.add(p.id); } });  // + su jefe hacia arriba
+  /* Reestructuración 28/9/2026: se eliminó la figura de líder comercial. Ahora la conducción es
+     GERENCIA (Irene y Germán), que en Odoo no es jefa de nadie —allá cada persona tiene un solo
+     jefe— pero en el Core conduce a toda la fuerza de ventas. Se suma quien todavía tenga
+     comerciales colgando de él en el organigrama (hoy, Dirección con los suyos). */
+  const GER=await EYG.gerencia().catch(()=>[]);
+  const gerEmpIds=new Set(GER.map(g=>g.emp));
+  const leaderIds=new Set([...gerEmpIds, ...EMPS.filter(e=>ventasParents.has(e.id)).map(e=>e.id)]);
   const leaders=EMPS.filter(e=>leaderIds.has(e.id)).sort((a,b)=>a.name.localeCompare(b.name));
-  const comEmps=ventasEmps.filter(e=>!leaderIds.has(e.id));   // comerciales = Ventas que no son líderes
-  const uidLeaderName={};   // uid del comercial -> nombre del líder (jerarquía hr)
-  comEmps.forEach(e=>{ const L=e.parent_id&&empById[e.parent_id[0]]; if(L) uidLeaderName[e.user_id[0]]=L.user_id[1]; });
+  const comEmps=ventasEmps.filter(e=>!leaderIds.has(e.id));   // comerciales = Ventas que no conducen
+  const uidLeaderName={};   // uid del comercial -> quién lo conduce
+  comEmps.forEach(e=>{
+    const L=e.parent_id&&empById[e.parent_id[0]];
+    // si su jefe del organigrama es alguien de Gerencia (o no tiene), se muestra "Gerencia"
+    uidLeaderName[e.user_id[0]] = (!L || gerEmpIds.has(L.id)) ? "Gerencia" : L.user_id[1];
+  });
   const comUids=[...new Set(comEmps.map(e=>e.user_id[0]))];
   const nameOfUid={}; EMPS.forEach(e=>{ nameOfUid[e.user_id[0]]=e.user_id[1]; });
   STATE.leaderEmps=leaders; STATE.comEmps=comEmps; STATE.empById=empById; STATE.teamOfUid=teamOfUid;  // para la herramienta de asignar
@@ -371,9 +377,11 @@ async function cargar(){
 
   // arma líderes: sólo lo que entra en la tarjeta-resumen (a cargo + clientes).
   const lcards=leaders.map(L=>{
-    const tu=comEmps.filter(e=>e.parent_id&&e.parent_id[0]===L.id).map(e=>e.user_id[0]);
+    // Gerencia conduce a TODA la fuerza de ventas; el resto, sólo a los que le cuelgan.
+    const tu=gerEmpIds.has(L.id) ? comEmps.map(e=>e.user_id[0])
+                                 : comEmps.filter(e=>e.parent_id&&e.parent_id[0]===L.id).map(e=>e.user_id[0]);
     const lu=L.user_id[0];
-    return { empId:L.id, uid:lu, name:L.user_id[1], teamN:tu.length,
+    return { empId:L.id, uid:lu, name:L.user_id[1], gerencia:gerEmpIds.has(L.id), teamN:tu.length,
       cartera:tu.reduce((a,u)=>a+(cartera[u]||0),0),   // clientes del equipo
       ownCartera:cartera[lu]||0 };                     // + los propios: el líder también vende
   });
@@ -450,7 +458,7 @@ async function montarOrg(){
   if(!STATE.leaderEmps||!STATE.leaderEmps.length){
     box.innerHTML='<div class="org"><div class="empty">Todavía no cargaron los líderes y comerciales de arriba. Recargá la página si no aparecen.</div></div>'; return;
   }
-  ORG.liderEmp = STATE.leaderEmps[0].id;   // Marcela por defecto
+  ORG.liderEmp = STATE.leaderEmps[0].id;   // el primero de la lista
   renderOrg();
 }
 function renderOrg(){
@@ -568,7 +576,7 @@ let CONQ=[], DESC_ARCH=false, MIS_COM=null;
 // Sólo los descartes de comerciales de MI equipo (subárbol del organigrama del que mira).
 const _nrm=s=>(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().replace(/\s+/g," ").trim();
 function enMiEquipo(com){ if(!MIS_COM||!MIS_COM.size) return true; const n=_nrm(com); for(const x of MIS_COM){ if(_nrm(x)===n) return true; } return false; }
-async function cargarMiEquipo(){ if(MIS_COM!==null) return; try{ MIS_COM=await EYG.orgDescendientes((PERFIL&&(PERFIL.nombre||PERFIL.comercial_ref))||""); }catch(e){ MIS_COM=new Set(); } }
+async function cargarMiEquipo(){ if(MIS_COM!==null) return; try{ MIS_COM=await EYG.aCargoDe((PERFIL&&(PERFIL.nombre||PERFIL.comercial_ref))||""); }catch(e){ MIS_COM=new Set(); } }
 function descActivos(){ return (CONQ||[]).filter(x=>x&&x.descartado&&!x.archivado&&enMiEquipo(x.com)); }
 function updDescPill(){ const p=document.getElementById("desc-pill"); if(!p)return; const n=descActivos().length; if(n){ p.textContent=n; p.style.display="inline-block"; } else p.style.display="none"; }
 async function cargarConqPill(){ await cargarMiEquipo(); try{ CONQ=await EYG.conquistarLeer(); }catch(e){ CONQ=[]; } updDescPill(); }

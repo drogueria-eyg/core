@@ -382,7 +382,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=85"></script>
+<script src="../assets/core.js?v=86"></script>
 <script src="../assets/metrics.js?v=5"></script>
 <script src="../assets/liquidacion.js?v=1"></script>
 <script>
@@ -427,22 +427,37 @@ function toast(msg, ok){ const t=document.getElementById("toast"); if(!t)return;
    Finanzas ni a otro líder como "comerciales". Mismo criterio que el Panel comerciales. */
 async function resolverLider(name){
   const u = await EYG.rpc("res.users","search_read",[[["name","=",name]]],{fields:["id","name"]});
-  if(!u.length) throw new Error('No encontré al líder "'+name+'" en Odoo.');
+  if(!u.length) throw new Error('No encontré a "'+name+'" en Odoo.');
   const emp = await EYG.rpc("hr.employee","search_read",[[["user_id","=",u[0].id]]],{fields:["id","name","child_ids"]});
-  if(!emp.length) throw new Error("El líder no tiene ficha de empleado en Odoo (hace falta para leer su equipo).");
+  if(!emp.length) throw new Error("No tiene ficha de empleado en Odoo (hace falta para leer su equipo).");
+  // GERENCIA (Irene y Germán) conduce a TODA la fuerza de ventas, no sólo a quien le cuelgue
+  // en el organigrama: en Odoo cada persona tiene un solo jefe y por eso esto vive en el Core.
+  if(await EYG.esGerencia(u[0].name)){
+    const fv=await EYG.fuerzaVentas();
+    return {uid:u[0].id, name:u[0].name, empId:emp[0].id, gerencia:true,
+            team:fv.map(x=>({uid:x.uid, name:x.nombre}))};
+  }
   const childIds = emp[0].child_ids||[];
   let team=[];
   if(childIds.length){
     const subs = await EYG.rpc("hr.employee","read",[childIds,["name","user_id","department_id","child_ids"]]);
-    team = subs.filter(s=>s.user_id && s.department_id && /ventas/i.test(s.department_id[1]) && !(s.child_ids||[]).length)
+    team = subs.filter(s=>s.user_id && s.department_id && /ventas/i.test(s.department_id[1]))
                .map(s=>({uid:s.user_id[0], name:s.user_id[1]}));
   }
   return {uid:u[0].id, name:u[0].name, empId:emp[0].id, team};
 }
 /* Líderes = empleados con subordinados que tienen usuario. Para el selector de admin. */
+/* Quiénes conducen: GERENCIA (conduce a todos) + quien todavía tenga comerciales colgando
+   de él en el organigrama de Odoo (hoy, Dirección con los suyos). */
 async function listarLideres(){
-  const emps = await EYG.rpc("hr.employee","search_read",[[["child_ids","!=",false]]],{fields:["id","name","user_id","child_ids"]});
-  return emps.filter(e=>e.user_id && (e.child_ids||[]).length).map(e=>({uid:e.user_id[0], name:e.user_id[1], empId:e.id}));
+  const out=[]; const vistos=new Set();
+  try{ (await EYG.gerencia()).forEach(g=>{ if(g.uid && !vistos.has(g.uid)){ vistos.add(g.uid); out.push({uid:g.uid, name:g.nombre, empId:g.emp, gerencia:true}); } }); }catch(e){}
+  try{
+    const emps = await EYG.rpc("hr.employee","search_read",[[["child_ids","!=",false]]],{fields:["id","name","user_id","child_ids"]});
+    emps.filter(e=>e.user_id && (e.child_ids||[]).length).forEach(e=>{
+      if(!vistos.has(e.user_id[0])){ vistos.add(e.user_id[0]); out.push({uid:e.user_id[0], name:e.user_id[1], empId:e.id}); } });
+  }catch(e){}
+  return out;
 }
 async function boot(){
   const params=new URLSearchParams(location.search);
@@ -533,7 +548,7 @@ async function cargarPresencia(){
 }
 
 /* ===== "Mis ventas": la mitad propia del líder que además vende ==============
-   Un líder que vende (German, Diego y ahora Marcela) necesita las dos cosas en
+   Gerencia vende además de conducir (Irene y Germán), así que necesita las dos cosas en
    la misma pantalla: SU cartera y la de su equipo. Esta banda es la mitad
    "🛒 Mis ventas" de la tarjeta partida del Panel comerciales, con los MISMOS
    números y el mismo criterio (cruce al vendedor del pedido; el 452 es el
