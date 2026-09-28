@@ -928,6 +928,23 @@ window.EYG = (function(){
       ? ["|",[f,"=",uid],[f,"=",VENDEDOR_GENERICO]]   // Gerencia carga con lo del genérico
       : [[f,"=",uid]];
   }
+  /* Con qué nombre figura esta persona en el organigrama de Odoo.
+     El perfil del Core puede traer `comercial_ref` (el nombre exacto de su usuario de Odoo),
+     sólo `nombre`, o los dos distintos según cómo lo hayan cargado en Usuarios. Si se elige mal,
+     el Core no la reconoce y le muestra de más (ej.: alguien de Gerencia vería TODOS los
+     comerciales, incluido el equipo propio de Dirección). Por eso se prueban los dos contra el
+     organigrama y contra Gerencia, y recién si ninguno matchea se usa el primero que haya. */
+  async function nombreOrg(perfil){
+    const cands=[perfil&&perfil.comercial_ref, perfil&&perfil.nombre].filter(Boolean);
+    if(!cands.length) return "";
+    try{
+      const org=await orgCargar();
+      for(const c of cands) if(_empByName(org,c)) return c;
+      const g=await gerencia();
+      for(const c of cands) if(g.some(x=>_normNom(x.nombre)===_normNom(c))) return c;
+    }catch(e){}
+    return cands[0];
+  }
   async function esGerencia(nombre){
     if(!nombre) return false;
     const g=await gerencia(); const n=_normNom(nombre);
@@ -2127,7 +2144,7 @@ window.EYG = (function(){
     RESERVA_DIAS, RESERVA_AVISO, TOPE_RESERVAS, conqEstado, conqOcupado, conqFuera, conqDiasRestantes, conqIndice, conqReservasDe,
     zonasLeer, zonasGuardar, zonaDe, zonaPermite, conquistarTomar, conquistarLiberar, conquistarContacto,
     orgCargar, orgDescendientes, orgAncestros, notificarLideresDe,
-    gerencia, esGerencia, fuerzaVentas, lideresDe, aCargoDe, jefesConEquipoPropio, domVendedor, VENDEDOR_GENERICO,
+    gerencia, esGerencia, fuerzaVentas, lideresDe, aCargoDe, jefesConEquipoPropio, domVendedor, VENDEDOR_GENERICO, nombreOrg,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA,
