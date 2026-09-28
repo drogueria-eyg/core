@@ -441,7 +441,7 @@ window.EYG = (function(){
     /* "Cargar venta" (comercial/vender.html) NO va como módulo suelto del menú:
        se entra desde ADENTRO del panel del comercial (botón "Cargar una venta" en panel.html). */
     {key:"cotizador", dept:"comercial", cat:"Comercial", ico:"🧮", titulo:"Cotizador",
-      desc:"Armar una cotización o pasar precios sueltos SIN elegir cliente y sin crear un presupuesto en Odoo. Todas las listas de precios a mano y un botón para copiarlo a WhatsApp.",
+      desc:"Armar una cotización o pasar precios sueltos SIN elegir cliente. Todas las listas de precios a mano y un botón para copiarlo a WhatsApp. Si el cliente la acepta, se guarda como presupuesto y la venta sigue en Cargar venta.",
       roles:["comercial","lider","admin","direccion"], ready:true, path:()=>"comercial/cotizador.html"},
     /* "CRM · Clientes" (comercial/crm.html) se unificó en "Clientes (CRM)" — el módulo real
        es datos/contactos.html (abajo, en Comercial). Se sacó la tarjeta placeholder duplicada. */

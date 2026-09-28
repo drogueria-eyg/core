@@ -122,6 +122,34 @@
   #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
   .spin{width:30px;height:30px;border:4px solid var(--line);border-top-color:var(--teal);border-radius:50%;animation:sp 1s linear infinite;margin:34px auto}
   @keyframes sp{to{transform:rotate(360deg)}}
+
+  /* ---- guardar como presupuesto: modal, picker de cliente y comparación ---- */
+  .scrim{position:fixed;inset:0;background:rgba(6,40,38,.42);display:flex;align-items:center;justify-content:center;padding:18px;z-index:9000}
+  .modal{background:var(--surface);border-radius:16px;box-shadow:0 24px 60px rgba(6,65,62,.28);padding:20px;width:100%;max-width:540px;max-height:88vh;overflow:auto}
+  .modal h3{margin:0 0 10px;font-size:17px;color:var(--teal-deep)}
+  .modal p{font-size:13.5px;line-height:1.55;color:var(--gris);margin:0 0 11px}
+  .mb{display:flex;gap:9px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
+  .mb.col{flex-direction:column;align-items:stretch}
+  .btn.red{background:var(--bad);color:#fff}
+  .errbox{background:#FEF4F3;border:1px solid #F2CFCA;color:#8A2F27;border-radius:9px;padding:10px 12px;font-size:12.5px;line-height:1.5;word-break:break-word;max-height:220px;overflow:auto}
+  .clilist{max-height:320px;overflow:auto;margin-top:10px}
+  .clirow{display:flex;align-items:center;gap:11px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;margin-bottom:6px;cursor:pointer;background:var(--surface)}
+  .clirow:hover{border-color:var(--teal);background:#F7FBFA}
+  .clirow .av{width:34px;height:34px;border-radius:50%;background:var(--teal);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;flex:none}
+  .clirow .nm{font-size:13.5px;font-weight:700;color:var(--ink);line-height:1.3}
+  .clirow .sub{font-size:11.5px;color:var(--gris)}
+  .clisep{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:800;padding:10px 4px 6px}
+  .cmp{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:4px}
+  .cmp th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);padding:4px 6px;font-weight:800}
+  .cmp td{padding:6px;border-top:1px solid var(--line);vertical-align:top}
+  .cmp td.n{text-align:right;white-space:nowrap;font-weight:700}
+  .cmp tr.dif td{background:#FEF6EC}
+  .cmp .dt{font-size:11px;font-weight:800;color:#8A5A12;display:block}
+  .banner{display:flex;align-items:center;gap:11px;flex-wrap:wrap;background:#EAF7F1;border:1px solid #BFE3D2;border-left:4px solid var(--ok);border-radius:10px;padding:11px 14px;font-size:13px;color:#1E5C46;margin-bottom:14px}
+  .banner b{color:#14493A}
+  .banner .sp{margin-left:auto;display:flex;gap:7px;flex-wrap:wrap}
+  .banner.viejo{background:#FEF6EC;border-color:#EAD6A6;border-left-color:#C89A2B;color:#7A5A16}
+  .banner.viejo b{color:#5E4410}
 </style>
 </head>
 <body>
@@ -136,8 +164,11 @@
    consultas (“¿cuánto sale la jeringa?”, “pasame precio de estos 5”) eso es
    burocracia pura y ensucia Odoo con borradores que nadie confirma.
 
-   Este módulo NO toca Odoo: solo LEE precios. No crea presupuestos, no crea
-   clientes, no reserva stock. Se arma, se copia y se manda por WhatsApp.
+   Cotizar NO toca Odoo: solo LEE precios. No crea clientes ni reserva stock.
+   Se arma, se copia y se manda por WhatsApp. Recién cuando el cliente ACEPTA,
+   el botón "Guardar como presupuesto" lo baja a Odoo como borrador a nombre de
+   un cliente, y de ahí sigue el circuito de "Cargar venta" (ver el bloque
+   GUARDAR COMO PRESUPUESTO al final del archivo).
 
    El precio sale del MISMO motor que “Cargar venta”: los ítems de la tarifa
    de Odoo (product.pricelist.item), con la escalera por cantidad de Farmacias
@@ -158,7 +189,8 @@ const LISTAS_DEF=[3,16,5];
 let PERFIL=null, USERID=null, COMERCIAL="";
 const ST={ listas:[], lista:null, modo:"cotizacion", conIva:false, conEscalera:false, escAbierta:null,
            lotes:{}, _lotesDone:null, lotAbierto:null, conVto:false,
-           q:"", res:[], buscando:false, items:[], precios:{}, tiers:{}, pvp:{}, taxes:{}, taxmap:null };
+           q:"", res:[], buscando:false, items:[], precios:{}, tiers:{}, pvp:{}, taxes:{}, taxmap:null,
+           cartera:null, fuera:[], qCli:"", guardado:null };
 
 /* ---------------- arranque ---------------- */
 EYG.guard(["comercial","lider","admin","direccion"]).then(async perfil=>{
@@ -363,13 +395,14 @@ function limpiaNom(n){ return String(n||"").replace(/^\[[^\]]*\]\s*/,"").trim();
 /* La cotización sobrevive a recargas y a cambiar de módulo: es un borrador de
    trabajo del comercial, no un dato del sistema, así que vive en el navegador. */
 const LSKEY="eyg_cotizador";
-function guardar(){ try{ localStorage.setItem(LSKEY, JSON.stringify({items:ST.items, lista:ST.lista, modo:ST.modo, conIva:ST.conIva, conEscalera:ST.conEscalera, conVto:ST.conVto})); }catch(e){} }
+function guardar(){ try{ localStorage.setItem(LSKEY, JSON.stringify({items:ST.items, lista:ST.lista, modo:ST.modo, conIva:ST.conIva, conEscalera:ST.conEscalera, conVto:ST.conVto, guardado:ST.guardado})); }catch(e){} }
 function restaurar(){
   try{ const o=JSON.parse(localStorage.getItem(LSKEY)||"{}");
     if(Array.isArray(o.items)) ST.items=o.items;
     if(o.lista && ST.listas.some(l=>l.id===o.lista)) ST.lista=o.lista;
     if(o.modo) ST.modo=o.modo;
     ST.conIva=!!o.conIva; ST.conEscalera=!!o.conEscalera; ST.conVto=!!o.conVto;
+    if(o.guardado && o.guardado.id) ST.guardado=o.guardado;   // el presupuesto ya creado sobrevive a la recarga
   }catch(e){}
 }
 
@@ -398,10 +431,11 @@ function render(){
   cap.innerHTML=`
     <h2 class="sec">🧮 Cotizador
       <span style="margin-left:auto;display:flex;align-items:center;gap:12px;font-weight:600;text-transform:none;letter-spacing:0">
-        <span style="color:var(--gris);font-size:12px">No crea nada en Odoo: es solo para pasar precios</span>
+        <span style="color:var(--gris);font-size:12px">Cotizás sin cliente; si te lo aceptan, lo guardás como presupuesto</span>
         <a href="panel.html${PERFIL&&PERFIL.rol!=="comercial"&&COMERCIAL?("?c="+encodeURIComponent(COMERCIAL)):""}" class="chip" style="text-decoration:none">← Volver al panel</a>
       </span></h2>
-    <div class="nota">Armá una cotización o pasá precios sueltos <b>sin elegir cliente y sin crear un presupuesto</b>. Los precios salen de la tarifa de Odoo, igual que en Cargar venta. Cuando esté listo, <b>copialo y pegalo en WhatsApp</b>.</div>
+    <div class="nota">Armá una cotización o pasá precios sueltos <b>sin elegir cliente</b>. Los precios salen de la tarifa de Odoo, igual que en Cargar venta. Cuando esté listo, <b>copialo y pegalo en WhatsApp</b> — y si el cliente te lo acepta, <b>guardalo como presupuesto</b> y seguí la venta sin volver a cargar nada.</div>
+    ${bannerHTML()}
     <div class="ctrl">
       <div class="fld"><span class="lb">Lista de precios</span>
         <div class="chips">${ST.listas.length? ST.listas.map(x=>`<button class="chip ${x.id===ST.lista?'on':''}" onclick="setLista(${x.id})">🏷️ ${esc(x.name)}</button>`).join("") : '<span style="font-size:13px;color:var(--gris)">Sin listas asignadas</span>'}</div>
@@ -543,6 +577,7 @@ function pintarItems(){
       <div class="btns">
         <button class="btn wa" onclick="copiar('precios')">📋 Copiar para WhatsApp</button>
         <button class="btn gh" onclick="verTexto()">👁 Ver cómo queda</button>
+        <div style="font-size:11.5px;color:var(--gris);text-align:center">Para guardarlo como presupuesto, pasá a <b>Cotización</b>.</div>
       </div>
       <div id="prev"></div>`;
     return;
@@ -554,6 +589,7 @@ function pintarItems(){
     <div class="tr big"><span>Total</span><span>${money(r.total)}</span></div>
     <div class="btns">
       <button class="btn wa" onclick="copiar('cot')">📋 Copiar para WhatsApp</button>
+      ${btnGuardarHTML()}
       <button class="btn gh" onclick="copiar('detalle')">📋 Copiar con detalle (cant. × precio)</button>
       <button class="btn gh" onclick="verTexto()">👁 Ver cómo queda</button>
     </div>
@@ -642,6 +678,310 @@ function verTexto(){
   const p=document.getElementById("prev"); if(!p) return;
   const txt=textoDe(ST.modo==="precios"?"precios":"cot");
   p.innerHTML = txt? `<div class="prev">${esc(txt)}</div>` : "";
+}
+/* ============================================================
+   GUARDAR COMO PRESUPUESTO  (cotización → borrador en Odoo → venta)
+   ============================================================
+   El Cotizador no toca Odoo, y eso está bien mientras sea una consulta suelta.
+   El problema aparecía cuando el cliente ACEPTABA: el comercial tenía que
+   volver a cargar producto por producto en “Cargar venta”. Acá se corta eso.
+
+   Qué hace: guarda la cotización como PRESUPUESTO (borrador de Odoo) a nombre
+   de un cliente. Desde ahí sigue el circuito de siempre — se retoma en
+   “Cargar venta”, se confirma (o se marca proforma) o se descarta.
+
+   Reglas que respeta:
+   - El presupuesto SIEMPRE queda a nombre de un cliente y con el comercial
+     como vendedor: por eso le aparece en SU lista de “Presupuestos en curso”.
+   - **El precio lo pone Odoo, no nosotros.** Escribimos producto y cantidad; el
+     precio lo calcula la tarifa del pedido. Después comparamos contra lo
+     cotizado y mostramos renglón por renglón lo que quedó distinto. Pisar el
+     precio a mano taparía el problema en vez de mostrarlo.
+   - Acá NO se confirma nada. Confirmar exige chequear stock comprometido y
+     plazo de pago, y eso ya vive en “Cargar venta”.
+   ============================================================ */
+const PPAL_TAG="[ENTREGA-PPAL]";   // misma marca que usa “Cargar venta” para la entrega principal
+const esJefe=()=>["lider","direccion","admin"].includes((PERFIL||{}).rol);
+/* Huella de la cotización: si cambia después de guardar, el cartel lo avisa
+   (si no, el comercial creería que el presupuesto de Odoo tiene lo que ve acá). */
+function firma(){ return "L"+ST.lista+":"+ST.items.map(it=>it.id+"x"+(it.cant||1)).sort().join(","); }
+
+function modal(html){
+  let h=document.getElementById("modalHost");
+  if(!h){ h=document.createElement("div"); h.id="modalHost"; document.body.appendChild(h); }
+  h.innerHTML=`<div class="scrim" onclick="if(event.target===this)cerrarModal()"><div class="modal">${html}</div></div>`;
+}
+function cerrarModal(){ const h=document.getElementById("modalHost"); if(h) h.innerHTML=""; }
+function cargandoModal(txt){ modal(`<div class="spin"></div><p style="text-align:center;margin:0">${esc(txt)}</p>`); }
+
+/* ---------------- botón y cartel ---------------- */
+function btnGuardarHTML(){
+  const g=ST.guardado;
+  if(g && g.firma===firma()) return `<button class="btn gh" onclick="vistaGuardado()" title="Ya la guardaste como el presupuesto ${esc(g.name)}">💾 Ver el presupuesto guardado</button>`;
+  return `<button class="btn" onclick="abrirGuardar()" title="Guarda esta cotización en Odoo como presupuesto, a nombre de un cliente. No es una venta: se confirma o se descarta desde Cargar venta.">💾 Guardar como presupuesto</button>`;
+}
+function bannerHTML(){
+  const g=ST.guardado; if(!g) return "";
+  const cambio = g.firma!==firma();
+  const d=(g.dif||[]).length;
+  return `<div class="banner ${cambio?"viejo":""}">
+    <span>${cambio?"⚠️":"💾"} Guardada como presupuesto <b>${esc(g.name)}</b> para <b>${esc(g.cliente)}</b>${d?` · <b>${d} renglón${d===1?"":"es"} a otro precio</b>`:""}${cambio?" · <b>la cotización cambió después de guardarla</b>: el presupuesto de Odoo quedó como estaba":""}</span>
+    <span class="sp">
+      <button class="chip" onclick="vistaGuardado()">Ver detalle</button>
+      <button class="chip on" onclick="seguirVenta()">🛒 Seguir con la venta</button>
+      <button class="chip" onclick="pedirDescartar()">🗑 Descartar</button>
+    </span></div>`;
+}
+
+/* ---------------- paso 1: el cliente ---------------- */
+async function abrirGuardar(){
+  if(!ST.items.length) return toast("No hay nada para guardar");
+  if(ST.modo==="precios") return toast("Pasá a “Cotización” para guardarlo: el presupuesto necesita cantidades");
+  if(!USERID) return modal(`<h3>No puedo guardar el presupuesto</h3>
+    <p>No encontré tu usuario de Odoo (<b>${esc(COMERCIAL)}</b>). El presupuesto no quedaría a tu nombre ni te aparecería en “Cargar venta”, así que mejor no crearlo. Avisale a Diego.</p>
+    <div class="mb"><button class="btn gh" onclick="cerrarModal()">Cerrar</button></div>`);
+  cargandoModal("Buscando tus clientes…");
+  await cargarCartera();
+  ST.qCli=""; ST.fuera=[]; ST._fueraQ=null;
+  pickerCliente();
+}
+async function cargarCartera(){
+  if(ST.cartera) return ST.cartera;
+  try{
+    // Misma cartera que “Cargar venta”: sólo CLIENTES FISCALES (parent_id=false),
+    // los que se facturan. Las sucursales de entrega se resuelven solas al crear.
+    const r=await EYG.rpc("res.partner","search_read",[[["user_id","=",USERID],["parent_id","=",false]]],
+      {fields:["id","name","property_product_pricelist","property_payment_term_id","city","vat"],limit:0,context:ES});
+    ST.cartera=(r||[]).sort((a,b)=>(a.name||"").localeCompare(b.name||""));
+  }catch(e){ ST.cartera=[]; }
+  return ST.cartera;
+}
+function pickerCliente(){
+  const g=ST.guardado;
+  const aviso = (g && g.firma!==firma())
+    ? `<p style="background:#FEF6EC;border:1px solid #EAD6A6;border-radius:9px;padding:9px 11px;color:#7A5A16"><b>Ojo:</b> ya guardaste ${esc(g.name)} con una versión anterior. Esto crea <b>otro</b> presupuesto; el anterior sigue en Odoo hasta que lo descartes.</p>` : "";
+  modal(`<h3>¿A nombre de qué cliente?</h3>
+    <p>El presupuesto queda en Odoo a nombre de este cliente y con vos como vendedor — por eso hace falta elegirlo. <b>No es una venta todavía</b>: se confirma o se descarta después, desde Cargar venta.</p>
+    ${aviso}
+    <div class="search">🔎 <input id="qcli" placeholder="Nombre o CUIT del cliente…" value="${esc(ST.qCli)}"></div>
+    <div class="clilist" id="clilist"></div>
+    <div class="mb"><button class="btn gh" onclick="cerrarModal()">Cancelar</button></div>`);
+  const i=document.getElementById("qcli");
+  if(i){ i.oninput=e=>buscarCli(e.target.value); i.focus(); }
+  pintarCli();
+}
+const buscarCli = EYG.buscador(v=>{ ST.qCli=v; pintarCli(); }, 200);
+function cliRowHTML(c, fuera){
+  const lst=c.property_product_pricelist?c.property_product_pricelist[1]:"";
+  const duenio=(fuera && c.user_id)?("de "+c.user_id[1]):"";
+  const sub=[c.city, lst, duenio].filter(Boolean).join(" · ");
+  const ini=(c.name||"?").trim().split(/\s+/).slice(0,2).map(p=>p[0]||"").join("");
+  return `<div class="clirow" onclick="elegirCli(${c.id})">
+    <div class="av">${esc(ini.toUpperCase())}</div>
+    <div><div class="nm">${esc(c.name||"")}</div>${sub?`<div class="sub">${esc(sub)}</div>`:""}</div>
+  </div>`;
+}
+function pintarCli(){
+  const el=document.getElementById("clilist"); if(!el) return;
+  const q=(ST.qCli||"").toLowerCase().trim();
+  let arr=(ST.cartera||[]);
+  if(q) arr=arr.filter(c=>(c.name||"").toLowerCase().includes(q)||(c.vat||"").toLowerCase().includes(q));
+  arr=arr.slice(0,60);
+  const ids=new Set(arr.map(c=>c.id));
+  const fuera=(ST.fuera||[]).filter(c=>!ids.has(c.id)).slice(0,20);
+  let html=arr.map(c=>cliRowHTML(c,false)).join("");
+  if(fuera.length) html+=`<div class="clisep">Fuera de tu cartera</div>`+fuera.map(c=>cliRowHTML(c,true)).join("");
+  if(!html) html=`<div class="vacio">${q?"Sin resultados en tu cartera.":"Escribí el nombre del cliente."}</div>`;
+  el.innerHTML=html;
+  // Los jefes cotizan para clientes de cualquier cartera: si en la suya no hay
+  // nada, buscamos en todo Odoo. Los comerciales quedan acotados a su cartera,
+  // igual que en “Cargar venta”.
+  if(esJefe() && q.length>=3 && !arr.length) buscarFuera(q);
+}
+async function buscarFuera(q){
+  if(ST._fueraQ===q) return; ST._fueraQ=q;
+  try{
+    const r=await EYG.rpc("res.partner","search_read",
+      [["&",["parent_id","=",false],["customer_rank",">",0],"|",["name","ilike",q],["vat","ilike",q]]],
+      {fields:["id","name","property_product_pricelist","property_payment_term_id","city","vat","user_id"],limit:20,context:ES});
+    if(ST._fueraQ!==q) return;
+    ST.fuera=r||[]; pintarCli();
+  }catch(e){}
+}
+
+/* ---------------- paso 2: con qué lista ----------------
+   La cotización se armó con UNA lista; el cliente puede tener fijada otra. No
+   lo decidimos por él: el precio que le prometió al cliente es el que cotizó,
+   pero la lista del cliente es la que Odoo usa al facturar. */
+function elegirCli(pid){
+  const c=((ST.cartera||[]).concat(ST.fuera||[])).find(x=>x.id===pid); if(!c) return;
+  const plCli=c.property_product_pricelist?c.property_product_pricelist[0]:null;
+  const plCliName=c.property_product_pricelist?c.property_product_pricelist[1]:"";
+  const lCot=(ST.listas||[]).find(x=>x.id===ST.lista);
+  if(plCli && ST.lista && plCli!==ST.lista){
+    modal(`<h3>Este cliente tiene otra lista</h3>
+      <p>Cotizaste con <b>${esc(lCot?lCot.name:"—")}</b> y <b>${esc(c.name)}</b> tiene fijada <b>${esc(plCliName)}</b>.
+      Los precios del presupuesto los calcula Odoo con la lista que elijas, así que esto cambia lo que le vas a cobrar.</p>
+      <div class="mb col">
+        <button class="btn" onclick="crearPresupuesto(${pid},${ST.lista})">🏷️ Con la que cotizaste · ${esc(lCot?lCot.name:"")}</button>
+        <button class="btn gh" onclick="crearPresupuesto(${pid},${plCli})">🏷️ Con la del cliente · ${esc(plCliName)}</button>
+        <button class="btn gh" onclick="pickerCliente()">← Elegir otro cliente</button>
+      </div>`);
+    return;
+  }
+  crearPresupuesto(pid, ST.lista||plCli||null);
+}
+
+/* ---------------- crear el presupuesto en Odoo ---------------- */
+async function crearPresupuesto(pid, plId){
+  const c=((ST.cartera||[]).concat(ST.fuera||[])).find(x=>x.id===pid); if(!c) return;
+  cargandoModal("Creando el presupuesto en Odoo…");
+  try{
+    const ship=await entregaDe(pid);
+    // El conector entra como Diego: sin estos contextos el comercial recibe la
+    // notificación “Diego te asignó un pedido” y queda el log de creación.
+    const CREAR={...ES, mail_auto_subscribe_no_notify:true, mail_create_nolog:true};
+    const vals={partner_id:pid, user_id:USERID, origin:"Core · cotizador"};
+    if(ship) vals.partner_shipping_id=ship.id;
+    const id=await EYG.rpc("sale.order","create",[vals],{context:CREAR});
+    // La lista va ANTES que las líneas: Odoo cotiza cada renglón con la tarifa
+    // que el pedido tenga EN ESE MOMENTO.
+    const [o]=await EYG.rpc("sale.order","read",[[id]],{fields:["id","name","pricelist_id"],context:ES});
+    if(plId && (!o.pricelist_id || o.pricelist_id[0]!==plId)){
+      await EYG.rpc("sale.order","write",[[id],{pricelist_id:plId}],{context:ES});
+    }
+    const cmds=ST.items.map(it=>[0,0,{product_id:it.id, product_uom_qty:Math.max(1, it.cant||1)}]);
+    await EYG.rpc("sale.order","write",[[id],{order_line:cmds}],{context:ES});
+    const [o2]=await EYG.rpc("sale.order","read",[[id]],
+      {fields:["id","name","amount_untaxed","amount_total","order_line","pricelist_id"],context:ES});
+    let lineas=[];
+    if((o2.order_line||[]).length) lineas=await EYG.rpc("sale.order.line","read",[o2.order_line],
+      {fields:["id","product_id","product_uom_qty","price_unit","discount","price_subtotal"],context:ES});
+    ST.guardado={ id, name:o2.name||("#"+id), cliente:c.name||"", clienteId:pid,
+      lista:(o2.pricelist_id&&o2.pricelist_id[1])||"", neto:o2.amount_untaxed||0, total:o2.amount_total||0,
+      items:ST.items.length, enOdoo:(lineas||[]).length, dif:compararPrecios(lineas), firma:firma() };
+    guardar(); render();
+    vistaGuardado();
+  }catch(e){
+    modal(`<h3>No pude guardar el presupuesto</h3>
+      <p>Odoo lo rechazó con este motivo:</p>
+      <div class="errbox">${esc(e.message||String(e))}</div>
+      <p style="margin-top:10px">La cotización no se perdió: sigue acá igual. Probá de nuevo y, si se repite, pasale este texto a Diego.</p>
+      <div class="mb"><button class="btn gh" onclick="cerrarModal()">Cerrar</button></div>`);
+  }
+}
+
+/* Dirección de entrega, con el mismo criterio que “Cargar venta”: una sola
+   sucursal entra sola; con varias manda la marcada como principal. Si hay
+   varias y ninguna principal no adivinamos — se elige al retomar la venta. */
+async function entregaDe(pid){
+  try{
+    const dels=await EYG.rpc("res.partner","search_read",[[["parent_id","=",pid],["type","=","delivery"]]],
+      {fields:["id","name"],order:"name",context:ES});
+    if(!dels||!dels.length) return null;
+    if(dels.length===1) return dels[0];
+    let msgs=[];
+    try{ msgs=await EYG.rpc("mail.message","search_read",
+      [[["model","=","res.partner"],["res_id","in",dels.map(d=>d.id)],["body","like",PPAL_TAG]]],
+      {fields:["res_id","body","date"],limit:0}); }catch(e){}
+    const st={}, seen=new Set();
+    (msgs||[]).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+    for(const m of (msgs||[])){ if(seen.has(m.res_id)) continue; seen.add(m.res_id);
+      const out=/salir/i.test((m.body||"").replace(/<[^>]+>/g," ")); st[m.res_id]={in:!out, date:m.date||""}; }
+    let ppal=null, best="";
+    for(const rid in st){ if(st[rid].in && st[rid].date>best){ best=st[rid].date; ppal=+rid; } }
+    return ppal ? (dels.find(d=>d.id===ppal)||null) : null;
+  }catch(e){ return null; }
+}
+
+/* Lo cotizado vs lo que puso Odoo, renglón por renglón. Tolerancia de $1 y
+   0,5% (redondeos). Lo que suele aparecer acá son los éticos: su precio en la
+   tarifa es un PORCENTAJE, no un importe fijo, y el cotizador muestra el PVP
+   como referencia — el precio bueno es el de Odoo. */
+function compararPrecios(lineas){
+  const out=[];
+  (lineas||[]).forEach(l=>{
+    const pid=l.product_id&&l.product_id[0]; if(!pid) return;
+    const it=ST.items.find(x=>x.id===pid); if(!it) return;
+    const tr=tramoDe(pid, it.cant); const cot = tr? tr.p : ST.precios[pid];
+    const odoo=(l.price_unit||0)*(1-((l.discount||0)/100));
+    if(cot==null){ out.push({name:it.name, cot:null, odoo, dif:null}); return; }
+    const d=odoo-cot;
+    if(Math.abs(d)>1 && Math.abs(d)/Math.max(1,cot)>0.005) out.push({name:it.name, cot, odoo, dif:d});
+  });
+  return out;
+}
+
+/* ---------------- qué hacer con el presupuesto guardado ---------------- */
+function vistaGuardado(){
+  const g=ST.guardado; if(!g) return;
+  const dif=g.dif||[];
+  const faltan=(g.items||0)-(g.enOdoo||0);
+  const tabla = dif.length
+    ? `<p><b>Ojo:</b> ${dif.length} de ${g.items} renglones quedaron a otro precio del que cotizaste. En el presupuesto manda <b>el precio de Odoo</b>: revisalo antes de confirmar la venta.</p>
+       <table class="cmp"><tr><th>Producto</th><th style="text-align:right">Cotizado</th><th style="text-align:right">En Odoo</th></tr>
+       ${dif.map(d=>`<tr class="dif"><td>${esc(d.name)}</td><td class="n">${d.cot!=null?money(d.cot):"—"}</td>
+         <td class="n">${money(d.odoo)}${d.dif!=null?`<span class="dt">${d.dif>0?"+":"−"}${money(Math.abs(d.dif))}</span>`:""}</td></tr>`).join("")}
+       </table>`
+    : `<p style="color:var(--ok);font-weight:700">✓ Los precios quedaron iguales a los que cotizaste.</p>`;
+  modal(`<h3>✅ Presupuesto guardado</h3>
+    <p><b>${esc(g.name)}</b> · ${esc(g.cliente)}${g.lista?" · "+esc(g.lista):""}<br>
+      Neto ${money(g.neto)} · Total ${money(g.total)} · ${g.enOdoo} producto${g.enOdoo===1?"":"s"}${faltan>0?` <b style="color:var(--bad)">(${faltan} no entraron)</b>`:""}</p>
+    ${tabla}
+    <p>Quedó en Odoo como <b>presupuesto</b>, a tu nombre — todavía no es una venta. Seguí desde <b>Cargar venta</b>: ahí cambiás cantidades, elegís el plazo de pago, adjuntás la orden de compra y lo confirmás (o lo marcás proforma).</p>
+    <div class="mb col">
+      <button class="btn" onclick="seguirVenta()">🛒 Seguir con la venta</button>
+      <button class="btn gh" onclick="cerrarModal()">Seguir cotizando</button>
+      <button class="btn gh" onclick="pedirDescartar()">🗑 Descartar el presupuesto</button>
+    </div>`);
+}
+function seguirVenta(){
+  const g=ST.guardado; if(!g) return;
+  const c=(PERFIL && PERFIL.rol!=="comercial" && COMERCIAL) ? ("&c="+encodeURIComponent(COMERCIAL)) : "";
+  location.href="vender.html?reanudar="+g.id+c;
+}
+function pedirDescartar(){
+  const g=ST.guardado; if(!g) return;
+  modal(`<h3>Descartar el presupuesto</h3>
+    <p>Se elimina de Odoo el presupuesto <b>${esc(g.name)}</b> de <b>${esc(g.cliente)}</b>. No se puede deshacer.
+    La cotización que tenés armada acá <b>no se toca</b>: podés seguir usándola o guardarla de nuevo.</p>
+    <div class="mb"><button class="btn gh" onclick="vistaGuardado()">No, volver</button>
+      <button class="btn red" onclick="doDescartar()">Sí, descartar</button></div>`);
+}
+async function doDescartar(){
+  const g=ST.guardado; if(!g) return;
+  cargandoModal("Descartando…");
+  const err=await borrarPresupuesto(g.id);
+  if(err){ dialogoNoBorra(err); return; }
+  ST.guardado=null; guardar(); cerrarModal(); render(); toast("Presupuesto descartado");
+}
+/* Igual que en “Cargar venta”: Odoo no deja borrar una cotización “enviada”
+   sin cancelarla antes, y su action_cancel por RPC devuelve un asistente.
+   Devuelve null si borró, o el motivo real del error. */
+async function borrarPresupuesto(id){
+  const detalle = e => (e && e.message) ? e.message : String(e);
+  try{ await EYG.rpc("sale.order","unlink",[[id]]); return null; }
+  catch(e1){
+    try{
+      await EYG.rpc("sale.order","write",[[id],{state:"cancel"}]);
+      await EYG.rpc("sale.order","unlink",[[id]]);
+      return null;
+    }catch(e2){
+      try{
+        await EYG.rpc("sale.order","action_cancel",[[id]],{context:{disable_cancel_warning:true}});
+        await EYG.rpc("sale.order","unlink",[[id]]);
+        return null;
+      }catch(e3){ return detalle(e3); }
+    }
+  }
+}
+function dialogoNoBorra(msg){
+  modal(`<h3>No se pudo descartar</h3>
+    <p>Odoo lo rechazó con este motivo:</p>
+    <div class="errbox">${esc(msg)}</div>
+    <p style="margin-top:10px">Si tenés esta pantalla abierta hace rato puede estar corriendo una versión vieja: recargá y probá otra vez. Si sigue igual, el presupuesto se puede eliminar desde <b>Cargar venta</b>.</p>
+    <div class="mb"><button class="btn gh" onclick="vistaGuardado()">Volver</button>
+      <button class="btn" onclick="location.reload()">🔄 Recargar</button></div>`);
 }
 </script>
 </body>
