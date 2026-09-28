@@ -394,7 +394,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=88"></script>
+<script src="../assets/core.js?v=89"></script>
 <script src="../assets/metrics.js?v=5"></script>
 <script src="../assets/liquidacion.js?v=1"></script>
 <script>
@@ -575,11 +575,9 @@ async function cargarMisVentas(){
   try{
     const u=LIDER.uid, hoy=argToday(), inicioMes=hoy.slice(0,8)+"01";
     const facDom=mt=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",inicioMes],
-      "|",["sale_line_ids.order_id.user_id","=",u],
-          "&",["sale_line_ids.order_id.user_id","=",452],["sale_line_ids.order_id.partner_id.user_id","=",u]];
+      ...EYG.domVendedor("sale_line_ids.order_id.", u)];
     const deudaDom=[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["journal_id","not in",[32,33]],
-      "|",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",u],
-          "&",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",452],["move_id.invoice_line_ids.sale_line_ids.order_id.partner_id.user_id","=",u]];
+      ...EYG.domVendedor("move_id.invoice_line_ids.sale_line_ids.order_id.", u)];
     const parts=await EYG.rpc("res.partner","search_read",[[["user_id","=",u],["customer_rank",">",0]]],{fields:["id"],limit:0});
     const ids=parts.map(p=>p.id);
     const [fi,fr,deu,cobG,hoyG]=await Promise.all([
@@ -1886,7 +1884,7 @@ async function fichaData(uid, name, carteraIn, pfIn){
     // cobros entrantes por mes (100d) → cobrado del mes + objetivo (prom 3m)
     EYG.rpc("account.payment","read_group",[[["partner_id","in",cartera],["payment_type","=","inbound"],["state","=","posted"],["date",">=",EYG.hace(100)]],["amount:sum"],["date:month"]],{lazy:false}),
     // saldos a cobrar sin conciliar → por cobrar / vencido
-    EYG.rpc("account.move.line","search_read",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["journal_id","not in",[32,33]],"|",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",uid],"&",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",452],["move_id.invoice_line_ids.sale_line_ids.order_id.partner_id.user_id","=",uid]]],{fields:["amount_residual","date_maturity"],limit:0}),
+    EYG.rpc("account.move.line","search_read",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["journal_id","not in",[32,33]],...EYG.domVendedor("move_id.invoice_line_ids.sale_line_ids.order_id.", uid)]],{fields:["amount_residual","date_maturity"],limit:0}),
     // pedidos confirmados por mes y cliente (190d) → promedios, actividad, ticket y pedidos netos del mes
     EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",EYG.hace(190)]],["amount_total:sum"],["date_order:month","partner_id"]],{lazy:false}),
     // órdenes del mes por estado → cancelados / presupuestos (desglose)
@@ -1919,8 +1917,7 @@ async function fichaData(uid, name, carteraIn, pfIn){
   try{
     // HÍBRIDO: quien generó el pedido; si el pedido está bajo la genérica (452), el dueño del cliente
     const domF=(mt)=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",EYG.hace(210)],
-      "|",["sale_line_ids.order_id.user_id","=",uid],
-          "&",["sale_line_ids.order_id.user_id","=",452],["sale_line_ids.order_id.partner_id.user_id","=",uid]];
+      ...EYG.domVendedor("sale_line_ids.order_id.", uid)];
     const [fi,fr]=await Promise.all([
       EYG.rpc("account.move.line","read_group",[domF("out_invoice"),["price_subtotal:sum","price_total:sum"],["date:month"]],{lazy:false}),
       EYG.rpc("account.move.line","read_group",[domF("out_refund"),["price_subtotal:sum","price_total:sum"],["date:month"]],{lazy:false}),

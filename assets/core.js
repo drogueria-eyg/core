@@ -899,10 +899,32 @@ window.EYG = (function(){
         const e=await rpc("hr.employee","search_read",[[["department_id","=",dep[0].id],["active","=",true]]],
           {fields:["id","name","job_title","user_id"],context:{lang:"es_AR"}});
         _ger=(e||[]).map(x=>({emp:x.id, nombre:x.user_id?x.user_id[1]:x.name, uid:x.user_id?x.user_id[0]:null, cargo:x.job_title||"Gerencia"}));
+        _gerUidSet=new Set(_ger.map(x=>x.uid).filter(Boolean));
       }catch(e){ _ger=[]; }
       _gerProm=null; return _ger;
     })();
     return _gerProm;
+  }
+  /* ===== DE QUIÉN ES CADA VENTA (para deuda y facturación) =====
+     El vendedor "Droguería EyG" (uid 452) es un usuario genérico que quedó de cuando los
+     pedidos institucionales se cargaban a su nombre: 3.061 pedidos, ninguno del portal web.
+     Hoy ya no se usa (1 solo cliente y 1 pedido en septiembre).
+     Antes el Core le atribuía esa venta A QUIEN ATIENDE HOY AL CLIENTE. Estaba mal: son
+     pedidos que cargó otro comercial y que el cliente heredó al cambiar de manos — le metían
+     $9,7M de vencido ajeno a Natividad sin que ella hubiera vendido nada de eso.
+     Decisión del dueño (28/9/2026): esa deuda va a GERENCIA, que no se evalúa por rendimiento,
+     en vez de castigar al comercial que atiende la cuenta. Medido antes de cambiarlo: no mueve
+     ni un peso de facturación de nadie (por el genérico ya no entra venta nueva), sólo saca
+     $10.050.140,82 de vencido de encima de los comerciales. */
+  const VENDEDOR_GENERICO=452;
+  let _gerUidSet=null;
+  /* Devuelve el pedazo de dominio "la venta es de este usuario", listo para concatenar con ... .
+     `prefijo` es el camino hasta el pedido, p.ej. "sale_line_ids.order_id." */
+  function domVendedor(prefijo, uid){
+    const f=(prefijo||"")+"user_id";
+    return (_gerUidSet && _gerUidSet.has(uid))
+      ? ["|",[f,"=",uid],[f,"=",VENDEDOR_GENERICO]]   // Gerencia carga con lo del genérico
+      : [[f,"=",uid]];
   }
   async function esGerencia(nombre){
     if(!nombre) return false;
@@ -2103,7 +2125,7 @@ window.EYG = (function(){
     RESERVA_DIAS, RESERVA_AVISO, TOPE_RESERVAS, conqEstado, conqOcupado, conqFuera, conqDiasRestantes, conqIndice, conqReservasDe,
     zonasLeer, zonasGuardar, zonaDe, zonaPermite, conquistarTomar, conquistarLiberar, conquistarContacto,
     orgCargar, orgDescendientes, orgAncestros, notificarLideresDe,
-    gerencia, esGerencia, fuerzaVentas, lideresDe, aCargoDe, jefesConEquipoPropio,
+    gerencia, esGerencia, fuerzaVentas, lideresDe, aCargoDe, jefesConEquipoPropio, domVendedor, VENDEDOR_GENERICO,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA,
