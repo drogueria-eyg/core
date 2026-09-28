@@ -434,7 +434,9 @@ window.EYG = (function(){
        pantalla le esconde la gestión del equipo y le deja la meta y las tasas en
        solo lectura (quien paga no define cuánto se paga). */
     {key:"panel", dept:"comercial", cat:"Comercial", ico:"⚡",
-      titulo:p=>(p.rol==="admin"||p.rol==="direccion")?"Panel comerciales":(p.rol==="finanzas"?"Cálculo de comisiones":"Mi Panel"),
+      /* "Mi Panel" es del comercial. Dirección/Gerencia entra a CONDUCIR, no a mirarse a sí
+         misma: desde la reestructuración del 28/9/2026 no tiene panel de ventas propio. */
+      titulo:p=>(p.rol==="admin"||p.rol==="direccion")?"Panel comerciales":(p.rol==="finanzas"?"Cálculo de comisiones":(p.rol==="lider"?"Conducción comercial":"Mi Panel")),
       desc:p=>(p.rol==="admin"||p.rol==="direccion")?"El equipo: métricas resumidas de cada comercial + acceso a su panel individual y al panel del líder.":(p.rol==="finanzas"?"La comisión de cada comercial mes a mes: el detalle del cálculo para entregar junto con el pago, y el corte para liquidar el mes y dejarlo congelado.":(p.rol==="lider"?"Tu panel de líder: el equipo, cumplimiento y alertas.":"Tu sesión de venta: objetivos, comisión, salud y tu cartera a mano.")),
       roles:["comercial","lider","finanzas"], ready:true,
       path:p=>{ if(p.rol==="admin"||p.rol==="direccion"||p.rol==="finanzas") return "comercial/comerciales.html"; if(p.rol==="lider") return "comercial/lider.html"; return `comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`; }},
