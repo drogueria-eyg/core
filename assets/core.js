@@ -873,10 +873,76 @@ window.EYG = (function(){
     while(cur && cur.parent && guard++<10){ out.push(cur.parent); cur=_empByName(org,cur.parent); }
     return out;
   }
-  /* Notifica (campanita) a los LÍDERES del comercial (su cadena de jefes del organigrama).
-     Así el descarte de un comercial sólo le llega a SUS líderes, no a los de otros equipos. */
+
+  /* ===== GERENCIA — la conducción comercial (reestructuración 28/9/2026) ==================
+     Cómo quedó la estructura:
+       · DIRECCIÓN — Diego Velázquez, por encima de todo.
+       · GERENCIA  — Irene Ercoli y Germán Banquero: conducen a TODOS los comerciales y
+                     además venden, cada uno con su propio panel de ventas.
+       · COMERCIALES — el departamento Ventas.
+     **Se eliminó la figura de LÍDER COMERCIAL** (el escalón intermedio que ocupaba Marcela).
+
+     Por qué Gerencia vive ACÁ y no en el organigrama de Odoo: en Odoo cada empleado tiene UN
+     solo jefe (`parent_id`), así que no se puede colgar a un comercial de dos personas a la
+     vez. El Core resuelve la conducción por su cuenta: Gerencia = quienes están en el
+     departamento "Gerencia" de Odoo, y el Core los trata como jefes de TODA la fuerza de
+     ventas, cuelgue cada comercial de quien cuelgue. Si mañana entra o sale alguien de
+     Gerencia en Odoo, esto se acomoda solo: no hay ninguna lista de nombres que mantener. */
+  let _ger=null, _gerProm=null;
+  async function gerencia(force){
+    if(_ger && !force) return _ger;
+    if(_gerProm && !force) return _gerProm;
+    _gerProm=(async()=>{
+      try{
+        const dep=await rpc("hr.department","search_read",[[["name","=","Gerencia"]]],{fields:["id"],limit:1});
+        if(!dep.length){ _ger=[]; return _ger; }
+        const e=await rpc("hr.employee","search_read",[[["department_id","=",dep[0].id],["active","=",true]]],
+          {fields:["id","name","job_title","user_id"],context:{lang:"es_AR"}});
+        _ger=(e||[]).map(x=>({emp:x.id, nombre:x.user_id?x.user_id[1]:x.name, uid:x.user_id?x.user_id[0]:null, cargo:x.job_title||"Gerencia"}));
+      }catch(e){ _ger=[]; }
+      _gerProm=null; return _ger;
+    })();
+    return _gerProm;
+  }
+  async function esGerencia(nombre){
+    if(!nombre) return false;
+    const g=await gerencia(); const n=_normNom(nombre);
+    return g.some(x=>_normNom(x.nombre)===n);
+  }
+  /* La fuerza de ventas: los comerciales de verdad (departamento Ventas, activos).
+     Ya NO se excluye a nadie por ser "jefe de otro": ese escalón dejó de existir. */
+  async function fuerzaVentas(force){
+    try{
+      const e=await rpc("hr.employee","search_read",[[["department_id.name","ilike","venta"],["active","=",true]]],
+        {fields:["id","name","job_title","user_id"],context:{lang:"es_AR"}});
+      const g=await gerencia(force);
+      const ger=new Set(g.map(x=>_normNom(x.nombre)));
+      return (e||[]).filter(x=>x.user_id && !ger.has(_normNom(x.user_id[1])))
+        .map(x=>({emp:x.id, nombre:x.user_id[1], uid:x.user_id[0], cargo:x.job_title||"Comercial"}));
+    }catch(e){ return []; }
+  }
+  /* Quiénes conducen a esta persona: su cadena de jefes del organigrama MÁS Gerencia
+     (que conduce a todos). Es lo que usan los avisos y el alcance de los paneles. */
+  async function lideresDe(nombre){
+    const anc=await orgAncestros(nombre);
+    const g=await gerencia();
+    const yo=_normNom(nombre);
+    const out=[...anc];
+    g.forEach(x=>{ if(_normNom(x.nombre)!==yo && !out.some(a=>_normNom(a)===_normNom(x.nombre))) out.push(x.nombre); });
+    return out;
+  }
+  /* A quiénes tiene a cargo: Gerencia ve a TODA la fuerza de ventas; el resto, su subárbol. */
+  async function aCargoDe(nombre){
+    if(await esGerencia(nombre)){
+      const fv=await fuerzaVentas();
+      return new Set(fv.map(x=>x.nombre));
+    }
+    return orgDescendientes(nombre);
+  }
+  /* Notifica (campanita) a quienes conducen al comercial: su cadena de jefes MÁS Gerencia.
+     Desde la reestructuración del 28/9/2026, Gerencia (Irene y Germán) recibe todo. */
   async function notificarLideresDe(nombreComercial, opts){
-    const anc=await orgAncestros(nombreComercial);
+    const anc=await lideresDe(nombreComercial);
     let emails=[];
     try{ const r=await rosterCore(); emails=(r||[]).filter(u=>anc.some(a=>_normNom(a)===_normNom(u.nombre))).map(u=>(u.email||"").toLowerCase()).filter(Boolean); }catch(e){}
     emails=[...new Set(emails)];
@@ -2010,6 +2076,7 @@ window.EYG = (function(){
     RESERVA_DIAS, RESERVA_AVISO, TOPE_RESERVAS, conqEstado, conqOcupado, conqFuera, conqDiasRestantes, conqIndice, conqReservasDe,
     zonasLeer, zonasGuardar, zonaDe, zonaPermite, conquistarTomar, conquistarLiberar, conquistarContacto,
     orgCargar, orgDescendientes, orgAncestros, notificarLideresDe,
+    gerencia, esGerencia, fuerzaVentas, lideresDe, aCargoDe,
     COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA,
