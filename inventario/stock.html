@@ -409,6 +409,41 @@ let TASAS_VENTA={};   // id de impuesto de venta -> tasa (la regla del costo sal
 function tildeEfectiva(r){ return EYG.vendeExento(r.taxesId, TASAS_VENTA) ? 1 : 0; }
 function costoReal(r){ const base=(r.xCostoMotor>0)?r.xCostoMotor:(r.std||0); const iv=tildeEfectiva(r)?(r.ivaCompra||0):0; return base*(1+iv); }
 
+// ===== AGRUPACIÓN POR MARCA (mismo producto, distinta marca) — para sumar historial y no marcar sobrestock falso =====
+// Núcleo = categoría + nombre normalizado sin la MARCA ni el packaging (unifica cc/ml, S/A, gr/g; protege tamaños kg/ml/mg).
+let BRANDS=new Set();
+const _stripN=s=>(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toUpperCase();
+const _PACKW="COMP|COMPR|AMP|CAPS|TIRAS?|UNIDADES?|UNID|BLISTERS?|SOBRES?|COMPRIMIDOS?";
+function nucleoProd(name, categ){
+  const perf=/PERFUMERIA/.test(categ||"");
+  let s=_stripN(name);
+  s=s.replace(/\(.*?\)/g," ").replace(/PRECIO\s+X[^-]*/g," ").replace(/[^A-Z0-9%\/. ]+/g," ");
+  s=s.replace(/(\d)\s*GRS?\b/g,"$1G").replace(/\bGRS?\b/g,"G");
+  s=s.replace(/\bCC\b/g,"ML").replace(/S\s*\/\s*AGUJA/g," SA ").replace(/S\s*\/\s*A\b/g," SA ").replace(/C\s*\/\s*AGUJA/g," CA ");
+  s=s.replace(/\bCOMPRIMIDOS?\b/g,"COMP").replace(/\bCOMP\b/g,"COMP").replace(/\bAMPOLLAS?\b/g,"AMP").replace(/\bCAPSULAS?\b/g,"CAPS").replace(/\bCAP\b/g,"CAPS").replace(/\bJARABE\b/g,"JBE").replace(/\bMGS?\b/g,"MG");
+  s=s.replace(/(?:X\s*)?(\d+[.,]?\d*)\s*(KG|MCG|MG|ML|CM|MM|UI|G|L|%)\b/g,(m,a,u)=>" "+a.replace(",",".")+u+" ");  // tamaños protegidos
+  s=" "+s.replace(/\s+/g," ").trim()+" ";
+  for(const b of BRANDS){ if(b.length<3) continue; let pat=" "+b+" "; while(s.indexOf(pat)>=0) s=s.replace(pat," "); }
+  if(!perf) s=s.replace(/\bX\s*\d+([.,]\d+)?\b/g," ");   // packs "x 10/100" (en Perfumería el "x N" suele ser gramaje)
+  s=s.replace(new RegExp("\\b("+_PACKW+"|CAJA|CAJAS|BOLSA|BOLSAS|PACK|BLISTER|BLISTERS|SOBRE|SOBRES|ESTUCHE|DISPLAY|X|DE|EL|LA|POR|C|S|H)\\b","g")," ");
+  s=s.replace(/\./g,"").replace(/[^A-Z0-9%]+/g," ").replace(/\s+/g," ").trim();
+  return s.split(" ").filter(Boolean).sort().join(" ");
+}
+function grpKeyDe(r){ const n=nucleoProd(r.name, r.categ); return n ? ((r.categ||"")+"||"+n) : ("SOLO#"+r.id); }
+// arma los grupos sobre un conjunto de filas y cuelga r.g (agregados del grupo) + r.esVigente (la marca a comprar)
+function agruparMarcas(rows){
+  const GB={};
+  for(const r of rows){ const k=grpKeyDe(r); (GB[k]=GB[k]||[]).push(r); }
+  for(const k in GB){ const ms=GB[k];
+    const venta=ms.reduce((a,r)=>a+r.ventaU,0), venta3=ms.reduce((a,r)=>a+r.venta3,0), freq=ms.reduce((a,r)=>a+r.freq,0);
+    const qty=ms.reduce((a,r)=>a+r.qty,0), incoming=ms.reduce((a,r)=>a+r.incoming,0);
+    let vig=ms[0], best=-1;   // marca VIGENTE: la que tiene stock / en camino / proveedor, más movida
+    for(const r of ms){ const sc=(r.incoming>0?3:0)+(r.qty>0?2:0)+(r.provId?1:0)+(r.compraFreq/1000)+(r.ventaU/1e9); if(sc>best){best=sc;vig=r;} }
+    const g={key:k, n:ms.length, venta, venta3, freq, qty, incoming, vigenteId:vig.id, members:ms};
+    for(const r of ms){ r.g=g; r.esVigente=(r.id===vig.id); }
+  }
+}
+
 const B_DEF=[["Sano","menos de 3 meses",0,3,"green"],["Elevado","3 a 6 meses",3,6,"lime"],["Alto","6 a 12 meses",6,12,"yel"],["Sobrestock","1 a 3 años",12,36,"org"],["Muerto / crítico","más de 3 años o sin venta",36,1e12,"red"]];
 
 async function cargar(){
@@ -456,7 +491,7 @@ async function cargar(){
 
     prog("categorías, proveedores y en camino…");
     const [meta, quantsLote] = await Promise.all([
-      rpc("product.product","read",[allIds,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","incoming_qty","seller_ids","uom_po_id","active","qty_available","x_costo_manual","x_costo_manual_date","x_costo_motor","x_iva_compra","taxes_id","x_oportunidad"]]),
+      rpc("product.product","read",[allIds,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","incoming_qty","seller_ids","uom_po_id","active","qty_available","x_costo_manual","x_costo_manual_date","x_costo_motor","x_iva_compra","taxes_id","x_oportunidad","x_studio_many2one_field_6o_1if0l6ud2"]]),
       rpc("stock.quant","search_read",[[["location_id.usage","=","internal"],["quantity",">",0],["lot_id","!=",false]],["product_id","lot_id","quantity","value"]],{limit:5000}),
     ]);
     const M={}; for(const m of meta) M[m.id]=m;
@@ -506,7 +541,7 @@ async function cargar(){
       const std=cost, catId=m.categ_id?m.categ_id[0]:0;
       const costoU=costoReal({xCostoMotor:m.x_costo_motor||0, std, ivaCompra:m.x_iva_compra||0, taxesId:m.taxes_id||[]});
       return {id, code:m.default_code||"", archivado:m.active===false, valRoto, qa, xop:!!m.x_oportunidad, manualC:m.x_costo_manual||0, manualD:m.x_costo_manual_date||null, name:(s?s.product_id[1]:(m.name||("#"+id))), fam:familia(m.categ_id),
-        categ:m.categ_id?m.categ_id[1]:"", catId, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, val, qty, ventaU, venta3, freq, compraFreq:Math.round(CF[id]||0),
+        categ:m.categ_id?m.categ_id[1]:"", catId, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, marca:(m.x_studio_many2one_field_6o_1if0l6ud2?m.x_studio_many2one_field_6o_1if0l6ud2[1]:""), val, qty, ventaU, venta3, freq, compraFreq:Math.round(CF[id]||0),
         incoming:Math.round(m.incoming_qty||0),
         meses: meses>900?999:Math.round(meses*10)/10,
         std, xCostoMotor:m.x_costo_motor||0, ivaCompra:m.x_iva_compra||0, taxesId:m.taxes_id||[], ivaAlCosto:tildeEfectiva({taxesId:m.taxes_id||[]})?(m.x_iva_compra||0):0,
@@ -527,6 +562,11 @@ async function cargar(){
     // sin stock PERO con ventas en el año = quiebre real → hay que reponer (NO debe desaparecer del panel)
     QUIEBRE=TODOS.filter(r=>!r.archivado && !r.valRoto && r.qty<=0 && r.ventaU>0).sort((a,b)=>b.freq-a.freq);
     REPO=DATA.concat(QUIEBRE);                                                     // universo para reposición (con stock + quiebres)
+    // AGRUPAR POR MARCA: mismo producto de distinta marca comparte historial y stock (arregla el sobrestock falso al cambiar de marca)
+    BRANDS=new Set(TODOS.map(r=>_stripN(r.marca).replace(/[^A-Z0-9 ]/g," ").replace(/\s+/g," ").trim()).filter(b=>b.length>=3));
+    agruparMarcas(REPO);
+    // la ROTACIÓN (meses de cobertura) se mide por GRUPO: el stock de la marca nueva rota al ritmo de todas las marcas juntas
+    for(const r of DATA){ const dv=r.g?r.g.venta:r.ventaU, dq=r.g?r.g.qty:r.qty; const mm=dv>0?dq/(dv/12):999; r.meses=mm>900?999:Math.round(mm*10)/10; }
     // PRECIO DE VENTA REAL desde el motor/listas (pricelist "(1) Farmacias", vía EYGOpo.fetchBase) — NO el list_price,
     // que en los hospitalarios viene en 1 porque se cotizan por tarifa. Recalcula márgenes con el precio de verdad.
     try{
@@ -557,42 +597,39 @@ async function cargar(){
 }
 
 // ---------- cálculo de reposición (depende de la política) ----------
-function demandaMes(r){ return pol.fuente==="3m" ? r.venta3/3 : r.ventaU/12; }
-// Ritmo de venta por FRECUENCIA (nº de ventas al año), no sólo por unidades:
-// un producto de "muchas unidades en 1 sola venta al año" NO es un vendedor parejo.
-function claseVenta(r){
-  const f=r.freq||0;
-  if(f<=0) return "inactivo";
-  if(f>=12) return "constante";   // vende ~todos los meses o más → no debe faltar nunca
-  if(f>=4)  return "habitual";    // vende seguido
-  return "esporadico";            // vende de a saltos (pocas veces al año) → comprar contra pedido
-}
+// agregados del GRUPO de marca (o del propio producto si no está agrupado)
+function gv(r,f){ if(r.g) return r.g[f]; return f==="venta"?r.ventaU : f==="venta3"?r.venta3 : f==="freq"?r.freq : f==="qty"?r.qty : f==="incoming"?r.incoming : 0; }
+function demandaMes(r){ const vu=gv(r,"venta"), v3=gv(r,"venta3"); return pol.fuente==="3m" ? v3/3 : vu/12; }
+// Ritmo de venta por FRECUENCIA (nº de ventas/año) del GRUPO — un producto de "muchas unidades en 1 sola venta" NO es parejo.
+function claseDe(f){ if(f<=0)return"inactivo"; if(f>=12)return"constante"; if(f>=4)return"habitual"; return"esporadico"; }
+function claseVenta(r){ return claseDe(gv(r,"freq")); }
 const CLASE_LBL={constante:"vende constante",habitual:"vende seguido",esporadico:"vende esporádico",inactivo:"sin ventas"};
 const CLASE_ORD={constante:0,habitual:1,esporadico:2,inactivo:3};
-// ¿EyG lo tiene DE STOCK (quiebre real si queda en 0) o lo compra CONTRA PEDIDO?
-// Se infiere por cómo compra: si lo compra y lo vende muchas más veces de las que lo compra, lo stockea.
-// La marca manual de German (STOCK_CRIT / STOCK_PED) manda por encima de la inferencia.
+// ¿EyG lo tiene DE STOCK (quiebre real si queda en 0) o lo compra CONTRA PEDIDO? (a nivel GRUPO)
 function esDeStock(r){
   if(STOCK_CRIT.has(r.id)) return true;
   if(STOCK_PED.has(r.id)) return false;
-  const cf=r.compraFreq||0, sf=r.freq||0, inc=r.incoming||0;
-  return inc>0 || (cf>=1 && sf>=cf*3) || cf>=6;   // ya viene en camino, o lo compra seguido y lo vende de stock
+  const cf=r.g? r.g.members.reduce((a,m)=>a+(m.compraFreq||0),0) : (r.compraFreq||0);
+  const sf=gv(r,"freq"), inc=gv(r,"incoming");
+  return inc>0 || (cf>=1 && sf>=cf*3) || cf>=6;
 }
 function repo(r){
   const clase=claseVenta(r);
   const deStock=esDeStock(r);
   const dm=demandaMes(r);
-  const pos=r.qty+r.incoming;
+  const gVenta=gv(r,"venta");
+  const pos=gv(r,"qty")+gv(r,"incoming");                    // stock + en camino DEL GRUPO (todas las marcas)
   const cob = dm>0 ? pos/dm : (pos>0?999:0);
   const objU = dm*pol.objetivo;
-  const auto = deStock && (clase==="constante" || clase==="habitual");   // repone por promedio sólo lo que stockeás y vende parejo
-  const quiebre = pos<=0 && r.ventaU>0;                      // sin stock y con ventas en el año
-  const necesita = auto && dm>0 && cob<pol.umbral;
+  const esVig = r.esVigente!==false;                          // sólo la marca VIGENTE carga la compra (no duplicar por marca)
+  const auto = deStock && (clase==="constante" || clase==="habitual");
+  const quiebre = pos<=0 && gVenta>0 && esVig;               // sin stock EL GRUPO y con ventas
+  const necesita = auto && esVig && dm>0 && cob<pol.umbral;
   let sug = necesita ? Math.max(0, Math.ceil(objU-pos)) : 0;
   if(sug>0 && sug<r.minQty) sug=r.minQty;
   const precio = r.provPrice>0?r.provPrice:r.costoU;
   const urg = quiebre?"quiebre":cob<0.5?"urgente":cob<1?"semana":"reponer";
-  return {clase, deStock, auto, quiebre, dm, pos, cob:cob>900?999:Math.round(cob*10)/10, necesita, sug, precio, costoLinea:sug*precio, urg};
+  return {clase, deStock, auto, quiebre, dm, pos, cob:cob>900?999:Math.round(cob*10)/10, necesita, sug, precio, costoLinea:sug*precio, urg, grpN:r.g?r.g.n:1};
 }
 const URG_ORD={quiebre:0,urgente:1,semana:2,reponer:3};
 const URG_COL={quiebre:"red",urgente:"org",semana:"yel",reponer:"green"};
@@ -601,13 +638,13 @@ const URG_LBL={quiebre:"Quiebre",urgente:"Urgente",semana:"Esta semana",reponer:
 function computar(){
   TOT=DATA.reduce((a,r)=>a+r.val,0);
   BUCKETS=B_DEF.map(([lbl,sub,lo,hi,col])=>{const sel=DATA.filter(r=>r.meses>=lo&&r.meses<hi);return{lbl,sub,col,n:sel.length,val:sel.reduce((a,r)=>a+r.val,0)};});
-  const muerto=DATA.filter(r=>r.ventaU===0).reduce((a,r)=>a+r.val,0);
-  let exceso3=0; for(const r of DATA){ if(r.ventaU>0){const ideal=(r.ventaU/12)*3, cu=r.val/r.qty; if(r.qty>ideal) exceso3+=(r.qty-ideal)*cu;}}
+  const muerto=DATA.filter(r=>gv(r,"venta")===0).reduce((a,r)=>a+r.val,0);   // sin ventas del GRUPO
+  const inmov=DATA.reduce((a,r)=>a+liberableDe(r),0);                          // liberable (excedente + muerto), ya por grupo
   const vencido=DATA.reduce((a,r)=>a+(r.valVenc||0),0);
   const v6=DATA.reduce((a,r)=>a+(r.val6||0),0);
   let riesgo=0; for(const r of DATA){ if(r.min!==null && r.meses>0 && r.min<r.meses) riesgo+=(r.valVenc+r.val6); }
   const sobre=BUCKETS[3].val+BUCKETS[4].val;
-  KPI={inv:TOT, sobre, sobrePct:sobre/TOT*100, inmov:exceso3+muerto, muerto, vencido, v6, riesgo};
+  KPI={inv:TOT, sobre, sobrePct:sobre/TOT*100, inmov, muerto, vencido, v6, riesgo};
   FAMS=[...new Set(DATA.map(r=>r.fam))].sort();
 }
 
@@ -1127,7 +1164,7 @@ function reponerListaHTML(){
         acc = cart+`<div class="row-acts"><button class="chip-act ok" onclick="event.stopPropagation();marcarPedido(${r.id})" title="Ya lo pediste">✓ ya pedido</button><button class="chip-act no" onclick="event.stopPropagation();descartar(${r.id})" title="No pedir este producto">🚫 no pedir</button></div>`;
       }
       return `<div class="row g-rep">
-        <div style="cursor:pointer" onclick="abrirProd(${r.id})"><div class="cname" style="color:var(--teal-deep)">${esc(cleanName(r.name))}</div><div class="cmeta">${r.provName?esc(r.provName):(r.viaOtra?"reposición directa":"sin proveedor")} · te lo piden ${r.freq}×/año${r.incoming>0?` · ${r.incoming} en camino`:""}</div></div>
+        <div style="cursor:pointer" onclick="abrirProd(${r.id})"><div class="cname" style="color:var(--teal-deep)">${esc(cleanName(r.name))}</div><div class="cmeta">${r.provName?esc(r.provName):(r.viaOtra?"reposición directa":"sin proveedor")} · te lo piden ${r.g?r.g.freq:r.freq}×/año${r.g&&r.g.n>1?` · <b style="color:var(--teal-deep)">${r.g.n} marcas</b>`:""}${(r.g?r.g.incoming:r.incoming)>0?` · ${r.g?r.g.incoming:r.incoming} en camino`:""}</div></div>
         <div><span class="pill ${URG_COL[rp.urg]}">${URG_LBL[rp.urg]}</span></div>
         <div class="tr-r hide-sm num">${rp.cob>900?"—":fmtDur(rp.cob)}</div>
         <div class="tr-r num">${rp.sug} u<div style="font-size:11px;color:var(--gris);font-weight:600">${money(rp.costoLinea)}</div></div>
@@ -1558,6 +1595,14 @@ function abrirProd(id){
         <div class="kv"><span class="k">Estado</span><span class="v"><span class="pill ${URG_COL[rp.urg]}">${URG_LBL[rp.urg]}</span></span></div>
         ${rp.necesita?`<div class="kv"><span class="k">Sugerido comprar</span><span class="v" style="color:var(--teal-deep)">${rp.sug} u · ${money(rp.costoLinea)}</span></div>`:""}
       </div>
+      ${r.g&&r.g.n>1?`<div class="dsec"><h4>Marcas de este producto · ${r.g.n}</h4>
+        <p style="font-size:12px;color:var(--gris);margin:0 0 8px">El historial y el stock se suman entre las marcas. Elegí con cuál reponer (la <b>vigente</b> viene marcada).</p>
+        ${r.g.members.slice().sort((a,b)=>b.qty-a.qty||b.ventaU-a.ventaU).map(m=>`<div class="provrow">
+          <div class="pnm">${esc(m.marca||cleanName(m.name))}${m.id===r.g.vigenteId?' <span class="tagmini">vigente</span>':''}
+            <span class="psub">${m.qty>0?m.qty.toLocaleString("es-AR")+" u en stock":"sin stock"} · vendió ${m.ventaU.toLocaleString("es-AR")} u/año${m.provName?" · "+esc(m.provName):""}</span></div>
+          ${m.provId?`<button class="mini-btn" style="background:var(--teal);color:#fff;border-color:var(--teal)" onclick="addToCart(${m.id},${m.provId},'${esc(m.provName||'').replace(/'/g,"")}',${m.provPrice||0},${rp.sug||0})">＋ Carrito</button>`:'<span class="tagmini">sin prov.</span>'}
+        </div>`).join("")}
+      </div>`:""}
       <div class="dsec"><h4>Abastecimiento</h4>
         <div class="kv"><span class="k">Cómo lo trata el sistema</span><span class="v">${STOCK_CRIT.has(r.id)?'📌 Crítico — fijado a mano':STOCK_PED.has(r.id)?'🛒 Contra pedido — fijado a mano':(rp.deStock?`De stock · automático (lo comprás ${r.compraFreq}×/año y lo vendés ${r.freq}×)`:`Contra pedido · automático (casi no lo comprás: ${r.compraFreq}×/año)`)}</span></div>
         <p style="font-size:12px;color:var(--gris);margin:6px 0 8px">Si está <b>de stock</b> y llega a cero, salta en el cartel rojo de quiebres. Si es <b>contra pedido</b>, estar en cero es normal.</p>
@@ -1677,7 +1722,7 @@ async function marcarModo(id, modo){
 }
 
 // ====== DRILL-DOWN: tocar una métrica/tarjeta abre la lista de productos detrás ======
-function liberableDe(r){ if(r.ventaU===0) return r.val; const ideal=(r.ventaU/12)*3, cu=r.qty>0?r.val/r.qty:0; return r.qty>ideal?Math.round((r.qty-ideal)*cu):0; }
+function liberableDe(r){ const dv=r.g?r.g.venta:r.ventaU, gq=r.g?r.g.qty:r.qty; if(dv===0) return r.val; const ideal=(dv/12)*3, cu=r.qty>0?r.val/r.qty:0; if(gq<=ideal) return 0; return Math.round(r.qty*(1-ideal/gq)*cu); }
 const LISTAS={
   quiebre:{ t:"En quiebre hoy", d:"Se venden y hoy no hay stock. Reponé cuanto antes.",
     sel:()=>DATA.filter(r=>{const rp=repo(r);return rp.dm>0&&rp.pos<=0;}).sort((a,b)=>b.margenAnual-a.margenAnual),
