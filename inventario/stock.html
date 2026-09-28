@@ -217,6 +217,7 @@
   .num{font-variant-numeric:tabular-nums;font-weight:700;font-size:13.5px}
   .rbadge{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:6px}
   .row.hot{background:#FFFBF3}.row.hot:hover{background:#FFF6E8}
+  .row.subrow{background:#FAFCFB;border-bottom:1px dashed var(--line)} .row.subrow .cname{font-size:12.5px}
 
   /* proveedores */
   .prov{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
@@ -1220,8 +1221,8 @@ function tabLiquidar(rd){
     </div>
     ${liqTabla(porVencer,"vence",50)}
 
-    <h2 class="sec" style="margin-top:26px">🐢 Sobrestock<span class="hint">+1 año de stock — conviene moverlo</span></h2>
-    ${liqTabla(sobre,"sobre",30)}
+    <h2 class="sec" style="margin-top:26px">🐢 Sobrestock<span class="hint">+1 año de stock (por grupo) — conviene moverlo</span></h2>
+    ${liqTablaSobre(sobre,40)}
 
     <h2 class="sec" style="margin-top:26px">💤 Sin rotación<span class="hint">sin ventas hace 1 año</span></h2>
     ${liqTabla(muerto,"muerto",30)}
@@ -1250,6 +1251,43 @@ function liqTabla(rows,tipo,cap){
       </div>`;
     }).join("")}
     ${rows.length>cap?`<div class="empty" style="padding:14px">…y ${(rows.length-cap).toLocaleString("es-AR")} más.</div>`:""}
+  </div>`;
+}
+// título del grupo = nombre sin la marca ni el packaging (para el encabezado del grupo)
+function tituloGrupo(r){
+  let t=cleanName(r.name).replace(/\(.*$/,"").trim();
+  if(r.marca){ const b=r.marca.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"); t=t.replace(new RegExp("\\s*-?\\s*"+b+"\\b.*$","i"),"").trim(); }
+  t=t.replace(/[\s\-–]+$/,"").trim();
+  return t||cleanName(r.name);
+}
+// Sobrestock AGRUPADO por marca: una fila por producto (stock/valor del grupo) + desglose por marca con "A ofertar"
+function liqTablaSobre(rows, cap){
+  if(!rows.length) return `<div class="pcard empty">Sin sobrestock. 👌</div>`;
+  const byk={}; for(const r of rows){ const k=r.g?r.g.key:("SOLO#"+r.id); (byk[k]=byk[k]||[]).push(r); }
+  let gs=Object.values(byk).map(ms=>({ms:ms.slice().sort((a,b)=>b.val-a.val), val:ms.reduce((a,r)=>a+r.val,0), qty:ms.reduce((a,r)=>a+r.qty,0), meses:ms[0].meses})).sort((a,b)=>b.val-a.val);
+  const total=gs.length; gs=gs.slice(0,cap);
+  const ofBtn=r=> r.xop ? '<span class="tagmini" style="background:#fbf0d6;color:#9a6a0b">en oportunidades</span>'
+    : `<button class="mini-btn" onclick="event.stopPropagation();mandarOportunidad(${r.id})" style="background:var(--gold);color:#fff;border-color:var(--gold)">🏷️ A ofertar →</button>`;
+  return `<div class="tablecard">
+    <div class="thead g-liq"><div>Producto</div><div>Cobertura</div><div class="tr-r hide-sm">Stock</div><div class="tr-r hide-sm">Valor</div><div style="text-align:right">Acción</div></div>
+    ${gs.map(g=>{ const multi=g.ms.length>1; const r0=g.ms[0];
+      const head=`<div class="row g-liq"${multi?'':` style="cursor:pointer" onclick="abrirProd(${r0.id})"`}>
+        <div${multi?'':' style="cursor:pointer"'} ${multi?'':`onclick="abrirProd(${r0.id})"`}><div class="cname" style="color:var(--teal-deep)">${esc(multi?tituloGrupo(r0):cleanName(r0.name))}</div><div class="cmeta">${multi?('<b style="color:var(--teal-deep)">'+g.ms.length+' marcas</b>'):(esc(r0.code||"")+(r0.provName?" · "+esc(r0.provName):""))}</div></div>
+        <div><span class="pill org">${fmtDurC(g.meses)}</span></div>
+        <div class="tr-r hide-sm num">${g.qty.toLocaleString("es-AR")}</div>
+        <div class="tr-r hide-sm num">${money(g.val)}</div>
+        <div style="text-align:right">${multi?'':ofBtn(r0)}</div>
+      </div>`;
+      const subs=multi ? g.ms.map(r=>`<div class="row g-liq subrow" style="cursor:pointer" onclick="abrirProd(${r.id})">
+        <div style="padding-left:16px"><div class="cname" style="font-weight:600">${esc(r.marca||cleanName(r.name))}</div><div class="cmeta">${esc(r.code||"")}${r.provName?" · "+esc(r.provName):""}</div></div>
+        <div></div>
+        <div class="tr-r hide-sm num">${r.qty.toLocaleString("es-AR")}</div>
+        <div class="tr-r hide-sm num">${money(r.val)}</div>
+        <div style="text-align:right">${ofBtn(r)}</div>
+      </div>`).join("") : "";
+      return head+subs;
+    }).join("")}
+    ${total>cap?`<div class="empty" style="padding:14px">…y ${(total-cap).toLocaleString("es-AR")} más.</div>`:""}
   </div>`;
 }
 function setLiqPlazo(m){ liq.plazo=m; render(); }
