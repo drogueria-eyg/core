@@ -440,11 +440,11 @@ function agruparMarcas(rows){
     const venta=ms.reduce((a,r)=>a+r.ventaU,0), venta3=ms.reduce((a,r)=>a+r.venta3,0), freq=ms.reduce((a,r)=>a+r.freq,0);
     const qty=ms.reduce((a,r)=>a+r.qty,0), incoming=ms.reduce((a,r)=>a+r.incoming,0);
     const val=ms.reduce((a,r)=>a+(r.val||0),0), valVenc=ms.reduce((a,r)=>a+(r.valVenc||0),0), val6=ms.reduce((a,r)=>a+(r.val6||0),0);
-    const compraFreq=ms.reduce((a,r)=>a+(r.compraFreq||0),0), margenAnual=ms.reduce((a,r)=>a+(r.margenAnual||0),0);
+    const compraFreq=ms.reduce((a,r)=>a+(r.compraFreq||0),0), compradoU=ms.reduce((a,r)=>a+(r.compradoU||0),0), margenAnual=ms.reduce((a,r)=>a+(r.margenAnual||0),0);
     const _mins=ms.map(r=>r.min).filter(x=>x!=null); const min=_mins.length?Math.min(..._mins):null;   // el lote que vence primero entre todas las marcas
     let vig=ms[0], best=-1;   // marca VIGENTE: la que tiene stock / en camino / proveedor, más movida
     for(const r of ms){ const sc=(r.incoming>0?3:0)+(r.qty>0?2:0)+(r.provId?1:0)+(r.compraFreq/1000)+(r.ventaU/1e9); if(sc>best){best=sc;vig=r;} }
-    const g={key:k, n:ms.length, venta, venta3, freq, qty, incoming, val, valVenc, val6, min, compraFreq, margenAnual, vigenteId:vig.id, members:ms};
+    const g={key:k, n:ms.length, venta, venta3, freq, qty, incoming, val, valVenc, val6, min, compraFreq, compradoU, margenAnual, vigenteId:vig.id, members:ms};
     for(const r of ms){ r.g=g; r.esVigente=(r.id===vig.id); }
   }
 }
@@ -475,7 +475,7 @@ async function cargar(){
     // impuestos de venta: de ahí sale la regla del costo (igual que en el motor y en Costos y Rentabilidad)
     TASAS_VENTA = await EYG.tasasVenta();
 
-    const CF={}; for(const c of comprasF){ if(c.product_id) CF[c.product_id[0]]=c.__count||0; }   // veces que EyG compró cada producto en 12m
+    const CF={}, CU={}; for(const c of comprasF){ if(c.product_id){ CF[c.product_id[0]]=c.__count||0; CU[c.product_id[0]]=c.product_qty||0; } }   // veces (CF) y unidades (CU) que EyG compró cada producto en 12m
     try{ const mo=modoParam?JSON.parse(modoParam):{}; STOCK_CRIT=new Set(mo.crit||[]); STOCK_PED=new Set(mo.ped||[]); }catch(e){ STOCK_CRIT=new Set(); STOCK_PED=new Set(); }
     // productos ya en una OC borrador/enviada (detección automática de "ya pedido")
     PEDIDOS_OC={}; for(const l of pedidosOC){ if(!l.product_id) continue; const id=l.product_id[0];
@@ -546,7 +546,7 @@ async function cargar(){
       const std=cost, catId=m.categ_id?m.categ_id[0]:0;
       const costoU=costoReal({xCostoMotor:m.x_costo_motor||0, std, ivaCompra:m.x_iva_compra||0, taxesId:m.taxes_id||[]});
       return {id, code:m.default_code||"", archivado:m.active===false, valRoto, qa, xop:!!m.x_oportunidad, manualC:m.x_costo_manual||0, manualD:m.x_costo_manual_date||null, name:(s?s.product_id[1]:(m.name||("#"+id))), fam:familia(m.categ_id),
-        categ:m.categ_id?m.categ_id[1]:"", catId, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, marca:(m.x_studio_many2one_field_6o_1if0l6ud2?m.x_studio_many2one_field_6o_1if0l6ud2[1]:""), val, qty, ventaU, venta3, freq, compraFreq:Math.round(CF[id]||0),
+        categ:m.categ_id?m.categ_id[1]:"", catId, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, marca:(m.x_studio_many2one_field_6o_1if0l6ud2?m.x_studio_many2one_field_6o_1if0l6ud2[1]:""), val, qty, ventaU, venta3, freq, compraFreq:Math.round(CF[id]||0), compradoU:Math.round(CU[id]||0),
         incoming:Math.round(m.incoming_qty||0),
         meses: meses>900?999:Math.round(meses*10)/10,
         std, xCostoMotor:m.x_costo_motor||0, ivaCompra:m.x_iva_compra||0, taxesId:m.taxes_id||[], ivaAlCosto:tildeEfectiva({taxesId:m.taxes_id||[]})?(m.x_iva_compra||0):0,
@@ -1706,21 +1706,23 @@ function smartBtns(id){
     <div class="sbtn" onclick="histVentas(${id})"><span class="sb-ic">📈</span><div class="sb-tx"><b id="sbVend">…</b><span id="sbVendSub">Vendido · ver mes a mes</span></div></div>
   </div>`;
 }
+function _sbSet(cu,vu,n){   // MISMO dato (12 meses) que la lista y las subfilas → los números coinciden en todas las vistas
+  const ec=document.getElementById("sbComp"); if(ec) ec.textContent=cu.toLocaleString("es-AR")+" u comprado";
+  const ev=document.getElementById("sbVend"); if(ev) ev.textContent=vu.toLocaleString("es-AR")+" u vendido";
+  const cs=document.getElementById("sbCompSub"); if(cs) cs.textContent=(n>1?n+" marcas · ":"")+"último año · a quién y a qué costo";
+  const vs=document.getElementById("sbVendSub"); if(vs) vs.textContent=(n>1?n+" marcas · ":"")+"último año · mes a mes";
+}
 async function cargarSmart(id){
+  const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id);
+  if(r){ _sbSet(gv(r,"compradoU"), gv(r,"venta"), r.g?r.g.n:1); return; }   // producto del stock: 12m ya calculado
+  // producto sólo del catálogo (no está en el stock): consulto los últimos 12 meses
   try{
-    const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id)||{};
-    const ids=r.g?r.g.members.map(m=>m.id):[id];      // suma TODAS las marcas del producto
+    const ini=iso(new Date(HOY.getFullYear(),HOY.getMonth()-12,1));
     const [c,v]=await Promise.all([
-      rpc("purchase.order.line","read_group",[[["product_id","in",ids],["state","in",["purchase","done"]]],["product_qty:sum"],[]],{lazy:false}),
-      rpc("sale.order.line","read_group",[[["product_id","in",ids],["order_id.state","in",["sale","done"]]],["product_uom_qty:sum"],[]],{lazy:false}),
+      rpc("purchase.order.line","read_group",[[["product_id","=",id],["state","in",["purchase","done"]],["order_id.date_order",">=",ini]],["product_qty:sum"],[]],{lazy:false}),
+      rpc("sale.order.line","read_group",[[["product_id","=",id],["order_id.state","in",["sale","done"]],["order_id.date_order",">=",ini]],["product_uom_qty:sum"],[]],{lazy:false}),
     ]);
-    const cu=c.length?Math.round(c[0].product_qty||0):0, vu=v.length?Math.round(v[0].product_uom_qty||0):0;
-    const ec=document.getElementById("sbComp"); if(ec) ec.textContent=cu.toLocaleString("es-AR")+" u comprado";
-    const ev=document.getElementById("sbVend"); if(ev) ev.textContent=vu.toLocaleString("es-AR")+" u vendido";
-    if(ids.length>1){   // el "N marcas" va en el subtítulo, así el número no se corta
-      const cs=document.getElementById("sbCompSub"); if(cs) cs.textContent=ids.length+" marcas · a quién y a qué costo";
-      const vs=document.getElementById("sbVendSub"); if(vs) vs.textContent=ids.length+" marcas · mes a mes";
-    }
+    _sbSet(c.length?Math.round(c[0].product_qty||0):0, v.length?Math.round(v[0].product_uom_qty||0):0, 1);
   }catch(e){ const ec=document.getElementById("sbComp"); if(ec)ec.textContent="—"; const ev=document.getElementById("sbVend"); if(ev)ev.textContent="—"; }
 }
 function abrirHist(titulo){
@@ -1751,9 +1753,12 @@ async function histCompras(id){
       .concat(sueltas).sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha)));
     if(!rows.length){ b.innerHTML='<div class="empty" style="padding:30px">Sin compras registradas.</div>'; return; }
     const tot=rows.reduce((a,r)=>a+(r.qty||0),0);
+    const ini12s=iso(new Date(HOY.getFullYear(),HOY.getMonth()-12,1));
+    const uano=(r.compradoU!=null)?gv(r,"compradoU"):rows.filter(x=>String(x.fecha)>=ini12s).reduce((a,x)=>a+(x.qty||0),0);   // MISMO número que la tarjeta
     const dif=(o,f)=> (f!=null && o>0 && Math.abs(f-o)/o>0.02);
     b.innerHTML=`<div class="note info" style="margin:0 0 10px">${isG?`Compras de las <b>${r.g.n} marcas</b> de este producto. `:""}El <b>costo que usa el motor</b> (y los márgenes) es el <b>facturado</b> — lo que realmente pagaste, no el de la orden. Cuando difieren, la factura manda (marcado en <b style="color:var(--red)">rojo</b>).</div>
-      <div class="count-line" style="margin:0 0 8px"><b>${rows.length}</b> compras · ${Math.round(tot).toLocaleString("es-AR")} u en total</div>
+      <div class="count-line" style="margin:0 0 4px"><b>${Math.round(uano).toLocaleString("es-AR")} u</b> compradas en el último año${isG?` · ${r.g.n} marcas`:""}</div>
+      <p style="font-size:11.5px;color:var(--gris);margin:0 0 10px">Todas las compras registradas (histórico completo: ${rows.length} compras · ${Math.round(tot).toLocaleString("es-AR")} u).</p>
       <div class="tablecard"><div class="thead g-hist2"><div>Fecha</div><div>Proveedor${isG?" / marca":""}</div><div class="tr-r">Cantidad</div><div class="tr-r">Orden $/u</div><div class="tr-r">Facturado $/u</div></div>
       ${rows.map(r=>`<div class="row g-hist2" ${r.oid?`onclick="window.open('${odooPO(r.oid)}','_blank')" style="cursor:pointer"`:''}>
         <div class="cmeta">${r.fecha?r.fecha.split("-").reverse().join("/"):"—"}${r.oname?`<div style="font-size:10.5px;color:var(--teal-deep)">${esc(r.oname)}</div>`:(r.suelta?`<div style="font-size:10.5px;color:var(--gris2)">${esc(r.prov)}</div>`:"")}</div>
@@ -1780,7 +1785,10 @@ async function histVentas(id){
       .sort((a,b)=>String(b.from).localeCompare(String(a.from)));
     if(!rows.length){ b.innerHTML='<div class="empty" style="padding:30px">Sin ventas registradas.</div>'; return; }
     const max=Math.max(...rows.map(r=>r.u))||1, tot=rows.reduce((a,r)=>a+r.u,0);
-    b.innerHTML=`<div class="count-line" style="margin:0 0 8px"><b>${Math.round(tot).toLocaleString("es-AR")} u</b> vendidas · ${rows.length} meses con venta</div>
+    const ini12s=iso(new Date(HOY.getFullYear(),HOY.getMonth()-12,1));
+    const uano=(r.ventaU!=null)?gv(r,"venta"):rows.filter(x=>String(x.from)>=ini12s).reduce((a,x)=>a+x.u,0);   // MISMO número que la tarjeta y la lista
+    b.innerHTML=`<div class="count-line" style="margin:0 0 4px"><b>${Math.round(uano).toLocaleString("es-AR")} u</b> vendidas en el último año${isG?` · ${r.g.n} marcas`:""}</div>
+      <p style="font-size:11.5px;color:var(--gris);margin:0 0 10px">Detalle mes a mes (histórico completo: ${Math.round(tot).toLocaleString("es-AR")} u en ${rows.length} meses con venta).</p>
       <div class="histbars">${rows.map(r=>`<div class="hb"><span class="hb-m">${esc(r.lab)}</span><span class="hb-bar"><i style="width:${Math.round(r.u/max*100)}%"></i></span><span class="hb-u">${r.u.toLocaleString("es-AR")}</span></div>`).join("")}</div>`;
   }catch(e){ const b=document.getElementById("hmBody"); if(b)b.innerHTML='<div class="errbox">No pude cargar las ventas: '+esc(e.message)+'</div>'; }
 }
