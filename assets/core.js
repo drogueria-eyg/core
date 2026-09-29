@@ -500,6 +500,14 @@ window.EYG = (function(){
     {key:"tesoreria", dept:"finanzas", cat:"Administración", ico:"💰", titulo:"Tesorería", desc:"Dónde está la plata hoy: saldo de cada banco y caja, cheques de terceros en cartera con sus vencimientos, y qué falta cruzar con el resumen del banco.", roles:["finanzas","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/tesoreria.html"},
+    /* EN PRUEBAS: Conciliación bancaria. ESCRIBE en Odoo (carga el extracto, imputa impuestos,
+       crea los pagos de comisiones y concilia). Nunca pisa lo ya cargado: detecta duplicados por
+       día contando repeticiones, porque hay movimientos legítimamente idénticos (seis comisiones
+       de $600 el mismo día son seis e-cheq distintos, no un duplicado).
+       Para liberarlo: borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/conciliacion.html. */
+    {key:"conciliacion", dept:"finanzas", cat:"Administración", ico:"🏦", titulo:"Conciliación bancaria", desc:"Subís el resumen del banco y se carga solo: valida que el saldo cierre, detecta lo que ya estaba, imputa impuestos, crea los pagos de comisiones y empareja los cobros con su cliente. Lo que queda en duda te lo muestra para que decidas.", roles:["finanzas","direccion"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"finanzas/conciliacion.html"},
     /* EN PRUEBAS: carga de cheques de terceros (lo urgente de Federico). Crea el recibo RE-X
        en el diario "Cheques de terceros" igual que Odoo, y lo imputa a las facturas del cliente.
        Para liberarlo: borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/cheques.html. */

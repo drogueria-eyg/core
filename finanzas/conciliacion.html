@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Conciliación bancaria · EyG Core</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/core.css?v=83">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="../assets/core.js?v=98"></script>
+<style>
+  :root{
+    --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
+    --agua:#E2F1EF; --coral:#EC8B5E; --ink:#0E1F1D; --gris:#5F716E; --gris2:#8A9A97;
+    --surface:#fff; --bg:#F4F8F7; --line:#DCE8E6; --radius:12px;
+    --shadow:0 1px 2px rgba(6,65,62,.05), 0 6px 24px rgba(6,65,62,.06);
+    --ok:#1F8A5F; --okbg:#E7F6EC; --warn:#B7791F; --warnbg:#FBF3D9;
+    --bad:#C0392B; --badbg:#FBE2E1; --info:#5B8DEF; --infobg:#EAF1FD;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Archivo',system-ui,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+  .topbar{background:var(--teal-deep);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:13px;position:sticky;top:0;z-index:30}
+  .mono{font-family:Georgia,serif;font-weight:700;font-size:23px;letter-spacing:.5px;line-height:1}
+  .mono .y{color:var(--aqua)}
+  .topbar .tag{font-weight:700;font-size:11px;letter-spacing:2px;text-transform:uppercase;background:rgba(255,255,255,.14);padding:3px 9px;border-radius:20px}
+  .topbar .title{font-weight:700;font-size:15px;margin-left:4px}
+  .topbar .back{margin-left:auto;color:#fff;text-decoration:none;font-size:13px;font-weight:600;opacity:.85}
+  .topbar .back:hover{opacity:1}
+  .wrap{max-width:1320px;margin:0 auto;padding:20px 22px 90px}
+
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 18px;margin-bottom:16px}
+  .panel h3{font-size:14.5px;font-weight:800;color:var(--teal-deep);margin-bottom:3px;display:flex;align-items:center;gap:7px}
+  .panel .sub{font-size:12px;color:var(--gris);margin-bottom:14px;line-height:1.5}
+
+  /* zona de carga */
+  .drop{border:2px dashed var(--teal-med);border-radius:14px;background:linear-gradient(180deg,#F7FCFB,#EDF7F5);
+        padding:28px 22px;text-align:center;cursor:pointer;transition:.15s}
+  .drop:hover,.drop.over{border-color:var(--teal);background:#E6F4F2;transform:translateY(-1px)}
+  .drop .ic{font-size:34px;line-height:1}
+  .drop .t{font-size:15px;font-weight:800;color:var(--teal-deep);margin-top:8px}
+  .drop .s{font-size:12.5px;color:var(--gris);margin-top:4px}
+  .drop input{display:none}
+
+  /* KPIs */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:11px;margin-bottom:16px}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:13px 14px;box-shadow:var(--shadow);text-align:left;font-family:inherit;cursor:pointer;transition:transform .12s,box-shadow .12s;border-left:3px solid var(--teal-med)}
+  .kpi:hover{transform:translateY(-2px);box-shadow:0 4px 8px rgba(6,65,62,.09),0 12px 30px rgba(6,65,62,.10)}
+  .kpi.on{border-color:var(--teal);background:var(--agua)}
+  .kpi.ok{border-left-color:var(--ok)} .kpi.warn{border-left-color:var(--warn)}
+  .kpi.bad{border-left-color:var(--bad)} .kpi.dup{border-left-color:var(--info)}
+  .kpi .l{font-size:10.5px;color:var(--gris);font-weight:700;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:5px}
+  .kpi .n{font-size:21px;font-weight:800;line-height:1.15;margin-top:5px}
+  .kpi .s{font-size:11px;color:var(--gris2);font-weight:600;margin-top:2px}
+  .neg{color:var(--bad)}.pos{color:var(--ok)}
+
+  /* avisos */
+  .aviso{border-radius:10px;padding:11px 14px;font-size:12.5px;line-height:1.55;margin-bottom:12px;display:flex;gap:9px;align-items:flex-start}
+  .aviso.ok{background:var(--okbg);border:1px solid #BFE3CD;color:#14603F}
+  .aviso.warn{background:var(--warnbg);border:1px solid #EAD9A0;color:#8A6D1A}
+  .aviso.bad{background:var(--badbg);border:1px solid #F0C3C0;color:#8E2A20}
+  .aviso.info{background:var(--infobg);border:1px solid #C6D8F8;color:#2E5AA8}
+  .aviso b{font-weight:800}
+
+  /* barra de composicion */
+  .compo{display:flex;height:26px;border-radius:7px;overflow:hidden;margin:4px 0 8px;border:1px solid var(--line)}
+  .compo div{display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:800;color:#fff;cursor:pointer;transition:.12s}
+  .compo div:hover{filter:brightness(1.12)}
+  .leyenda{display:flex;flex-wrap:wrap;gap:12px;font-size:11.5px;color:var(--gris);font-weight:600}
+  .leyenda span{display:flex;align-items:center;gap:5px}
+  .leyenda i{width:10px;height:10px;border-radius:3px;display:inline-block}
+
+  /* tabla */
+  .tw{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:900px}
+  thead th{background:#F1F7F6;color:var(--teal-deep);font-weight:800;font-size:11px;text-transform:uppercase;letter-spacing:.4px;
+           padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap;cursor:help}
+  tbody td{padding:9px 10px;border-bottom:1px solid #EEF4F3;vertical-align:top}
+  tbody tr:hover{background:#FAFDFC}
+  tbody tr:last-child td{border-bottom:0}
+  td.r,th.r{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .muted{color:var(--gris2)}
+  .cpto{max-width:330px;line-height:1.4}
+  .cpto .cli{font-size:11px;font-weight:800;color:var(--teal-deep);display:block;margin-top:2px}
+
+  .badge{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:800;padding:2px 7px;border-radius:20px;white-space:nowrap;text-transform:uppercase;letter-spacing:.3px}
+  .b-ok{background:var(--okbg);color:#14603F} .b-warn{background:var(--warnbg);color:#8A6D1A}
+  .b-bad{background:var(--badbg);color:#8E2A20} .b-dup{background:var(--infobg);color:#2E5AA8}
+  .b-nu{background:#EDF3F2;color:var(--gris)}
+
+  .btn{font-family:inherit;font-size:12px;font-weight:700;padding:6px 12px;border-radius:8px;border:1px solid var(--teal);
+       background:var(--teal);color:#fff;cursor:pointer;white-space:nowrap}
+  .btn:hover{background:var(--teal-deep)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn.gh{background:#fff;color:var(--teal-deep)}
+  .btn.gh:hover{background:var(--agua)}
+  .btn.sm{font-size:11px;padding:4px 9px}
+  .btn.wide{width:100%;padding:11px;font-size:13.5px}
+  .acciones{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:14px}
+
+  select.cand{font-family:inherit;font-size:11.5px;padding:4px 7px;border:1px solid var(--line);border-radius:7px;background:#fff;max-width:280px}
+
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .cargando{text-align:center;padding:40px;color:var(--gris);font-size:13px}
+
+  .log{background:#0E1F1D;color:#9FE8DF;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.6;
+       border-radius:10px;padding:12px 14px;max-height:230px;overflow:auto;margin-top:12px;white-space:pre-wrap}
+  .log .e{color:#FF9B8F} .log .o{color:#8FE3A8}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="mono">E<span class="y">y</span>G</div>
+  <span class="tag">Core</span>
+  <span class="title">Conciliación bancaria</span>
+  <a class="back" href="../index.html">← Volver</a>
+</div>
+<div class="wrap" id="app">
+  <div class="cargando">Cargando…</div>
+</div>
+
+<script>
+const money=n=>"$"+(n||0).toLocaleString("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2});
+const esc=EYG.esc;
+const rpc=EYG.rpc;
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CONFIGURACIÓN — el mapa de códigos del banco.
+   Cada código dice QUÉ es el movimiento y QUÉ hay que hacer con él.
+   Verificado contra el historial de Federico (agosto–septiembre 2026).
+   ══════════════════════════════════════════════════════════════════════════ */
+const BANCOS={
+  credicoop:{
+    nombre:"Banco Credicoop", diario:24, cuenta:359, partner:2043,
+    /* OJO: 974 y 1273 NO son comisiones aunque el código lo parezca.
+       974 = Transf. Interbanking (un COBRO) · 1273 = entre cuentas propias. */
+    codigos:{
+      IVAA1:{tipo:"cargo",   sub:"IVA"},
+      IVA08:{tipo:"cargo",   sub:"IVA"},
+      "2572":{tipo:"cargo",  sub:"Comisión e-cheq"},
+      "500": {tipo:"cargo",  sub:"Com. mantenimiento"},
+      "505": {tipo:"cargo",  sub:"Com. administrativa"},
+      SCECO:{tipo:"impuesto",sub:"SIRCREB",            cta:128},
+      IDCC1:{tipo:"impuesto",sub:"Ley 25.413 créditos",cta:259},
+      IDCC3:{tipo:"impuesto",sub:"Ley 25.413 débitos", cta:259},
+      "1872":{tipo:"cobro",  sub:"Transferencia recibida"},
+      "1874":{tipo:"cobro",  sub:"DEBIN"},
+      "974": {tipo:"cobro",  sub:"Interbanking"},
+      "1871":{tipo:"interna",sub:"Entre cuentas propias"},
+      "1273":{tipo:"interna",sub:"Entre cuentas propias (otro banco)"},
+      "2002":{tipo:"echeq",  sub:"E-cheq cámara"},
+      "2003":{tipo:"echeq",  sub:"E-cheq canje interno"}
+    }
+  }
+};
+const CTA_TRANSIT=349, CTA_RECIBOS=350, CTA_PAGOS=351, CTA_PROVEEDORES=148;
+const TIPOS={
+  cargo:   {lbl:"Comisiones e IVA", color:"#B7791F", ayuda:"Cargos del banco que van a la liquidación (LI-A): comisiones, IVA e intereses."},
+  impuesto:{lbl:"Impuestos",        color:"#8E5FBF", ayuda:"SIRCREB e Impuesto Ley 25.413. Se imputan directo a su cuenta, sin pago de por medio."},
+  cobro:   {lbl:"Cobros",           color:"#1F8A5F", ayuda:"Plata que entra de clientes. Se concilia contra el recibo que carga Cobranzas."},
+  echeq:   {lbl:"E-cheq pagados",   color:"#C0392B", ayuda:"Cheques electrónicos debitados. Se concilian contra el pago emitido."},
+  interna: {lbl:"Entre cuentas",    color:"#5B8DEF", ayuda:"Transferencias entre cuentas propias. Se concilian con el extracto del otro banco."},
+  otro:    {lbl:"Sin clasificar",   color:"#8A9A97", ayuda:"El código del banco no está en el mapa. Hay que decidirlo a mano."}
+};
+
+/* ══════════════════════════════════════════════════════════════════════════
+   LECTOR DEL ARCHIVO
+   ══════════════════════════════════════════════════════════════════════════ */
+const norm=s=>String(s||"").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\./g,"");
+function num(s){
+  const t=String(s||"").replace(/\s/g,"").replace(/\$/g,"");
+  if(t===""||t==="-") return 0;
+  const neg=/^-/.test(t)||/^\(.*\)$/.test(t);
+  const v=parseFloat(t.replace(/[()\-]/g,"").replace(/,/g,""))||0;
+  return neg?-v:v;
+}
+const fecha=s=>{const m=String(s||"").trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);return m?m[3]+"-"+m[2]+"-"+m[1]:null;};
+
+function leerArchivo(buf){
+  const wb=XLSX.read(buf,{type:"array",raw:false});
+  const sh=wb.Sheets[wb.SheetNames[0]];
+  const rows=XLSX.utils.sheet_to_json(sh,{header:1,defval:"",raw:false});
+  const cab=(rows[0]||[]).map(norm);
+  const col=(...al)=>{for(const a of al){const i=cab.indexOf(a);if(i>=0)return i;}return -1;};
+  const C={fecha:col("fecha"),concepto:col("concepto","detalle","descripcion"),cpbte:col("nrocpbte","nro cpbte","comprobante"),
+           debito:col("debito"),credito:col("credito"),saldo:col("saldo"),cod:col("cod","codigo")};
+  const faltan=["fecha","concepto","debito","credito","saldo"].filter(k=>C[k]<0);
+  if(faltan.length) throw new Error("El archivo no tiene las columnas esperadas: falta "+faltan.join(", ")+". Encabezado leído: "+cab.join(" | "));
+  const movs=[];
+  for(let i=1;i<rows.length;i++){
+    const r=rows[i], f=fecha(r[C.fecha]); if(!f) continue;
+    const deb=num(r[C.debito]), cre=num(r[C.credito]);
+    movs.push({fecha:f, concepto:String(r[C.concepto]||"").trim().replace(/\s+/g," "),
+      cpbte:String(r[C.cpbte]||"").trim(), importe:Math.round((cre-deb)*100)/100,
+      saldo:num(r[C.saldo]), cod:String(r[C.cod]||"").trim()});
+  }
+  movs.reverse();                       // el banco los manda del más nuevo al más viejo
+  return {movs,encabezado:cab};
+}
+/* El saldo tiene que encadenar movimiento a movimiento. Si no cierra, el archivo no se usa. */
+function validarCadena(movs){
+  const f=[];
+  for(let i=1;i<movs.length;i++){
+    const esp=Math.round((movs[i-1].saldo+movs[i].importe)*100)/100;
+    if(Math.abs(esp-movs[i].saldo)>0.005) f.push({i,esperado:esp,real:movs[i].saldo,mov:movs[i]});
+  }
+  return f;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ESTADO
+   ══════════════════════════════════════════════════════════════════════════ */
+const ST={banco:"credicoop", movs:[], dias:[], filtro:null, mapaCuit:{}, listo:false, trabajando:false, logs:[]};
+
+function log(msg,clase){ ST.logs.push({msg,clase,t:new Date()}); pintarLog(); }
+function pintarLog(){
+  const el=document.getElementById("log"); if(!el) return;
+  el.innerHTML=ST.logs.map(l=>'<span class="'+(l.clase||"")+'">'+
+    String(l.t.toTimeString().slice(0,8))+"  "+esc(l.msg)+"</span>").join("\n");
+  el.scrollTop=el.scrollHeight;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ANÁLISIS: duplicados, clasificación y candidatos
+   ══════════════════════════════════════════════════════════════════════════ */
+async function analizar(movs){
+  const B=BANCOS[ST.banco];
+  const fechas=[...new Set(movs.map(m=>m.fecha))].sort();
+  log("Archivo leído: "+movs.length+" movimientos, del "+fechas[0]+" al "+fechas[fechas.length-1]);
+
+  /* ---- 1) lo que YA está cargado en Odoo, por día ---- */
+  const yaEn=await rpc("account.bank.statement.line","search_read",
+    [[["journal_id","=",B.diario],["date","in",fechas]],["date","payment_ref","amount","ref","is_reconciled","to_check","move_id","partner_id"]],
+    {limit:0});
+  log("Ya cargado en Odoo para esas fechas: "+yaEn.length+" movimientos");
+
+  /* Huella por (fecha|concepto|importe) contando repeticiones: hay movimientos
+     legítimamente idénticos (6 comisiones de $600 el mismo día) y NO son duplicados. */
+  const clave=m=>m.fecha+"|"+String(m.concepto||m.payment_ref||"").slice(0,60)+"|"+(Math.round((m.amount!==undefined?m.amount:m.importe)*100)/100);
+  const pool={}; yaEn.forEach(l=>{const k=clave({fecha:l.date,concepto:l.payment_ref,amount:l.amount});(pool[k]=pool[k]||[]).push(l);});
+
+  movs.forEach(m=>{
+    const k=clave(m), lista=pool[k];
+    if(lista&&lista.length){ m.yaEsta=lista.shift(); }   // consume una ocurrencia
+    else m.yaEsta=null;
+  });
+  const dup=movs.filter(m=>m.yaEsta).length;
+  log(dup?("Detectados "+dup+" movimientos que YA estaban cargados: no se vuelven a crear"):"Ninguno estaba cargado: son todos nuevos",dup?"o":"");
+
+  /* ---- 2) clasificar por el código del banco ---- */
+  movs.forEach(m=>{
+    const c=B.codigos[m.cod];
+    m.tipo=c?c.tipo:"otro"; m.sub=c?c.sub:("código "+(m.cod||"—")); m.cta=c?c.cta:null;
+    const cu=String(m.concepto).match(/\b(\d{11})\b/); m.cuit=cu?cu[1]:null;
+  });
+
+  /* ---- 3) mapa CUIT → cliente, aprendido del historial ---- */
+  await construirMapaCuit();
+  movs.forEach(m=>{ m.cliente=(m.cuit&&ST.mapaCuit[m.cuit])?ST.mapaCuit[m.cuit]:null; });
+
+  /* ---- 4) candidatos para conciliar ---- */
+  const necesitaRec=movs.some(m=>m.tipo==="cobro"&&!m.yaEsta), necesitaPag=movs.some(m=>(m.tipo==="echeq"||m.tipo==="interna")&&!m.yaEsta);
+  const abiertas=async cta=>await rpc("account.move.line","search_read",
+    [[["account_id","=",cta],["parent_state","=","posted"],["full_reconcile_id","=",false]],
+     ["date","debit","credit","move_id","partner_id","amount_residual"]],{limit:0});
+  const recibos=necesitaRec?await abiertas(CTA_RECIBOS):[];
+  const pagos  =necesitaPag?await abiertas(CTA_PAGOS):[];
+  log("Partidas abiertas para emparejar: "+recibos.length+" recibos · "+pagos.length+" pagos");
+
+  movs.forEach(m=>{
+    m.cands=[];
+    if(m.yaEsta) return;
+    const pool2 = m.tipo==="cobro" ? recibos : (m.tipo==="echeq"||m.tipo==="interna") ? pagos : [];
+    const mismos=pool2.filter(r=>Math.abs(Math.abs(r.amount_residual)-Math.abs(m.importe))<0.005);
+    /* El importe solo no alcanza: si además sabemos el cliente, filtramos por él.
+       Esto es lo que evita imputarle el cobro al cliente equivocado. */
+    const porCli = m.cliente ? mismos.filter(r=>r.partner_id&&r.partner_id[0]===m.cliente.id) : [];
+    m.cands = porCli.length ? porCli : mismos;
+    m.porCliente = porCli.length>0;
+  });
+  return movs;
+}
+
+/* El mapa se construye leyendo los cobros que Cobranzas ya imputó: cada uno
+   enseña qué CUIT paga por qué cliente. Mejora solo con el uso. */
+async function construirMapaCuit(){
+  if(Object.keys(ST.mapaCuit).length) return;
+  const B=BANCOS[ST.banco];
+  const desde=new Date(); desde.setMonth(desde.getMonth()-6);
+  const hist=await rpc("account.bank.statement.line","search_read",
+    [[["journal_id","=",B.diario],["amount",">",0],["partner_id","!=",false],["date",">=",desde.toISOString().slice(0,10)]],
+     ["payment_ref","partner_id"]],{limit:0});
+  const m={};
+  hist.forEach(l=>{
+    const c=String(l.payment_ref||"").match(/\b(\d{11})\b/); if(!c) return;
+    const k=c[1]; m[k]=m[k]||{};
+    const id=l.partner_id[0]; m[k][id]=m[k][id]||{id,nombre:l.partner_id[1],veces:0}; m[k][id].veces++;
+  });
+  let unicos=0;
+  Object.keys(m).forEach(cuit=>{
+    const opts=Object.values(m[cuit]);
+    if(opts.length===1){ ST.mapaCuit[cuit]=opts[0]; unicos++; }   // sólo los inequívocos
+  });
+  log("Mapa CUIT→cliente aprendido de "+hist.length+" cobros: "+unicos+" clientes identificables");
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   RENDER
+   ══════════════════════════════════════════════════════════════════════════ */
+function render(){
+  const app=document.getElementById("app");
+  if(!ST.listo){ app.innerHTML=zonaCarga(); engancharDrop(); return; }
+  const M=ST.movs;
+  const nuevos=M.filter(m=>!m.yaEsta), dups=M.filter(m=>m.yaEsta);
+  const porTipo={}; M.forEach(m=>{(porTipo[m.tipo]=porTipo[m.tipo]||[]).push(m);});
+  const listos=nuevos.filter(m=>m.tipo==="impuesto"||m.tipo==="cargo"||(m.cands.length===1));
+  const dudas=nuevos.filter(m=>m.cands.length>1||(m.cands.length===0&&(m.tipo==="cobro"||m.tipo==="echeq"||m.tipo==="interna"))||m.tipo==="otro");
+
+  app.innerHTML=
+    zonaCarga()+
+    avisoValidacion()+
+    kpis(M,nuevos,dups,listos,dudas)+
+    composicion(porTipo)+
+    panelAcciones(nuevos,listos,dudas)+
+    tabla(filtrar(M))+
+    '<div class="panel"><h3>📋 Registro de lo que se hizo</h3>'+
+    '<div class="sub">Todo lo que la herramienta ejecutó en Odoo, en orden.</div>'+
+    '<div class="log" id="log"></div></div>';
+  engancharDrop(); pintarLog();
+}
+
+function zonaCarga(){
+  return '<div class="panel"><h3>📂 Resumen del banco</h3>'+
+    '<div class="sub">Arrastrá el archivo que bajás del home banking (.xls) o hacé clic para elegirlo. '+
+    'Se puede subir el mismo archivo más de una vez: lo que ya esté cargado se detecta y no se duplica.</div>'+
+    '<label class="drop" id="drop"><div class="ic">📄</div>'+
+    '<div class="t">'+(ST.listo?"Cargar otro archivo":"Elegí el resumen diario")+'</div>'+
+    '<div class="s">Banco Credicoop · formato .xls</div>'+
+    '<input type="file" id="file" accept=".xls,.xlsx"></label></div>';
+}
+function engancharDrop(){
+  const d=document.getElementById("drop"), f=document.getElementById("file"); if(!d||!f) return;
+  f.onchange=e=>{ if(e.target.files[0]) procesar(e.target.files[0]); };
+  ["dragenter","dragover"].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.add("over");}));
+  ["dragleave","drop"].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.remove("over");}));
+  d.addEventListener("drop",e=>{ const file=e.dataTransfer.files[0]; if(file) procesar(file); });
+}
+
+function avisoValidacion(){
+  const v=ST.validacion; if(!v) return "";
+  if(v.ok) return '<div class="aviso ok">✅ <div><b>El archivo cierra exacto.</b> Los '+ST.movs.length+
+    ' movimientos encadenan saldo a saldo, del '+money(v.inicial)+' al '+money(v.final)+'. '+
+    'Si un solo importe estuviera mal leído, esta cadena se rompería.</div></div>';
+  return '<div class="aviso bad">⛔ <div><b>El archivo NO cierra.</b> La cadena de saldos se rompe en '+v.fallas.length+
+    ' punto(s). No se carga nada hasta resolverlo — sería meter números que el banco no dice.<br>'+
+    v.fallas.slice(0,3).map(f=>"· fila "+f.i+": esperaba "+money(f.esperado)+" y el archivo dice "+money(f.real)).join("<br>")+
+    '</div></div>';
+}
+
+function kpis(M,nuevos,dups,listos,dudas){
+  const k=(id,clase,lbl,n,s,ayuda)=>
+    '<button class="kpi '+clase+(ST.filtro===id?" on":"")+'" onclick="filtrar_('+JSON.stringify(id)+')" title="'+esc(ayuda)+'">'+
+    '<div class="l">'+esc(lbl)+'</div><div class="n">'+n+'</div><div class="s">'+esc(s)+'</div></button>';
+  const suma=a=>money(a.reduce((s,m)=>s+m.importe,0));
+  return '<div class="kpis">'+
+    k(null,"","Movimientos",M.length,suma(M),"Todo lo que trae el archivo. Clic para ver todos.")+
+    k("nuevo","ok","Nuevos",nuevos.length,suma(nuevos),"Movimientos que todavía no están en Odoo. Son los que se van a cargar.")+
+    k("dup","dup","Ya cargados",dups.length,suma(dups),"Ya estaban en Odoo. No se vuelven a crear: se respeta lo que hay.")+
+    k("listo","ok","Se resuelven solos",listos.length,suma(listos),"Tienen un único destino posible. Se pueden cargar y conciliar sin decidir nada.")+
+    k("duda","warn","Necesitan que decidas",dudas.length,suma(dudas),"O tienen varios candidatos, o no tienen ninguno, o el código no está en el mapa.")+
+  '</div>';
+}
+
+function composicion(porTipo){
+  const tot=Object.values(porTipo).reduce((s,a)=>s+a.length,0); if(!tot) return "";
+  const orden=["cobro","cargo","impuesto","echeq","interna","otro"].filter(t=>porTipo[t]);
+  return '<div class="panel"><h3>🧭 De qué se compone el día</h3>'+
+    '<div class="sub">Cada tipo de movimiento tiene su propio circuito. Tocá una franja para filtrar la tabla.</div>'+
+    '<div class="compo">'+orden.map(t=>{
+      const p=porTipo[t].length/tot*100;
+      return '<div style="width:'+p.toFixed(2)+'%;background:'+TIPOS[t].color+'" onclick="filtrarTipo_('+JSON.stringify(t)+')" '+
+        'title="'+esc(TIPOS[t].lbl+": "+porTipo[t].length+" movimientos. "+TIPOS[t].ayuda)+'">'+(p>7?porTipo[t].length:"")+'</div>';
+    }).join("")+'</div>'+
+    '<div class="leyenda">'+orden.map(t=>'<span title="'+esc(TIPOS[t].ayuda)+'"><i style="background:'+TIPOS[t].color+'"></i>'+
+      esc(TIPOS[t].lbl)+' · '+porTipo[t].length+'</span>').join("")+'</div></div>';
+}
+
+function panelAcciones(nuevos,listos,dudas){
+  if(!ST.validacion||!ST.validacion.ok) return "";
+  if(!nuevos.length) return '<div class="aviso info">ℹ️ <div><b>Este archivo ya está íntegramente cargado.</b> '+
+    'Los '+ST.movs.length+' movimientos ya estaban en Odoo, así que no hay nada nuevo que hacer. Podés subir otro día.</div></div>';
+  const t=ST.trabajando;
+  return '<div class="panel"><h3>⚙️ Qué se puede hacer ahora</h3>'+
+    '<div class="sub">Se carga <b>todo</b> el extracto (si no, el saldo del banco no cuadra) y se resuelve solo lo que no deja dudas. '+
+    'Lo ambiguo queda abajo para que lo decidas vos.</div>'+
+    '<div class="acciones">'+
+      '<button class="btn" onclick="accionCargar()" '+(t?"disabled":"")+'>'+(t?'<span class="spin"></span> ':"")+
+        'Cargar los '+nuevos.length+' movimientos nuevos</button>'+
+      '<button class="btn gh" onclick="accionResolver()" '+(t?"disabled":"")+'>Resolver los '+listos.length+' que no tienen dudas</button>'+
+    '</div>'+
+    '<div class="aviso info" style="margin:0">💡 <div>De los '+nuevos.length+' nuevos, <b>'+listos.length+'</b> tienen un destino único '+
+    'y <b>'+dudas.length+'</b> necesitan una decisión tuya. Nada se concilia si hay más de un candidato posible.</div></div></div>';
+}
+
+function filtrar(M){
+  if(!ST.filtro) return M;
+  if(ST.filtro==="nuevo") return M.filter(m=>!m.yaEsta);
+  if(ST.filtro==="dup")   return M.filter(m=>m.yaEsta);
+  if(ST.filtro==="listo") return M.filter(m=>!m.yaEsta&&(m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1));
+  if(ST.filtro==="duda")  return M.filter(m=>!m.yaEsta&&(m.cands.length>1||(m.cands.length===0&&["cobro","echeq","interna"].includes(m.tipo))||m.tipo==="otro"));
+  if(ST.filtro.startsWith("t:")) return M.filter(m=>m.tipo===ST.filtro.slice(2));
+  return M;
+}
+window.filtrar_=id=>{ ST.filtro=(ST.filtro===id?null:id); render(); };
+window.filtrarTipo_=t=>{ const k="t:"+t; ST.filtro=(ST.filtro===k?null:k); render(); };
+
+function estadoDe(m){
+  if(m.yaEsta) return m.yaEsta.is_reconciled
+    ? '<span class="badge b-dup">ya cargado · conciliado</span>'
+    : '<span class="badge b-dup">ya cargado</span>'+(m.yaEsta.to_check?' <span class="badge b-warn">a revisar</span>':"");
+  if(m.tipo==="impuesto") return '<span class="badge b-ok">va a su cuenta</span>';
+  if(m.tipo==="cargo")    return '<span class="badge b-warn">va a la liquidación</span>';
+  if(m.cands.length===1)  return '<span class="badge b-ok">'+(m.porCliente?"cliente + importe":"un candidato")+'</span>';
+  if(m.cands.length>1)    return '<span class="badge b-warn">'+m.cands.length+' candidatos</span>';
+  if(["cobro","echeq","interna"].includes(m.tipo)) return '<span class="badge b-bad">falta la contraparte</span>';
+  return '<span class="badge b-nu">sin clasificar</span>';
+}
+function accionDe(m,i){
+  if(m.yaEsta) return '<span class="muted">—</span>';
+  if(m.cands.length>1) return '<select class="cand" id="sel'+i+'"><option value="">Elegí cuál…</option>'+
+    m.cands.map(c=>'<option value="'+c.id+'">'+esc(String(c.move_id[1]).slice(0,26))+" · "+(c.partner_id?esc(String(c.partner_id[1]).slice(0,22)):"sin cliente")+'</option>').join("")+
+    '</select> <button class="btn sm" onclick="elegirCand('+i+')">Aplicar</button>';
+  if(m.cands.length===0&&["cobro","echeq","interna"].includes(m.tipo))
+    return '<span class="muted" style="font-size:11.5px">'+(m.cliente?"falta cargar el cobro de "+esc(m.cliente.nombre.slice(0,22)):"falta la contraparte")+'</span>';
+  return '<span class="muted">—</span>';
+}
+
+function tabla(M){
+  if(!M.length) return '<div class="panel"><div class="sub">No hay movimientos con ese filtro.</div></div>';
+  return '<div class="panel"><h3>📑 Movimiento por movimiento'+(ST.filtro?' <span class="badge b-nu">filtrado</span>':"")+'</h3>'+
+    '<div class="sub">'+M.length+' movimientos. El cliente sale del CUIT del concepto, aprendido de los cobros anteriores.</div>'+
+    '<div class="tw"><table><thead><tr>'+
+    '<th title="Fecha del movimiento según el banco">Fecha</th>'+
+    '<th title="El texto tal cual lo manda el banco, y debajo el cliente si se pudo identificar">Concepto</th>'+
+    '<th title="Qué tipo de movimiento es, según el código que manda el banco">Tipo</th>'+
+    '<th class="r" title="Positivo entra, negativo sale">Importe</th>'+
+    '<th title="Si ya estaba cargado, si se resuelve solo, o si necesita una decisión">Estado</th>'+
+    '<th title="Qué se puede hacer con este movimiento">Acción</th>'+
+    '</tr></thead><tbody>'+
+    M.map((m,i)=>'<tr>'+
+      '<td class="muted">'+m.fecha.slice(8)+"/"+m.fecha.slice(5,7)+'</td>'+
+      '<td class="cpto">'+esc(m.concepto.slice(0,92))+(m.concepto.length>92?"…":"")+
+        (m.cliente?'<span class="cli">→ '+esc(m.cliente.nombre)+'</span>':(m.cuit?'<span class="cli muted">CUIT '+m.cuit+' · sin identificar</span>':""))+'</td>'+
+      '<td><span class="badge b-nu" title="'+esc(TIPOS[m.tipo].ayuda)+'">'+esc(m.sub)+'</span></td>'+
+      '<td class="r '+(m.importe<0?"neg":"pos")+'"><b>'+money(m.importe)+'</b></td>'+
+      '<td>'+estadoDe(m)+'</td>'+
+      '<td>'+accionDe(m,ST.movs.indexOf(m))+'</td></tr>').join("")+
+    '</tbody></table></div></div>';
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ACCIONES — lo único que escribe en Odoo
+   ══════════════════════════════════════════════════════════════════════════ */
+async function conTrabajo(fn){
+  if(ST.trabajando) return;
+  ST.trabajando=true; render();
+  try{ await fn(); }
+  catch(e){ log("ERROR: "+(e.message||e),"e"); }
+  ST.trabajando=false;
+  await reAnalizar();
+}
+async function reAnalizar(){
+  ST.mapaCuit={};                       // se reconstruye: puede haber aprendido clientes nuevos
+  await analizar(ST.movs);
+  render();
+}
+
+/* Carga las líneas que faltan. NUNCA pisa lo que ya está: los que tienen
+   `yaEsta` se saltean, y el estado de cuenta del día se reusa si existe. */
+window.accionCargar=()=>conTrabajo(async()=>{
+  const B=BANCOS[ST.banco];
+  const nuevos=ST.movs.filter(m=>!m.yaEsta);
+  if(!nuevos.length){ log("No hay movimientos nuevos para cargar"); return; }
+  const porDia={}; nuevos.forEach(m=>{(porDia[m.fecha]=porDia[m.fecha]||[]).push(m);});
+
+  for(const dia of Object.keys(porDia).sort()){
+    const delDia=ST.movs.filter(m=>m.fecha===dia);          // todos, para los saldos del día
+    const aCargar=porDia[dia];
+    let stId=null;
+    const exist=await rpc("account.bank.statement","search_read",
+      [[["journal_id","=",B.diario],["date","=",dia]],["id","name"]],{limit:1});
+    if(exist.length){ stId=exist[0].id; log("Reuso el estado de cuenta del "+dia+" que ya existía"); }
+    else{
+      const ini=Math.round((delDia[0].saldo-delDia[0].importe)*100)/100;
+      const fin=delDia[delDia.length-1].saldo;
+      const r=await rpc("account.bank.statement","create",[[{
+        name:"BCRED Estado de cuenta "+dia, date:dia, journal_id:B.diario,
+        balance_start:ini, balance_end_real:fin}]]);
+      stId=Array.isArray(r)?r[0]:r;
+      log("Estado de cuenta del "+dia+": "+money(ini)+" → "+money(fin));
+    }
+    let ok=0;
+    for(const m of aCargar){
+      await rpc("account.bank.statement.line","create",[[{
+        date:m.fecha, journal_id:B.diario, statement_id:stId,
+        payment_ref:m.concepto, amount:m.importe,
+        partner_id: m.cliente ? m.cliente.id : false,     // el cliente va ACÁ: después no se puede
+        ref:(m.cpbte&&m.cpbte!=="0"?"Cpbte "+m.cpbte+" · ":"")+"Cod "+m.cod}]]);
+      ok++;
+    }
+    log("Cargados "+ok+" movimientos del "+dia,"o");
+  }
+});
+
+/* Resuelve sólo lo inequívoco. Si hay más de un candidato, no toca nada. */
+window.accionResolver=()=>conTrabajo(async()=>{
+  const B=BANCOS[ST.banco];
+  let imp=0,car=0,con=0;
+  for(const m of ST.movs){
+    if(!m.yaEsta || m.yaEsta.is_reconciled) continue;      // sólo lo cargado y sin resolver
+    const linea=m.yaEsta;
+    const mv=await rpc("account.move","read",[[linea.move_id[0]],["line_ids"]]);
+    const lins=await rpc("account.move.line","read",[mv[0].line_ids,["account_id"]]);
+    const tra=lins.find(x=>x.account_id[0]===CTA_TRANSIT);
+    if(!tra) continue;
+
+    if(m.tipo==="impuesto"&&m.cta){
+      await rpc("account.move.line","write",[[tra.id],{account_id:m.cta}]);
+      imp++; log("Imputado "+money(m.importe)+" — "+m.sub);
+    }
+    else if(m.tipo==="cargo"){
+      const p=await rpc("account.payment","create",[[{
+        partner_id:B.partner, journal_id:B.diario, payment_type:"outbound", partner_type:"supplier",
+        payment_method_line_id:21, destination_account_id:CTA_PROVEEDORES,
+        amount:Math.abs(m.importe), date:m.fecha, ref:m.concepto.slice(0,60)}]]);
+      const pid=Array.isArray(p)?p[0]:p;
+      await rpc("account.payment","action_post",[[pid]]);
+      const pv=await rpc("account.payment","read",[[pid],["name","move_id"]]);
+      const lp=await rpc("account.move.line","search_read",
+        [[["move_id","=",pv[0].move_id[0]],["account_id","=",CTA_PAGOS]],["id"]],{limit:1});
+      await rpc("account.move.line","write",[[tra.id],{account_id:CTA_PAGOS}]);
+      await rpc("account.move.line","reconcile",[[tra.id,lp[0].id]]);
+      car++; log("Pago "+pv[0].name+" por "+money(Math.abs(m.importe))+" — "+m.sub);
+    }
+    else if(m.cands.length===1){
+      const cta = m.tipo==="cobro" ? CTA_RECIBOS : CTA_PAGOS;
+      await rpc("account.move.line","write",[[tra.id],{account_id:cta}]);
+      await rpc("account.move.line","reconcile",[[tra.id,m.cands[0].id]]);
+      con++; log("Conciliado "+money(m.importe)+(m.cliente?" — "+m.cliente.nombre:""));
+    }
+  }
+  log("Resueltos: "+imp+" impuestos · "+car+" cargos · "+con+" conciliaciones","o");
+});
+
+/* El usuario eligió cuál de los candidatos es el correcto. */
+window.elegirCand=(i)=>conTrabajo(async()=>{
+  const m=ST.movs[i]; const sel=document.getElementById("sel"+i);
+  if(!sel||!sel.value){ log("No elegiste ningún candidato"); return; }
+  if(!m.yaEsta){ log("Primero hay que cargar el movimiento","e"); return; }
+  const mv=await rpc("account.move","read",[[m.yaEsta.move_id[0]],["line_ids"]]);
+  const lins=await rpc("account.move.line","read",[mv[0].line_ids,["account_id"]]);
+  const tra=lins.find(x=>x.account_id[0]===CTA_TRANSIT);
+  if(!tra){ log("Ese movimiento ya no está pendiente","e"); return; }
+  const cta = m.tipo==="cobro" ? CTA_RECIBOS : CTA_PAGOS;
+  await rpc("account.move.line","write",[[tra.id],{account_id:cta}]);
+  await rpc("account.move.line","reconcile",[[tra.id,+sel.value]]);
+  log("Conciliado "+money(m.importe)+" con el candidato que elegiste","o");
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ARRANQUE
+   ══════════════════════════════════════════════════════════════════════════ */
+async function procesar(file){
+  try{
+    ST.listo=false; ST.logs=[]; ST.filtro=null; render();
+    document.getElementById("app").insertAdjacentHTML("beforeend",'<div class="cargando">Leyendo el archivo y consultando Odoo…</div>');
+    const buf=await file.arrayBuffer();
+    const {movs}=leerArchivo(buf);
+    if(!movs.length) throw new Error("El archivo no tiene movimientos con fecha válida.");
+    const fallas=validarCadena(movs);
+    ST.validacion={ok:!fallas.length,fallas,inicial:Math.round((movs[0].saldo-movs[0].importe)*100)/100,final:movs[movs.length-1].saldo};
+    ST.movs=movs; ST.mapaCuit={};
+    if(fallas.length){ ST.listo=true; render(); return; }
+    await analizar(movs);
+    ST.listo=true; render();
+  }catch(e){
+    ST.listo=true; ST.movs=[]; ST.validacion=null;
+    document.getElementById("app").innerHTML=zonaCarga()+
+      '<div class="aviso bad">⛔ <div><b>No se pudo leer el archivo.</b><br>'+esc(e.message||String(e))+'</div></div>';
+    engancharDrop();
+  }
+}
+
+EYG.guard(["finanzas","direccion","admin"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(function(){
+  render();
+});
+</script>
+</body>
+</html>
