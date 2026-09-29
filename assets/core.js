@@ -546,7 +546,11 @@ window.EYG = (function(){
     {key:"tablero", dept:"direccion", cat:"Dirección", ico:"🗺️", titulo:"Tablero en vivo", desc:"Mapa con nuestras farmacias e instituciones, clientes activos y nuevos en tiempo real, cobertura por zona y cuánto mercado falta conquistar. Pensado para pantalla grande.", roles:["comercial","finanzas","inventario"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"direccion/tablero.html"},
-    {key:"radiografia",dept:"direccion", cat:"Dirección", ico:"📊", titulo:"Radiografía", desc:"Ventas, facturación, márgenes, cobranza y stock de toda la droguería en un tablero.", roles:["direccion"], ready:false, path:()=>"direccion/radiografia.html"},
+    /* Métricas: réplica del tablero de Métricas del Core de Rosaint con los datos de
+       la droguería (ventas, compras, margen, pedidos, canales, rubros y mapa por
+       departamento de Santa Fe). Reemplaza al placeholder "Radiografía". Sólo
+       admin/dirección: muestra toda la plata de la empresa. */
+    {key:"metricas",dept:"direccion", cat:"Dirección", ico:"📊", titulo:"Métricas", desc:"Ventas, compras y margen de toda la droguería desde marzo 2025, con pedidos sin facturar, canales, rubros, productos, comerciales y el mapa de ventas por departamento de Santa Fe. Cada número se comprueba al centavo.", roles:["direccion"], ready:true, path:()=>"direccion/metricas.html"},
     /* EN PRUEBAS: el mapa vivo del sistema (registro maestro / ley). Sólo super-admins
        hasta liberarlo: borrar la línea `pruebas` de acá y el {pruebas:…} del
        EYG.guard() de direccion/mapa.html. */
