@@ -439,9 +439,11 @@ function agruparMarcas(rows){
   for(const k in GB){ const ms=GB[k];
     const venta=ms.reduce((a,r)=>a+r.ventaU,0), venta3=ms.reduce((a,r)=>a+r.venta3,0), freq=ms.reduce((a,r)=>a+r.freq,0);
     const qty=ms.reduce((a,r)=>a+r.qty,0), incoming=ms.reduce((a,r)=>a+r.incoming,0);
+    const val=ms.reduce((a,r)=>a+(r.val||0),0), valVenc=ms.reduce((a,r)=>a+(r.valVenc||0),0), val6=ms.reduce((a,r)=>a+(r.val6||0),0);
+    const _mins=ms.map(r=>r.min).filter(x=>x!=null); const min=_mins.length?Math.min(..._mins):null;   // el lote que vence primero entre todas las marcas
     let vig=ms[0], best=-1;   // marca VIGENTE: la que tiene stock / en camino / proveedor, más movida
     for(const r of ms){ const sc=(r.incoming>0?3:0)+(r.qty>0?2:0)+(r.provId?1:0)+(r.compraFreq/1000)+(r.ventaU/1e9); if(sc>best){best=sc;vig=r;} }
-    const g={key:k, n:ms.length, venta, venta3, freq, qty, incoming, vigenteId:vig.id, members:ms};
+    const g={key:k, n:ms.length, venta, venta3, freq, qty, incoming, val, valVenc, val6, min, vigenteId:vig.id, members:ms};
     for(const r of ms){ r.g=g; r.esVigente=(r.id===vig.id); }
   }
 }
@@ -1413,19 +1415,26 @@ function setInvMode(m){ invMode=m; render(); }
 const rotCls=m=>m<3?"green":m<6?"lime":m<12?"yel":m<36?"org":"red";
 function visibles(){
   return DATA.filter(r=>{
-    if(filtro.q){const q=filtro.q.toLowerCase(); if(!(r.name.toLowerCase().includes(q)||(r.code||"").toLowerCase().includes(q))) return false;}
+    if(filtro.q){const q=filtro.q.toLowerCase(); const ms=r.g?r.g.members:[r]; if(!ms.some(x=>(x.name||"").toLowerCase().includes(q)||(x.code||"").toLowerCase().includes(q))) return false;}
     if(filtro.fam && r.fam!==filtro.fam) return false;
     if(filtro.chip==="sobre" && !(r.meses>12)) return false;
-    if(filtro.chip==="muerto" && r.ventaU!==0) return false;
-    if(filtro.chip==="venc" && !(r.valVenc>0||r.val6>0)) return false;
+    if(filtro.chip==="muerto" && gv(r,"venta")!==0) return false;
+    if(filtro.chip==="venc" && !(gv(r,"valVenc")>0||gv(r,"val6")>0)) return false;
     return true;
   });
 }
+// el Explorador colapsa a UNA fila por producto (grupo de marcas): representante = la marca con más stock
+function visiblesGrp(){
+  const reps={};
+  for(const r of visibles()){ const k=r.g?r.g.key:("SOLO#"+r.id); if(!reps[k]||r.qty>reps[k].qty) reps[k]=r; }
+  return Object.values(reps);
+}
 function renderTabla(){
-  let d=visibles();
+  let d=visiblesGrp();
   const k=filtro.sortK;
-  d=[...d].sort((a,b)=>{let x=a[k],y=b[k];if(typeof x==="string")return filtro.dir*x.localeCompare(y);return filtro.dir*((x??-1)-(y??-1));});
-  const tot=d.reduce((a,r)=>a+r.val,0);
+  const sk=(r)=> k==="qty"?gv(r,"qty") : k==="val"?gv(r,"val") : k==="ventaU"?gv(r,"venta") : k==="min"?(gv(r,"min")??-1) : k==="meses"?r.meses : r[k];
+  d=[...d].sort((a,b)=>{let x=sk(a),y=sk(b);if(typeof x==="string")return filtro.dir*x.localeCompare(y);return filtro.dir*((x??-1)-(y??-1));});
+  const tot=d.reduce((a,r)=>a+gv(r,"val"),0);
   const cap=d.slice(0,300);
   const arrow=key=>filtro.sortK===key?(filtro.dir<0?" ↓":" ↑"):"";
   const el=document.getElementById("tabla"); if(!el)return;
@@ -1433,22 +1442,23 @@ function renderTabla(){
     <div class="count-line"><b>${d.length}</b> productos · ${fmtM(tot)} en stock</div>
     <div class="tablecard">
       <div class="thead g-stock">
-        <div onclick="sortBy('name')" title="Nombre y código del producto.">Producto${arrow('name')}</div>
+        <div onclick="sortBy('name')" title="Nombre del producto (agrupado por marcas).">Producto${arrow('name')}</div>
         <div class="hide-sm" onclick="sortBy('fam')" title="Rubro: primer nivel de la categoría de Odoo.">Rubro${arrow('fam')}</div>
-        <div class="tr-r" onclick="sortBy('qty')" title="Unidades en stock hoy (on-hand).">Stock (u)${arrow('qty')}</div>
-        <div class="tr-r" onclick="sortBy('val')" title="Valor del stock: unidades × costo.">Valor stock${arrow('val')}</div>
-        <div class="tr-r hide-sm" onclick="sortBy('ventaU')" title="Unidades vendidas en los últimos 12 meses.">Vendido/año${arrow('ventaU')}</div>
-        <div class="tr-r" onclick="sortBy('meses')" title="Cobertura: para cuánto tiempo alcanza el stock al ritmo de venta actual.">Alcanza para${arrow('meses')}</div>
-        <div class="tr-r" onclick="sortBy('min')" title="Cuánto falta para que venza el lote más próximo a vencer.">Vence en${arrow('min')}</div>
+        <div class="tr-r" onclick="sortBy('qty')" title="Unidades en stock hoy (on-hand), sumando todas las marcas del producto.">Stock (u)${arrow('qty')}</div>
+        <div class="tr-r" onclick="sortBy('val')" title="Valor del stock: unidades × costo, sumando todas las marcas.">Valor stock${arrow('val')}</div>
+        <div class="tr-r hide-sm" onclick="sortBy('ventaU')" title="Unidades vendidas en los últimos 12 meses, sumando todas las marcas.">Vendido/año${arrow('ventaU')}</div>
+        <div class="tr-r" onclick="sortBy('meses')" title="Cobertura: para cuánto alcanza el stock al ritmo de venta actual (por producto, sumando marcas).">Alcanza para${arrow('meses')}</div>
+        <div class="tr-r" onclick="sortBy('min')" title="Cuánto falta para que venza el lote más próximo a vencer (entre todas las marcas).">Vence en${arrow('min')}</div>
       </div>
-      ${cap.map(r=>{const c=rotCls(r.meses);
-        const venc=r.min===null?'<span style="color:#CCD5D3">—</span>':r.min<0?'<b style="color:var(--red)">vencido</b>':(r.min<6?'<b style="color:var(--org)">'+fmtDurC(r.min)+'</b>':fmtDurC(r.min));
+      ${cap.map(r=>{const c=rotCls(r.meses); const multi=r.g&&r.g.n>1;
+        const gq=gv(r,"qty"), gval=gv(r,"val"), gvu=gv(r,"venta"), gmin=gv(r,"min");
+        const venc=gmin==null?'<span style="color:#CCD5D3">—</span>':gmin<0?'<b style="color:var(--red)">vencido</b>':(gmin<6?'<b style="color:var(--org)">'+fmtDurC(gmin)+'</b>':fmtDurC(gmin));
         return `<div class="row g-stock" onclick="abrirProd(${r.id})">
-          <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">${esc(r.code||"")}</div></div>
+          <div><div class="cname">${esc(multi?tituloGrupo(r):cleanName(r.name))}</div><div class="cmeta">${multi?('<b style="color:var(--teal-deep)">'+r.g.n+' marcas</b>'):esc(r.code||"")}</div></div>
           <div class="hide-sm cmeta">${esc(r.fam)}</div>
-          <div class="tr-r num" style="font-weight:600">${r.qty.toLocaleString("es-AR")}</div>
-          <div class="tr-r num">${money(r.val)}</div>
-          <div class="tr-r hide-sm num" style="font-weight:500">${r.ventaU.toLocaleString("es-AR")}</div>
+          <div class="tr-r num" style="font-weight:600">${gq.toLocaleString("es-AR")}</div>
+          <div class="tr-r num">${money(gval)}</div>
+          <div class="tr-r hide-sm num" style="font-weight:500">${gvu.toLocaleString("es-AR")}</div>
           <div class="tr-r"><span class="rbadge" style="background:var(--${c}bg);color:var(--${c})" title="Meses de stock: para cuánto alcanza (${r.meses>900?"sin ventas":fmtDur(r.meses)})">${r.meses>900?"—":fmtDurC(r.meses)}</span></div>
           <div class="tr-r">${venc}</div>
         </div>`}).join("")}
