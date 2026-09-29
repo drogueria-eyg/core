@@ -145,6 +145,14 @@
   .edbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:#FFF7EE;border-top:1px solid #F0DFB8;padding:9px 12px;font-size:12px;font-weight:600;color:#7A5A20}
   .edbar.oculta{display:none}
 
+  /* papeles del pedido (facturas y remitos, con su botón de imprimir) */
+  .papelgrupo{margin-bottom:11px}
+  .papelgrupo:last-child{margin-bottom:0}
+  .papelgrupo>b{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);margin-bottom:6px}
+  .papel{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid var(--line);background:#F9FCFB;border-radius:8px;padding:7px 11px;margin-bottom:5px}
+  .papel .pn{font-size:12.5px;font-weight:800;color:var(--teal-deep);min-width:150px}
+  .papel .pd{font-size:11.5px;color:var(--gris2);font-weight:600;flex:1;min-width:150px}
+
   .adjs{display:flex;flex-wrap:wrap;gap:7px}
   .adj{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:#F9FCFB;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;color:var(--teal-deep);text-decoration:none}
   .adj:hover{background:var(--agua);border-color:var(--teal-med)}
@@ -313,7 +321,70 @@ function toast(msg){let t=document.getElementById("toast");if(!t){t=document.cre
 const PF=["name","date_order","partner_id","user_id","amount_total","amount_untaxed",
           "amount_to_invoice","type_id","state","invoice_status","delivery_status","invoice_count","client_order_ref",
           "margin","margin_percent"];
-const MF=["name","invoice_date","partner_id","amount_total","amount_untaxed","state","move_type","journal_id","invoice_origin","invoice_user_id"];
+const MF=["name","invoice_date","partner_id","amount_total","amount_untaxed","state","move_type","journal_id","invoice_origin","invoice_user_id","access_token"];
+
+/* ══════════════ IMPRIMIR ══════════════
+   FACTURAS: salen por el portal de Odoo, con el mismo enlace que se le manda al
+   cliente — `/my/invoices/<id>?access_token=…&report_type=pdf`. No hace falta
+   estar logueada en Odoo, y cada comprobante sale con SU formulario: verificado
+   el 29/9/2026 que la fiscal imprime con CAE y "COD. 01", y la proforma con su
+   plantilla propia ("Documento sin validez fiscal", sin CAE).
+
+   El token lo crea Odoo recién cuando hace falta (al enviar la factura por
+   mail), así que 4 de cada 10 no lo tienen. Cuando falta, lo generamos nosotros:
+   es exactamente lo que hace Odoo por dentro, un uuid4 en ese campo.
+
+   REMITOS: no tienen portal (`stock.picking` no lleva access_token) y el PDF no
+   se puede pedir por RPC (el método que lo arma es privado). Por eso van por la
+   función `odoo-pdf`, que abre una sesión web en Odoo y devuelve el PDF. Si esa
+   función todavía no está desplegada, el botón cae en abrir Odoo. */
+const PDF_FN = "https://yxotopoklgjowcudveoj.supabase.co/functions/v1/odoo-pdf";
+
+/* La ventana se abre ANTES de los await: si se abriera después, el navegador la
+   toma como emergente no pedida y la bloquea. */
+function ventanaPDF(){ return window.open("", "_blank"); }
+function fallaPDF(w, msg, urlOdoo){
+  if(w && !w.closed){ try{ w.close(); }catch(_){ } }
+  toast(msg);
+  if(urlOdoo) window.open(urlOdoo, "_blank");
+}
+
+async function imprimirFactura(id, ev){
+  if(ev) ev.stopPropagation();
+  const w=ventanaPDF();
+  try{
+    const m=(await EYG.rpc("account.move","read",[[id]],{fields:["access_token","name","state"]}))[0];
+    if(!m) throw new Error("no encontré el comprobante");
+    if(m.state!=="posted") throw new Error("todavía está en borrador: emitila y después imprimila");
+    let tok=m.access_token;
+    if(!tok){
+      tok=(window.crypto&&crypto.randomUUID)?crypto.randomUUID()
+        :String(Date.now())+"-"+Math.random().toString(16).slice(2);
+      await EYG.rpc("account.move","write",[[id],{access_token:tok}]);
+    }
+    w.location=`${ODOO}/my/invoices/${id}?access_token=${encodeURIComponent(tok)}&report_type=pdf`;
+  }catch(e){
+    fallaPDF(w, "No pude abrir la factura: "+(e.message||e), `${ODOO}/web#id=${id}&model=account.move&view_type=form`);
+  }
+}
+
+async function imprimirRemito(id, ev){
+  if(ev) ev.stopPropagation();
+  const w=ventanaPDF();
+  try{
+    const head=await EYG.rpcHead();
+    const r=await fetch(PDF_FN,{method:"POST",headers:head,body:JSON.stringify({tipo:"remito",id})});
+    if(!r.ok){
+      let det=""; try{ det=(await r.json()).error||""; }catch(_){ }
+      throw new Error(det||("el servidor devolvió "+r.status));
+    }
+    const blob=await r.blob();
+    w.location=URL.createObjectURL(blob);
+  }catch(e){
+    fallaPDF(w, "No pude traer el remito ("+(e.message||e)+"). Lo abro en Odoo.",
+      `${ODOO}/web#id=${id}&model=stock.picking&view_type=form`);
+  }
+}
 
 /* Lo que ve Vanesa: pedidos CONFIRMADOS de los últimos DIAS_VISTA días, MÁS
    cualquier confirmado que siga por facturar dentro de la ventana de DIAS_DEMORA. */
@@ -804,21 +875,32 @@ async function abrir(id){
   ABIERTO=id; render();
   if(!DET[id]){
     try{
-      const [lineas,msgs,adj]=await Promise.all([
+      const [lineas,msgs,adj,ord,pick]=await Promise.all([
         EYG.rpc("sale.order.line","search_read",[[["order_id","=",id]]],
           {fields:["name","product_uom_qty","qty_delivered","qty_invoiced","price_unit","discount","price_subtotal",
                    "product_id","purchase_price","margin","margin_percent"],context:{lang:"es_AR"},limit:0}),
         EYG.rpc("mail.message","search_read",[[["model","=","sale.order"],["res_id","=",id],["message_type","=","comment"]]],
           {fields:["date","body","author_id"],limit:0,order:"date desc"}),
         EYG.rpc("ir.attachment","search_read",[[["res_model","=","sale.order"],["res_id","=",id]]],
-          {fields:["name","mimetype","create_date"],limit:0,order:"create_date desc"})
+          {fields:["name","mimetype","create_date"],limit:0,order:"create_date desc"}),
+        /* Los papeles del pedido, para poder imprimirlos desde acá. */
+        EYG.rpc("sale.order","read",[[id]],{fields:["invoice_ids"]}).catch(()=>[]),
+        EYG.rpc("stock.picking","search_read",[[["sale_id","=",id],["picking_type_code","=","outgoing"]]],
+          {fields:["name","state","date_done","scheduled_date"],limit:0,order:"id desc",context:{lang:"es_AR"}}).catch(()=>[])
       ]);
       // Las del Core van primero: son las que la comercial escribió para ella.
       const deCore=(AVISOS[id]||[]).filter(a=>a.core)
         .map(a=>({date:a.fecha, author_id:[0,a.autor], txt:a.txt, core:true}));
+      /* Las facturas del pedido, para el botón de imprimir. Van en una segunda
+         vuelta porque recién con el pedido leído sabemos cuáles son. */
+      const facIds=(ord&&ord[0]&&ord[0].invoice_ids)||[];
+      const facs=facIds.length
+        ? await EYG.rpc("account.move","read",[facIds],
+            {fields:["name","move_type","state","invoice_date","amount_total","journal_id"],context:{lang:"es_AR"}}).catch(()=>[])
+        : [];
       DET[id]={lineas,
         msgs:deCore.concat(msgs.map(m=>({date:m.date,author_id:m.author_id,txt:limpiar(m.body)})).filter(m=>m.txt)),
-        adj};
+        adj, facs, pick:pick||[]};
     }catch(e){ DET[id]={error:e.message||String(e)}; }
     render();
   }
@@ -896,7 +978,40 @@ function detalleHTML(o){
       <div class="dh">📎 Respaldo del pedido<span class="n">${d.adj.length?fnum(d.adj.length)+(d.adj.length===1?" archivo":" archivos"):"sin archivos"}</span></div>
       <div class="db">${adj}</div>
     </div>
+    ${papelesHTML(d)}
   </div>`;
+}
+
+/* Los papeles del pedido: facturas y remitos, con su botón de imprimir. Es lo
+   que Vanesa tenía que ir a buscar a Odoo uno por uno. */
+function papelesHTML(d){
+  const facs=d.facs||[], pick=d.pick||[];
+  const fac=facs.length?facs.map(m=>{
+    const nc=m.move_type==="out_refund", emitida=m.state==="posted";
+    return `<div class="papel">
+      <span class="pn">${nc?"↩️":"🧾"} ${esc(m.name&&m.name!=="/"?m.name:"(borrador)")}</span>
+      <span class="pd">${fmtFecha(m.invoice_date)} · ${esc(m.journal_id?m.journal_id[1]:"—")} · ${money(m.amount_total)}</span>
+      ${emitida?`<button class="btn sm" title="Abre el PDF para imprimirlo. Sale el mismo formulario que se le manda al cliente." onclick="imprimirFactura(${m.id},event)">🖨️ Imprimir</button>`
+               :'<span class="chip c-warn" title="Está en borrador: hay que emitirla antes de imprimirla.">sin emitir</span>'}
+    </div>`;
+  }).join(""):'<span class="muted">Todavía no tiene factura.</span>';
+
+  const rem=pick.length?pick.map(p=>{
+    const hecho=p.state==="done";
+    return `<div class="papel">
+      <span class="pn">📦 ${esc(p.name)}</span>
+      <span class="pd">${hecho?"entregado "+fmtFecha(p.date_done):"programado "+fmtFecha(p.scheduled_date)}</span>
+      <button class="btn sm" title="Abre el PDF del remito de entrega para imprimirlo." onclick="imprimirRemito(${p.id},event)">🖨️ Imprimir</button>
+    </div>`;
+  }).join(""):'<span class="muted">Este pedido no tiene remitos de salida.</span>';
+
+  return `<div class="dcard">
+      <div class="dh">🖨️ Papeles del pedido<span class="n">${fnum(facs.length)} ${facs.length===1?"factura":"facturas"} · ${fnum(pick.length)} ${pick.length===1?"remito":"remitos"}</span></div>
+      <div class="db">
+        <div class="papelgrupo"><b>Facturas y notas de crédito</b>${fac}</div>
+        <div class="papelgrupo"><b>Remitos de entrega</b>${rem}</div>
+      </div>
+    </div>`;
 }
 
 /* ══════════════ EDITAR LOS RENGLONES ══════════════
@@ -1059,8 +1174,11 @@ function vistaEmitido(){
       <td>${m.state==="posted"?'<span class="chip c-ok">emitida</span>':m.state==="draft"?'<span class="chip c-warn">borrador</span>':'<span class="chip c-gris">'+esc(m.state)+'</span>'}</td>
       <td class="r ${m.move_type==="out_refund"?"neg":""}">${money(m.amount_untaxed)}</td>
       <td class="r muted">${money(m.amount_total)}</td>
+      <td class="r">${m.state==="posted"
+        ? `<button class="btn sm" title="Abre el PDF del comprobante para imprimirlo. Sale el mismo formulario que se le manda al cliente." onclick="imprimirFactura(${m.id},event)">🖨️</button>`
+        : '<span class="muted" title="Primero hay que emitirla.">—</span>'}</td>
     </tr>`;
-  const cab=`<thead><tr><th>Comprobante</th><th>Fecha</th><th>Cliente</th><th>Tipo</th><th title="Talonario de Odoo. «Ventas AFIP PdV 005» es el fiscal; «Proforma EYG» no tiene validez fiscal.">Diario</th><th title="Emitida = validada y con CAE. Borrador = creada pero sin validar, no cuenta como venta.">Estado</th><th class="r" title="Importe sin IVA">Neto</th><th class="r" title="Importe con IVA">Con IVA</th></tr></thead>`;
+  const cab=`<thead><tr><th>Comprobante</th><th>Fecha</th><th>Cliente</th><th>Tipo</th><th title="Talonario de Odoo. «Ventas AFIP PdV 005» es el fiscal; «Proforma EYG» no tiene validez fiscal.">Diario</th><th title="Emitida = validada y con CAE. Borrador = creada pero sin validar, no cuenta como venta.">Estado</th><th class="r" title="Importe sin IVA">Neto</th><th class="r" title="Importe con IVA">Con IVA</th><th class="r" title="Imprimir el PDF del comprobante, sin entrar a Odoo.">Imprimir</th></tr></thead>`;
   const tabla=(l,vacio)=>l.length?`<div class="tscroll"><table>${cab}<tbody>${l.map(fila).join("")}</tbody></table></div>`:`<div class="vacio">${vacio}</div>`;
   return `${draft.length?`<div class="panel">
       <h3>⚠️ Facturas en borrador (sin emitir)</h3>
@@ -1239,6 +1357,7 @@ function dialogoError(nombre,msg){
 
 window.irA=irA; window.filtrar=filtrar; window.verCola=verCola; window.filtrarQ=filtrarQ; window.abrir=abrir;
 window.accion=accion; window.irPedido=irPedido; window.cerrarDialogo=cerrarDialogo;
+window.imprimirFactura=imprimirFactura; window.imprimirRemito=imprimirRemito;
 window.recalcLinea=recalcLinea; window.guardarLineas=guardarLineas; window.descartarLineas=descartarLineas;
 window.pedirArchivar=pedirArchivar; window.archivar=archivar; window.desarchivar=desarchivar;
 window.ponerMotivo=ponerMotivo; window.notaListo=notaListo;
