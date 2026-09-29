@@ -96,7 +96,7 @@ window.EYGHome = (function(){
   let ORD8=[], ORD8_OK=false;   // pedidos de los últimos 8 días (hoy / hora x hora / sparkline)
   let MG=null;                  // resumen de margen (se cachea entre refrescos)
   let MODO="ventas";            // qué muestra el gráfico: ventas | margen | canales | rubros
-  const FOCO={canales:null, rubros:null};   // ítem aislado en el gráfico, por corte
+  const FOCO={canales:null, rubros:null, operacion:null};   // ítem aislado en el gráfico, por corte
   /* Las olas 2 y 3 arrancan en paralelo con la 1, pero algunos números ("compraron
      hoy", "quién vendió hoy") salen de ORD8, que llena la ola 1. Sin esta espera
      mostraban 0 según quién ganara la carrera. */
@@ -185,7 +185,53 @@ window.EYGHome = (function(){
      Canales = por dónde entró el pedido. Rubros = qué tipo de cliente lo hizo.
      Los dos funcionan igual: una consulta por ítem y el último sale por resta,
      así el apilado siempre suma exactamente lo mismo que la pestaña Ventas. */
+  /* ---------- TRIANGULACIÓN: la venta que no pasa por el depósito ----------
+     El proveedor entrega directo al cliente. Es venta real y con su margen, pero
+     es otra operación: no mueve stock propio y su plata va a cuentas contables
+     separadas. Dirección la quiere ver adentro del total pero apartada.
+
+     Se corta a nivel RENGLÓN, no de pedido, porque hay pedidos MIXTOS: uno con
+     4 renglones triangulados y 2 normales contado entero sumaría de más
+     (medido el 29/9: $260.742 de diferencia sobre $34M).
+
+     Y se agrupa del lado del cliente porque `date_order` en sale.order.line
+     NO está almacenado: Odoo lo acepta en el filtro (por la relación) pero lo
+     rechaza en el group_by. Ver la trampa en odoo-order-campos-no-almacenados. */
+  const TRI_CAT=448;
+  async function mapaTriangulacion(k,ini,g){
+    const ls=await rpc("sale.order.line","search_read",
+      [domLineas([["order_id.date_order",">=",uDesde(ini)],["product_id.categ_id","child_of",TRI_CAT]]),
+       ["order_id","price_subtotal"]], Object.assign({limit:0},CTX));
+    if(!ls.length) return {};
+    const ids=[...new Set(ls.map(l=>l.order_id[0]))];
+    const ords=await rpc("sale.order","read",[ids,["date_order"]],CTX);
+    const fecha={}; ords.forEach(o=>{ fecha[o.id]=o.date_order; });
+    const m={};
+    ls.forEach(l=>{
+      const d=fecha[l.order_id[0]]; if(!d) return;
+      const key=bkt(k,String(d));
+      const o=m[key]||(m[key]={v:0,ped:new Set()});
+      o.v+=l.price_subtotal||0; o.ped.add(l.order_id[0]);
+    });
+    /* El conteo va por PEDIDO, igual que el resto de los cortes. En un pedido
+       mixto el mismo pedido cuenta en los dos lados: el importe es exacto, la
+       cantidad es indicativa. */
+    Object.values(m).forEach(o=>{ o.n=o.ped.size; delete o.ped; });
+    return m;
+  }
+  const OPERACION=[
+    {k:"tri", ic:"🔀", lab:"Triangulación", corto:"Triangulación", col:"#8E5FBF",
+     mapa:mapaTriangulacion,
+     ayuda:"Ventas con entrega directa del proveedor al cliente: la mercadería no pasa por el depósito. Se cuenta renglón por renglón, así un pedido mixto reparte bien cada parte."},
+    {k:"propia", ic:"🏠", lab:"Venta propia", corto:"Propia", col:"#04635F", resto:true,
+     ayuda:"Todo lo demás: mercadería que sale de nuestro depósito, con su remito y su movimiento de stock."},
+  ];
+
   const CORTES={
+    operacion:{ k:"operacion", lab:"Triangulación", items:OPERACION, ico:"🔀",
+      tit:"Venta propia y triangulación", h2:"🔀 ¿Cuánto es venta propia y cuánto triangulación?",
+      sub:"la misma venta, apilada según si la mercadería sale de nuestro depósito o la entrega el proveedor · sin IVA",
+      lider:"El que más pesa", pie:"tocá una parte para verla sola" },
     canales:{ k:"canales", lab:"Canales", items:CANALES, ico:"🧭",
       tit:"Ventas por canal", h2:"🧭 ¿Por dónde entran las ventas?",
       sub:"los mismos pedidos confirmados, apilados según por dónde entraron · sin IVA",
@@ -901,6 +947,10 @@ window.EYGHome = (function(){
     const pedidos=C.items.filter(i=>!i.resto);
     const resto=C.items.find(i=>i.resto);
     const mapas=await Promise.all(pedidos.map(async i=>{
+      /* Un ítem puede traer su propio cálculo si no se puede sacar con un
+         read_group sobre sale.order (el caso de Triangulación, que va por
+         renglón y se agrupa del lado del cliente). */
+      if(i.mapa) return await i.mapa(k,ini,g);
       const raw=await rpc("sale.order","read_group",
         [domVentas([["date_order",">=",uDesde(ini)]]).concat(i.dom),["amount_untaxed:sum"],["date_order:"+g.g]],
         Object.assign({lazy:false},CTX));
@@ -942,6 +992,23 @@ window.EYGHome = (function(){
   }
   const rubroDeOrden = o => (RUB_MAPA && RUB_MAPA[o.pid]) || "__sin";
 
+  /* Cuánto de cada pedido de HOY es triangulación, para la vista por hora.
+     Se trae una sola vez, la primera vez que alguien mira el corte. */
+  let TRI_HOY=null, _triCargando=null;
+  function cargarTriHoy(){
+    if(TRI_HOY) return Promise.resolve(TRI_HOY);
+    if(_triCargando) return _triCargando;
+    _triCargando = rpc("sale.order.line","search_read",
+        [domLineas([["order_id.date_order",">=",HOY+" 00:00:00"],
+                    ["product_id.categ_id","child_of",TRI_CAT]]),
+         ["order_id","price_subtotal"]], Object.assign({limit:0},CTX))
+      .then(ls=>{ const m={};
+        ls.forEach(l=>{ const id=l.order_id[0]; m[id]=(m[id]||0)+(l.price_subtotal||0); });
+        TRI_HOY=m; return m; })
+      .catch(()=>{ TRI_HOY={}; return TRI_HOY; });
+    return _triCargando;
+  }
+
   /* La vista por HORA se arma con los pedidos de hoy, que ya están leídos: el
      reparto por canal y por rubro se calcula acá, sin una consulta más. */
   function serieHora(corteK){
@@ -949,7 +1016,7 @@ window.EYGHome = (function(){
     let lo=7, hi=21;
     c.hHoy.forEach((v,h)=>{ if(v>0){ lo=Math.min(lo,h); hi=Math.max(hi,h); } });
     hi=Math.max(hi,Math.ceil(c.nf));
-    /* por rubro se calcula al vuelo; por canal ya viene sumado desde la ola 1 */
+    /* por rubro y por operación se calculan al vuelo; por canal ya viene sumado desde la ola 1 */
     let rHoy=null, rHoyN=null;
     if(corteK==="rubros" && RUB_MAPA){
       rHoy={}; rHoyN={};
@@ -958,10 +1025,21 @@ window.EYGHome = (function(){
         if(!rHoy[r]){ rHoy[r]=new Array(24).fill(0); rHoyN[r]=new Array(24).fill(0); }
         rHoy[r][o.hour]+=o.amt; rHoyN[r][o.hour]++; });
     }
+    /* Triangulación por hora: se reparte el importe de CADA pedido entre la parte
+       triangulada y el resto, así un pedido mixto queda bien partido. */
+    if(corteK==="operacion" && TRI_HOY){
+      rHoy={tri:new Array(24).fill(0), propia:new Array(24).fill(0)};
+      rHoyN={tri:new Array(24).fill(0), propia:new Array(24).fill(0)};
+      ORD8.forEach(o=>{ if(o.date!==HOY) return;
+        const t=Math.min(TRI_HOY[o.id]||0, o.amt);
+        rHoy.tri[o.hour]+=t; rHoy.propia[o.hour]+=(o.amt-t);
+        (t>0?rHoyN.tri:rHoyN.propia)[o.hour]++; });
+    }
     const pts=[];
     for(let h=lo;h<=hi;h++){
       const seg={};
-      if(rHoy) RUBROS.forEach(x=>{ seg[x.k]={v:(rHoy[x.k]||[])[h]||0, n:(rHoyN[x.k]||[])[h]||0}; });
+      if(rHoy){ const its=(CORTES[corteK]&&CORTES[corteK].items)||RUBROS;
+        its.forEach(x=>{ seg[x.k]={v:(rHoy[x.k]||[])[h]||0, n:(rHoyN[x.k]||[])[h]||0}; }); }
       else CANALES.forEach(x=>{ seg[x.k]={v:(c.cHoy[x.k]||[])[h]||0, n:(c.cHoyN[x.k]||[])[h]||0}; });
       pts.push({key:String(h), v:c.hHoy[h], prev:c.hAyer[h], n:0, seg});
     }
@@ -973,6 +1051,7 @@ window.EYGHome = (function(){
     /* Los rubros de la vista por hora salen del mapa de clientes: si todavía no
        llegó, se espera, porque sin él todo caería en "sin rubro". */
     if(MODO==="rubros") await cargarMapaRubros();
+    if(MODO==="operacion") await cargarTriHoy();
     if(k!=="hora" && !CACHE[MODO+"|"+k]){
       const w=document.getElementById("evo-body");
       if(w) w.innerHTML=`<div class="skel" style="height:230px;border-radius:12px"></div>`;
@@ -1006,6 +1085,8 @@ window.EYGHome = (function(){
       if(gra==="hora"){
         if(c==="rubros" && !RUB_MAPA)
           cargarMapaRubros().then(()=>{ if(GRA!==gra) return; MODO==="rubros"?pintarEvo():pintarLeyenda(gra); });
+        if(c==="operacion" && !TRI_HOY)
+          cargarTriHoy().then(()=>{ if(GRA!==gra) return; MODO==="operacion"?pintarEvo():pintarLeyenda(gra); });
         return;
       }
       if(CACHE[c+"|"+gra]) return;
@@ -1030,6 +1111,7 @@ window.EYGHome = (function(){
         ${V.margen?`<button class="${esMg?"on":""}" onclick="EYGHome.verModo('margen')" title="Qué margen dejó la venta de cada período.">Margen</button>`:""}
         <button class="${MODO==="canales"?"on":""}" onclick="EYGHome.verModo('canales')" title="La misma venta, apilada según por dónde entró cada pedido.">Canales</button>
         <button class="${MODO==="rubros"?"on":""}" onclick="EYGHome.verModo('rubros')" title="La misma venta, apilada según el rubro del cliente que compró.">Rubros</button>
+        <button class="${MODO==="operacion"?"on":""}" onclick="EYGHome.verModo('operacion')" title="La misma venta, separando la triangulación: lo que entrega el proveedor directo al cliente y no pasa por nuestro depósito.">Triangulación</button>
       </div>`+
       `<div class="pills">${grans.map(k=>
         `<button data-k="${k}" class="${k===GRA?"on":""}" onclick="EYGHome.ver('${k}')">${GRAN[k].lab}</button>`).join("")}</div>`;
