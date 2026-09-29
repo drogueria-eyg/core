@@ -130,10 +130,14 @@ window.EYG = (function(){
   const TRI_DOM_FACT = ["|","|",["partner_id","child_of",TRI_PARTNERS],
                                 ["account_id","=",TRI_CUENTA],
                                 ["product_id.categ_id","child_of",CAT_OCULTAS]];
-  /* renglon de PEDIDO (sale.order.line) */
-  const TRI_DOM_PED  = ["|","|",["order_partner_id","child_of",TRI_PARTNERS],
-                                ["invoice_lines.account_id","=",TRI_CUENTA],
-                                ["product_id.categ_id","child_of",CAT_OCULTAS]];
+  /* renglon de PEDIDO (sale.order.line). Aca NO va la cuenta: cruzar a
+     account.move.line desde el pedido obliga a leer contabilidad, y el Inicio lo miran
+     roles que no tienen ese permiso. No hace falta: verificado el 29/09/2026 que
+     CLIENTE o CATEGORIA dan el total completo ($167.882.490, diferencia $0,00 contra el
+     criterio con cuenta). Los pedidos de Lazzari y Sanchez entran por cliente y el
+     mixto de Rosaint por categoria. */
+  const TRI_DOM_PED  = ["|",["order_partner_id","child_of",TRI_PARTNERS],
+                            ["product_id.categ_id","child_of",CAT_OCULTAS]];
   const TRI_COLOR = "#8E5FBF";
 
   const money = n => "$"+Math.round(n||0).toLocaleString("es-AR");

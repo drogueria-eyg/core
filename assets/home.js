@@ -1065,6 +1065,14 @@ window.EYGHome = (function(){
       if(w) w.innerHTML=`<div class="skel" style="height:230px;border-radius:12px"></div>`;
       try{ await serie(k); }catch(e){ if(w) w.innerHTML=`<div class="errmini">No pude traer la serie: ${esc(e.message)}</div>`; return; }
     }
+    /* El tramo de triangulación va DENTRO de las barras, así que su serie se espera
+       acá y no en segundo plano como las leyendas: si llega tarde hay que redibujar
+       el gráfico entero, y eso ya nos dejó las barras lisas una vez. Es una consulta
+       chica y acotada. Si falla, se pinta sin el tramo y el error queda en consola. */
+    if(k!=="hora" && MODO==="ventas" && !CACHE["operacion|"+k]){
+      try{ await serie(k,"operacion"); }
+      catch(e){ console.warn("[Inicio] no pude calcular la triangulación:", e); }
+    }
     pintarEvo();
   }
   /* Cambia lo que muestra el gráfico. "Hora" no existe para margen: el margen de
@@ -1107,7 +1115,7 @@ window.EYGHome = (function(){
       serie(gra,c).then(()=>{
         if(GRA!==gra || MODO==="margen") return;
         if(repintaBarras(c)) pintarEvo(); else pintarLeyenda(gra);
-      }).catch(()=>{});
+      }).catch(e=>console.warn("[Inicio] falló el corte "+c+":", e));
     });
   }
 
