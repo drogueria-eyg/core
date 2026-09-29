@@ -146,6 +146,9 @@
   .cuadre div{display:flex;justify-content:space-between;padding:2px 0}
   .cuadre b{font-variant-numeric:tabular-nums}
   .cuadre .dif{border-top:1px dashed rgba(0,0,0,.18);margin-top:5px;padding-top:6px;font-weight:800}
+  .tot-sec{margin-left:auto;font-size:12.5px;font-weight:800;color:var(--gris);font-variant-numeric:tabular-nums}
+  .seccion-conc h3{user-select:none}
+  .seccion-conc h3:hover{color:var(--teal)}
 </style>
 </head>
 <body>
@@ -259,7 +262,7 @@ function validarCadena(movs){
 /* ══════════════════════════════════════════════════════════════════════════
    ESTADO
    ══════════════════════════════════════════════════════════════════════════ */
-const ST={banco:"credicoop", movs:[], archivos:[], filtro:null, mapaCuit:{}, listo:false, trabajando:false, logs:[]};
+const ST={banco:"credicoop", movs:[], archivos:[], verConc:false, filtro:null, mapaCuit:{}, listo:false, trabajando:false, logs:[]};
 
 function log(msg,clase){ ST.logs.push({msg,clase,t:new Date()}); pintarLog(); }
 function pintarLog(){
@@ -372,7 +375,7 @@ function render(){
     composicion(porTipo)+
     panelAcciones(nuevos,listos,dudas)+
     panelResolver()+
-    tabla(filtrar(M))+
+    tablas(filtrar(M))+
     '<div class="panel"><h3>📋 Registro de lo que se hizo</h3>'+
     '<div class="sub">Todo lo que la herramienta ejecutó en Odoo, en orden.</div>'+
     '<div class="log" id="log"></div></div>';
@@ -513,11 +516,36 @@ function accionDe(m,i){
   return '<span class="muted">—</span>';
 }
 
-function tabla(M){
-  if(!M.length) return '<div class="panel"><div class="sub">No hay movimientos con ese filtro.</div></div>';
-  return '<div class="panel"><h3>📑 Movimiento por movimiento'+(ST.filtro?' <span class="badge b-nu">filtrado</span>':"")+'</h3>'+
-    '<div class="sub">'+M.length+' movimientos. El cliente sale del CUIT del concepto, aprendido de los cobros anteriores.</div>'+
-    '<div class="tw"><table><thead><tr>'+
+/* Dos secciones: primero lo que falta resolver (es lo accionable), después lo
+   que ya está cerrado. Lo conciliado va colapsado: está para consultar, no
+   para trabajar. */
+function tablas(M){
+  const conc=M.filter(m=>m.yaEsta&&m.yaEsta.is_reconciled);
+  const pend=M.filter(m=>!(m.yaEsta&&m.yaEsta.is_reconciled));
+  const sumar=a=>a.reduce((s,m)=>s+m.importe,0);
+  let h="";
+  h+=tabla(pend,"⏳ Falta resolver","Lo que todavía no está conciliado: o falta cargarlo, o falta la contraparte, o hay que decidir cuál es. "+
+      "Es donde hay trabajo.", pend.length?money(sumar(pend)):"", "pend");
+  if(conc.length){
+    h+='<div class="panel seccion-conc"><h3 onclick="ST.verConc=!ST.verConc;render()" style="cursor:pointer">'+
+      (ST.verConc?"▾":"▸")+' ✅ Ya conciliados <span class="badge b-ok">'+conc.length+'</span>'+
+      '<span class="tot-sec">'+money(sumar(conc))+'</span></h3>'+
+      '<div class="sub">Cerrados contra su contraparte. Están acá para consultar, no requieren nada.</div>'+
+      (ST.verConc?filasDe(conc):'<button class="btn gh sm" onclick="ST.verConc=true;render()">Ver los '+conc.length+'</button>')+
+      '</div>';
+  }
+  return h;
+}
+function tabla(M,titulo,sub,total,cual){
+  if(!M.length) return '<div class="panel"><h3>'+titulo+' <span class="badge b-ok">0</span></h3>'+
+    '<div class="sub">'+(cual==="pend"?"No queda nada por resolver de este archivo. 🎉":"Nada acá.")+'</div></div>';
+  return '<div class="panel"><h3>'+titulo+' <span class="badge '+(cual==="pend"?"b-warn":"b-ok")+'">'+M.length+'</span>'+
+    (ST.filtro?' <span class="badge b-nu">filtrado</span>':"")+
+    (total?'<span class="tot-sec">'+total+'</span>':"")+'</h3>'+
+    '<div class="sub">'+esc(sub)+'</div>'+filasDe(M)+'</div>';
+}
+function filasDe(M){
+  return '<div class="tw"><table><thead><tr>'+
     '<th title="Fecha del movimiento según el banco">Fecha</th>'+
     '<th title="El texto tal cual lo manda el banco, y debajo el cliente si se pudo identificar">Concepto</th>'+
     '<th title="Qué tipo de movimiento es, según el código que manda el banco">Tipo</th>'+
@@ -533,7 +561,7 @@ function tabla(M){
       '<td class="r '+(m.importe<0?"neg":"pos")+'"><b>'+money(m.importe)+'</b></td>'+
       '<td>'+estadoDe(m)+'</td>'+
       '<td>'+accionDe(m,ST.movs.indexOf(m))+'</td></tr>').join("")+
-    '</tbody></table></div></div>';
+    '</tbody></table></div>';
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
