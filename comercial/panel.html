@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=94"></script>
+<script src="../assets/core.js?v=95"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -878,8 +878,22 @@ const diasDe=f=> f? Math.floor((now-new Date(f))/86400000):null;
 
 async function cargar(){
   try{
-    const u=await rpc("res.users","search_read",[[["name","=",COMERCIAL]]],{fields:["id","name","partner_id"],limit:1});
-    if(!u.length) throw new Error("No encontré al comercial \""+COMERCIAL+"\".");
+    let u=await rpc("res.users","search_read",[[["name","=",COMERCIAL]]],{fields:["id","name","partner_id"],limit:1});
+    if(!u.length){
+      /* La búsqueda de arriba es EXACTA y distingue acentos: si en Usuarios cargaron "Irené"
+         (o "Irene" a secas) y en Odoo dice "Irene Ercoli", no encuentra nada y la pantalla
+         queda muerta. Acá se reintenta comparando SIN acentos ni mayúsculas, y si eso tampoco
+         da, por nombre de pila. Se acepta sólo si hay UNA sola persona: con dos (Maricruz /
+         María Emilia) no se adivina, se avisa qué corregir. */
+      const _n=s=>(s||"").toString().trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\s+/g," ");
+      const todos=await rpc("res.users","search_read",[[["share","=",false],["active","=",true]]],{fields:["id","name","partner_id"],limit:0});
+      const q=_n(COMERCIAL);
+      let hit=todos.filter(x=>_n(x.name)===q);                       // igual salvo acentos/mayúsculas
+      if(!hit.length) hit=todos.filter(x=>_n(x.name).startsWith(q+" "));  // vino sólo el nombre de pila
+      if(hit.length===1){ u=hit; COMERCIAL=hit[0].name; }
+      else if(hit.length>1) throw new Error("El nombre \""+COMERCIAL+"\" coincide con "+hit.length+" personas ("+hit.map(x=>x.name).join(", ")+"). Poné el nombre completo en el panel de Usuarios.");
+    }
+    if(!u.length) throw new Error("No encontré al comercial \""+COMERCIAL+"\" en Odoo. Revisá el panel de Usuarios: el nombre tiene que coincidir con el del usuario de Odoo.");
     ST.userId=u[0].id; ST.userPartner=u[0].partner_id&&u[0].partner_id[0]; document.getElementById("whoName").textContent=u[0].name;
     // CARTERA = clientes REALES del comercial: excluye direcciones de entrega (type=delivery),
     // de facturación (invoice) y sub-contactos (parent_id) — esos no son fichas a completar.

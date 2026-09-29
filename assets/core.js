@@ -949,9 +949,18 @@ window.EYG = (function(){
     if(!cands.length) return "";
     try{
       const org=await orgCargar();
-      for(const c of cands) if(_empByName(org,c)) return c;
+      for(const c of cands) if(_empByName(org,c)) return c;     // _normNom ya ignora acentos
       const g=await gerencia();
       for(const c of cands) if(g.some(x=>_normNom(x.nombre)===_normNom(c))) return c;
+      /* Último recurso: el perfil trae sólo el nombre de pila ("Irene" por "Irene Ercoli").
+         Se acepta SÓLO si hay una sola persona que empiece así — con dos (Maricruz y María
+         Emilia) no se adivina y se devuelve lo que vino, que dará el aviso de siempre. */
+      const todos=[...new Set([...org.map(x=>x.name), ...g.map(x=>x.nombre)].filter(Boolean))];
+      for(const c of cands){
+        const n=_normNom(c);
+        const hit=todos.filter(x=>_normNom(x).startsWith(n+" "));
+        if(hit.length===1) return hit[0];
+      }
     }catch(e){}
     return cands[0];
   }

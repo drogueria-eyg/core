@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=94"></script>
+<script src="../assets/core.js?v=95"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF; --agua:#E2F1EF;
@@ -472,8 +472,18 @@ function badgeIVA(pid){
    ============================================================ */
 async function cargar(){
   try{
-    const u = await rpc("res.users","search_read",[[["name","=",COMERCIAL]]],{fields:["id","name"],limit:1});
-    if(!u.length) throw new Error("No encontré al comercial \""+COMERCIAL+"\" en Odoo.");
+    let u = await rpc("res.users","search_read",[[["name","=",COMERCIAL]]],{fields:["id","name"],limit:1});
+    if(!u.length){
+      // mismo criterio que el panel: comparar sin acentos ni mayúsculas, y si no, por nombre
+      // de pila; se acepta sólo si hay UNA sola coincidencia.
+      const _n=s=>(s||"").toString().trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\s+/g," ");
+      const todos = await rpc("res.users","search_read",[[["share","=",false],["active","=",true]]],{fields:["id","name"],limit:0});
+      const q=_n(COMERCIAL);
+      let hit=todos.filter(x=>_n(x.name)===q);
+      if(!hit.length) hit=todos.filter(x=>_n(x.name).startsWith(q+" "));
+      if(hit.length===1){ u=hit; COMERCIAL=hit[0].name; }
+    }
+    if(!u.length) throw new Error("No encontré al comercial \""+COMERCIAL+"\" en Odoo. Revisá el nombre en el panel de Usuarios.");
     ST.userId = u[0].id;
     document.getElementById("whoName").textContent = u[0].name;
     const [cartera, drafts] = await Promise.all([
