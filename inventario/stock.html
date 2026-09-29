@@ -605,7 +605,7 @@ async function cargar(){
 
 // ---------- cálculo de reposición (depende de la política) ----------
 // agregados del GRUPO de marca (o del propio producto si no está agrupado)
-function gv(r,f){ if(r.g) return r.g[f]; return f==="venta"?r.ventaU : f==="venta3"?r.venta3 : f==="freq"?r.freq : f==="qty"?r.qty : f==="incoming"?r.incoming : 0; }
+function gv(r,f){ if(r.g) return r.g[f]; return f==="venta"?r.ventaU : f==="venta3"?r.venta3 : f==="freq"?r.freq : f==="qty"?r.qty : f==="incoming"?r.incoming : (r[f]!==undefined?r[f]:0); }
 function demandaMes(r){ const vu=gv(r,"venta"), v3=gv(r,"venta3"); return pol.fuente==="3m" ? v3/3 : vu/12; }
 // Ritmo de venta por FRECUENCIA (nº de ventas/año) del GRUPO — un producto de "muchas unidades en 1 sola venta" NO es parejo.
 function claseDe(f){ if(f<=0)return"inactivo"; if(f>=12)return"constante"; if(f>=4)return"habitual"; return"esporadico"; }
@@ -616,7 +616,7 @@ const CLASE_ORD={constante:0,habitual:1,esporadico:2,inactivo:3};
 function esDeStock(r){
   if(STOCK_CRIT.has(r.id)) return true;
   if(STOCK_PED.has(r.id)) return false;
-  const cf=r.g? r.g.members.reduce((a,m)=>a+(m.compraFreq||0),0) : (r.compraFreq||0);
+  const cf=r.g? r.g.compraFreq : (r.compraFreq||0);
   const sf=gv(r,"freq"), inc=gv(r,"incoming");
   return inc>0 || (cf>=1 && sf>=cf*3) || cf>=6;
 }
@@ -1255,7 +1255,7 @@ function liqTabla(rows,tipo,cap,grouped){
         <div>${est}</div>
         <div class="tr-r hide-sm num">${q.toLocaleString("es-AR")}</div>
         <div class="tr-r hide-sm num">${money(vl)}</div>
-        <div style="text-align:right">${r.xop?'<span class="tagmini" style="background:#fbf0d6;color:#9a6a0b">en oportunidades</span>':`<button class="mini-btn" onclick="mandarOportunidad(${r.id})" style="background:var(--gold);color:#fff;border-color:var(--gold)">🏷️ A ofertar →</button>`}</div>
+        <div style="text-align:right">${r.xop?'<span class="tagmini" style="background:#fbf0d6;color:#9a6a0b">en oportunidades</span>':`<button class="mini-btn" onclick="${multi?'mandarOportunidadGrupo':'mandarOportunidad'}(${r.id})" style="background:var(--gold);color:#fff;border-color:var(--gold)">🏷️ A ofertar →</button>`}</div>
       </div>`;
     }).join("")}
     ${rows.length>cap?`<div class="empty" style="padding:14px">…y ${(rows.length-cap).toLocaleString("es-AR")} más.</div>`:""}
@@ -1308,6 +1308,16 @@ async function mandarOportunidad(id){
     toast("✓ Enviado a Oportunidades"); await cargar();
   }catch(e){ alert("No se pudo enviar: "+(e.message||e)); }
 }
+// producto SIN rotación con varias marcas: manda TODAS sus marcas a Oportunidades (cada una con su propio costo)
+async function mandarOportunidadGrupo(id){
+  const r=DATA.find(x=>x.id===id); if(!r) return;
+  const ms=r.g?r.g.members:[r];
+  if(!confirm(`¿Mandar "${r.g&&r.g.n>1?tituloGrupo(r):cleanName(r.name)}" (${ms.length} marca${ms.length===1?"":"s"}) a Oportunidades para liquidar?\n\nSe marcan todas las marcas del producto para que se les arme la oferta y vayan al panel de comerciales.`)) return;
+  try{
+    for(const m of ms){ await rpc("product.product","write",[[m.id],{x_oportunidad:true, x_oportunidad_costo_ant:m.costoU||0, x_oportunidad_fecha:iso(HOY)}]); }
+    toast(`✓ ${ms.length} marca${ms.length===1?"":"s"} enviada${ms.length===1?"":"s"} a Oportunidades`); await cargar();
+  }catch(e){ alert("No se pudo enviar: "+(e.message||e)); }
+}
 
 // ---------- TAB: Ganadores ----------
 function tabWin(rd){
@@ -1333,7 +1343,8 @@ function renderWin(){
     if(q){ const ms=r.g?r.g.members:[r]; if(!ms.some(m=>(m.name||"").toLowerCase().includes(q)||(m.code||"").toLowerCase().includes(q))) continue; }
     const k=r.g?r.g.key:("SOLO#"+r.id); if(!reps[k]||r.margenAnual>reps[k].margenAnual) reps[k]=r;
   }
-  let list=Object.values(reps).map(r=>({r,rp:repo(r)}));
+  // la reposición (necesita/urgencia) se evalúa SIEMPRE sobre la marca vigente del grupo, aunque la fila mostrada sea la de mayor margen
+  let list=Object.values(reps).map(r=>{ const vig=r.g?(r.g.members.find(m=>m.id===r.g.vigenteId)||r):r; return {r, rp:repo(vig)}; });
   if(rfiltro.soloRepo) list=list.filter(x=>x.rp.necesita);
   const k=rfiltro.sortK;
   const val=x=> k==="cob"?x.rp.cob : k==="name"?x.r.name : k==="freq"?gv(x.r,"freq") : k==="ventaU"?gv(x.r,"venta") : k==="margenAnual"?gv(x.r,"margenAnual") : (x.r[k]??-1);
@@ -1616,7 +1627,8 @@ function abrirFicha(id){
 // ---------- drawer producto ----------
 function abrirProd(id){
   const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id); if(!r) return;
-  const rp=repo(r);
+  const vig=r.g?(r.g.members.find(m=>m.id===r.g.vigenteId)||r):r;   // la reposición del producto se calcula sobre la marca vigente (aunque abras una marca no vigente)
+  const rp=repo(vig);
   const isG=r.g&&r.g.n>1;                                  // el producto tiene varias marcas → todo se muestra por GRUPO
   const gqty=gv(r,"qty"), gval=gv(r,"val"), gmin=gv(r,"min"), ginc=gv(r,"incoming"),
         gfreq=gv(r,"freq"), gcompra=r.g?r.g.compraFreq:r.compraFreq, gmargen=gv(r,"margenAnual"), gventa=gv(r,"venta");
