@@ -490,8 +490,11 @@ async function cargar(){
     for(const g of cad){ if(g.partner_id) CAD[g.partner_id[0]]=g.__count||0; }
     const stockIds=stock.filter(s=>s.product_id).map(s=>s.product_id[0]);
     const stockSet=new Set(stockIds);
-    // productos que VENDEN pero NO tienen stock/quant (se vaciaron del todo) → quiebres que el panel no veía. Se suman.
-    const extraIds=Object.keys(V).map(Number).filter(id=>V[id]>0 && !stockSet.has(id));
+    // productos SIN stock/quant que igual importan: los que VENDIERON (quiebres) o los que COMPRÁS (marcas del mismo grupo que no tienen stock ni venta pero sí compras en 12m).
+    const extraSet=new Set();
+    for(const id in V){ if(V[id]>0 && !stockSet.has(+id)) extraSet.add(+id); }
+    for(const id in CF){ if(CF[id]>0 && !stockSet.has(+id)) extraSet.add(+id); }   // así el grupo no subestima compradoU/compraFreq/incoming
+    const extraIds=[...extraSet];
     const allIds=[...stockIds, ...extraIds];
 
     prog("categorías, proveedores y en camino…");
@@ -564,8 +567,8 @@ async function cargar(){
     ARCH=TODOS.filter(r=>r.archivado).sort((a,b)=>b.val-a.val);
     VALROTO=TODOS.filter(r=>!r.archivado && r.valRoto).sort((a,b)=>a.val-b.val);   // más negativo (peor) primero
     DATA=TODOS.filter(r=>!r.archivado && !r.valRoto && r.qty>0);                   // inventario/valuación: sólo con stock
-    // sin stock PERO con ventas en el año = quiebre real → hay que reponer (NO debe desaparecer del panel)
-    QUIEBRE=TODOS.filter(r=>!r.archivado && !r.valRoto && r.qty<=0 && r.ventaU>0).sort((a,b)=>b.freq-a.freq);
+    // sin stock PERO con ventas (quiebre real) O con compras en 12m (marca del grupo sin stock ni venta) → parte del universo de reposición/grupo
+    QUIEBRE=TODOS.filter(r=>!r.archivado && !r.valRoto && r.qty<=0 && (r.ventaU>0 || r.compradoU>0)).sort((a,b)=>b.freq-a.freq);
     REPO=DATA.concat(QUIEBRE);                                                     // universo para reposición (con stock + quiebres)
     // AGRUPAR POR MARCA: mismo producto de distinta marca comparte historial y stock (arregla el sobrestock falso al cambiar de marca)
     BRANDS=new Set(TODOS.map(r=>_stripN(r.marca).replace(/[^A-Z0-9 ]/g," ").replace(/\s+/g," ").trim()).filter(b=>b.length>=3));
@@ -651,7 +654,7 @@ function computar(){
   const v6=DATA.reduce((a,r)=>a+(r.val6||0),0);
   let riesgo=0; for(const r of unGrupo(DATA)){ const mn=gv(r,"min"); if(mn!=null && r.meses>0 && mn<r.meses) riesgo+=gv(r,"valVenc")+gv(r,"val6"); }   // por grupo y con el MISMO criterio que LISTAS.riesgo (el total del KPI = el de la lista)
   const sobre=BUCKETS[3].val+BUCKETS[4].val;
-  KPI={inv:TOT, sobre, sobrePct:sobre/TOT*100, inmov, muerto, vencido, v6, riesgo, nProd:unGrupo(DATA).length};
+  KPI={inv:TOT, sobre, sobrePct:TOT>0?sobre/TOT*100:0, inmov, muerto, vencido, v6, riesgo, nProd:unGrupo(DATA).length};
   FAMS=[...new Set(DATA.map(r=>r.fam))].sort();
 }
 
@@ -1344,10 +1347,10 @@ function renderWin(){
     const k=r.g?r.g.key:("SOLO#"+r.id); if(!reps[k]||r.margenAnual>reps[k].margenAnual) reps[k]=r;
   }
   // la reposición (necesita/urgencia) se evalúa SIEMPRE sobre la marca vigente del grupo, aunque la fila mostrada sea la de mayor margen
-  let list=Object.values(reps).map(r=>{ const vig=r.g?(r.g.members.find(m=>m.id===r.g.vigenteId)||r):r; return {r, rp:repo(vig)}; });
+  let list=Object.values(reps).map(r=>{ const vig=r.g?(r.g.members.find(m=>m.id===r.g.vigenteId)||r):r; return {r, vig, rp:repo(vig)}; });
   if(rfiltro.soloRepo) list=list.filter(x=>x.rp.necesita);
   const k=rfiltro.sortK;
-  const val=x=> k==="cob"?x.rp.cob : k==="name"?x.r.name : k==="freq"?gv(x.r,"freq") : k==="ventaU"?gv(x.r,"venta") : k==="margenAnual"?gv(x.r,"margenAnual") : (x.r[k]??-1);
+  const val=x=> k==="cob"?x.rp.cob : k==="name"?x.r.name : k==="freq"?gv(x.r,"freq") : k==="ventaU"?gv(x.r,"venta") : k==="margenAnual"?gv(x.r,"margenAnual") : k==="margenPct"?(x.vig.margenPct??-1) : (x.r[k]??-1);
   list.sort((a,b)=>{const x=val(a),y=val(b);if(typeof x==="string")return rfiltro.dir*x.localeCompare(y);return rfiltro.dir*(x-y);});
   const cap=list.slice(0,120);
   const el=document.getElementById("wtabla"); if(!el)return;
@@ -1360,12 +1363,12 @@ function renderWin(){
       <div class="tr-r hide-sm" onclick="sortWin('margenPct')" title="Margen %: ganancia por unidad como % del precio de venta = (precio − costo) / precio. Sobre neto sin IVA.">Margen${arrow('margenPct')}</div>
       <div class="tr-r" onclick="sortWin('margenAnual')" title="Margen $/año: la plata que te deja al año = unidades vendidas × ganancia por unidad. Es la métrica que más importa para saber en qué invertir.">Margen $/año${arrow('margenAnual')}</div>
       <div class="tr-r" onclick="sortWin('cob')" title="Cobertura: para cuánto tiempo alcanza el stock actual (más lo que está en camino) al ritmo de venta actual. En naranja/rojo = se está por acabar.">Cobertura${arrow('cob')}</div></div>
-    ${cap.map(x=>{const r=x.r,rp=x.rp;const c=rp.cob<pol.umbral?URG_COL[rp.urg]:rp.cob<pol.objetivo?"yel":"green"; const multi=r.g&&r.g.n>1;
+    ${cap.map(x=>{const r=x.r,vig=x.vig,rp=x.rp;const c=rp.cob<pol.umbral?URG_COL[rp.urg]:rp.cob<pol.objetivo?"yel":"green"; const multi=r.g&&r.g.n>1;
       return `<div class="row g-win ${rp.necesita?'hot':''}" onclick="abrirProd(${r.id})">
         <div><div class="cname">${esc(multi?tituloGrupo(r):cleanName(r.name))}</div><div class="cmeta">${multi?('<b style="color:var(--teal-deep)">'+r.g.n+' marcas</b>'):esc(r.provName||r.code||"")}</div></div>
         <div class="tr-r num">${gv(r,"freq")}</div>
         <div class="tr-r hide-sm num" style="font-weight:500">${gv(r,"venta").toLocaleString("es-AR")}</div>
-        <div class="tr-r hide-sm num" style="font-weight:600">${r.margenPct!==null?r.margenPct.toFixed(0)+"%":"—"}</div>
+        <div class="tr-r hide-sm num" style="font-weight:600">${vig.margenPct!==null&&vig.margenPct!==undefined?vig.margenPct.toFixed(0)+"%":"—"}</div>
         <div class="tr-r num" style="color:var(--green)">${money(gv(r,"margenAnual"))}</div>
         <div class="tr-r"><span class="rbadge" style="background:var(--${c}bg);color:var(--${c})" title="Cobertura: ${rp.cob>900?"sin ventas":fmtDur(rp.cob)}">${rp.cob>900?"∞":fmtDurC(rp.cob)}</span></div>
       </div>`}).join("")}
@@ -1388,10 +1391,10 @@ function tabInventario(){
 
     <h2 class="sec">En qué está parada la plata del inventario<span class="hint">tocá un tramo para ver esos productos</span></h2>
     <div class="pcard">
-      <div class="rotbar">${BUCKETS.map((b,i)=>{const p=b.val/TOT*100;return `<div onclick="abrirBucket(${i})" style="background:var(--${b.col});width:${p}%" title="${b.lbl}: ${fmtM(b.val)} · tocá para ver">${p>7?p.toFixed(0)+"%":""}</div>`}).join("")}</div>
+      <div class="rotbar">${BUCKETS.map((b,i)=>{const p=TOT>0?b.val/TOT*100:0;return `<div onclick="abrirBucket(${i})" style="background:var(--${b.col});width:${p}%" title="${b.lbl}: ${fmtM(b.val)} · tocá para ver">${p>7?p.toFixed(0)+"%":""}</div>`}).join("")}</div>
       <div class="rotleg">${BUCKETS.map((b,i)=>`<div class="rl" onclick="abrirBucket(${i})" style="cursor:pointer"><span class="dot" style="background:var(--${b.col})"></span>
         <span class="lb"><b>${b.lbl}</b><span>${b.sub} · ${b.n} productos</span></span>
-        <span class="vv">${fmtM(b.val)}<span>${(b.val/TOT*100).toFixed(0)}%</span></span></div>`).join("")}</div>
+        <span class="vv">${fmtM(b.val)}<span>${(TOT>0?b.val/TOT*100:0).toFixed(0)}%</span></span></div>`).join("")}</div>
     </div>
 
     <h2 class="sec">Explorador de productos<span class="hint">con stock (valorizado) o todo el catálogo</span></h2>
@@ -1521,7 +1524,7 @@ async function loadCatalogo(){
     for(const s of si){ if(!s.partner_id||s.partner_id[0]===PROVEEDOR_T) continue; const t=s.product_tmpl_id?s.product_tmpl_id[0]:null; if(!t) continue;
       const m=(byTmpl[t]=byTmpl[t]||{}), pid=s.partner_id[0], cur=m[pid];
       if(!cur || (s.min_qty||1)<cur.minQty) m[pid]={id:pid,name:s.partner_id[1],price:s.price>0?s.price:0,minQty:s.min_qty||1}; }
-    const stQty={}; DATA.forEach(r=>stQty[r.id]=r.qty); ARCH.forEach(r=>stQty[r.id]=r.qty);
+    const stQty={}; DATA.forEach(r=>stQty[r.id]=r.qty); ARCH.forEach(r=>stQty[r.id]=r.qty); VALROTO.forEach(r=>stQty[r.id]=r.qty); QUIEBRE.forEach(r=>stQty[r.id]=r.qty);   // incluir "A revisar" (valorización rota) y quiebres para no mostrar 0 en catálogo con stock real
     CAT.rows=prods.map(p=>{ const t=p.product_tmpl_id?p.product_tmpl_id[0]:null;
       const provs=t&&byTmpl[t]?Object.values(byTmpl[t]):[];
       const catId=p.categ_id?p.categ_id[0]:0, std=p.standard_price||0;
@@ -1626,9 +1629,9 @@ function abrirFicha(id){
 }
 // ---------- drawer producto ----------
 function abrirProd(id){
-  const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id); if(!r) return;
-  const vig=r.g?(r.g.members.find(m=>m.id===r.g.vigenteId)||r):r;   // la reposición del producto se calcula sobre la marca vigente (aunque abras una marca no vigente)
-  const rp=repo(vig);
+  const r0=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id); if(!r0) return;
+  const r=r0.g?(r0.g.members.find(m=>m.id===r0.g.vigenteId)||r0):r0;   // la ficha representa SIEMPRE la marca vigente del producto (misma info venga de donde venga; código/costo/precio/proveedor son coherentes con la etiqueta "vigente")
+  const rp=repo(r);
   const isG=r.g&&r.g.n>1;                                  // el producto tiene varias marcas → todo se muestra por GRUPO
   const gqty=gv(r,"qty"), gval=gv(r,"val"), gmin=gv(r,"min"), ginc=gv(r,"incoming"),
         gfreq=gv(r,"freq"), gcompra=r.g?r.g.compraFreq:r.compraFreq, gmargen=gv(r,"margenAnual"), gventa=gv(r,"venta");
@@ -1894,7 +1897,7 @@ async function abrirProveedor(provId){
         <div class="ord" style="border-bottom:2px solid var(--line);font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);font-weight:700">
           <div>Producto</div><div style="text-align:center">Unid.</div><div style="text-align:right">Costo</div></div>
         ${PEDIDO.items.map((it,i)=>`<div class="ord">
-          <div class="on">${esc(cleanName(it.r.name))}<span>cobertura ${it.rp.cob>900?"—":fmtDur(it.rp.cob)} · vende ${it.r.freq}×/año · <span class="pill ${URG_COL[it.rp.urg]}" style="font-size:9px">${URG_LBL[it.rp.urg]}</span></span></div>
+          <div class="on">${esc(it.r.g&&it.r.g.n>1?tituloGrupo(it.r):cleanName(it.r.name))}<span>cobertura ${it.rp.cob>900?"—":fmtDur(it.rp.cob)} · vende ${gv(it.r,"freq")}×/año · <span class="pill ${URG_COL[it.rp.urg]}" style="font-size:9px">${URG_LBL[it.rp.urg]}</span></span></div>
           <input class="q" type="number" min="0" step="1" value="${it.qty}" oninput="ordQty(${i},this.value)">
           <div class="lt" id="lt${i}">${money(it.qty*it.rp.precio)}</div>
         </div>`).join("")}
