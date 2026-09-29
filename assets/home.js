@@ -1088,20 +1088,25 @@ window.EYGHome = (function(){
      se piden hasta tener el gráfico pintado: primero lo que el usuario fue a
      ver, después el detalle. Por hora no cuesta ninguna consulta (sale de los
      pedidos de hoy, que ya están leídos). */
+  /* Cuando llega el reparto de un corte que se pidió en segundo plano alcanza con
+     repintar su leyenda... salvo "operacion": esa serie no va debajo del gráfico sino
+     ENCIMA de las barras, así que hay que redibujar el gráfico o el tramo violeta no
+     aparece nunca. Es lo que pasaba: la leyenda se pintaba y las barras quedaban lisas. */
+  const repintaBarras = c => MODO===c || (c==="operacion" && MODO==="ventas");
   function asegurarCortes(){
     const gra=GRA;
     cortesVisibles().forEach(c=>{
       if(gra==="hora"){
         if(c==="rubros" && !RUB_MAPA)
-          cargarMapaRubros().then(()=>{ if(GRA!==gra) return; MODO==="rubros"?pintarEvo():pintarLeyenda(gra); });
+          cargarMapaRubros().then(()=>{ if(GRA!==gra) return; repintaBarras("rubros")?pintarEvo():pintarLeyenda(gra); });
         if(c==="operacion" && !TRI_HOY)
-          cargarTriHoy().then(()=>{ if(GRA!==gra) return; MODO==="operacion"?pintarEvo():pintarLeyenda(gra); });
+          cargarTriHoy().then(()=>{ if(GRA!==gra) return; repintaBarras("operacion")?pintarEvo():pintarLeyenda(gra); });
         return;
       }
       if(CACHE[c+"|"+gra]) return;
       serie(gra,c).then(()=>{
         if(GRA!==gra || MODO==="margen") return;
-        if(MODO===c) pintarEvo(); else pintarLeyenda(gra);
+        if(repintaBarras(c)) pintarEvo(); else pintarLeyenda(gra);
       }).catch(()=>{});
     });
   }
