@@ -440,10 +440,11 @@ function agruparMarcas(rows){
     const venta=ms.reduce((a,r)=>a+r.ventaU,0), venta3=ms.reduce((a,r)=>a+r.venta3,0), freq=ms.reduce((a,r)=>a+r.freq,0);
     const qty=ms.reduce((a,r)=>a+r.qty,0), incoming=ms.reduce((a,r)=>a+r.incoming,0);
     const val=ms.reduce((a,r)=>a+(r.val||0),0), valVenc=ms.reduce((a,r)=>a+(r.valVenc||0),0), val6=ms.reduce((a,r)=>a+(r.val6||0),0);
+    const compraFreq=ms.reduce((a,r)=>a+(r.compraFreq||0),0), margenAnual=ms.reduce((a,r)=>a+(r.margenAnual||0),0);
     const _mins=ms.map(r=>r.min).filter(x=>x!=null); const min=_mins.length?Math.min(..._mins):null;   // el lote que vence primero entre todas las marcas
     let vig=ms[0], best=-1;   // marca VIGENTE: la que tiene stock / en camino / proveedor, más movida
     for(const r of ms){ const sc=(r.incoming>0?3:0)+(r.qty>0?2:0)+(r.provId?1:0)+(r.compraFreq/1000)+(r.ventaU/1e9); if(sc>best){best=sc;vig=r;} }
-    const g={key:k, n:ms.length, venta, venta3, freq, qty, incoming, val, valVenc, val6, min, vigenteId:vig.id, members:ms};
+    const g={key:k, n:ms.length, venta, venta3, freq, qty, incoming, val, valVenc, val6, min, compraFreq, margenAnual, vigenteId:vig.id, members:ms};
     for(const r of ms){ r.g=g; r.esVigente=(r.id===vig.id); }
   }
 }
@@ -570,7 +571,7 @@ async function cargar(){
     BRANDS=new Set(TODOS.map(r=>_stripN(r.marca).replace(/[^A-Z0-9 ]/g," ").replace(/\s+/g," ").trim()).filter(b=>b.length>=3));
     agruparMarcas(REPO);
     // la ROTACIÓN (meses de cobertura) se mide por GRUPO: el stock de la marca nueva rota al ritmo de todas las marcas juntas
-    for(const r of DATA){ const dv=r.g?r.g.venta:r.ventaU, dq=r.g?r.g.qty:r.qty; const mm=dv>0?dq/(dv/12):999; r.meses=mm>900?999:Math.round(mm*10)/10; }
+    for(const r of REPO){ const dv=r.g?r.g.venta:r.ventaU, dq=r.g?r.g.qty:r.qty; const mm=dv>0?dq/(dv/12):999; r.meses=mm>900?999:Math.round(mm*10)/10; }
     // PRECIO DE VENTA REAL desde el motor/listas (pricelist "(1) Farmacias", vía EYGOpo.fetchBase) — NO el list_price,
     // que en los hospitalarios viene en 1 porque se cotizan por tarifa. Recalcula márgenes con el precio de verdad.
     try{
@@ -580,6 +581,8 @@ async function cargar(){
         if(pv>0){ r.pvp=pv; r.margenU=Math.max(0,pv-r.costoU); r.margenPct=pv>0?(pv-r.costoU)/pv*100:null;
           r.margenAnual=(r.ventaU>0 && pv>r.costoU)?r.ventaU*(pv-r.costoU):0; } }
     }catch(e){ console.warn("No pude traer el precio real de la lista:", e); }
+    // el margen anual del GRUPO se recalcula con el precio real ya aplicado (suma el de cada marca)
+    { const vis=new Set(); for(const r of REPO){ if(!r.g||vis.has(r.g.key))continue; vis.add(r.g.key); r.g.margenAnual=r.g.members.reduce((a,m)=>a+(m.margenAnual||0),0); } }
     // costo actual del motor para los rotos (para revalorizar): última compra vs costo manual, gana el más reciente
     if(VALROTO.length){ try{
       const pol2=await rpc("purchase.order.line","search_read",[[["product_id","in",VALROTO.map(r=>r.id)],["order_id.state","in",["purchase","done"]]]],{fields:["product_id","price_unit","date_planned"],order:"date_planned desc",limit:3000});
@@ -641,14 +644,14 @@ const URG_LBL={quiebre:"Quiebre",urgente:"Urgente",semana:"Esta semana",reponer:
 
 function computar(){
   TOT=DATA.reduce((a,r)=>a+r.val,0);
-  BUCKETS=B_DEF.map(([lbl,sub,lo,hi,col])=>{const sel=DATA.filter(r=>r.meses>=lo&&r.meses<hi);return{lbl,sub,col,n:sel.length,val:sel.reduce((a,r)=>a+r.val,0)};});
+  BUCKETS=B_DEF.map(([lbl,sub,lo,hi,col])=>{const sel=DATA.filter(r=>r.meses>=lo&&r.meses<hi);return{lbl,sub,col,n:unGrupo(sel).length,val:sel.reduce((a,r)=>a+r.val,0)};});
   const muerto=DATA.filter(r=>gv(r,"venta")===0).reduce((a,r)=>a+r.val,0);   // sin ventas del GRUPO
   const inmov=DATA.reduce((a,r)=>a+liberableDe(r),0);                          // liberable (excedente + muerto), ya por grupo
   const vencido=DATA.reduce((a,r)=>a+(r.valVenc||0),0);
   const v6=DATA.reduce((a,r)=>a+(r.val6||0),0);
   let riesgo=0; for(const r of DATA){ if(r.min!==null && r.meses>0 && r.min<r.meses) riesgo+=(r.valVenc+r.val6); }
   const sobre=BUCKETS[3].val+BUCKETS[4].val;
-  KPI={inv:TOT, sobre, sobrePct:sobre/TOT*100, inmov, muerto, vencido, v6, riesgo};
+  KPI={inv:TOT, sobre, sobrePct:sobre/TOT*100, inmov, muerto, vencido, v6, riesgo, nProd:unGrupo(DATA).length};
   FAMS=[...new Set(DATA.map(r=>r.fam))].sort();
 }
 
@@ -658,11 +661,11 @@ function repoData(){
   const conDem=REPO.filter(r=>r.ventaU>0).length;
   // quiebres = sin stock y con ventas; los priorizo por clase (constante primero) y margen
   const quiebreRows=rows.filter(x=>x.rp.quiebre)
-    .sort((a,b)=>(CLASE_ORD[a.rp.clase]-CLASE_ORD[b.rp.clase])||(b.r.margenAnual-a.r.margenAnual)||(b.r.freq-a.r.freq));
+    .sort((a,b)=>(CLASE_ORD[a.rp.clase]-CLASE_ORD[b.rp.clase])||(gv(b.r,"margenAnual")-gv(a.r,"margenAnual"))||(gv(b.r,"freq")-gv(a.r,"freq")));
   const quiebresCriticos=quiebreRows.filter(x=>x.rp.deStock && !pedidoInfo(x.r.id) && !esDescartado(x.r.id))   // de stock, sin resolver (ni pedido ni descartado)
-    .sort((a,b)=>(b.r.freq-a.r.freq)||(b.r.margenAnual-a.r.margenAnual)||(b.r.ventaU-a.r.ventaU)); // por URGENCIA = cuán seguido te lo piden (rotación); plata como desempate
+    .sort((a,b)=>(gv(b.r,"freq")-gv(a.r,"freq"))||(gv(b.r,"margenAnual")-gv(a.r,"margenAnual"))||(gv(b.r,"venta")-gv(a.r,"venta"))); // por URGENCIA = cuán seguido te lo piden (rotación) del grupo; plata como desempate
   const quiebresEspor=quiebreRows.filter(x=>!x.rp.deStock)     // no los stockeás (contra pedido / otro proveedor)
-    .sort((a,b)=>b.r.ventaU-a.r.ventaU);
+    .sort((a,b)=>gv(b.r,"venta")-gv(a.r,"venta"));
   const quiebres=quiebresCriticos.length;   // el semáforo cuenta sólo los quiebres reales (de stock)
   const byProv={};
   for(const x of necesita){
@@ -1059,7 +1062,7 @@ function reponerSeccion(rd){
   const qc=rd.quiebresCriticos||[], qe=rd.quiebresEspor||[];
   // lista maestra UNIFICADA: todo lo que necesita reponerse (incluye los sin stock), sin duplicar, por urgencia
   const byId={}; [...rd.necesita, ...qc].forEach(x=>{ byId[x.r.id]=x; });
-  RCACHE=Object.values(byId).sort((a,b)=>(URG_ORD[a.rp.urg]-URG_ORD[b.rp.urg])||(b.r.freq-a.r.freq));
+  RCACHE=Object.values(byId).sort((a,b)=>(URG_ORD[a.rp.urg]-URG_ORD[b.rp.urg])||(gv(b.r,"freq")-gv(a.r,"freq")));
   const provSet={}; RCACHE.forEach(x=>{ if(x.r.provId) provSet[x.r.provId]=x.r.provName; });
   const provOpts=`<option value="">Todos los proveedores</option>`
     +Object.keys(provSet).sort((a,b)=>(provSet[a]||"").localeCompare(provSet[b]||"")).map(id=>`<option value="${id}" ${String(rProv)===String(id)?"selected":""}>${esc(provSet[id])}</option>`).join("")
@@ -1090,9 +1093,9 @@ function reponerSeccion(rd){
     </div>
 
     ${qe.length?`<h2 class="sec" style="margin-top:26px">🟠 Sin stock, pero son de contra pedido<span class="hint">EyG no los stockea · se compran cuando hay pedido · ${qe.length} en total</span></h2>
-      <div class="pcard"><ul class="lst">${qe.slice(0,30).map(x=>{const r=x.r;
+      <div class="pcard"><ul class="lst">${qe.slice(0,30).map(x=>{const r=x.r; const multi=r.g&&r.g.n>1; const vu=gv(r,"venta"), fr=gv(r,"freq"), cf=r.g?r.g.compraFreq:r.compraFreq;
         return `<li class="li" onclick="abrirProd(${r.id})"><span class="pill gray">contra pedido</span>
-          <div class="nm"><b>${esc(cleanName(r.name))}</b><span>${r.provName?esc(r.provName)+" · ":""}vendió ${r.ventaU.toLocaleString("es-AR")} u en ${r.freq} venta${r.freq===1?"":"s"} · lo compraste ${r.compraFreq}×/año</span></div>
+          <div class="nm"><b>${esc(multi?tituloGrupo(r):cleanName(r.name))}</b><span>${r.provName?esc(r.provName)+" · ":""}vendió ${vu.toLocaleString("es-AR")} u en ${fr} venta${fr===1?"":"s"} · lo compraste ${cf}×/año${multi?` · <b style="color:var(--teal-deep)">${r.g.n} marcas</b>`:""}</span></div>
           <div class="amt" style="font-size:12px;color:var(--gris)">${r.provName?"contra pedido":"sin proveedor"}</div></li>`}).join("")}</ul>
         ${qe.length>30?`<div class="count-line" style="margin-top:8px">…y ${qe.length-30} más. Si alguno debería estar siempre en stock, abrilo y marcalo 📌 crítico.</div>`:""}</div>`:""}
 
@@ -1106,10 +1109,10 @@ function quiebresHTML(){
   if(q) rows=QCACHE.filter(x=>(cleanName(x.r.name)+" "+(x.r.code||"")).toLowerCase().includes(q));
   if(!rows.length) return `<div class="qa-empty">Ningún quiebre coincide con "${esc(qBuscar)}".</div>`;
   const cap=Math.min(rows.length,80);
-  return rows.slice(0,cap).map(x=>{const r=x.r; const pm=Math.round(r.freq/12);
+  return rows.slice(0,cap).map(x=>{const r=x.r; const multi=r.g&&r.g.n>1; const fr=gv(r,"freq"), inc=gv(r,"incoming"), mg=gv(r,"margenAnual"), vu=gv(r,"venta"); const pm=Math.round(fr/12);
     return `<div class="qa-row" onclick="abrirProd(${r.id})">
-      <div class="qa-nm"><b>${esc(cleanName(r.name))}</b><span><b style="color:#8E1F14">te lo piden ${r.freq}×/año${pm>=1?` (~${pm}/mes)`:""}</b>${r.provName?" · "+esc(r.provName):""}${STOCK_CRIT.has(r.id)?' · 📌 crítico':""}${r.incoming>0?` · <b style="color:var(--teal-deep)">${r.incoming} en camino</b>`:""}</span></div>
-      <div class="qa-act">${x.rp.sug>0?`${x.rp.sug} u`:"comprar"}<span>${r.margenAnual>0?"~"+money(r.margenAnual)+"/año":r.ventaU.toLocaleString("es-AR")+" u/año"}</span></div>
+      <div class="qa-nm"><b>${esc(multi?tituloGrupo(r):cleanName(r.name))}</b><span><b style="color:#8E1F14">te lo piden ${fr}×/año${pm>=1?` (~${pm}/mes)`:""}</b>${r.provName?" · "+esc(r.provName):""}${multi?` · <b style="color:var(--teal-deep)">${r.g.n} marcas</b>`:""}${STOCK_CRIT.has(r.id)?' · 📌 crítico':""}${inc>0?` · <b style="color:var(--teal-deep)">${inc} en camino</b>`:""}</span></div>
+      <div class="qa-act">${x.rp.sug>0?`${x.rp.sug} u`:"comprar"}<span>${mg>0?"~"+money(mg)+"/año":vu.toLocaleString("es-AR")+" u/año"}</span></div>
     </div>`}).join("") + (rows.length>cap?`<div class="qa-more">…y ${rows.length-cap} más. Usá el buscador para acotar.</div>`:"");
 }
 function pintarQuiebres(){ const el=document.getElementById("qlist"); if(el) el.innerHTML=quiebresHTML(); }
@@ -1118,7 +1121,7 @@ function reponerListaHTML(){
   const q=(rBuscar||"").toLowerCase().trim();
   const pasa=x=>{
     if(rProv==="_none"){ if(x.r.provId) return false; } else if(rProv){ if(String(x.r.provId)!==String(rProv)) return false; }
-    if(q && !(cleanName(x.r.name)+" "+(x.r.code||"")+" "+(x.r.provName||"")).toLowerCase().includes(q)) return false;
+    if(q){ const ms=x.r.g?x.r.g.members:[x.r]; const hay=(cleanName(x.r.name)+" "+(x.r.provName||"")+" "+ms.map(m=>(m.name||"")+" "+(m.code||"")).join(" ")).toLowerCase().includes(q); if(!hay) return false; }
     return true;
   };
   const base=RCACHE.filter(pasa);
@@ -1168,7 +1171,7 @@ function reponerListaHTML(){
         acc = cart+`<div class="row-acts"><button class="chip-act ok" onclick="event.stopPropagation();marcarPedido(${r.id})" title="Ya lo pediste">✓ ya pedido</button><button class="chip-act no" onclick="event.stopPropagation();descartar(${r.id})" title="No pedir este producto">🚫 no pedir</button></div>`;
       }
       return `<div class="row g-rep">
-        <div style="cursor:pointer" onclick="abrirProd(${r.id})"><div class="cname" style="color:var(--teal-deep)">${esc(cleanName(r.name))}</div><div class="cmeta">${r.provName?esc(r.provName):(r.viaOtra?"reposición directa":"sin proveedor")} · te lo piden ${r.g?r.g.freq:r.freq}×/año${r.g&&r.g.n>1?` · <b style="color:var(--teal-deep)">${r.g.n} marcas</b>`:""}${(r.g?r.g.incoming:r.incoming)>0?` · ${r.g?r.g.incoming:r.incoming} en camino`:""}</div></div>
+        <div style="cursor:pointer" onclick="abrirProd(${r.id})"><div class="cname" style="color:var(--teal-deep)">${esc(r.g&&r.g.n>1?tituloGrupo(r):cleanName(r.name))}</div><div class="cmeta">${r.provName?esc(r.provName):(r.viaOtra?"reposición directa":"sin proveedor")} · te lo piden ${r.g?r.g.freq:r.freq}×/año${r.g&&r.g.n>1?` · <b style="color:var(--teal-deep)">${r.g.n} marcas</b>`:""}${(r.g?r.g.incoming:r.incoming)>0?` · ${r.g?r.g.incoming:r.incoming} en camino`:""}</div></div>
         <div><span class="pill ${URG_COL[rp.urg]}">${URG_LBL[rp.urg]}</span></div>
         <div class="tr-r hide-sm num">${rp.cob>900?"—":fmtDur(rp.cob)}</div>
         <div class="tr-r num">${rp.sug} u<div style="font-size:11px;color:var(--gris);font-weight:600">${money(rp.costoLinea)}</div></div>
@@ -1210,7 +1213,9 @@ function setFuente(f){pol.fuente=f;render();}
 function tabLiquidar(rd){
   const porVencer=DATA.filter(r=>r.min!=null && r.min<liq.plazo && !r.xop).sort((a,b)=>a.min-b.min);
   const sobre=DATA.filter(r=>r.meses>12 && !r.xop).sort((a,b)=>b.val-a.val);
-  const muerto=DATA.filter(r=>r.ventaU===0 && !r.xop).sort((a,b)=>b.val-a.val);
+  // sin rotación = el PRODUCTO (grupo) no vendió nada en el año; una fila por producto (no por marca)
+  const seenM={}; const muerto=[];
+  for(const r of DATA.filter(r=>gv(r,"venta")===0 && !r.xop).sort((a,b)=>gv(b,"val")-gv(a,"val"))){ const k=r.g?r.g.key:("SOLO#"+r.id); if(seenM[k])continue; seenM[k]=1; muerto.push(r); }
   const yaMarcados=DATA.filter(r=>r.xop).length;
   const plazoLbl=m=>m>=12?(m/12)+(m===12?" año":" años"):m+" meses";
   return `
@@ -1227,29 +1232,29 @@ function tabLiquidar(rd){
     <h2 class="sec" style="margin-top:26px">🐢 Sobrestock<span class="hint">+1 año de stock (por grupo) — conviene moverlo</span></h2>
     ${liqTablaSobre(sobre,40)}
 
-    <h2 class="sec" style="margin-top:26px">💤 Sin rotación<span class="hint">sin ventas hace 1 año</span></h2>
-    ${liqTabla(muerto,"muerto",30)}
+    <h2 class="sec" style="margin-top:26px">💤 Sin rotación<span class="hint">el producto no vendió nada hace 1 año</span></h2>
+    ${liqTabla(muerto,"muerto",30,true)}
   `;
 }
-function liqTabla(rows,tipo,cap){
+function liqTabla(rows,tipo,cap,grouped){
   if(!rows.length) return `<div class="pcard empty">${tipo==="vence"?"Nada que venza en ese plazo. 👌":tipo==="sobre"?"Sin sobrestock. 👌":"Todo rota. 👌"}</div>`;
   return `<div class="tablecard">
     <div class="thead g-liq">
       <div title="Nombre y código del producto.">Producto</div>
       <div title="${tipo==='vence'?'Cuánto falta para que venza (o si ya venció).':tipo==='sobre'?'Para cuánto alcanza el stock al ritmo de venta.':'Hace cuánto que no se vende.'}">Estado</div>
-      <div class="tr-r hide-sm" title="Unidades en stock.">Stock</div>
-      <div class="tr-r hide-sm" title="Valor del stock (unidades × costo).">Valor</div>
+      <div class="tr-r hide-sm" title="Unidades en stock${grouped?' (todas las marcas)':''}.">Stock</div>
+      <div class="tr-r hide-sm" title="Valor del stock (unidades × costo)${grouped?', sumando marcas':''}.">Valor</div>
       <div style="text-align:right" title="Mandar al módulo de Oportunidades para ofertarlo.">Acción</div>
     </div>
-    ${rows.slice(0,cap).map(r=>{
+    ${rows.slice(0,cap).map(r=>{const multi=grouped&&r.g&&r.g.n>1; const q=grouped?gv(r,"qty"):r.qty, vl=grouped?gv(r,"val"):r.val;
       const est = tipo==="vence" ? (r.min<0?`<span class="pill red">vencido</span>`:`<span class="pill org">${fmtDurC(r.min)}</span>`)
         : tipo==="sobre" ? `<span class="pill org">${fmtDurC(r.meses)}</span>`
         : `<span class="pill gray">sin venta</span>`;
       return `<div class="row g-liq">
-        <div style="cursor:pointer" onclick="abrirProd(${r.id})"><div class="cname" style="color:var(--teal-deep)">${esc(cleanName(r.name))}</div><div class="cmeta">${r.code?esc(r.code):""}${r.provName?" · "+esc(r.provName):""}</div></div>
+        <div style="cursor:pointer" onclick="abrirProd(${r.id})"><div class="cname" style="color:var(--teal-deep)">${esc(multi?tituloGrupo(r):cleanName(r.name))}</div><div class="cmeta">${multi?('<b style="color:var(--teal-deep)">'+r.g.n+' marcas</b>'):(r.code?esc(r.code):"")}${!multi&&r.provName?" · "+esc(r.provName):""}</div></div>
         <div>${est}</div>
-        <div class="tr-r hide-sm num">${r.qty.toLocaleString("es-AR")}</div>
-        <div class="tr-r hide-sm num">${money(r.val)}</div>
+        <div class="tr-r hide-sm num">${q.toLocaleString("es-AR")}</div>
+        <div class="tr-r hide-sm num">${money(vl)}</div>
         <div style="text-align:right">${r.xop?'<span class="tagmini" style="background:#fbf0d6;color:#9a6a0b">en oportunidades</span>':`<button class="mini-btn" onclick="mandarOportunidad(${r.id})" style="background:var(--gold);color:#fff;border-color:var(--gold)">🏷️ A ofertar →</button>`}</div>
       </div>`;
     }).join("")}
@@ -1321,12 +1326,17 @@ function onWinSearch(v){rfiltro.q=v;renderWin();}
 function toggleSoloRepo(el){rfiltro.soloRepo=!rfiltro.soloRepo;el.classList.toggle("on");renderWin();}
 function sortWin(k){if(rfiltro.sortK===k)rfiltro.dir*=-1;else{rfiltro.sortK=k;rfiltro.dir=(k==="name")?1:-1;}renderWin();}
 function renderWin(){
-  let d=DATA.filter(r=>r.margenAnual>0);
-  if(rfiltro.q){const q=rfiltro.q.toLowerCase();d=d.filter(r=>r.name.toLowerCase().includes(q)||(r.code||"").toLowerCase().includes(q));}
-  let list=d.map(r=>({r,rp:repo(r)}));
+  const q=rfiltro.q?rfiltro.q.toLowerCase():"";
+  // una fila por PRODUCTO (grupo de marcas): representante = la marca de mayor margen; los valores son del grupo
+  const reps={};
+  for(const r of DATA){ if(gv(r,"margenAnual")<=0) continue;
+    if(q){ const ms=r.g?r.g.members:[r]; if(!ms.some(m=>(m.name||"").toLowerCase().includes(q)||(m.code||"").toLowerCase().includes(q))) continue; }
+    const k=r.g?r.g.key:("SOLO#"+r.id); if(!reps[k]||r.margenAnual>reps[k].margenAnual) reps[k]=r;
+  }
+  let list=Object.values(reps).map(r=>({r,rp:repo(r)}));
   if(rfiltro.soloRepo) list=list.filter(x=>x.rp.necesita);
   const k=rfiltro.sortK;
-  const val=x=> k==="cob"?x.rp.cob : k==="name"?x.r.name : (x.r[k]??-1);
+  const val=x=> k==="cob"?x.rp.cob : k==="name"?x.r.name : k==="freq"?gv(x.r,"freq") : k==="ventaU"?gv(x.r,"venta") : k==="margenAnual"?gv(x.r,"margenAnual") : (x.r[k]??-1);
   list.sort((a,b)=>{const x=val(a),y=val(b);if(typeof x==="string")return rfiltro.dir*x.localeCompare(y);return rfiltro.dir*(x-y);});
   const cap=list.slice(0,120);
   const el=document.getElementById("wtabla"); if(!el)return;
@@ -1339,13 +1349,13 @@ function renderWin(){
       <div class="tr-r hide-sm" onclick="sortWin('margenPct')" title="Margen %: ganancia por unidad como % del precio de venta = (precio − costo) / precio. Sobre neto sin IVA.">Margen${arrow('margenPct')}</div>
       <div class="tr-r" onclick="sortWin('margenAnual')" title="Margen $/año: la plata que te deja al año = unidades vendidas × ganancia por unidad. Es la métrica que más importa para saber en qué invertir.">Margen $/año${arrow('margenAnual')}</div>
       <div class="tr-r" onclick="sortWin('cob')" title="Cobertura: para cuánto tiempo alcanza el stock actual (más lo que está en camino) al ritmo de venta actual. En naranja/rojo = se está por acabar.">Cobertura${arrow('cob')}</div></div>
-    ${cap.map(x=>{const r=x.r,rp=x.rp;const c=rp.cob<pol.umbral?URG_COL[rp.urg]:rp.cob<pol.objetivo?"yel":"green";
+    ${cap.map(x=>{const r=x.r,rp=x.rp;const c=rp.cob<pol.umbral?URG_COL[rp.urg]:rp.cob<pol.objetivo?"yel":"green"; const multi=r.g&&r.g.n>1;
       return `<div class="row g-win ${rp.necesita?'hot':''}" onclick="abrirProd(${r.id})">
-        <div><div class="cname">${esc(cleanName(r.name))}</div><div class="cmeta">${esc(r.provName||r.code||"")}</div></div>
-        <div class="tr-r num">${r.freq}</div>
-        <div class="tr-r hide-sm num" style="font-weight:500">${r.ventaU.toLocaleString("es-AR")}</div>
+        <div><div class="cname">${esc(multi?tituloGrupo(r):cleanName(r.name))}</div><div class="cmeta">${multi?('<b style="color:var(--teal-deep)">'+r.g.n+' marcas</b>'):esc(r.provName||r.code||"")}</div></div>
+        <div class="tr-r num">${gv(r,"freq")}</div>
+        <div class="tr-r hide-sm num" style="font-weight:500">${gv(r,"venta").toLocaleString("es-AR")}</div>
         <div class="tr-r hide-sm num" style="font-weight:600">${r.margenPct!==null?r.margenPct.toFixed(0)+"%":"—"}</div>
-        <div class="tr-r num" style="color:var(--green)">${money(r.margenAnual)}</div>
+        <div class="tr-r num" style="color:var(--green)">${money(gv(r,"margenAnual"))}</div>
         <div class="tr-r"><span class="rbadge" style="background:var(--${c}bg);color:var(--${c})" title="Cobertura: ${rp.cob>900?"sin ventas":fmtDur(rp.cob)}">${rp.cob>900?"∞":fmtDurC(rp.cob)}</span></div>
       </div>`}).join("")}
     ${list.length>120?`<div class="empty" style="padding:16px">…y ${list.length-120} más.</div>`:""}
@@ -1358,7 +1368,7 @@ function tabInventario(){
   const vencPct=KPI.inv>0?(KPI.riesgo/KPI.inv*100):0;
   const metricas = `
     <div class="kpis kpis4" style="margin-top:12px">
-      <div class="kpi clk" onclick="abrirLista('inventario')"><div class="l">Inventario valorizado</div><div class="n">${fmtM(KPI.inv)}</div><div class="d">${DATA.length} productos con stock</div><div class="ver">Ver todos →</div></div>
+      <div class="kpi clk" onclick="abrirLista('inventario')"><div class="l">Inventario valorizado</div><div class="n">${fmtM(KPI.inv)}</div><div class="d">${KPI.nProd} productos con stock</div><div class="ver">Ver todos →</div></div>
       <div class="kpi warn clk" onclick="abrirLista('sobre')"><div class="l">Sobrestock (+1 año)</div><div class="n">${fmtM(KPI.sobre)}</div><div class="d">${KPI.sobrePct.toFixed(0)}% del inventario parado</div><div class="ver">Ver cuáles →</div></div>
       <div class="kpi warn clk" onclick="abrirLista('liberable')"><div class="l">Plata liberable</div><div class="n">${fmtM(KPI.inmov)}</div><div class="d">sobre 3 meses de demanda que no vende</div><div class="ver">Ver cuáles →</div></div>
       <div class="kpi alert clk" onclick="abrirLista('riesgo')"><div class="l">En riesgo de vencer</div><div class="n">${fmtM(KPI.riesgo)}</div><div class="d">${vencPct.toFixed(1)}% · vencido o por vencer sin venderse</div><div class="ver">Ver cuáles →</div></div>
@@ -1375,7 +1385,7 @@ function tabInventario(){
 
     <h2 class="sec">Explorador de productos<span class="hint">con stock (valorizado) o todo el catálogo</span></h2>
     <div class="segs" style="margin-bottom:10px">
-      <button class="${invMode==='stock'?'on':''}" onclick="setInvMode('stock')">📦 Con stock · ${DATA.length}</button>
+      <button class="${invMode==='stock'?'on':''}" onclick="setInvMode('stock')">📦 Con stock · ${KPI.nProd}</button>
       <button class="${invMode==='todo'?'on':''}" onclick="setInvMode('todo')">🔎 Todo el catálogo${CAT.loaded?` · ${CAT.rows.length.toLocaleString('es-AR')}`:''}</button>
     </div>`;
   // Modo CON STOCK: explorador valorizado (DATA)
@@ -1607,28 +1617,35 @@ function abrirFicha(id){
 function abrirProd(id){
   const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id); if(!r) return;
   const rp=repo(r);
-  const lotes=(LOTES[id]||[]).sort((a,b)=>(a.mh??9999)-(b.mh??9999));
+  const isG=r.g&&r.g.n>1;                                  // el producto tiene varias marcas → todo se muestra por GRUPO
+  const gqty=gv(r,"qty"), gval=gv(r,"val"), gmin=gv(r,"min"), ginc=gv(r,"incoming"),
+        gfreq=gv(r,"freq"), gcompra=r.g?r.g.compraFreq:r.compraFreq, gmargen=gv(r,"margenAnual"), gventa=gv(r,"venta");
+  // lotes de TODAS las marcas del grupo (el vencimiento es del producto, no de una sola marca)
+  const lids=r.g?r.g.members.map(m=>m.id):[id];
+  const lotes=lids.flatMap(x=>LOTES[x]||[]).sort((a,b)=>(a.mh??9999)-(b.mh??9999));
   const c=rotCls(r.meses);
   const d=document.getElementById("drawer"); d.classList.remove("wide");
   d.innerHTML=`
     <div class="dhead"><span class="x" onclick="cerrar()">✕</span>
-      <h2>${esc(cleanName(r.name))}</h2>
-      <div class="deuda">${money(r.val)}</div>
+      <h2>${esc(isG?tituloGrupo(r):cleanName(r.name))}</h2>
+      <div class="deuda">${money(gval)}</div>
       <div class="badges">
+        ${isG?`<span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${r.g.n} marcas</span>`:""}
         <span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${r.meses>900?"sin venta":fmtDur(r.meses)+" de stock"}</span>
-        ${r.min!==null?`<span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${r.min<0?"vencido en depósito":"vence en "+fmtDur(r.min)}</span>`:""}
+        ${gmin!=null?`<span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${gmin<0?"vencido en depósito":"vence en "+fmtDur(gmin)}</span>`:""}
       </div>
     </div>
     <div class="dbody">
       ${smartBtns(r.id)}
+      ${isG?`<div class="note info" style="margin:0 0 12px">Este producto tiene <b>${r.g.n} marcas</b>. Las unidades, el stock, lo comprado y lo vendido que ves acá <b>suman todas las marcas</b>. El costo y el precio son de la marca vigente (el detalle por marca está más abajo).</div>`:""}
       <div class="dsec"><h4>Situación</h4>
-        <div class="kv"><span class="k">Código</span><span class="v">${esc(r.code||"—")}</span></div>
+        <div class="kv"><span class="k">Código</span><span class="v">${esc(r.code||"—")}${isG?` <span style="font-size:11px;color:var(--gris)">(marca vigente)</span>`:""}</span></div>
         <div class="kv"><span class="k">Familia</span><span class="v">${esc(r.fam)}</span></div>
-        <div class="kv"><span class="k">Unidades en stock</span><span class="v">${r.qty.toLocaleString("es-AR")}${r.incoming?` (+${r.incoming} en camino)`:""}</span></div>
+        <div class="kv"><span class="k">Unidades en stock${isG?" (todas las marcas)":""}</span><span class="v">${gqty.toLocaleString("es-AR")}${ginc?` (+${ginc} en camino)`:""}</span></div>
         <div class="kv"><span class="k">Alcanza para</span><span class="v" style="color:var(--${c})">${r.meses>900?"sin ventas":fmtDur(r.meses)}</span></div>
-        <div class="kv"><span class="k" title="Costo real del motor (última compra/manual, +IVA al costo si vende exento). NO es el standard_price de Odoo.">Costo (motor)</span><span class="v">${money(r.costoU)}${r.ivaAlCosto>0?` <span style="font-size:11px;color:var(--gris);font-weight:500">(neto ${money(r.xCostoMotor||r.std)} +${Math.round(r.ivaAlCosto*100)}% IVA)</span>`:""}</span></div>
-        <div class="kv"><span class="k">Precio de lista</span><span class="v">${money(r.pvp)}${r.margenPct!==null?` · ${r.margenPct.toFixed(0)}% margen`:""}</span></div>
-        <div class="kv"><span class="k">Margen generado al año</span><span class="v" style="color:var(--green)">${money(r.margenAnual)}</span></div>
+        <div class="kv"><span class="k" title="Costo real del motor (última compra/manual, +IVA al costo si vende exento). NO es el standard_price de Odoo.">Costo (motor)${isG?" · vigente":""}</span><span class="v">${money(r.costoU)}${r.ivaAlCosto>0?` <span style="font-size:11px;color:var(--gris);font-weight:500">(neto ${money(r.xCostoMotor||r.std)} +${Math.round(r.ivaAlCosto*100)}% IVA)</span>`:""}</span></div>
+        <div class="kv"><span class="k">Precio de lista${isG?" · vigente":""}</span><span class="v">${money(r.pvp)}${r.margenPct!==null?` · ${r.margenPct.toFixed(0)}% margen`:""}</span></div>
+        <div class="kv"><span class="k">Margen generado al año${isG?" (todas las marcas)":""}</span><span class="v" style="color:var(--green)">${money(gmargen)}</span></div>
       </div>
       <div class="dsec"><h4>Proveedores${r.provs.length>1?` · le comprás a ${r.provs.length}`:""}</h4>
         ${r.provs.length? (()=>{ const conP=r.provs.filter(p=>p.price>0).map(p=>p.price); const minP=conP.length?Math.min(...conP):null;
@@ -1653,7 +1670,7 @@ function abrirProd(id){
         </div>`).join("")}
       </div>`:""}
       <div class="dsec"><h4>Abastecimiento</h4>
-        <div class="kv"><span class="k">Cómo lo trata el sistema</span><span class="v">${STOCK_CRIT.has(r.id)?'📌 Crítico — fijado a mano':STOCK_PED.has(r.id)?'🛒 Contra pedido — fijado a mano':(rp.deStock?`De stock · automático (lo comprás ${r.compraFreq}×/año y lo vendés ${r.freq}×)`:`Contra pedido · automático (casi no lo comprás: ${r.compraFreq}×/año)`)}</span></div>
+        <div class="kv"><span class="k">Cómo lo trata el sistema</span><span class="v">${STOCK_CRIT.has(r.id)?'📌 Crítico — fijado a mano':STOCK_PED.has(r.id)?'🛒 Contra pedido — fijado a mano':(rp.deStock?`De stock · automático (lo comprás ${gcompra}×/año y lo vendés ${gfreq}×)`:`Contra pedido · automático (casi no lo comprás: ${gcompra}×/año)`)}</span></div>
         <p style="font-size:12px;color:var(--gris);margin:6px 0 8px">Si está <b>de stock</b> y llega a cero, salta en el cartel rojo de quiebres. Si es <b>contra pedido</b>, estar en cero es normal.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="mini-btn" onclick="marcarModo(${r.id},'crit')" style="${STOCK_CRIT.has(r.id)?'background:var(--red);color:#fff;border-color:var(--red)':'border-color:#F1B4AD;color:#8E1F14'}">📌 Siempre en stock</button>
@@ -1673,11 +1690,12 @@ function abrirProd(id){
   cargarSmart(r.id);
 }
 function sugerencia(r,rp){
-  if(r.valVenc>0) return `Hay <b>${money(r.valVenc)}</b> ya vencido en depósito: dar de baja contablemente y retirar del stock.`;
-  if(r.val6>0 && (r.min!==null && r.meses>r.min)) return `Vence en <b>${fmtDur(r.min)}</b> pero al ritmo actual tardaría <b>${fmtDur(r.meses)}</b> en venderse. Ofertar/liquidar ya.`;
-  if(rp.pos<=0 && rp.dm>0) return `<b>Quiebre:</b> se vende (${r.freq}×/año) y no hay stock. ${r.provName?`Pedir ~<b>${rp.sug} u</b> a ${esc(r.provName)}.`:"Reponer cuanto antes."}`;
+  const gfreq=gv(r,"freq"), gvvenc=gv(r,"valVenc"), gv6=gv(r,"val6"), gmin=gv(r,"min"), gventa=gv(r,"venta");
+  if(gvvenc>0) return `Hay <b>${money(gvvenc)}</b> ya vencido en depósito: dar de baja contablemente y retirar del stock.`;
+  if(gv6>0 && (gmin!=null && r.meses>gmin)) return `Vence en <b>${fmtDur(gmin)}</b> pero al ritmo actual tardaría <b>${fmtDur(r.meses)}</b> en venderse. Ofertar/liquidar ya.`;
+  if(rp.pos<=0 && rp.dm>0) return `<b>Quiebre:</b> se vende (${gfreq}×/año) y no hay stock. ${r.provName?`Pedir ~<b>${rp.sug} u</b> a ${esc(r.provName)}.`:"Reponer cuanto antes."}`;
   if(rp.necesita) return `Quedan <b>${fmtDur(rp.cob)}</b> de cobertura. ${r.provName?`Conviene pedir ~<b>${rp.sug} u</b> a ${esc(r.provName)} (${money(rp.costoLinea)}) para cubrir ${pol.objetivo} meses.`:"Reponer para cubrir "+pol.objetivo+" meses."}`;
-  if(r.ventaU===0) return `Sin ventas en el último año. Revisar si sigue vigente: liquidar, devolver o discontinuar.`;
+  if(gventa===0) return `Sin ventas en el último año. Revisar si sigue vigente: liquidar, devolver o discontinuar.`;
   if(r.meses>12) return `Stock para <b>${fmtDur(r.meses)}</b>. Frenar la reposición hasta que baje.`;
   return `Rotación saludable. Mantener el nivel de reposición actual.`;
 }
@@ -1690,13 +1708,16 @@ function smartBtns(id){
 }
 async function cargarSmart(id){
   try{
+    const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id)||{};
+    const ids=r.g?r.g.members.map(m=>m.id):[id];      // suma TODAS las marcas del producto
     const [c,v]=await Promise.all([
-      rpc("purchase.order.line","read_group",[[["product_id","=",id],["state","in",["purchase","done"]]],["product_qty:sum"],[]],{lazy:false}),
-      rpc("sale.order.line","read_group",[[["product_id","=",id],["order_id.state","in",["sale","done"]]],["product_uom_qty:sum"],[]],{lazy:false}),
+      rpc("purchase.order.line","read_group",[[["product_id","in",ids],["state","in",["purchase","done"]]],["product_qty:sum"],[]],{lazy:false}),
+      rpc("sale.order.line","read_group",[[["product_id","in",ids],["order_id.state","in",["sale","done"]]],["product_uom_qty:sum"],[]],{lazy:false}),
     ]);
     const cu=c.length?Math.round(c[0].product_qty||0):0, vu=v.length?Math.round(v[0].product_uom_qty||0):0;
-    const ec=document.getElementById("sbComp"); if(ec) ec.textContent=cu.toLocaleString("es-AR")+" u comprado";
-    const ev=document.getElementById("sbVend"); if(ev) ev.textContent=vu.toLocaleString("es-AR")+" u vendido";
+    const nm=ids.length>1?` (${ids.length} marcas)`:"";
+    const ec=document.getElementById("sbComp"); if(ec) ec.textContent=cu.toLocaleString("es-AR")+" u comprado"+nm;
+    const ev=document.getElementById("sbVend"); if(ev) ev.textContent=vu.toLocaleString("es-AR")+" u vendido"+nm;
   }catch(e){ const ec=document.getElementById("sbComp"); if(ec)ec.textContent="—"; const ev=document.getElementById("sbVend"); if(ev)ev.textContent="—"; }
 }
 function abrirHist(titulo){
@@ -1707,12 +1728,14 @@ function abrirHist(titulo){
 function cerrarHist(){ const m=document.getElementById("histmodal"); if(m) m.remove(); }
 async function histCompras(id){
   const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id)||(CAT.loaded?CAT.rows.find(x=>x.id===id):null)||{};
-  abrirHist("Compras de "+cleanName(r.name||("#"+id)));
+  const isG=r.g&&r.g.n>1; const ids=r.g?r.g.members.map(m=>m.id):[id];
+  const marcaById={}; if(r.g){ for(const m of r.g.members) marcaById[m.id]=m.marca||cleanName(m.name); }
+  abrirHist("Compras de "+(isG?tituloGrupo(r):cleanName(r.name||("#"+id)))+(isG?` · ${r.g.n} marcas`:""));
   try{
-    // Órdenes + facturas de compra: el motor usa el costo FACTURADO (el real), no el de la orden
+    // Órdenes + facturas de compra de TODAS las marcas: el motor usa el costo FACTURADO (el real), no el de la orden
     const [pol, aml]=await Promise.all([
-      rpc("purchase.order.line","search_read",[[["product_id","=",id],["state","in",["purchase","done"]]]],{fields:["order_id","partner_id","date_order","product_qty","price_unit","qty_received"],limit:300}),
-      rpc("account.move.line","search_read",[[["product_id","=",id],["parent_state","=","posted"],["move_id.move_type","in",["in_invoice","in_refund"]]]],{fields:["move_name","date","quantity","price_subtotal","purchase_line_id","move_type"],limit:300}),
+      rpc("purchase.order.line","search_read",[[["product_id","in",ids],["state","in",["purchase","done"]]]],{fields:["product_id","order_id","partner_id","date_order","product_qty","price_unit","qty_received"],limit:600}),
+      rpc("account.move.line","search_read",[[["product_id","in",ids],["parent_state","=","posted"],["move_id.move_type","in",["in_invoice","in_refund"]]]],{fields:["move_name","date","quantity","price_subtotal","purchase_line_id","move_type"],limit:600}),
     ]);
     const b=document.getElementById("hmBody"); if(!b) return;
     // agrupar facturas por línea de orden (una orden puede tener varias facturas / notas de crédito)
@@ -1721,17 +1744,17 @@ async function histCompras(id){
       if(l.purchase_line_id){ const k=l.purchase_line_id[0]; const a=factByPol[k]||(factByPol[k]={qty:0,sub:0}); a.qty+=sign*(l.quantity||0); a.sub+=sign*(l.price_subtotal||0); }
       else if((l.quantity||0)>0){ sueltas.push({fecha:(l.date||"").slice(0,10), prov:l.move_name||"factura suelta", qty:l.quantity, ordU:null, facU:l.price_subtotal/l.quantity, suelta:true}); } }
     let rows=pol.map(l=>{ const f=factByPol[l.id]; const facU=(f&&f.qty)?(f.sub/f.qty):null;
-      return {fecha:(l.date_order||"").slice(0,10), prov:l.partner_id?l.partner_id[1]:"—", oid:l.order_id?l.order_id[0]:0, oname:l.order_id?l.order_id[1]:"", qty:l.product_qty||0, ordU:l.price_unit||0, facU}; })
+      return {fecha:(l.date_order||"").slice(0,10), prov:l.partner_id?l.partner_id[1]:"—", marca:(isG&&l.product_id)?(marcaById[l.product_id[0]]||""):"", oid:l.order_id?l.order_id[0]:0, oname:l.order_id?l.order_id[1]:"", qty:l.product_qty||0, ordU:l.price_unit||0, facU}; })
       .concat(sueltas).sort((a,b)=>String(b.fecha).localeCompare(String(a.fecha)));
     if(!rows.length){ b.innerHTML='<div class="empty" style="padding:30px">Sin compras registradas.</div>'; return; }
     const tot=rows.reduce((a,r)=>a+(r.qty||0),0);
     const dif=(o,f)=> (f!=null && o>0 && Math.abs(f-o)/o>0.02);
-    b.innerHTML=`<div class="note info" style="margin:0 0 10px">El <b>costo que usa el motor</b> (y los márgenes) es el <b>facturado</b> — lo que realmente pagaste, no el de la orden. Cuando difieren, la factura manda (marcado en <b style="color:var(--red)">rojo</b>).</div>
+    b.innerHTML=`<div class="note info" style="margin:0 0 10px">${isG?`Compras de las <b>${r.g.n} marcas</b> de este producto. `:""}El <b>costo que usa el motor</b> (y los márgenes) es el <b>facturado</b> — lo que realmente pagaste, no el de la orden. Cuando difieren, la factura manda (marcado en <b style="color:var(--red)">rojo</b>).</div>
       <div class="count-line" style="margin:0 0 8px"><b>${rows.length}</b> compras · ${Math.round(tot).toLocaleString("es-AR")} u en total</div>
-      <div class="tablecard"><div class="thead g-hist2"><div>Fecha</div><div>Proveedor</div><div class="tr-r">Cantidad</div><div class="tr-r">Orden $/u</div><div class="tr-r">Facturado $/u</div></div>
+      <div class="tablecard"><div class="thead g-hist2"><div>Fecha</div><div>Proveedor${isG?" / marca":""}</div><div class="tr-r">Cantidad</div><div class="tr-r">Orden $/u</div><div class="tr-r">Facturado $/u</div></div>
       ${rows.map(r=>`<div class="row g-hist2" ${r.oid?`onclick="window.open('${odooPO(r.oid)}','_blank')" style="cursor:pointer"`:''}>
         <div class="cmeta">${r.fecha?r.fecha.split("-").reverse().join("/"):"—"}${r.oname?`<div style="font-size:10.5px;color:var(--teal-deep)">${esc(r.oname)}</div>`:(r.suelta?`<div style="font-size:10.5px;color:var(--gris2)">${esc(r.prov)}</div>`:"")}</div>
-        <div class="cmeta" style="white-space:normal">${esc(r.suelta?"—":r.prov)}</div>
+        <div class="cmeta" style="white-space:normal">${esc(r.suelta?"—":r.prov)}${r.marca?`<div style="font-size:10.5px;color:var(--gris2)">${esc(r.marca)}</div>`:""}</div>
         <div class="tr-r num">${Math.round(r.qty).toLocaleString("es-AR")}</div>
         <div class="tr-r num" style="font-weight:500;color:var(--gris)">${r.ordU!=null?money(r.ordU):"—"}</div>
         <div class="tr-r num" style="font-weight:700;${dif(r.ordU,r.facU)?"color:var(--red)":""}">${r.facU!=null?money(r.facU):'<span style="color:var(--gris2);font-weight:500">s/factura</span>'}</div>
@@ -1740,9 +1763,11 @@ async function histCompras(id){
 }
 async function histVentas(id){
   const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id)||(CAT.loaded?CAT.rows.find(x=>x.id===id):null)||{};
-  abrirHist("Ventas de "+cleanName(r.name||("#"+id)));
+  const isG=r.g&&r.g.n>1; const ids=r.g?r.g.members.map(m=>m.id):[id];
+  abrirHist("Ventas de "+(isG?tituloGrupo(r):cleanName(r.name||("#"+id)))+(isG?` · ${r.g.n} marcas`:""));
   try{
-    const g=await rpc("sale.report","read_group",[[["product_id","=",id],["state","in",["sale","done"]]],["product_uom_qty:sum"],["date:month"]],{lazy:false});
+    // ventas mes a mes de TODAS las marcas (se suman por mes)
+    const g=await rpc("sale.report","read_group",[[["product_id","in",ids],["state","in",["sale","done"]]],["product_uom_qty:sum"],["date:month"]],{lazy:false});
     const b=document.getElementById("hmBody"); if(!b) return;
     const rows=g.filter(x=>x["date:month"]).map(x=>{
       const from=(x.__range&&x.__range["date:month"])?x.__range["date:month"].from:null;
@@ -1772,25 +1797,27 @@ async function marcarModo(id, modo){
 
 // ====== DRILL-DOWN: tocar una métrica/tarjeta abre la lista de productos detrás ======
 function liberableDe(r){ const dv=r.g?r.g.venta:r.ventaU, gq=r.g?r.g.qty:r.qty; if(dv===0) return r.val; const ideal=(dv/12)*3, cu=r.qty>0?r.val/r.qty:0; if(gq<=ideal) return 0; return Math.round(r.qty*(1-ideal/gq)*cu); }
+function liberableGrupo(r){ return r.g? r.g.members.reduce((a,m)=>a+liberableDe(m),0) : liberableDe(r); }   // liberable de TODAS las marcas
+function unGrupo(rows){ const seen={}; const out=[]; for(const r of rows){ const k=r.g?r.g.key:("SOLO#"+r.id); if(seen[k])continue; seen[k]=1; out.push(r);} return out; }   // una fila por producto
 const LISTAS={
   quiebre:{ t:"En quiebre hoy", d:"Se venden y hoy no hay stock. Reponé cuanto antes.",
-    sel:()=>DATA.filter(r=>{const rp=repo(r);return rp.dm>0&&rp.pos<=0;}).sort((a,b)=>b.margenAnual-a.margenAnual),
-    val:r=>r.margenAnual, meta:r=>`vende ${r.freq}×/año · ${r.provName||"sin proveedor"}` },
+    sel:()=>unGrupo(REPO.filter(r=>{const rp=repo(r);return rp.dm>0&&rp.pos<=0&&r.esVigente!==false;}).sort((a,b)=>gv(b,"margenAnual")-gv(a,"margenAnual"))),
+    val:r=>gv(r,"margenAnual"), meta:r=>`vende ${gv(r,"freq")}×/año · ${r.provName||"sin proveedor"}` },
   reponer:{ t:"Productos a reponer", d:`Cobertura por debajo de ${pol.umbral} mes. Sugerido para cubrir ${pol.objetivo} meses.`,
-    sel:()=>DATA.map(r=>({r,rp:repo(r)})).filter(x=>x.rp.necesita&&(x.r.provId||x.r.viaOtra)).sort((a,b)=>(URG_ORD[a.rp.urg]-URG_ORD[b.rp.urg])||(b.r.margenAnual-a.r.margenAnual)).map(x=>x.r),
+    sel:()=>unGrupo(REPO.map(r=>({r,rp:repo(r)})).filter(x=>x.rp.necesita&&(x.r.provId||x.r.viaOtra)).sort((a,b)=>(URG_ORD[a.rp.urg]-URG_ORD[b.rp.urg])||(gv(b.r,"margenAnual")-gv(a.r,"margenAnual"))).map(x=>x.r)),
     val:r=>repo(r).costoLinea, meta:r=>{const rp=repo(r);return `cobertura ${rp.cob>900?"—":fmtDur(rp.cob)} · pedir ${rp.sug} u · ${r.provName||"—"}`;} },
   sobre:{ t:"Sobrestock (+1 año)", d:"Ya hay stock para más de un año (contando todas las marcas del mismo producto). Frená la compra hasta que baje.",
-    sel:()=>DATA.filter(r=>r.meses>12).sort((a,b)=>b.val-a.val),
-    val:r=>r.val, meta:r=>`${r.meses>900?"sin venta 12m":fmtDur(r.meses)+" de stock"} · ${r.qty} u` },
+    sel:()=>unGrupo(DATA.filter(r=>r.meses>12).sort((a,b)=>gv(b,"val")-gv(a,"val"))),
+    val:r=>gv(r,"val"), meta:r=>`${r.meses>900?"sin venta 12m":fmtDur(r.meses)+" de stock"} · ${gv(r,"qty").toLocaleString("es-AR")} u` },
   riesgo:{ t:"En riesgo de tirar", d:"Vencido o por vencer antes de alcanzar a venderse. Ofertá o liquidá para recuperar algo.",
-    sel:()=>DATA.filter(r=>r.valVenc>0||r.val6>0).sort((a,b)=>(b.valVenc+b.val6)-(a.valVenc+a.val6)),
-    val:r=>r.valVenc+r.val6, meta:r=>r.valVenc>0?`vencido en depósito · ${money(r.valVenc)}`:`vence en ${fmtDur(r.min)}` },
+    sel:()=>unGrupo(DATA.filter(r=>gv(r,"valVenc")>0||gv(r,"val6")>0).sort((a,b)=>((gv(b,"valVenc")+gv(b,"val6"))-(gv(a,"valVenc")+gv(a,"val6"))))),
+    val:r=>gv(r,"valVenc")+gv(r,"val6"), meta:r=>gv(r,"valVenc")>0?`vencido en depósito · ${money(gv(r,"valVenc"))}`:`vence en ${fmtDur(gv(r,"min"))}` },
   inventario:{ t:"Inventario valorizado", d:"Todo el stock activo, del que más plata tiene parada al que menos.",
-    sel:()=>[...DATA].sort((a,b)=>b.val-a.val),
-    val:r=>r.val, meta:r=>`${r.qty} u · ${r.meses>900?"sin venta":fmtDur(r.meses)+" de stock"}` },
+    sel:()=>unGrupo([...DATA].sort((a,b)=>gv(b,"val")-gv(a,"val"))),
+    val:r=>gv(r,"val"), meta:r=>`${gv(r,"qty").toLocaleString("es-AR")} u · ${r.meses>900?"sin venta":fmtDur(r.meses)+" de stock"}` },
   liberable:{ t:"Plata liberable", d:"Lo que sobra por encima de 3 meses de demanda, más lo que no vende. Se puede desinmovilizar.",
-    sel:()=>DATA.map(r=>({r,l:liberableDe(r)})).filter(x=>x.l>0).sort((a,b)=>b.l-a.l).map(x=>x.r),
-    val:r=>liberableDe(r), meta:r=>r.ventaU===0?`sin venta 12m · ${r.qty} u`:`${fmtDur(r.meses)} de stock · sobra sobre 3m` },
+    sel:()=>unGrupo(DATA.map(r=>({r,l:liberableGrupo(r)})).filter(x=>x.l>0).sort((a,b)=>b.l-a.l).map(x=>x.r)),
+    val:r=>liberableGrupo(r), meta:r=>gv(r,"venta")===0?`sin venta 12m · ${gv(r,"qty").toLocaleString("es-AR")} u`:`${fmtDur(r.meses)} de stock · sobra sobre 3m` },
 };
 function abrirLista(tipo){
   const L=LISTAS[tipo]; if(!L) return;
@@ -1802,7 +1829,7 @@ function abrirLista(tipo){
     <div class="dbody">
       ${L.d?`<p style="font-size:12.5px;color:var(--gris);margin:-4px 0 12px">${L.d}</p>`:""}
       <ul class="lst">${rows.slice(0,150).map(r=>`<li class="li" onclick="abrirProd(${r.id})">
-        <div class="nm"><b>${esc(cleanName(r.name))}</b><span>${L.meta(r)}</span></div>
+        <div class="nm"><b>${esc(r.g&&r.g.n>1?tituloGrupo(r):cleanName(r.name))}</b><span>${L.meta(r)}${r.g&&r.g.n>1?` · <b style="color:var(--teal-deep)">${r.g.n} marcas</b>`:""}</span></div>
         <div class="amt">${money(L.val(r))}</div></li>`).join("")}</ul>
       ${rows.length>150?`<div class="count-line" style="margin-top:8px">…y ${rows.length-150} más. Usá el explorador para verlos todos.</div>`:""}
       ${!rows.length?'<div class="empty">Nada acá. 👌</div>':""}
@@ -1811,15 +1838,15 @@ function abrirLista(tipo){
 }
 function abrirBucket(i){
   const b=B_DEF[i]; if(!b) return; const [lbl,sub,lo,hi]=b;
-  const rows=DATA.filter(r=>r.meses>=lo&&r.meses<hi).sort((a,b)=>b.val-a.val);
-  const tot=rows.reduce((a,r)=>a+r.val,0);
+  const rows=unGrupo(DATA.filter(r=>r.meses>=lo&&r.meses<hi).sort((a,b)=>gv(b,"val")-gv(a,"val")));
+  const tot=rows.reduce((a,r)=>a+gv(r,"val"),0);
   const d=document.getElementById("drawer");
   d.innerHTML=`<div class="dhead"><span class="x" onclick="cerrar()">✕</span>
       <h2>Rotación: ${lbl}</h2><div class="deuda">${money(tot)}</div>
       <div class="badges"><span class="rbadge" style="background:rgba(255,255,255,.16);color:#fff">${sub} · ${rows.length} productos</span></div></div>
     <div class="dbody"><ul class="lst">${rows.slice(0,150).map(r=>`<li class="li" onclick="abrirProd(${r.id})">
-        <div class="nm"><b>${esc(cleanName(r.name))}</b><span>${r.meses>900?"sin venta 12m":fmtDur(r.meses)+" de stock"} · ${r.qty} u</span></div>
-        <div class="amt">${money(r.val)}</div></li>`).join("")}</ul>
+        <div class="nm"><b>${esc(r.g&&r.g.n>1?tituloGrupo(r):cleanName(r.name))}</b><span>${r.meses>900?"sin venta 12m":fmtDur(r.meses)+" de stock"} · ${gv(r,"qty").toLocaleString("es-AR")} u${r.g&&r.g.n>1?` · <b style="color:var(--teal-deep)">${r.g.n} marcas</b>`:""}</span></div>
+        <div class="amt">${money(gv(r,"val"))}</div></li>`).join("")}</ul>
       ${rows.length>150?`<div class="count-line" style="margin-top:8px">…y ${rows.length-150} más.</div>`:""}</div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
 }
