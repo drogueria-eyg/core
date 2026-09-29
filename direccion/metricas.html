@@ -130,7 +130,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=99"></script>
+<script src="../assets/core.js?v=100"></script>
 <script src="../assets/sf-departamentos.js?v=1"></script>
 <script>
 /* =====================================================================
@@ -162,11 +162,11 @@ const MES_ES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto
 const MES_EN = ["january","february","march","april","may","june","july","august","september","october","november","december"];
 const MES_TXT = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
 const COL = {ventas:"var(--c-ventas)", compras:"var(--c-compras)", margen:"var(--c-margen)", pedidos:"var(--c-pedidos)", sinfac:"var(--c-sinfac)", tri:"var(--c-tri)"};
-/* Triangulacion: el corte sale por la CUENTA DE INGRESOS del renglon, no por categoria de producto.
-   409 = 4.1.1.01.040 Venta de mercaderia TRIANGULACION. Verificado el 29/09/2026: todos los renglones de
-   la categoria TRIANGULACION (448) caen en esta cuenta, y ademas la cuenta recoge las facturas viejas que
-   se reclasificaron, hechas con los productos reales. La cuenta es el conjunto completo; la categoria no. */
-const CTA_TRI = 409;
+/* Triangulacion: el criterio es UNO SOLO para todo el Core y vive en core.js (EYG.TRI_DOM_FACT).
+   Son tres condiciones en OR: el CLIENTE (Lazzari y Sanchez Victoria son triangulacion siempre, regla
+   de Direccion), la CUENTA de ingresos del renglon (409, la que recoge las facturas viejas que se
+   reclasificaron) y la CATEGORIA del producto (los codigos TRI-). Ninguna sola alcanza. */
+const TRI_FACT = EYG.TRI_DOM_FACT;
 const PALETA = ["#048782","#1E5FA8","#EC8B5E","#7A4DB8","#E5A93B","#1E7D46","#5FC8BF","#B0413E","#04635F","#8A9A97","#C06C84","#355C7D"];
 const COL_CANAL = {"Core (comerciales)":"#048782","Odoo a mano":"#1E5FA8","Portal web":"#E5A93B","WhatsApp":"#25A35A","Sin pedido (factura directa)":"#8A9A97"};
 const DESC_CANAL = {
@@ -304,7 +304,7 @@ async function construir(){
     rg("account.move", VD, ["amount_untaxed_signed:sum"], ["invoice_date:month","invoice_user_id","move_type"]),
     rg("account.move.line", VL.concat([["move_id.move_type","=","out_invoice"]]), ["balance:sum","quantity:sum"], ["invoice_date:month","product_id"]),
     rg("account.move.line", VL.concat([["move_id.move_type","=","out_refund"]]), ["balance:sum","quantity:sum"], ["invoice_date:month","product_id"]),
-    rg("account.move.line", VL.concat([["account_id","=",CTA_TRI]]), ["balance:sum"], ["invoice_date:month","partner_id"]),
+    rg("account.move.line", VL.concat(TRI_FACT), ["balance:sum"], ["invoice_date:month","partner_id"]),
     rg("account.move.line", VL.concat([[SO("website_id"),"!=",false]]), ["balance:sum"], ["invoice_date:month"]),
     rg("account.move.line", VL.concat([[SO("website_id"),"=",false],[SO("origin"),"ilike","WhatsApp"]]), ["balance:sum"], ["invoice_date:month"]),
     rg("account.move.line", VL.concat(DOM_CORE), ["balance:sum"], ["invoice_date:month"]),
@@ -504,7 +504,7 @@ function render(){
 
   $("root").innerHTML=`
   <div class="kpis">
-    ${kpi("Ventas netas",fmtM(V),delta(V,prev&&prev.V)+(TRI>0.005?`<span class="d" title="Facturación de triangulación (cuenta 4.1.1.01.040), ya incluida en el total de arriba: ${fmt$c(TRI)}">propia <b>${fmtM(VP)}</b> · <b style="color:${COL.tri}">triangulación ${fmtM(TRI)}</b> (${fmtP(TRI/V)})</span>`:""),"main",fmt$c(V)+" · facturas + notas de débito − notas de crédito, sin IVA. Sólo diarios de venta (no cuenta el diario Redondeo)."+(TRI>0.005?" De ese total, "+fmt$c(TRI)+" es triangulación.":"")+" Tocá para ver la evolución.","ventas","p-main")}
+    ${kpi("Ventas netas",fmtM(V),delta(V,prev&&prev.V)+(TRI>0.005?`<span class="d" title="Facturación de triangulación, ya incluida en el total de arriba: ${fmt$c(TRI)}">propia <b>${fmtM(VP)}</b> · <b style="color:${COL.tri}">triangulación ${fmtM(TRI)}</b> (${fmtP(TRI/V)})</span>`:""),"main",fmt$c(V)+" · facturas + notas de débito − notas de crédito, sin IVA. Sólo diarios de venta (no cuenta el diario Redondeo)."+(TRI>0.005?" De ese total, "+fmt$c(TRI)+" es triangulación.":"")+" Tocá para ver la evolución.","ventas","p-main")}
     ${kpi("Pedidos confirmados",fmtM(PC),`<span class="d">${fmtN(PN)} pedidos · <b>${fmtP(PC?PF/PC:NaN)}</b> ya facturado</span>`,"",fmt$c(PC)+" · pedidos de venta confirmados en el período (por fecha del pedido), sin IVA. Tocá para ver el detalle.","pedidos","p-ped")}
     ${kpi("Sin facturar",`<span class="${PSF>0.5?"":"pos"}">${fmtM(PSF)}</span>`,`<span class="d">${nPend?fmtN(nPend)+" pedido"+(nPend===1?"":"s")+" con saldo":"todo facturado"}</span>`,"","Lo confirmado en pedidos menos lo que ya se facturó de esos mismos pedidos · "+fmt$c(PSF)+". Tocá para ver qué pedidos.","sinfac","p-ped")}
     ${kpi(st.compras==="oper"?"Compras mercadería":"Compras netas",fmtM(Cm),delta(Cm,prev&&prev.C,true),"",fmt$c(Cm)+(st.compras==="oper"?" · sólo compra de mercadería y medicamentos (5.1.1)":" · todas las facturas de proveedor: mercadería, gastos, intereses y bienes de uso")+", sin IVA. No incluye el capital de préstamos ni los descuentos de cheques. Tocá para ver en qué se gasta.","compras","p-compras")}
@@ -527,7 +527,7 @@ function render(){
       </div></div>
     <div class="chart" id="ch-main"></div>
     <div class="compo" id="compo"></div>
-    <div class="nota">Todo sin IVA. <b>Ventas netas</b> = facturas + notas de débito − notas de crédito, sólo de diarios de venta. <b>Compras</b> = facturas de proveedor − sus notas de crédito, sin el capital de préstamos ni los descuentos de cheques (esa plata entra, no es una compra). <b>Margen</b> = ventas − compras del mes. <b>Pedidos confirmados</b> (línea punteada) = por fecha del pedido. Lo que está fuera del período elegido se ve atenuado. <b>Triangulación</b> = renglones facturados a la cuenta <i>4.1.1.01.040 Venta de mercadería TRIANGULACIÓN</i>: se muestran como el tramo violeta <b>arriba de la barra de ventas</b>, apartados pero adentro — el total no cambia, lo de abajo es venta propia. Antes de junio 2026 no hubo triangulación, por eso el tramo no aparece. <b>Tocá un mes del gráfico para ver solo ese mes.</b></div>
+    <div class="nota">Todo sin IVA. <b>Ventas netas</b> = facturas + notas de débito − notas de crédito, sólo de diarios de venta. <b>Compras</b> = facturas de proveedor − sus notas de crédito, sin el capital de préstamos ni los descuentos de cheques (esa plata entra, no es una compra). <b>Margen</b> = ventas − compras del mes. <b>Pedidos confirmados</b> (línea punteada) = por fecha del pedido. Lo que está fuera del período elegido se ve atenuado. <b>Triangulación</b> = lo facturado a los clientes de triangulación (Lazzari y Sánchez Victoria, que lo son siempre), más cualquier renglón que vaya a la cuenta <i>4.1.1.01.040</i> o lleve un producto <b>TRI-</b>: así entran también los pedidos mixtos. Se muestra como el tramo violeta <b>arriba de la barra de ventas</b>, apartado pero adentro — el total no cambia, lo de abajo es venta propia. Antes de junio 2026 no hubo triangulación, por eso el tramo no aparece. <b>Tocá un mes del gráfico para ver solo ese mes.</b></div>
   </div>
 
   <div class="panel" id="p-ped">
@@ -669,7 +669,7 @@ function renderCompo(a,b){
   const S=D.serie;
   const prod=sum(S.map(s=>s.productos),a,b), otros=sum(S.map(s=>s.otros_conceptos),a,b), vn=sum(S.map(s=>s.ventas_netas),a,b), nc=sum(S.map(s=>s.nc),a,b), iva=sum(S.map(s=>s.ventas_con_iva),a,b);
   const tri=sum(S.map(s=>s.triangulacion||0),a,b);
-  $("compo").innerHTML=`<span class="c" title="Renglones de factura con producto, menos los devueltos">Productos <b>${fmt$(prod)}</b></span>${Math.abs(otros)>=0.01?` + <span class="c" title="Renglones sin producto: ajustes, intereses, cheques rechazados facturados">Conceptos sin producto <b>${fmt$(otros)}</b></span>`:""} = <span class="c" title="${fmt$c(vn)}">Ventas netas <b>${fmt$(vn)}</b></span> <span class="c" title="Ya descontadas dentro de productos">de las cuales notas de crédito <b>${fmt$(nc)}</b></span>${Math.abs(tri)>=0.01?` <span class="c" title="Renglones facturados a la cuenta 4.1.1.01.040 Venta de mercadería TRIANGULACIÓN. Ya están dentro de las ventas netas: acá se muestran apartados." style="border-color:${COL.tri}">de las cuales triangulación <b style="color:${COL.tri}">${fmt$(tri)}</b></span> <span class="c" title="Ventas netas menos triangulación">venta propia <b>${fmt$(vn-tri)}</b></span>`:""} <span class="c" title="Lo mismo con IVA incluido: lo que se le facturó al cliente">Con IVA <b>${fmt$(iva)}</b></span>`;
+  $("compo").innerHTML=`<span class="c" title="Renglones de factura con producto, menos los devueltos">Productos <b>${fmt$(prod)}</b></span>${Math.abs(otros)>=0.01?` + <span class="c" title="Renglones sin producto: ajustes, intereses, cheques rechazados facturados">Conceptos sin producto <b>${fmt$(otros)}</b></span>`:""} = <span class="c" title="${fmt$c(vn)}">Ventas netas <b>${fmt$(vn)}</b></span> <span class="c" title="Ya descontadas dentro de productos">de las cuales notas de crédito <b>${fmt$(nc)}</b></span>${Math.abs(tri)>=0.01?` <span class="c" title="Clientes de triangulación, cuenta 4.1.1.01.040 o productos TRI-. Ya están dentro de las ventas netas: acá se muestran apartados." style="border-color:${COL.tri}">de las cuales triangulación <b style="color:${COL.tri}">${fmt$(tri)}</b></span> <span class="c" title="Ventas netas menos triangulación">venta propia <b>${fmt$(vn-tri)}</b></span>`:""} <span class="c" title="Lo mismo con IVA incluido: lo que se le facturó al cliente">Con IVA <b>${fmt$(iva)}</b></span>`;
 }
 
 function renderPedidos(t){

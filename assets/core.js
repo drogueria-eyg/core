@@ -105,6 +105,37 @@ window.EYG = (function(){
   const CAT_OCULTAS = [448];
   const SIN_OCULTAS = ["!", ["categ_id","child_of",CAT_OCULTAS]];
 
+  /* ---------- QUE CUENTA COMO TRIANGULACION (un solo criterio para todo el Core) ----------
+     La regla del negocio la puso Direccion: Lazzari y Sanchez Victoria son clientes de
+     triangulacion SIEMPRE, todo lo que se les vende. Los demas casos son mixtos (un mismo
+     pedido con renglones triangulados y normales), y ahi el corte va por renglon.
+
+     Por eso son TRES condiciones en OR, y hacen falta las tres:
+       · TRI_PARTNERS  el cliente. Es la regla real, y la unica que ve un pedido que
+                       todavia no se facturo ni usa los productos TRI-.
+       · TRI_CUENTA    la cuenta de ingresos del renglon de factura. Es la que recoge la
+                       historia: las facturas de junio a agosto 2026 se hicieron con los
+                       productos REALES y se reclasificaron despues.
+       · CAT_OCULTAS   la categoria del producto (los codigos TRI-). Ve el renglon del
+                       pedido antes de facturarlo.
+     Verificado el 29/09/2026: las tres juntas dan lo mismo que la cuenta sola en los cuatro
+     meses que hay (jun 19.875.000 · jul 37.338.500 · ago 64.217.490 · sep 46.451.500), asi
+     que no se pisan ni suman de mas.
+
+     SI APARECE OTRO CLIENTE DE TRIANGULACION HAY QUE AGREGARLO ACA. No se usa etiqueta de
+     contacto porque en esta base las etiquetas son los RUBROS y meter una mas los ensucia. */
+  const TRI_PARTNERS = [4117, 4215];   // Lazzari, Augusto · SANCHEZ VICTORIA BELEL
+  const TRI_CUENTA   = 409;            // 4.1.1.01.040 Venta de mercaderia TRIANGULACION
+  /* renglon de FACTURA (account.move.line) */
+  const TRI_DOM_FACT = ["|","|",["partner_id","child_of",TRI_PARTNERS],
+                                ["account_id","=",TRI_CUENTA],
+                                ["product_id.categ_id","child_of",CAT_OCULTAS]];
+  /* renglon de PEDIDO (sale.order.line) */
+  const TRI_DOM_PED  = ["|","|",["order_partner_id","child_of",TRI_PARTNERS],
+                                ["invoice_lines.account_id","=",TRI_CUENTA],
+                                ["product_id.categ_id","child_of",CAT_OCULTAS]];
+  const TRI_COLOR = "#8E5FBF";
+
   const money = n => "$"+Math.round(n||0).toLocaleString("es-AR");
   const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   const hace = d => { const t=new Date(); t.setDate(t.getDate()-d); return t.toISOString().slice(0,10); };
@@ -2185,7 +2216,7 @@ window.EYG = (function(){
     return m>0 && Math.abs(m-c)<0.01;
   }
 
-  return { supa, rpc, rpcHead, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
+  return { supa, rpc, rpcHead, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,

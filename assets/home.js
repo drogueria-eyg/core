@@ -194,13 +194,19 @@ window.EYGHome = (function(){
      4 renglones triangulados y 2 normales contado entero sumaría de más
      (medido el 29/9: $260.742 de diferencia sobre $34M).
 
+     El CRITERIO vive en core.js (EYG.TRI_DOM_PED) y son tres condiciones en OR:
+     el cliente, la cuenta de ingresos de su factura y la categoría del producto.
+     Con la categoría sola el Inicio mostraba junio, julio y agosto en CERO, porque
+     los productos TRI- recién se crearon en septiembre y esas facturas se hicieron
+     con los productos reales. Regla de Dirección: Lazzari y Sánchez Victoria son
+     triangulación SIEMPRE. Si aparece otro cliente se agrega en core.js.
+
      Y se agrupa del lado del cliente porque `date_order` en sale.order.line
      NO está almacenado: Odoo lo acepta en el filtro (por la relación) pero lo
      rechaza en el group_by. Ver la trampa en odoo-order-campos-no-almacenados. */
-  const TRI_CAT=448;
   async function mapaTriangulacion(k,ini,g){
     const ls=await rpc("sale.order.line","search_read",
-      [domLineas([["order_id.date_order",">=",uDesde(ini)],["product_id.categ_id","child_of",TRI_CAT]]),
+      [domLineas([["order_id.date_order",">=",uDesde(ini)]]).concat(EYG.TRI_DOM_PED),
        ["order_id","price_subtotal"]], Object.assign({limit:0},CTX));
     if(!ls.length) return {};
     const ids=[...new Set(ls.map(l=>l.order_id[0]))];
@@ -219,12 +225,15 @@ window.EYGHome = (function(){
     Object.values(m).forEach(o=>{ o.n=o.ped.size; delete o.ped; });
     return m;
   }
+  /* El ORDEN importa: svgBarras apila de abajo hacia arriba siguiendo este array, así
+     que la venta propia va primera (la base) y la triangulación última (arriba). Es la
+     misma lectura que el tablero de métricas: el tramo violeta corona la barra. */
   const OPERACION=[
-    {k:"tri", ic:"🔀", lab:"Triangulación", corto:"Triangulación", col:"#8E5FBF",
-     mapa:mapaTriangulacion,
-     ayuda:"Ventas con entrega directa del proveedor al cliente: la mercadería no pasa por el depósito. Se cuenta renglón por renglón, así un pedido mixto reparte bien cada parte."},
     {k:"propia", ic:"🏠", lab:"Venta propia", corto:"Propia", col:"#04635F", resto:true,
-     ayuda:"Todo lo demás: mercadería que sale de nuestro depósito, con su remito y su movimiento de stock."},
+     ayuda:"Mercadería que sale de nuestro depósito, con su remito y su movimiento de stock."},
+    {k:"tri", ic:"🔀", lab:"Triangulación", corto:"Triangulación", col:EYG.TRI_COLOR,
+     mapa:mapaTriangulacion,
+     ayuda:"Ventas con entrega directa del proveedor al cliente: la mercadería no pasa por el depósito. Se cuenta renglón por renglón, así un pedido mixto reparte bien cada parte. Lazzari y Sánchez Victoria son triangulación siempre."},
   ];
 
   const CORTES={
@@ -999,8 +1008,7 @@ window.EYGHome = (function(){
     if(TRI_HOY) return Promise.resolve(TRI_HOY);
     if(_triCargando) return _triCargando;
     _triCargando = rpc("sale.order.line","search_read",
-        [domLineas([["order_id.date_order",">=",HOY+" 00:00:00"],
-                    ["product_id.categ_id","child_of",TRI_CAT]]),
+        [domLineas([["order_id.date_order",">=",HOY+" 00:00:00"]]).concat(EYG.TRI_DOM_PED),
          ["order_id","price_subtotal"]], Object.assign({limit:0},CTX))
       .then(ls=>{ const m={};
         ls.forEach(l=>{ const id=l.order_id[0]; m[id]=(m[id]||0)+(l.price_subtotal||0); });
@@ -1062,6 +1070,7 @@ window.EYGHome = (function(){
   /* Cambia lo que muestra el gráfico. "Hora" no existe para margen: el margen de
      una hora suelta es ruido, y cada barra de margen cuesta una consulta. */
   function verModo(m){
+    if(m==="operacion") m="ventas";   // ya no es una pestaña: se ve encimada en Ventas
     if(MODO===m) return;
     MODO=m;
     if(m==="margen" && GRA==="hora") GRA="mes";
@@ -1111,7 +1120,6 @@ window.EYGHome = (function(){
         ${V.margen?`<button class="${esMg?"on":""}" onclick="EYGHome.verModo('margen')" title="Qué margen dejó la venta de cada período.">Margen</button>`:""}
         <button class="${MODO==="canales"?"on":""}" onclick="EYGHome.verModo('canales')" title="La misma venta, apilada según por dónde entró cada pedido.">Canales</button>
         <button class="${MODO==="rubros"?"on":""}" onclick="EYGHome.verModo('rubros')" title="La misma venta, apilada según el rubro del cliente que compró.">Rubros</button>
-        <button class="${MODO==="operacion"?"on":""}" onclick="EYGHome.verModo('operacion')" title="La misma venta, separando la triangulación: lo que entrega el proveedor directo al cliente y no pasa por nuestro depósito.">Triangulación</button>
       </div>`+
       `<div class="pills">${grans.map(k=>
         `<button data-k="${k}" class="${k===GRA?"on":""}" onclick="EYGHome.ver('${k}')">${GRAN[k].lab}</button>`).join("")}</div>`;
@@ -1190,13 +1198,13 @@ window.EYGHome = (function(){
           ? (MG&&MG.ok&&MG.ref!=null?`<div class="es sm"><div class="l">vs promedio 12 meses</div><div class="v">${deltaPts(tot,MG.ref,"")}</div></div>`:"")
           : `<div class="es sm"><div class="l">${esc(cmpTxt)}</div><div class="v">${compTot?delta(tot,compTot,""):'<span class="delta flat">—</span>'}</div></div>`}
         ${(!esMg&&nPed)?`<div class="es sm"><div class="l">Pedidos</div><div class="v">${ent(nPed)}</div></div>`:""}
-        ${focoC?"":visibles.map(c=>`<div class="es sm" id="evo-lider-${c}" hidden title="${esc(CORTES[c].lider)}: el que se llevó la mayor parte de la plata en el período que estás mirando."></div>`).join("")}
+        ${focoC?"":visibles.filter(c=>c!=="operacion").map(c=>`<div class="es sm" id="evo-lider-${c}" hidden title="${esc(CORTES[c].lider)}: el que se llevó la mayor parte de la plata en el período que estás mirando."></div>`).join("")}
         ${s.hora?`<div class="es sm"><div class="l">&nbsp;</div><div class="v" style="font-size:12px"><span class="chip-live" style="padding:5px 10px"><span class="dot"></span>en vivo</span></div></div>`:""}
       </div>
-      <div class="chartwrap" id="evo-chart">${svgBarras(vis, prom, s.hora, fmtV, {segs:(C&&!focoC)?C.items:null, color:focoC?focoC.col:null})}<div class="tt" id="evo-tt"></div></div>
+      <div class="chartwrap" id="evo-chart">${svgBarras(vis, prom, s.hora, fmtV, {segs:(C&&!focoC)?C.items:null, color:focoC?focoC.col:null, tri:triEncimada(vis, VC)})}<div class="tt" id="evo-tt"></div></div>
       <div id="evo-can">${visibles.map(c=>leyendaCorte(VC[c], GRA, c)).join("")}</div>`;
     paintNums(body);
-    if(!focoC) visibles.forEach(c=>pintarLider(VC[c], c));
+    if(!focoC) visibles.filter(c=>c!=="operacion").forEach(c=>pintarLider(VC[c], c));
     engancharTooltip(vis, s.hora, esMg, (C&&!focoC)?C.items:null);
     if(!esMg) asegurarCortes();
   }
@@ -1205,6 +1213,21 @@ window.EYGHome = (function(){
      En la pestaña Ventas se muestran LAS DOS —por dónde entró y qué tipo de
      cliente compró— porque son las dos preguntas que se hacen mirando el
      gráfico. En la pestaña de un corte se muestra sólo la suya. */
+  /* Cuánta triangulación hay en cada barra VISIBLE de la pestaña Ventas.
+     Se alinea por clave de bucket, no por posición: la serie del corte llega en
+     otra llamada y si alguna vez trajera otro largo, emparejar por índice
+     correría el tramo de mes. Devuelve null cuando no corresponde encimarlo
+     (margen, o ya estamos dentro de un corte que apila por otra dimensión). */
+  let _triTT=null;             // el mismo reparto que se pintó, para el tooltip
+  function triEncimada(vis, VC){
+    _triTT=null;
+    if(MODO!=="ventas" || !vis || !vis.length) return null;
+    const vc=VC&&VC.operacion; if(!vc||!vc.vis) return null;
+    const m={}; vc.vis.forEach(p=>{ m[p.key]=((p.seg||{}).tri||{}).v||0; });
+    const out=vis.map(p=>m[p.key]||0);
+    if(!out.some(v=>v>0)) return null;
+    return (_triTT=out);
+  }
   const sumaCanal  = (arr,k)=>arr.reduce((a,p)=>a+((((p.seg||{})[k])||{}).v||0),0);
   const cuentaCanal= (arr,k)=>arr.reduce((a,p)=>a+((((p.seg||{})[k])||{}).n||0),0);
 
@@ -1225,7 +1248,9 @@ window.EYGHome = (function(){
   function cortesVisibles(){
     if(MODO==="margen") return [];
     if(esCorte(MODO)) return [MODO];
-    return ["canales","rubros"];
+    /* "operacion" ya no tiene pestaña propia: la triangulación se pinta ENCIMADA
+       dentro de las barras de Ventas, así que su serie se pide siempre acá. */
+    return ["operacion","canales","rubros"];
   }
   /* Repinta sólo las leyendas y los "quién más trae" (los usa asegurarCortes
      cuando el reparto llega tarde: así no se redibuja el gráfico entero ni se
@@ -1233,7 +1258,7 @@ window.EYGHome = (function(){
   function pintarLeyenda(gra){
     const h=document.getElementById("evo-can"); if(!h||gra!==GRA) return;
     h.innerHTML=cortesVisibles().map(c=>leyendaCorte(ventanaCorte(null,null,_cmpOK,c), gra, c)).join("");
-    cortesVisibles().forEach(c=>pintarLider(ventanaCorte(null,null,_cmpOK,c), c));
+    cortesVisibles().filter(c=>c!=="operacion").forEach(c=>pintarLider(ventanaCorte(null,null,_cmpOK,c), c));
   }
   function pintarLider(vc, corteK){
     const el=document.getElementById("evo-lider-"+corteK); if(!el) return;
@@ -1320,8 +1345,16 @@ window.EYGHome = (function(){
           acc+=sv;
         });
       }else{
+        const d=Math.min(i*22,500);
         bars+=`<rect class="bar bar-in" data-i="${i}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="4"
-          fill="${opt.color || (activa?"#EC8B5E":"url(#bg1)")}" style="animation-delay:${Math.min(i*22,500)}ms"/>`;
+          fill="${opt.color || (activa?"#EC8B5E":"url(#bg1)")}" style="animation-delay:${d}ms"/>`;
+        /* Triangulación ENCIMADA: el tramo se apoya arriba, la venta propia queda
+           abajo. El total de la barra no cambia — es la misma barra, partida. Se le
+           come 1px de alto para que se vea la juntura, igual que en el apilado. */
+        const tv = opt.tri ? Math.min(opt.tri[i]||0, p.v) : 0;
+        if(tv>0){ const yB=Y(p.v-tv);
+          bars+=`<rect class="bar bar-tri" data-i="${i}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(yB-y-1,1).toFixed(1)}" rx="4"
+            fill="${EYG.TRI_COLOR}" style="animation-delay:${d+420}ms"/>`; }
       }
       hits+=`<rect class="hit" data-i="${i}" x="${(x0+slot*i).toFixed(1)}" y="${y0}" width="${slot.toFixed(1)}" height="${(y1-y0).toFixed(1)}" fill="transparent"/>`;
       const paso=Math.ceil(pts.length/(chico?5:(pts.length>26?9:16)));
@@ -1355,6 +1388,11 @@ window.EYGHome = (function(){
       wrap.querySelectorAll('.bar[data-i="'+i+'"]').forEach(b=>b.classList.add("sel"));
       const r=t.getBoundingClientRect(), wr=wrap.getBoundingClientRect();
       const t1 = esHora ? `${p.key}:00 a ${p.key}:59` : etiquetaLarga(GRA,p.key);
+      /* En Ventas la barra viene partida: el tooltip tiene que decir las dos partes,
+         si no el tramo violeta no se puede leer. */
+      const tv = (!items && _triTT) ? (_triTT[i]||0) : 0;
+      const partida = tv>0 ? `<div class="t3"><b style="color:${EYG.TRI_COLOR}">■</b> Triangulación · ${esc(M(tv))} <span style="opacity:.7">(${esc(p1(tv/(p.v||1)*100))})</span></div>`
+                           + `<div class="t3"><b style="color:#04635F">■</b> Venta propia · ${esc(M((p.v||0)-tv))}</div>` : "";
       let pie;
       if(items){
         const filas=items.filter(c=>((((p.seg||{})[c.k])||{}).v||0)>0)
@@ -1367,7 +1405,7 @@ window.EYGHome = (function(){
           : esHora
           ? (p.prev?`ayer a esta hora: ${M(p.prev)}`:"ayer no hubo ventas en esta hora")
           : (p.n?`${ent(p.n)} pedido${p.n===1?"":"s"} · ticket ${M(p.v/p.n)}`:"sin pedidos");
-        pie=`<div class="t3">${esc(extra)}</div>`;
+        pie=partida+`<div class="t3">${esc(extra)}</div>`;
       }
       tt.innerHTML=`<div class="t1">${esc(t1)}</div><div>${esc(esMg?p1(p.v):M(p.v))}</div>${pie}`;
       tt.style.left=(r.left-wr.left+r.width/2)+"px";
