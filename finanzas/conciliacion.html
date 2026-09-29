@@ -43,6 +43,13 @@
   .drop .t{font-size:15px;font-weight:800;color:var(--teal-deep);margin-top:8px}
   .drop .s{font-size:12.5px;color:var(--gris);margin-top:4px}
   .drop input{display:none}
+  .selbanco{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 12px;background:#F7FBFA;border:1px solid var(--line);border-radius:10px}
+  .selbanco label{font-size:12px;font-weight:800;color:var(--teal-deep);display:flex;align-items:center;gap:8px;cursor:help;text-transform:uppercase;letter-spacing:.5px}
+  .selbanco select{font-family:inherit;font-size:13px;font-weight:700;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);cursor:pointer}
+  .selbanco .cta-num{font-size:11.5px;color:var(--gris);font-weight:600;cursor:help}
+  .archivos{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}
+  .arch{font-size:11.5px;font-weight:700;background:var(--agua);color:var(--teal-deep);padding:4px 10px;border-radius:20px;cursor:help}
+  .arch b{background:rgba(4,135,130,.16);padding:0 5px;border-radius:9px;margin-left:3px}
 
   /* KPIs */
   .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:11px;margin-bottom:16px}
@@ -134,7 +141,7 @@ const rpc=EYG.rpc;
    ══════════════════════════════════════════════════════════════════════════ */
 const BANCOS={
   credicoop:{
-    nombre:"Banco Credicoop", diario:24, cuenta:359, partner:2043,
+    nombre:"Credicoop", cuentaBanco:"191-274-015650/8", diario:24, cuenta:359, partner:2043,
     /* OJO: 974 y 1273 NO son comisiones aunque el código lo parezca.
        974 = Transf. Interbanking (un COBRO) · 1273 = entre cuentas propias. */
     codigos:{
@@ -154,7 +161,16 @@ const BANCOS={
       "2002":{tipo:"echeq",  sub:"E-cheq cámara"},
       "2003":{tipo:"echeq",  sub:"E-cheq canje interno"}
     }
-  }
+  },
+  /* Los demás bancos están listados pero SIN mapa de códigos: el lector puede
+     funcionar si el formato del archivo es igual, pero la clasificación queda
+     en "sin clasificar" y la pantalla lo avisa. Para habilitar uno, hay que ver
+     un resumen suyo y agregarle su objeto `codigos`. */
+  macro:     {nombre:"Macro",             cuentaBanco:"333209421315913",  diario:26, cuenta:361, partner:2092, codigos:null},
+  bbva:      {nombre:"BBVA",              cuentaBanco:"282-036215/1",     diario:25, cuenta:360, partner:2667, codigos:null},
+  santafe:   {nombre:"Santa Fe",          cuentaBanco:"00004034106204",   diario:77, cuenta:397, partner:3919, codigos:null},
+  municipal: {nombre:"Municipal Rosario", cuentaBanco:"",                 diario:87, cuenta:400, partner:4038, codigos:null},
+  nacion:    {nombre:"Nación",            cuentaBanco:"30354480100005",   diario:14, cuenta:345, partner:4045, codigos:null}
 };
 const CTA_TRANSIT=349, CTA_RECIBOS=350, CTA_PAGOS=351, CTA_PROVEEDORES=148;
 const TIPOS={
@@ -213,7 +229,7 @@ function validarCadena(movs){
 /* ══════════════════════════════════════════════════════════════════════════
    ESTADO
    ══════════════════════════════════════════════════════════════════════════ */
-const ST={banco:"credicoop", movs:[], dias:[], filtro:null, mapaCuit:{}, listo:false, trabajando:false, logs:[]};
+const ST={banco:"credicoop", movs:[], archivos:[], filtro:null, mapaCuit:{}, listo:false, trabajando:false, logs:[]};
 
 function log(msg,clase){ ST.logs.push({msg,clase,t:new Date()}); pintarLog(); }
 function pintarLog(){
@@ -333,30 +349,55 @@ function render(){
 }
 
 function zonaCarga(){
+  const B=BANCOS[ST.banco];
+  const ops=Object.keys(BANCOS).map(k=>'<option value="'+k+'"'+(k===ST.banco?" selected":"")+'>'+
+    esc(BANCOS[k].nombre)+(BANCOS[k].codigos?"":" · sin mapa")+'</option>').join("");
   return '<div class="panel"><h3>📂 Resumen del banco</h3>'+
-    '<div class="sub">Arrastrá el archivo que bajás del home banking (.xls) o hacé clic para elegirlo. '+
-    'Se puede subir el mismo archivo más de una vez: lo que ya esté cargado se detecta y no se duplica.</div>'+
-    '<label class="drop" id="drop"><div class="ic">📄</div>'+
-    '<div class="t">'+(ST.listo?"Cargar otro archivo":"Elegí el resumen diario")+'</div>'+
-    '<div class="s">Banco Credicoop · formato .xls</div>'+
-    '<input type="file" id="file" accept=".xls,.xlsx"></label></div>';
+    '<div class="sub">Elegí el banco y subí uno o varios archivos. El resumen no dice de qué cuenta es, '+
+    'así que el banco hay que declararlo. Podés subir el mismo archivo más de una vez: lo que ya esté cargado se detecta y no se duplica.</div>'+
+    '<div class="selbanco">'+
+      '<label title="El archivo del banco no trae el número de cuenta: por eso hay que elegir a cuál corresponde.">Banco'+
+      '<select id="selBanco" onchange="cambiarBanco(this.value)">'+ops+'</select></label>'+
+      '<span class="cta-num" title="La cuenta del diario en Odoo. Verificá que sea la del archivo que vas a subir.">'+
+        (B.cuentaBanco?"cuenta "+esc(B.cuentaBanco):"sin número de cuenta en el diario")+'</span>'+
+    '</div>'+
+    (B.codigos?"":'<div class="aviso warn" style="margin:12px 0 0">⚠️ <div><b>'+esc(B.nombre)+' todavía no tiene su mapa de códigos.</b> '+
+      'El archivo se va a poder leer si el formato es igual al de Credicoop, pero los movimientos van a quedar <b>sin clasificar</b>: '+
+      'no voy a saber cuál es un impuesto, cuál una comisión y cuál un cobro. Pasame un resumen de este banco y lo agrego.</div></div>')+
+    '<label class="drop" id="drop" style="margin-top:12px"><div class="ic">📄</div>'+
+    '<div class="t">'+(ST.listo?"Cargar más archivos":"Elegí uno o varios resúmenes")+'</div>'+
+    '<div class="s">'+esc(B.nombre)+' · formato .xls · se pueden soltar varios juntos</div>'+
+    '<input type="file" id="file" accept=".xls,.xlsx" multiple></label>'+
+    (ST.archivos&&ST.archivos.length?'<div class="archivos">'+ST.archivos.map(a=>
+      '<span class="arch" title="'+esc(a.movs+" movimientos · "+a.dias.join(", "))+'">📄 '+esc(a.nombre)+
+      ' <b>'+a.movs+'</b></span>').join("")+'</div>':"")+
+    '</div>';
 }
+window.cambiarBanco=k=>{
+  if(ST.movs.length && !confirm("Cambiar de banco descarta lo que subiste. ¿Seguimos?")){
+    document.getElementById("selBanco").value=ST.banco; return;
+  }
+  ST.banco=k; ST.movs=[]; ST.archivos=[]; ST.validacion=null; ST.listo=false; ST.mapaCuit={}; ST.logs=[]; render();
+};
 function engancharDrop(){
   const d=document.getElementById("drop"), f=document.getElementById("file"); if(!d||!f) return;
-  f.onchange=e=>{ if(e.target.files[0]) procesar(e.target.files[0]); };
+  f.onchange=e=>{ if(e.target.files.length) procesar([...e.target.files]); };
   ["dragenter","dragover"].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.add("over");}));
   ["dragleave","drop"].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.remove("over");}));
-  d.addEventListener("drop",e=>{ const file=e.dataTransfer.files[0]; if(file) procesar(file); });
+  d.addEventListener("drop",e=>{ const fs=[...e.dataTransfer.files]; if(fs.length) procesar(fs); });
 }
 
 function avisoValidacion(){
   const v=ST.validacion; if(!v) return "";
-  if(v.ok) return '<div class="aviso ok">✅ <div><b>El archivo cierra exacto.</b> Los '+ST.movs.length+
-    ' movimientos encadenan saldo a saldo, del '+money(v.inicial)+' al '+money(v.final)+'. '+
+  const cuantos=(v.archivos||1)>1?("Los "+v.archivos+" archivos cierran"):"El archivo cierra";
+  const dias=v.dias&&v.dias.length>1?(" — "+v.dias.length+" días, del "+v.dias[0]+" al "+v.dias[v.dias.length-1]):"";
+  if(v.ok) return '<div class="aviso ok">✅ <div><b>'+cuantos+' exacto.</b> Los '+ST.movs.length+
+    ' movimientos encadenan saldo a saldo, de '+money(v.inicial)+' a '+money(v.final)+dias+'. '+
     'Si un solo importe estuviera mal leído, esta cadena se rompería.</div></div>';
-  return '<div class="aviso bad">⛔ <div><b>El archivo NO cierra.</b> La cadena de saldos se rompe en '+v.fallas.length+
+  return '<div class="aviso bad">⛔ <div><b>No cierra la cadena de saldos.</b> Se rompe en '+v.fallas.length+
     ' punto(s). No se carga nada hasta resolverlo — sería meter números que el banco no dice.<br>'+
-    v.fallas.slice(0,3).map(f=>"· fila "+f.i+": esperaba "+money(f.esperado)+" y el archivo dice "+money(f.real)).join("<br>")+
+    v.fallas.slice(0,4).map(f=>"· "+(f.archivo?esc(f.archivo)+", ":"")+"fila "+f.i+
+      ": esperaba "+money(f.esperado)+" y el archivo dice "+money(f.real)).join("<br>")+
     '</div></div>';
 }
 
@@ -573,23 +614,57 @@ window.elegirCand=(i)=>conTrabajo(async()=>{
 /* ══════════════════════════════════════════════════════════════════════════
    ARRANQUE
    ══════════════════════════════════════════════════════════════════════════ */
-async function procesar(file){
+async function procesar(files){
   try{
-    ST.listo=false; ST.logs=[]; ST.filtro=null; render();
-    document.getElementById("app").insertAdjacentHTML("beforeend",'<div class="cargando">Leyendo el archivo y consultando Odoo…</div>');
-    const buf=await file.arrayBuffer();
-    const {movs}=leerArchivo(buf);
-    if(!movs.length) throw new Error("El archivo no tiene movimientos con fecha válida.");
-    const fallas=validarCadena(movs);
-    ST.validacion={ok:!fallas.length,fallas,inicial:Math.round((movs[0].saldo-movs[0].importe)*100)/100,final:movs[movs.length-1].saldo};
-    ST.movs=movs; ST.mapaCuit={};
-    if(fallas.length){ ST.listo=true; render(); return; }
-    await analizar(movs);
+    ST.listo=false; ST.logs=[]; ST.filtro=null; ST.archivos=[]; render();
+    document.getElementById("app").insertAdjacentHTML("beforeend",
+      '<div class="cargando">Leyendo '+files.length+' archivo(s) y consultando Odoo…</div>');
+
+    /* ---- leer todos, cada uno con su propia cadena de saldos ---- */
+    const porArchivo=[], errores=[];
+    for(const f of files){
+      try{
+        const {movs}=leerArchivo(await f.arrayBuffer());
+        if(!movs.length){ errores.push(f.name+": no tiene movimientos con fecha válida"); continue; }
+        const fallas=validarCadena(movs);
+        const dias=[...new Set(movs.map(m=>m.fecha))].sort();
+        porArchivo.push({nombre:f.name, movs, fallas, dias});
+      }catch(e){ errores.push(f.name+": "+(e.message||e)); }
+    }
+    if(!porArchivo.length) throw new Error(errores.join(" · ")||"Ningún archivo se pudo leer.");
+    errores.forEach(e=>log("No se pudo leer — "+e,"e"));
+
+    /* ---- el mismo día en dos archivos: se usa una sola vez ---- */
+    porArchivo.sort((a,b)=>a.dias[0].localeCompare(b.dias[0]));
+    const vistos=new Set(), todos=[], repetidos=[];
+    porArchivo.forEach(a=>{
+      const nuevosDias=a.dias.filter(d=>!vistos.has(d));
+      const repes=a.dias.filter(d=>vistos.has(d));
+      if(repes.length) repetidos.push({archivo:a.nombre,dias:repes});
+      a.dias.forEach(d=>vistos.add(d));
+      todos.push(...a.movs.filter(m=>nuevosDias.includes(m.fecha)));
+      ST.archivos.push({nombre:a.nombre, movs:a.movs.length, dias:a.dias, fallas:a.fallas.length});
+    });
+    repetidos.forEach(r=>log("El día "+r.dias.join(", ")+" ya venía en otro archivo: de "+r.archivo+" se ignora","e"));
+
+    todos.sort((a,b)=>a.fecha.localeCompare(b.fecha));
+    const conFalla=porArchivo.filter(a=>a.fallas.length);
+    ST.validacion={
+      ok:!conFalla.length,
+      fallas:conFalla.flatMap(a=>a.fallas.map(f=>({...f,archivo:a.nombre}))),
+      archivos:porArchivo.length, dias:[...vistos].sort(),
+      inicial:todos.length?Math.round((todos[0].saldo-todos[0].importe)*100)/100:0,
+      final:todos.length?todos[todos.length-1].saldo:0
+    };
+    ST.movs=todos; ST.mapaCuit={};
+    log("Leídos "+porArchivo.length+" archivo(s): "+todos.length+" movimientos en "+vistos.size+" día(s)");
+    if(conFalla.length){ ST.listo=true; render(); return; }
+    await analizar(todos);
     ST.listo=true; render();
   }catch(e){
     ST.listo=true; ST.movs=[]; ST.validacion=null;
     document.getElementById("app").innerHTML=zonaCarga()+
-      '<div class="aviso bad">⛔ <div><b>No se pudo leer el archivo.</b><br>'+esc(e.message||String(e))+'</div></div>';
+      '<div class="aviso bad">⛔ <div><b>No se pudo leer.</b><br>'+esc(e.message||String(e))+'</div></div>';
     engancharDrop();
   }
 }
