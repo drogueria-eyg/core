@@ -11,7 +11,7 @@
 <style>
   /* Tokens del tablero (mismo esquema que Métricas de Rosaint, con la paleta EyG) */
   .mt{--accent:#048782;--accent-deep:#04635F;--muted:#8A9A97;--text:#0E1F1D;--text-2:#5F716E;--surface-2:#EFF5F4;--border:var(--line);
-      --c-ventas:#048782;--c-compras:#EC8B5E;--c-margen:#1E5FA8;--c-pedidos:#7A4DB8;--c-sinfac:#E5A93B;--hot:#B0413E;--okc:#1E7D46}
+      --c-ventas:#048782;--c-compras:#EC8B5E;--c-margen:#1E5FA8;--c-pedidos:#7A4DB8;--c-sinfac:#E5A93B;--c-tri:#8E5FBF;--hot:#B0413E;--okc:#1E7D46}
   .mt .bar-top{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
   .mt .bar-top .sp{flex:1}
   .mt .bar-top .grp{display:inline-flex;gap:8px;align-items:center;white-space:nowrap}
@@ -161,7 +161,12 @@ const CACHE_K = "eyg-metricas-v1", CACHE_TTL = 15*60*1000;
 const MES_ES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 const MES_EN = ["january","february","march","april","may","june","july","august","september","october","november","december"];
 const MES_TXT = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
-const COL = {ventas:"var(--c-ventas)", compras:"var(--c-compras)", margen:"var(--c-margen)", pedidos:"var(--c-pedidos)", sinfac:"var(--c-sinfac)"};
+const COL = {ventas:"var(--c-ventas)", compras:"var(--c-compras)", margen:"var(--c-margen)", pedidos:"var(--c-pedidos)", sinfac:"var(--c-sinfac)", tri:"var(--c-tri)"};
+/* Triangulacion: el corte sale por la CUENTA DE INGRESOS del renglon, no por categoria de producto.
+   409 = 4.1.1.01.040 Venta de mercaderia TRIANGULACION. Verificado el 29/09/2026: todos los renglones de
+   la categoria TRIANGULACION (448) caen en esta cuenta, y ademas la cuenta recoge las facturas viejas que
+   se reclasificaron, hechas con los productos reales. La cuenta es el conjunto completo; la categoria no. */
+const CTA_TRI = 409;
 const PALETA = ["#048782","#1E5FA8","#EC8B5E","#7A4DB8","#E5A93B","#1E7D46","#5FC8BF","#B0413E","#04635F","#8A9A97","#C06C84","#355C7D"];
 const COL_CANAL = {"Core (comerciales)":"#048782","Odoo a mano":"#1E5FA8","Portal web":"#E5A93B","WhatsApp":"#25A35A","Sin pedido (factura directa)":"#8A9A97"};
 const DESC_CANAL = {
@@ -292,13 +297,14 @@ async function construir(){
   const limites = meses.map((m,i)=>{ const [y,mm]=m.split("-").map(Number); const n=mm===12?(y+1)+"-01":y+"-"+String(mm+1).padStart(2,"0"); return [m+"-01 03:00:00", n+"-01 03:00:00"]; });
   const SOD = [["state","in",["sale","done"]],["date_order",">=",DESDE+" 03:00:00"]];
 
-  const [vCab, vCli, vPrim, vCom, lFac, lNc, cPortal, cWsp, cCore, cPed, cCab, cLin, pCab, pFacMes, pPend] = await Promise.all([
+  const [vCab, vCli, vPrim, vCom, lFac, lNc, lTri, cPortal, cWsp, cCore, cPed, cCab, cLin, pCab, pFacMes, pPend] = await Promise.all([
     rg("account.move", VD, ["amount_untaxed_signed:sum","amount_total_signed:sum"], ["invoice_date:month","move_type"]),
     rg("account.move", VD, ["amount_untaxed_signed:sum"], ["invoice_date:month","partner_id","move_type"]),
     rg("account.move", [["state","=","posted"],["move_type","=","out_invoice"],EYG.VENTA_REAL], ["invoice_date:min"], ["commercial_partner_id"]),
     rg("account.move", VD, ["amount_untaxed_signed:sum"], ["invoice_date:month","invoice_user_id","move_type"]),
     rg("account.move.line", VL.concat([["move_id.move_type","=","out_invoice"]]), ["balance:sum","quantity:sum"], ["invoice_date:month","product_id"]),
     rg("account.move.line", VL.concat([["move_id.move_type","=","out_refund"]]), ["balance:sum","quantity:sum"], ["invoice_date:month","product_id"]),
+    rg("account.move.line", VL.concat([["account_id","=",CTA_TRI]]), ["balance:sum"], ["invoice_date:month","partner_id"]),
     rg("account.move.line", VL.concat([[SO("website_id"),"!=",false]]), ["balance:sum"], ["invoice_date:month"]),
     rg("account.move.line", VL.concat([[SO("website_id"),"=",false],[SO("origin"),"ilike","WhatsApp"]]), ["balance:sum"], ["invoice_date:month"]),
     rg("account.move.line", VL.concat(DOM_CORE), ["balance:sum"], ["invoice_date:month"]),
@@ -311,7 +317,7 @@ async function construir(){
   ]);
 
   // ================= VENTAS (cabeceras) =================
-  const serie = meses.map(m=>({mes:m, ventas_brutas:0, nc:0, ventas_netas:0, ventas_con_iva:0, n_facturas:0, n_nc:0, compras_netas:0, unidades:0, productos:0, otros_conceptos:0, clientes:0, clientes_nuevos:0}));
+  const serie = meses.map(m=>({mes:m, ventas_brutas:0, nc:0, ventas_netas:0, ventas_propias:0, triangulacion:0, ventas_con_iva:0, n_facturas:0, n_nc:0, compras_netas:0, unidades:0, productos:0, otros_conceptos:0, clientes:0, clientes_nuevos:0}));
   for(const g of vCab){ const i=iOf(g["invoice_date:month"]); if(i===undefined) continue; const s=serie[i];
     if(g.move_type==="out_invoice"){ s.ventas_brutas+=g.amount_untaxed_signed; s.n_facturas+=g.__count; } else { s.nc+=g.amount_untaxed_signed; s.n_nc+=g.__count; }
     s.ventas_con_iva+=g.amount_total_signed; }
@@ -334,7 +340,15 @@ async function construir(){
     if(fac){ add(cliN,cp,i,g.__count); add(ubiN,pid,i,g.__count); cliMes[i].add(cp); }
   }
   serie.forEach((s,i)=>{ s.clientes=cliMes[i].size; s.clientes_nuevos=[...cliMes[i]].filter(id=>(primeraDe[id]||"").slice(0,7)===s.mes).length; });
-  const clientes = Object.keys(cli).map(id=>{ const c=cpInfo[id]||{}; return {id:+id, nombre:c.name||m2oName((pInfo[id]||{}).commercial_partner_id)||"?", rubro:EYG.rubroDe(c)||"", valores:cli[id].map(r2), n:cliN[id]||zeros()}; });
+  // ================= TRIANGULACION (por la cuenta de ingresos del renglon) =================
+  // Va apartada pero adentro: el total de ventas netas NO cambia, la venta propia sale por resta.
+  const triCli={};
+  for(const g of lTri){ const i=iOf(g["invoice_date:month"]); if(i===undefined) continue;
+    const v=-(g.balance||0); serie[i].triangulacion+=v;
+    const pid=m2oId(g.partner_id); const pp=pInfo[pid]||{}; const cp=m2oId(pp.commercial_partner_id)||pid;
+    if(cp) add(triCli,cp,i,v); }
+
+  const clientes = Object.keys(cli).map(id=>{ const c=cpInfo[id]||{}; return {id:+id, nombre:c.name||m2oName((pInfo[id]||{}).commercial_partner_id)||"?", rubro:EYG.rubroDe(c)||"", valores:cli[id].map(r2), n:cliN[id]||zeros(), tri:(triCli[id]||zeros()).map(r2)}; });
   const ubicaciones = Object.keys(ubi).map(id=>{ const p=pInfo[id]||{}; return {id:+id, nombre:p.name||"?", city:p.city||"", state:m2oName(p.state_id).replace(/\s*\(AR\)\s*$/,""), zip:p.zip||"", lat:p.partner_latitude||0, lon:p.partner_longitude||0, state_id:p.state_id, valores:ubi[id].map(r2), n:ubiN[id]||zeros()}; });
 
   // ================= COMERCIALES =================
@@ -393,7 +407,7 @@ async function construir(){
       .filter(p=>Math.abs(p.sin_facturar)>=1).sort((a,b)=>b.sin_facturar-a.sin_facturar);
   }
 
-  serie.forEach(s=>{ s.ventas_netas=s.ventas_brutas+s.nc; for(const k in s) if(typeof s[k]==="number") s[k]=r2(s[k]); });
+  serie.forEach(s=>{ s.ventas_netas=s.ventas_brutas+s.nc; s.ventas_propias=s.ventas_netas-s.triangulacion; for(const k in s) if(typeof s[k]==="number") s[k]=r2(s[k]); });
   const toList=(o,key,extra)=>Object.entries(o).map(([k,v])=>Object.assign({[key]:k}, extra?extra(k):{}, {valores:v.map(r2), total:r2(v.reduce((a,b)=>a+b,0))})).sort((a,b)=>b.total-a.total);
 
   return {
@@ -450,7 +464,8 @@ function comprasMes(i){
 function composicionOk(){ return D.serie.every(s=>Math.abs(s.productos+s.otros_conceptos-s.ventas_netas)<0.05); }
 function renderStatus(){
   const C=D.control;
-  const ok = C.ventas.every(c=>Math.abs(c.dif)<0.01) && C.compras.every(c=>Math.abs(c.dif)<0.01) && C.canales.every(v=>Math.abs(v)<0.05) && C.pedidos.every(v=>Math.abs(v)<0.05) && composicionOk();
+  const ok = C.ventas.every(c=>Math.abs(c.dif)<0.01) && C.compras.every(c=>Math.abs(c.dif)<0.01) && C.canales.every(v=>Math.abs(v)<0.05) && C.pedidos.every(v=>Math.abs(v)<0.05) && composicionOk()
+    && D.serie.every(x=>Math.abs(x.ventas_propias+x.triangulacion-x.ventas_netas)<0.05);
   const h=new Date(D.generado);
   $("status").className="status";
   $("status").innerHTML=`Odoo · Droguería EyG · leído ${h.toLocaleDateString("es-AR")} ${h.toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"})} · ${fmtN(C.comprobantes_venta)} comprobantes de venta y ${fmtN(C.comprobantes_compra)} de compra · `+
@@ -465,7 +480,8 @@ function render(){
   const tot=(k,x=a,y=b)=>sum(S.map(s=>s[k]),x,y);
   const comp=(x,y)=>{ let s=0; for(let i=x;i<=y;i++) s+=comprasMes(i); return s; };
   const V=tot("ventas_netas"), Cm=comp(a,b), M=V-Cm, U=tot("unidades"), F=tot("n_facturas");
-  const prev = hayPrev ? {V:tot("ventas_netas",pa,pb), C:comp(pa,pb), U:tot("unidades",pa,pb), F:tot("n_facturas",pa,pb)} : null;
+  const TRI=tot("triangulacion"), VP=V-TRI;   // triangulación apartada dentro del total
+  const prev = hayPrev ? {V:tot("ventas_netas",pa,pb), C:comp(pa,pb), U:tot("unidades",pa,pb), F:tot("n_facturas",pa,pb), TRI:tot("triangulacion",pa,pb)} : null;
   if(prev) prev.M=prev.V-prev.C;
   let cliPer=0; D.clientes.forEach(c=>{ if(sum(c.n,a,b)>0) cliPer++; });
   const cliNuevos=tot("clientes_nuevos");
@@ -488,7 +504,7 @@ function render(){
 
   $("root").innerHTML=`
   <div class="kpis">
-    ${kpi("Ventas netas",fmtM(V),delta(V,prev&&prev.V),"main",fmt$c(V)+" · facturas + notas de débito − notas de crédito, sin IVA. Sólo diarios de venta (no cuenta el diario Redondeo). Tocá para ver la evolución.","ventas","p-main")}
+    ${kpi("Ventas netas",fmtM(V),delta(V,prev&&prev.V)+(TRI>0.005?`<span class="d" title="Facturación de triangulación (cuenta 4.1.1.01.040), ya incluida en el total de arriba: ${fmt$c(TRI)}">propia <b>${fmtM(VP)}</b> · <b style="color:${COL.tri}">triangulación ${fmtM(TRI)}</b> (${fmtP(TRI/V)})</span>`:""),"main",fmt$c(V)+" · facturas + notas de débito − notas de crédito, sin IVA. Sólo diarios de venta (no cuenta el diario Redondeo)."+(TRI>0.005?" De ese total, "+fmt$c(TRI)+" es triangulación.":"")+" Tocá para ver la evolución.","ventas","p-main")}
     ${kpi("Pedidos confirmados",fmtM(PC),`<span class="d">${fmtN(PN)} pedidos · <b>${fmtP(PC?PF/PC:NaN)}</b> ya facturado</span>`,"",fmt$c(PC)+" · pedidos de venta confirmados en el período (por fecha del pedido), sin IVA. Tocá para ver el detalle.","pedidos","p-ped")}
     ${kpi("Sin facturar",`<span class="${PSF>0.5?"":"pos"}">${fmtM(PSF)}</span>`,`<span class="d">${nPend?fmtN(nPend)+" pedido"+(nPend===1?"":"s")+" con saldo":"todo facturado"}</span>`,"","Lo confirmado en pedidos menos lo que ya se facturó de esos mismos pedidos · "+fmt$c(PSF)+". Tocá para ver qué pedidos.","sinfac","p-ped")}
     ${kpi(st.compras==="oper"?"Compras mercadería":"Compras netas",fmtM(Cm),delta(Cm,prev&&prev.C,true),"",fmt$c(Cm)+(st.compras==="oper"?" · sólo compra de mercadería y medicamentos (5.1.1)":" · todas las facturas de proveedor: mercadería, gastos, intereses y bienes de uso")+", sin IVA. No incluye el capital de préstamos ni los descuentos de cheques. Tocá para ver en qué se gasta.","compras","p-compras")}
@@ -504,13 +520,14 @@ function render(){
     <div class="panel-head"><h2 title="Ventas netas y compras en barras, margen en línea llena y pedidos confirmados en línea punteada, mes por mes. Tocá la leyenda para prender/apagar series.">Evolución mensual · ventas, compras y margen</h2>
       <div class="legend" id="leg-main">
         <button data-s="ventas" title="Ventas netas sin IVA"><i style="background:${COL.ventas}"></i>Ventas netas</button>
+        <button data-s="tri" title="Facturación de triangulación, apartada DENTRO de la barra de ventas. El total no cambia: lo que queda abajo es la venta propia."><i style="background:${COL.tri}"></i>↳ de las cuales triangulación</button>
         <button data-s="compras" title="Compras ${compTxt} sin IVA"><i style="background:${COL.compras}"></i>Compras ${compTxt}</button>
         <button data-s="margen" title="Ventas netas − compras"><i style="background:${COL.margen}"></i>Margen</button>
         <button data-s="pedidos" title="Pedidos confirmados por fecha del pedido"><i style="background:${COL.pedidos}"></i>Pedidos confirmados</button>
       </div></div>
     <div class="chart" id="ch-main"></div>
     <div class="compo" id="compo"></div>
-    <div class="nota">Todo sin IVA. <b>Ventas netas</b> = facturas + notas de débito − notas de crédito, sólo de diarios de venta. <b>Compras</b> = facturas de proveedor − sus notas de crédito, sin el capital de préstamos ni los descuentos de cheques (esa plata entra, no es una compra). <b>Margen</b> = ventas − compras del mes. <b>Pedidos confirmados</b> (línea punteada) = por fecha del pedido. Lo que está fuera del período elegido se ve atenuado. <b>Tocá un mes del gráfico para ver solo ese mes.</b></div>
+    <div class="nota">Todo sin IVA. <b>Ventas netas</b> = facturas + notas de débito − notas de crédito, sólo de diarios de venta. <b>Compras</b> = facturas de proveedor − sus notas de crédito, sin el capital de préstamos ni los descuentos de cheques (esa plata entra, no es una compra). <b>Margen</b> = ventas − compras del mes. <b>Pedidos confirmados</b> (línea punteada) = por fecha del pedido. Lo que está fuera del período elegido se ve atenuado. <b>Triangulación</b> = renglones facturados a la cuenta <i>4.1.1.01.040 Venta de mercadería TRIANGULACIÓN</i>: se muestran como el tramo violeta <b>arriba de la barra de ventas</b>, apartados pero adentro — el total no cambia, lo de abajo es venta propia. Antes de junio 2026 no hubo triangulación, por eso el tramo no aparece. <b>Tocá un mes del gráfico para ver solo ese mes.</b></div>
   </div>
 
   <div class="panel" id="p-ped">
@@ -547,6 +564,7 @@ function render(){
     <div class="panel-head"><h2 title="Los 15 productos que más se vendieron en el período.">Productos · ${esc(periodoTxt)}</h2>
       <div class="tools"><div class="pills" id="seg-prod"><button data-m="neto" class="${st.prodModo==="neto"?"on":""}" title="Ordenar por ventas netas en pesos">$ ventas</button><button data-m="unidades" class="${st.prodModo==="unidades"?"on":""}" title="Ordenar por unidades vendidas">Unidades</button></div></div></div>
     <div id="prod-top"></div>
+    <div class="nota">Los productos de triangulación son los de código <b>TRI-</b> y forman la línea <b>TRIANGULACIÓN</b>. Las facturas de triangulación anteriores a septiembre 2026 se hicieron con los productos reales, así que ahí las unidades aparecen sumadas a su propia línea: el corte limpio por producto vale de septiembre 2026 en adelante. El importe total de triangulación siempre está bien, porque sale de la cuenta contable.</div>
   </div>
 
   <div class="panel">
@@ -593,7 +611,7 @@ function irA(id){ const el=$(id); if(!el) return; el.scrollIntoView({behavior:"s
 /* ---------- gráfico principal (barras + líneas, admite margen negativo) ---------- */
 function renderMain(){
   const el=$("ch-main"), S=D.serie, n=S.length;
-  const ser={ventas:S.map(s=>s.ventas_netas), compras:S.map((s,i)=>comprasMes(i))};
+  const ser={ventas:S.map(s=>s.ventas_netas), compras:S.map((s,i)=>comprasMes(i)), tri:S.map(s=>s.triangulacion||0)};
   ser.margen=ser.ventas.map((v,i)=>v-ser.compras[i]); ser.pedidos=D.pedidos.serie.map(x=>x.confirmado);
   const vis=k=>!st.off[k];
   const all=[].concat(vis("ventas")?ser.ventas:[],vis("compras")?ser.compras:[],vis("margen")?ser.margen:[],vis("pedidos")?ser.pedidos:[],[0]);
@@ -611,10 +629,14 @@ function renderMain(){
       const dim=i<st.a||i>st.b;
       if(!dim) body+=`<rect x="${mL+slot*i+2}" y="${mT}" width="${slot-4}" height="${ih}" rx="8" fill="var(--teal)" opacity=".05"/>`;
       let k=0;
-      [["ventas",COL.ventas],["compras",COL.compras]].forEach(([s,c])=>{ if(!vis(s)) return;
+      [["ventas",COL.ventas],["compras",COL.compras]].forEach(([sk,c])=>{ if(!vis(sk)) return;
         const off=nb===2?(k===0?-bw/2-1.5:bw/2+1.5):0; k++;
-        const v=ser[s][i], y0=y(0), yv=y(v);
-        body+=`<rect x="${xc(i)+off-bw/2}" y="${Math.min(y0,yv)}" width="${bw}" height="${Math.max(1,Math.abs(y0-yv))}" rx="4" fill="${c}" opacity="${dim?.28:.92}"/>`; });
+        const v=ser[sk][i], y0=y(0), yv=y(v), x0=xc(i)+off-bw/2;
+        body+=`<rect x="${x0}" y="${Math.min(y0,yv)}" width="${bw}" height="${Math.max(1,Math.abs(y0-yv))}" rx="4" fill="${c}" opacity="${dim?.28:.92}"/>`;
+        /* la triangulación se apoya arriba de la venta propia: misma barra, dos tramos */
+        if(sk==="ventas" && vis("tri") && v>0){ const t=ser.tri[i]; if(t>0.005){ const yp=y(Math.max(0,v-t));
+          body+=`<rect x="${x0}" y="${yv}" width="${bw}" height="${Math.max(1,yp-yv)}" rx="4" fill="${COL.tri}" opacity="${dim?.3:.95}"/>`
+               + `<line x1="${x0}" x2="${x0+bw}" y1="${yp}" y2="${yp}" stroke="var(--surface)" stroke-width="1.4"/>`; } } });
       body+=`<text x="${xc(i)}" y="${H-8}" text-anchor="middle" font-size="${slot<44?9:10.5}" fill="${dim?"var(--gris2)":"var(--gris)"}" font-weight="${dim?400:700}">${slot<44?MES_TXT[+S[i].mes.slice(5)-1]:lblMes(S[i].mes)}${S[i].mes===MES_ACTUAL?"*":""}</text>`;
     }
     if(vis("margen")){ const pts=ser.margen.map((v,i)=>[xc(i),y(v)]);
@@ -629,6 +651,8 @@ function renderMain(){
     svg.addEventListener("mousemove",e=>{ const r=svg.getBoundingClientRect(), i=iDe(e), s=S[i], m=ser.margen[i];
       tip.innerHTML=`<div class="t">${lblMesLargo(s.mes)}${s.mes===MES_ACTUAL?" (en curso)":""}</div>
         <div class="r"><span>Ventas netas</span><b>${fmt$(ser.ventas[i])}</b></div>
+        ${ser.tri[i]>0.005?`<div class="r"><span>· venta propia</span><b>${fmt$(ser.ventas[i]-ser.tri[i])}</b></div>
+        <div class="r"><span>· triangulación</span><b style="color:${COL.tri}">${fmt$(ser.tri[i])} · ${fmtP(ser.ventas[i]?ser.tri[i]/ser.ventas[i]:NaN)}</b></div>`:""}
         <div class="r"><span>Compras ${st.compras==="oper"?"mercadería":"netas"}</span><b>${fmt$(ser.compras[i])}</b></div>
         <div class="r"><span>Margen</span><b class="${m<0?"neg":"pos"}">${fmt$(m)} · ${fmtP(ser.ventas[i]?m/ser.ventas[i]:NaN)}</b></div>
         <div class="r"><span>Pedidos confirmados</span><b>${fmt$(ser.pedidos[i])} · ${fmtP(ser.pedidos[i]?D.pedidos.serie[i].facturado/ser.pedidos[i]:NaN)} facturado</b></div>
@@ -644,7 +668,8 @@ function renderMain(){
 function renderCompo(a,b){
   const S=D.serie;
   const prod=sum(S.map(s=>s.productos),a,b), otros=sum(S.map(s=>s.otros_conceptos),a,b), vn=sum(S.map(s=>s.ventas_netas),a,b), nc=sum(S.map(s=>s.nc),a,b), iva=sum(S.map(s=>s.ventas_con_iva),a,b);
-  $("compo").innerHTML=`<span class="c" title="Renglones de factura con producto, menos los devueltos">Productos <b>${fmt$(prod)}</b></span>${Math.abs(otros)>=0.01?` + <span class="c" title="Renglones sin producto: ajustes, intereses, cheques rechazados facturados">Conceptos sin producto <b>${fmt$(otros)}</b></span>`:""} = <span class="c" title="${fmt$c(vn)}">Ventas netas <b>${fmt$(vn)}</b></span> <span class="c" title="Ya descontadas dentro de productos">de las cuales notas de crédito <b>${fmt$(nc)}</b></span> <span class="c" title="Lo mismo con IVA incluido: lo que se le facturó al cliente">Con IVA <b>${fmt$(iva)}</b></span>`;
+  const tri=sum(S.map(s=>s.triangulacion||0),a,b);
+  $("compo").innerHTML=`<span class="c" title="Renglones de factura con producto, menos los devueltos">Productos <b>${fmt$(prod)}</b></span>${Math.abs(otros)>=0.01?` + <span class="c" title="Renglones sin producto: ajustes, intereses, cheques rechazados facturados">Conceptos sin producto <b>${fmt$(otros)}</b></span>`:""} = <span class="c" title="${fmt$c(vn)}">Ventas netas <b>${fmt$(vn)}</b></span> <span class="c" title="Ya descontadas dentro de productos">de las cuales notas de crédito <b>${fmt$(nc)}</b></span>${Math.abs(tri)>=0.01?` <span class="c" title="Renglones facturados a la cuenta 4.1.1.01.040 Venta de mercadería TRIANGULACIÓN. Ya están dentro de las ventas netas: acá se muestran apartados." style="border-color:${COL.tri}">de las cuales triangulación <b style="color:${COL.tri}">${fmt$(tri)}</b></span> <span class="c" title="Ventas netas menos triangulación">venta propia <b>${fmt$(vn-tri)}</b></span>`:""} <span class="c" title="Lo mismo con IVA incluido: lo que se le facturó al cliente">Con IVA <b>${fmt$(iva)}</b></span>`;
 }
 
 function renderPedidos(t){
@@ -796,7 +821,10 @@ function renderTops(a,b){
   const colR={}; EYG.RUBROS.forEach(r=>colR[r.l]=r.c);
   barras($("tk-rubro"), Object.entries(rk).filter(([,r])=>r.f>0).map(([k,r])=>({label:k+" ("+fmtN(r.f)+" fact.)", value:r.v/r.f, color:colR[k]||"#8A9A97", title:k+": "+fmt$(r.v)+" en "+fmtN(r.f)+" facturas a "+r.c.size+" clientes"})).sort((x,y)=>y.value-x.value), v=>fmt$(v), "#048782");
   const colRub=r=>(EYG.RUBRO_META[r]||{}).c||"#8A9A97";
-  barras($("cli-top"), D.clientes.map(c=>({label:c.nombre, value:sum(c.valores,a,b), color:colRub(c.rubro), title:c.nombre+" · "+rubroLbl(c.rubro)+": "+fmt$c(sum(c.valores,a,b))+" en "+fmtN(sum(c.n,a,b))+" facturas"})).filter(x=>x.value>0).sort((x,y)=>y.value-x.value).slice(0,12), corto, "#048782");
+  barras($("cli-top"), D.clientes.map(c=>{ const v=sum(c.valores,a,b), t=sum(c.tri||[],a,b);
+      return {label:c.nombre+(t>0.005?" · triangulación":""), value:v, color:(t>v/2?COL.tri:colRub(c.rubro)),
+        title:c.nombre+" · "+rubroLbl(c.rubro)+": "+fmt$c(v)+" en "+fmtN(sum(c.n,a,b))+" facturas"+(t>0.005?" — de eso, "+fmt$c(t)+" es triangulación y "+fmt$c(v-t)+" venta propia":"")}; })
+    .filter(x=>x.value>0).sort((x,y)=>y.value-x.value).slice(0,12), corto, "#048782");
   barras($("prov2-top"), top(D.proveedores,"nombre",12, st.compras==="todas"?null:(x=>sum(x.merc,a,b))), corto, "#EC8B5E");
   const ctas=D.compras_cuentas.filter(c=>st.compras==="todas"||c.grupo==="Mercadería").map(c=>({...c, cuenta:c.cuenta.replace(/^[\d.]+\s+/,"")}));
   barras($("cta-top"), top(ctas,"cuenta",14).map(x=>{ const c=D.compras_cuentas.find(y=>y.cuenta.replace(/^[\d.]+\s+/,"")===x.label); return {...x, color:COL_GRUPO[c&&c.grupo]||"#EC8B5E", title:(c?c.cuenta+" · "+c.grupo:x.label)+": "+fmt$c(x.value)}; }), corto, "#EC8B5E");
@@ -806,8 +834,8 @@ function renderTops(a,b){
 function renderControl(){
   const ok=v=>Math.abs(v)<0.05?'<span class="pos">✔ 0,00</span>':`<span class="neg">${fmt$c(v)}</span>`;
   const rows=D.serie.map((s,i)=>{ const cv=D.control.ventas[i], cc=D.control.compras[i];
-    return `<tr><td style="white-space:nowrap">${lblMesLargo(s.mes)}</td><td class="num">${fmt$c(cv.cabecera)}</td><td class="num">${fmt$c(cv.renglones)}</td><td class="num">${ok(cv.dif)}</td><td class="num">${ok(s.productos+s.otros_conceptos-s.ventas_netas)}</td><td class="num">${ok(D.control.canales[i])}</td><td class="num">${ok(D.control.pedidos[i])}</td><td class="num">${fmt$c(cc.cabecera)}</td><td class="num">${fmt$c(cc.renglones)}</td><td class="num">${ok(cc.dif)}</td></tr>`; }).join("");
-  $("ctl-tbl").innerHTML=`<thead><tr><th>Mes</th><th class="num" title="Suma del neto de cada factura/NC">Ventas (cabeceras)</th><th class="num" title="Suma renglón por renglón">Ventas (renglones)</th><th class="num">Diferencia</th><th class="num" title="Productos + conceptos sin producto − ventas netas">Composición</th><th class="num" title="Suma de los 5 canales − ventas netas">Canales</th><th class="num" title="Confirmado en pedidos − suma de sus renglones">Pedidos</th><th class="num" title="Suma del neto de cada factura de proveedor">Compras (cabeceras)</th><th class="num" title="Suma renglón por renglón, antes de excluir">Compras (renglones)</th><th class="num">Diferencia</th></tr></thead><tbody>${rows}</tbody>`;
+    return `<tr><td style="white-space:nowrap">${lblMesLargo(s.mes)}</td><td class="num">${fmt$c(cv.cabecera)}</td><td class="num">${fmt$c(cv.renglones)}</td><td class="num">${ok(cv.dif)}</td><td class="num">${ok(s.productos+s.otros_conceptos-s.ventas_netas)}</td><td class="num">${ok(D.control.canales[i])}</td><td class="num">${ok(s.ventas_propias+s.triangulacion-s.ventas_netas)}</td><td class="num">${ok(D.control.pedidos[i])}</td><td class="num">${fmt$c(cc.cabecera)}</td><td class="num">${fmt$c(cc.renglones)}</td><td class="num">${ok(cc.dif)}</td></tr>`; }).join("");
+  $("ctl-tbl").innerHTML=`<thead><tr><th>Mes</th><th class="num" title="Suma del neto de cada factura/NC">Ventas (cabeceras)</th><th class="num" title="Suma renglón por renglón">Ventas (renglones)</th><th class="num">Diferencia</th><th class="num" title="Productos + conceptos sin producto − ventas netas">Composición</th><th class="num" title="Suma de los 5 canales − ventas netas">Canales</th><th class="num" title="Venta propia + triangulación − ventas netas: el desglose no puede cambiar el total">Triangulación</th><th class="num" title="Confirmado en pedidos − suma de sus renglones">Pedidos</th><th class="num" title="Suma del neto de cada factura de proveedor">Compras (cabeceras)</th><th class="num" title="Suma renglón por renglón, antes de excluir">Compras (renglones)</th><th class="num">Diferencia</th></tr></thead><tbody>${rows}</tbody>`;
   const ex=D.excluidos.map(e=>`${esc(e.concepto)} <b>${fmt$(e.total)}</b>`).join(" · ");
   $("ctl-excl").innerHTML=`<b>Qué NO se cuenta como compra</b> (está en las facturas de proveedor, se ve en las columnas de renglones de arriba, pero no es un costo): ${ex||"nada"} — desde marzo 2025. El capital de préstamos y los descuentos de cheques se cargan como "factura" del banco con el neto acreditado: es plata que entra. Sus intereses sí se cuentan, en el grupo Financieros.`+
     (D.pedidos.n_pend_leidos>=600?" La tabla de pedidos sin facturar muestra los 600 de mayor saldo.":"");
