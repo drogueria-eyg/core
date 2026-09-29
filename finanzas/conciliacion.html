@@ -116,6 +116,36 @@
   .log{background:#0E1F1D;color:#9FE8DF;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.6;
        border-radius:10px;padding:12px 14px;max-height:230px;overflow:auto;margin-top:12px;white-space:pre-wrap}
   .log .e{color:#FF9B8F} .log .o{color:#8FE3A8}
+
+  /* panel de resolución */
+  .resolver{border:2px solid var(--teal);box-shadow:0 6px 28px rgba(4,135,130,.16)}
+  .movres{display:flex;align-items:center;gap:13px;flex-wrap:wrap;background:#F4FAF9;border:1px solid var(--line);
+          border-radius:9px;padding:9px 12px;margin-bottom:13px;font-size:12.5px}
+  .movres b{font-size:16px;font-variant-numeric:tabular-nums}
+  .movres .cp{color:var(--gris);flex:1;min-width:180px}
+  .busca{width:100%;font-family:inherit;font-size:13.5px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;margin-top:4px}
+  .busca:focus{outline:none;border-color:var(--teal)}
+  .opts{display:flex;flex-direction:column;gap:3px;margin-top:8px;max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:9px;padding:5px}
+  .opt{font-family:inherit;font-size:12.5px;text-align:left;padding:7px 10px;border:0;background:none;border-radius:7px;cursor:pointer;color:var(--ink)}
+  .opt:hover{background:var(--agua)}
+  .clienteEl{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:13.5px}
+  .facs{display:flex;flex-direction:column;gap:4px;max-height:290px;overflow:auto;border:1px solid var(--line);border-radius:9px;padding:6px}
+  .fac{display:grid;grid-template-columns:24px 1fr auto auto;gap:10px;align-items:center;font-family:inherit;font-size:12.5px;
+       text-align:left;padding:7px 9px;border:0;background:none;border-radius:7px;cursor:pointer;color:var(--ink)}
+  .fac>*{min-width:0}
+  .fac:hover{background:#F4FAF9}
+  .fac.on{background:var(--agua);font-weight:700}
+  .fac .tk{font-size:15px;color:var(--teal)}
+  .fac .fn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fac .fd{font-size:11px;white-space:nowrap}
+  .fac .fm{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+  .cuadre{margin-top:11px;border-radius:9px;padding:10px 13px;font-size:12.5px;border:1px solid}
+  .cuadre.ok{background:var(--okbg);border-color:#BFE3CD}
+  .cuadre.warn{background:var(--warnbg);border-color:#EAD9A0}
+  .cuadre.bad{background:var(--badbg);border-color:#F0C3C0}
+  .cuadre div{display:flex;justify-content:space-between;padding:2px 0}
+  .cuadre b{font-variant-numeric:tabular-nums}
+  .cuadre .dif{border-top:1px dashed rgba(0,0,0,.18);margin-top:5px;padding-top:6px;font-weight:800}
 </style>
 </head>
 <body>
@@ -341,6 +371,7 @@ function render(){
     kpis(M,nuevos,dups,listos,dudas)+
     composicion(porTipo)+
     panelAcciones(nuevos,listos,dudas)+
+    panelResolver()+
     tabla(filtrar(M))+
     '<div class="panel"><h3>📋 Registro de lo que se hizo</h3>'+
     '<div class="sub">Todo lo que la herramienta ejecutó en Odoo, en orden.</div>'+
@@ -474,8 +505,11 @@ function accionDe(m,i){
   if(m.cands.length>1) return '<select class="cand" id="sel'+i+'"><option value="">Elegí cuál…</option>'+
     m.cands.map(c=>'<option value="'+c.id+'">'+esc(String(c.move_id[1]).slice(0,26))+" · "+(c.partner_id?esc(String(c.partner_id[1]).slice(0,22)):"sin cliente")+'</option>').join("")+
     '</select> <button class="btn sm" onclick="elegirCand('+i+')">Aplicar</button>';
-  if(m.cands.length===0&&["cobro","echeq","interna"].includes(m.tipo))
-    return '<span class="muted" style="font-size:11.5px">'+(m.cliente?"falta cargar el cobro de "+esc(m.cliente.nombre.slice(0,22)):"falta la contraparte")+'</span>';
+  if(m.cands.length===0&&m.tipo==="cobro")
+    return '<button class="btn sm '+(RES.i===i?"":"gh")+'" onclick="abrirResolver('+i+')">'+
+      (RES.i===i?"Cerrar":"Resolver")+'</button>';
+  if(m.cands.length===0&&["echeq","interna"].includes(m.tipo))
+    return '<span class="muted" style="font-size:11.5px">falta cargar '+(m.tipo==="echeq"?"el pago del cheque":"el otro extracto")+'</span>';
   return '<span class="muted">—</span>';
 }
 
@@ -594,6 +628,139 @@ window.accionResolver=()=>conTrabajo(async()=>{
     }
   }
   log("Resueltos: "+imp+" impuestos · "+car+" cargos · "+con+" conciliaciones","o");
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+   RESOLVER A MANO — para lo que no se puede conciliar solo.
+   El caso más frecuente: el cobro llegó al banco pero Cobranzas todavía no
+   cargó el recibo. Acá se crea el recibo, se elige qué facturas cancela y
+   se concilia contra el extracto, sin pasar por Odoo.
+   ───────────────────────────────────────────────────────────────────────── */
+window.RES={i:null, cliente:null, facturas:[], sel:new Set(), buscando:false};
+
+window.abrirResolver=async(i)=>{
+  const m=ST.movs[i];
+  if(RES.i===i){ RES.i=null; render(); return; }
+  RES.i=i; RES.cliente=m.cliente||null; RES.facturas=[]; RES.sel=new Set(); render();
+  if(RES.cliente) await cargarFacturas(RES.cliente.id);
+};
+window.cerrarResolver=()=>{ RES.i=null; render(); };
+
+async function cargarFacturas(pid){
+  RES.buscando=true; render();
+  /* facturas del cliente con saldo abierto, de la más vieja a la más nueva */
+  const ls=await rpc("account.move.line","search_read",
+    [[["partner_id","=",pid],["account_id","=",52],["parent_state","=","posted"],
+      ["full_reconcile_id","=",false],["debit",">",0]],
+     ["move_id","date","date_maturity","debit","amount_residual"]],{limit:0,order:"date_maturity,date"});
+  RES.facturas=ls.filter(l=>Math.abs(l.amount_residual)>0.005);
+  RES.buscando=false; render();
+}
+window.buscarCliente=async(txt)=>{
+  if(!txt||txt.length<3){ RES.opciones=null; render(); return; }
+  RES.opciones=await rpc("res.partner","search_read",
+    [["|",["name","ilike",txt],["vat","like",txt.replace(/\D/g,"")]],["id","name","vat"]],{limit:12});
+  render();
+};
+window.elegirCliente=async(id,nombre)=>{
+  RES.cliente={id,nombre}; RES.opciones=null; RES.sel=new Set();
+  await cargarFacturas(id);
+};
+window.toggleFac=(id)=>{ RES.sel.has(id)?RES.sel.delete(id):RES.sel.add(id); render(); };
+
+function panelResolver(){
+  if(RES.i===null) return "";
+  const m=ST.movs[RES.i]; if(!m) return "";
+  const selTot=RES.facturas.filter(f=>RES.sel.has(f.id)).reduce((s,f)=>s+Math.abs(f.amount_residual),0);
+  const dif=Math.round((Math.abs(m.importe)-selTot)*100)/100;
+  const exacto=Math.abs(dif)<0.005;
+
+  let cuerpo="";
+  if(!RES.cliente){
+    cuerpo='<div class="sub">No pude identificar de quién es este cobro. Buscalo por nombre o CUIT:</div>'+
+      '<input class="busca" id="qcli" placeholder="Nombre del cliente o CUIT…" oninput="buscarCliente(this.value)" autocomplete="off">'+
+      (RES.opciones?'<div class="opts">'+(RES.opciones.length?RES.opciones.map(o=>
+        '<button class="opt" onclick="elegirCliente('+o.id+','+JSON.stringify(o.name).replace(/"/g,"&quot;")+')">'+
+        esc(o.name)+(o.vat?' <span class="muted">· '+esc(o.vat)+'</span>':"")+'</button>').join("")
+        :'<div class="muted" style="padding:8px">Ningún cliente con ese nombre o CUIT.</div>')+'</div>':"");
+  } else if(RES.buscando){
+    cuerpo='<div class="cargando">Buscando las facturas abiertas de '+esc(RES.cliente.nombre)+'…</div>';
+  } else {
+    cuerpo='<div class="clienteEl">👤 <b>'+esc(RES.cliente.nombre)+'</b>'+
+      (m.cliente?' <span class="badge b-ok">identificado por CUIT</span>':' <span class="badge b-warn">elegido a mano</span>')+
+      ' <button class="btn gh sm" onclick="RES.cliente=null;RES.facturas=[];RES.sel=new Set();render()">Cambiar</button></div>';
+    if(!RES.facturas.length){
+      cuerpo+='<div class="aviso warn" style="margin:10px 0 0">⚠️ <div><b>Este cliente no tiene facturas abiertas.</b> '+
+        'El cobro se puede registrar igual: queda <b>a cuenta</b> y se imputa cuando se facture.</div></div>';
+    } else {
+      cuerpo+='<div class="sub" style="margin:11px 0 7px">Tildá qué facturas cancela este cobro. '+
+        'Las más viejas primero, que es como se imputa normalmente.</div>'+
+        '<div class="facs">'+RES.facturas.map(f=>{
+          const on=RES.sel.has(f.id);
+          return '<button class="fac'+(on?" on":"")+'" onclick="toggleFac('+f.id+')">'+
+            '<span class="tk">'+(on?"☑":"☐")+'</span>'+
+            '<span class="fn">'+esc(String(f.move_id[1]).slice(0,26))+'</span>'+
+            '<span class="fd muted">'+(f.date_maturity||f.date)+'</span>'+
+            '<span class="fm">'+money(Math.abs(f.amount_residual))+'</span></button>';
+        }).join("")+'</div>'+
+        '<div class="cuadre '+(exacto?"ok":(selTot>Math.abs(m.importe)?"bad":"warn"))+'">'+
+          '<div><span>Cobro del banco</span><b>'+money(Math.abs(m.importe))+'</b></div>'+
+          '<div><span>Facturas tildadas ('+RES.sel.size+')</span><b>'+money(selTot)+'</b></div>'+
+          '<div class="dif"><span>'+(exacto?"Cierra exacto":(dif>0?"Queda a cuenta":"Se pasa por"))+'</span>'+
+            '<b>'+(exacto?"$0,00":money(Math.abs(dif)))+'</b></div>'+
+        '</div>'+
+        (selTot>Math.abs(m.importe)?'<div class="aviso bad" style="margin:10px 0 0">⛔ <div>Tildaste '+money(selTot-Math.abs(m.importe))+
+          ' <b>más</b> de lo que entró. Sacá alguna factura: no se puede cancelar más de lo que el banco acreditó.</div></div>':"")+
+        (!exacto&&dif>0?'<div class="aviso info" style="margin:10px 0 0">ℹ️ <div>Van a quedar '+money(dif)+
+          ' <b>a cuenta</b> del cliente, para imputar a una factura futura. Es correcto si pagó de más o adelantado.</div></div>':"");
+    }
+    cuerpo+='<div class="acciones" style="margin:13px 0 0">'+
+      '<button class="btn" onclick="crearRecibo()" '+(ST.trabajando||selTot>Math.abs(m.importe)?"disabled":"")+'>'+
+        (ST.trabajando?'<span class="spin"></span> ':"")+'Crear el recibo'+(RES.sel.size?" e imputar "+RES.sel.size+" factura(s)":" a cuenta")+'</button>'+
+      '<button class="btn gh" onclick="cerrarResolver()">Cancelar</button></div>';
+  }
+  return '<div class="panel resolver"><h3>🔧 Resolver este movimiento</h3>'+
+    '<div class="movres"><span>'+m.fecha+'</span><b class="'+(m.importe<0?"neg":"pos")+'">'+money(m.importe)+'</b>'+
+    '<span class="cp">'+esc(m.concepto.slice(0,80))+'</span></div>'+cuerpo+'</div>';
+}
+
+/* Crea el recibo igual que lo hace Cobranzas, lo imputa a las facturas
+   tildadas y lo concilia contra la línea del extracto. Todo o nada. */
+window.crearRecibo=()=>conTrabajo(async()=>{
+  const m=ST.movs[RES.i]; const B=BANCOS[ST.banco];
+  if(!m||!RES.cliente){ log("Falta elegir el cliente","e"); return; }
+  if(!m.yaEsta){ log("Primero hay que cargar el movimiento a Odoo","e"); return; }
+
+  const p=await rpc("account.payment","create",[[{
+    partner_id:RES.cliente.id, journal_id:B.diario,
+    payment_type:"inbound", partner_type:"customer",
+    payment_method_line_id:20, destination_account_id:52,
+    amount:Math.abs(m.importe), date:m.fecha}]]);
+  const pid=Array.isArray(p)?p[0]:p;
+  await rpc("account.payment","action_post",[[pid]]);
+  const pv=await rpc("account.payment","read",[[pid],["name","move_id"]]);
+  log("Recibo "+pv[0].name+" por "+money(Math.abs(m.importe))+" — "+RES.cliente.nombre,"o");
+
+  const lins=await rpc("account.move.line","search_read",
+    [[["move_id","=",pv[0].move_id[0]]],["account_id","id"]],{limit:0});
+  const lCred=lins.find(l=>l.account_id[0]===52);
+  const lRec =lins.find(l=>l.account_id[0]===CTA_RECIBOS);
+
+  if(RES.sel.size&&lCred){
+    await rpc("account.move.line","reconcile",[[lCred.id,...[...RES.sel]]]);
+    log("Imputado a "+RES.sel.size+" factura(s)");
+  } else log("Queda a cuenta del cliente (sin imputar)");
+
+  /* y ahora contra el extracto */
+  const mv=await rpc("account.move","read",[[m.yaEsta.move_id[0]],["line_ids"]]);
+  const ext=await rpc("account.move.line","read",[mv[0].line_ids,["account_id"]]);
+  const tra=ext.find(x=>x.account_id[0]===CTA_TRANSIT);
+  if(tra&&lRec){
+    await rpc("account.move.line","write",[[tra.id],{account_id:CTA_RECIBOS}]);
+    await rpc("account.move.line","reconcile",[[tra.id,lRec.id]]);
+    log("Conciliado con el movimiento del banco","o");
+  }
+  RES.i=null; RES.cliente=null; RES.facturas=[]; RES.sel=new Set();
 });
 
 /* El usuario eligió cuál de los candidatos es el correcto. */
