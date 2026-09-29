@@ -183,10 +183,31 @@ window.EYG = (function(){
     }catch(e){ return ""; }
   }
 
+  /* Sesión vencida ≠ perfil inexistente -----------------------------------
+     Cuando se le cambia la contraseña a alguien, su sesión abierta queda muerta.
+     El navegador guarda igual la credencial vieja, getSession() la devuelve como
+     si sirviera, y la consulta a core_users vuelve con error de token. Como acá
+     antes sólo se miraba si vino el DATO (nunca el error), el Core concluía que
+     no existía el perfil y mostraba "no hay un perfil en el Core para tu email,
+     pedile al administrador que te cree el acceso" — falso, y encima manda a la
+     persona a resolverlo donde no está el problema. Pasó con una comercial y
+     después con un socio, a quien le restablecimos la clave al aire por este
+     cartel. Ahora se detecta el token muerto, se cierra la sesión sucia y se
+     muestra el formulario de ingreso, que es lo único que hace falta. */
+  let _sesionVencida = false;
+  const esErrorDeSesion = e => !!e && /jwt|jws|token|PGRST301|PGRST302|invalid.*claim/i
+    .test(String(e.code||"") + " " + String(e.message||""));
+
   async function perfil(){
+    _sesionVencida = false;
     const s = await session(); if(!s) return null;
     const email = (s.user.email||"").toLowerCase();
-    const {data} = await supa().from("core_users").select("email,nombre,rol,comercial_ref,activo,debe_cambiar_pwd,modulos_extra,modulos_quita").eq("email",email).maybeSingle();
+    const {data, error} = await supa().from("core_users").select("email,nombre,rol,comercial_ref,activo,debe_cambiar_pwd,modulos_extra,modulos_quita").eq("email",email).maybeSingle();
+    if(!data && esErrorDeSesion(error)){
+      _sesionVencida = true;
+      try{ await supa().auth.signOut(); }catch(e){}
+      return null;
+    }
     if(data) data._h = await huella(data.email || email);
     /* Interruptores del Core (core_config). Se leen acá, una vez, para que el
        encierro del comercial —que es sincrónico— pueda consultarlos. Encender
@@ -234,6 +255,7 @@ window.EYG = (function(){
     let s; try{ s = await session(); }catch(e){ showLogin(); return; }
     if(!s){ showLogin(); return; }
     const p = await perfil();
+    if(_sesionVencida){ showLogin(); return; }          // credencial muerta: a ingresar de nuevo
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso", accesoMsg(p,s), false); return; }
     if(comercialLock(p)) return;   // comercial fuera de su panel → a su panel
     /* Permisos por persona, igual que en guard(): una concesión (modulos_extra)
@@ -256,6 +278,7 @@ window.EYG = (function(){
     let s; try{ s = await session(); }catch(e){ showLogin(); return new Promise(()=>{}); }
     if(!s){ showLogin(); return new Promise(()=>{}); }
     const p = await perfil();
+    if(_sesionVencida){ showLogin(); return new Promise(()=>{}); }   // credencial muerta: a ingresar de nuevo
     if(!p || !p.activo){ gateMsg("🔒","Sin acceso", accesoMsg(p,s), false); return new Promise(()=>{}); }
     if(comercialLock(p)) return new Promise(()=>{});   // comercial fuera de su panel → a su panel
     /* Permisos por persona: resolvemos el módulo actual por el archivo (mismo
