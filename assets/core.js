@@ -95,6 +95,16 @@ window.EYG = (function(){
      detrás esos renglones ya quedan afuera — verificado, 0 de 123. */
   const VENTA_REAL = ["journal_id.type","=","sale"];
 
+  /* TRIANGULACION (categoría 448): productos que se facturan con entrega directa del
+     proveedor al cliente. No pasan por el depósito, así que no tienen stock ni costo
+     propio y su precio lo replica el cron 100 desde el producto original.
+     Las comerciales NO los ven en el Core: esas ventas se cargan desde Odoo, para que
+     nadie los elija por error creyendo que es el producto de depósito. La mayoría de
+     las búsquedas ya los deja afuera porque piden `qty_available > 0` y estos son
+     consumibles (siempre 0); este dominio es para las que buscan sin filtro de stock. */
+  const CAT_OCULTAS = [448];
+  const SIN_OCULTAS = ["!", ["categ_id","child_of",CAT_OCULTAS]];
+
   const money = n => "$"+Math.round(n||0).toLocaleString("es-AR");
   const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   const hace = d => { const t=new Date(); t.setDate(t.getDate()-d); return t.toISOString().slice(0,10); };
@@ -2131,7 +2141,7 @@ window.EYG = (function(){
     return m>0 && Math.abs(m-c)<0.01;
   }
 
-  return { supa, rpc, rpcHead, gate, VENTA_REAL, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
+  return { supa, rpc, rpcHead, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
