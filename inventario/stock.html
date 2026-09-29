@@ -431,7 +431,41 @@ function nucleoProd(name, categ){
   s=s.replace(/\./g,"").replace(/[^A-Z0-9%]+/g," ").replace(/\s+/g," ").trim();
   return s.split(" ").filter(Boolean).sort().join(" ");
 }
-function grpKeyDe(r){ const n=nucleoProd(r.name, r.categ); return n ? ((r.categ||"")+"||"+n) : ("SOLO#"+r.id); }
+// ===== Fase 2: agrupar MEDICAMENTOS por DROGA (monodrug de Odoo) + concentración + forma =====
+// concentración: ignora los números precedidos por "x" (son pack/cantidad, no dosis) y exige una dosis ACTIVA (mg/mcg/ui/%/g), no sólo volumen.
+function concMed(name){ let s=_stripN(name).replace(/\[[^\]]*\]/g," ").replace(/\(.*?\)/g," ");
+  s=s.replace(/(\d)\s*GRS?\b/g,"$1G").replace(/\bGRS?\b/g,"G").replace(/\bCC\b/g,"ML").replace(/\bMGS?\b/g,"MG").replace(/MCG|UG/g,"MCG");
+  const out=[]; const re=/([X×]?)\s*(\d+[.,]?\d*)\s*(MCG|MG|ML|UI|KG|G|%)(?![A-Z0-9])/g; let m;
+  while((m=re.exec(s))){ if(m[1]==="X"||m[1]==="×") continue; out.push(m[2].replace(",",".")+m[3]); }
+  const activos=out.filter(x=>/(MG|MCG|UI|%|KG|G)$/.test(x) && !/ML$/.test(x));
+  if(!activos.length) return "";
+  return [...new Set(out)].sort().join("+"); }
+// forma: el NOMBRE manda, la categoría es respaldo; se distinguen sublingual, liberación prolongada, masticable, efervescente, dispersable
+function _formaBase(x){
+  if(/CAPSULA|\bCAPS\b|\bCAPS\./.test(x)) return "CAPS";
+  if(/COMPRIMIDO|\bCOMPR?\b|\bCOMP\b|\bCOMP\.|GRAGEA/.test(x)) return "COMP";
+  if(/JARABE|\bJBE\b|SUSPENSION|\bSUSP\b|PVO.*SUSP|POLVO.*SUSP/.test(x)) return "JBE";
+  if(/\bGOTAS\b/.test(x)) return "GOTAS";
+  if(/COLIRIO|OFTALMIC/.test(x)) return "OFT";
+  if(/CREMA|POMADA|UNGUENTO|\bGEL\b|JALEA|LOCION/.test(x)) return "TOPICO";
+  if(/SUPOSITORIO|\bSUP\b|\bOVULO/.test(x)) return "SUP";
+  if(/AEROSOL|\bAER\b|INHALAD|\bHFA\b|\bDS\b/.test(x)) return "INHAL";
+  if(/CARAMELO|CARAM/.test(x)) return "CARAM";
+  if(/AMPOLLA|\bAMP\b|\bAMP\.|F\/?A\b|FCO.*AMP|FRASCO.*AMP|LIOF|\bINY|I\.?M\b|I\.?V\b/.test(x)) return "INY";
+  if(/SOLUCION|\bSOL\.?\b|\bLT\b|LITRO|\bML\b/.test(x)) return "LIQ";
+  return ""; }
+function formaMed(name,categ){ const s=_stripN(name), c=_stripN(categ); const base=_formaBase(s)||_formaBase(c); if(!base) return "?";
+  const mods=[]; if(/SUBLINGUAL|\bSUBL\b/.test(s))mods.push("SUBL");
+  if(/RETARD|\bXR\b|\bXL\b|PROLONGAD|LIB\.?\s*PROLONG|LIBERACION\s+PROLONG|\bAP\b|\bLP\b/.test(s))mods.push("LP");
+  if(/MASTICABLE|MASTIC/.test(s))mods.push("MAST");
+  if(/EFERVESCENTE|EFERV/.test(s))mods.push("EFV");
+  if(/DISPERSABLE|DISPER|BUCODISP/.test(s))mods.push("DISP");
+  return base+(mods.length?"-"+mods.sort().join(""):""); }
+// clave por droga (sólo si hay monodrug + concentración activa + forma clara); si no, null → cae al agrupado por nombre
+function drogaKey(r){ if(!r.monodrug) return null; const dr=_stripN(r.monodrug).replace(/\s+/g," ").trim(); if(!dr) return null;
+  const cf=concMed(r.name), fo=formaMed(r.name, r.categ); if(!cf || fo==="?") return null; return "RX::"+dr+"|"+cf+"|"+fo; }
+function grpKeyDe(r){ const rx=drogaKey(r); if(rx) return rx;   // medicamento: droga+concentración+forma une marcas comerciales distintas
+  const n=nucleoProd(r.name, r.categ); return n ? ((r.categ||"")+"||"+n) : ("SOLO#"+r.id); }
 // arma los grupos sobre un conjunto de filas y cuelga r.g (agregados del grupo) + r.esVigente (la marca a comprar)
 function agruparMarcas(rows){
   const GB={};
@@ -499,7 +533,7 @@ async function cargar(){
 
     prog("categorías, proveedores y en camino…");
     const [meta, quantsLote] = await Promise.all([
-      rpc("product.product","read",[allIds,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","incoming_qty","seller_ids","uom_po_id","active","qty_available","x_costo_manual","x_costo_manual_date","x_costo_motor","x_iva_compra","taxes_id","x_oportunidad","x_studio_many2one_field_6o_1if0l6ud2"]]),
+      rpc("product.product","read",[allIds,["categ_id","default_code","name","standard_price","list_price","product_tmpl_id","incoming_qty","seller_ids","uom_po_id","active","qty_available","x_costo_manual","x_costo_manual_date","x_costo_motor","x_iva_compra","taxes_id","x_oportunidad","x_studio_many2one_field_6o_1if0l6ud2","monodrug"]]),
       rpc("stock.quant","search_read",[[["location_id.usage","=","internal"],["quantity",">",0],["lot_id","!=",false]],["product_id","lot_id","quantity","value"]],{limit:5000}),
     ]);
     const M={}; for(const m of meta) M[m.id]=m;
@@ -549,7 +583,7 @@ async function cargar(){
       const std=cost, catId=m.categ_id?m.categ_id[0]:0;
       const costoU=costoReal({xCostoMotor:m.x_costo_motor||0, std, ivaCompra:m.x_iva_compra||0, taxesId:m.taxes_id||[]});
       return {id, code:m.default_code||"", archivado:m.active===false, valRoto, qa, xop:!!m.x_oportunidad, manualC:m.x_costo_manual||0, manualD:m.x_costo_manual_date||null, name:(s?s.product_id[1]:(m.name||("#"+id))), fam:familia(m.categ_id),
-        categ:m.categ_id?m.categ_id[1]:"", catId, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, marca:(m.x_studio_many2one_field_6o_1if0l6ud2?m.x_studio_many2one_field_6o_1if0l6ud2[1]:""), val, qty, ventaU, venta3, freq, compraFreq:Math.round(CF[id]||0), compradoU:Math.round(CU[id]||0),
+        categ:m.categ_id?m.categ_id[1]:"", catId, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, marca:(m.x_studio_many2one_field_6o_1if0l6ud2?m.x_studio_many2one_field_6o_1if0l6ud2[1]:""), monodrug:(m.monodrug?m.monodrug[1]:""), val, qty, ventaU, venta3, freq, compraFreq:Math.round(CF[id]||0), compradoU:Math.round(CU[id]||0),
         incoming:Math.round(m.incoming_qty||0),
         meses: meses>900?999:Math.round(meses*10)/10,
         std, xCostoMotor:m.x_costo_motor||0, ivaCompra:m.x_iva_compra||0, taxesId:m.taxes_id||[], ivaAlCosto:tildeEfectiva({taxesId:m.taxes_id||[]})?(m.x_iva_compra||0):0,
@@ -1266,6 +1300,10 @@ function liqTabla(rows,tipo,cap,grouped){
 }
 // título del grupo = nombre sin la marca ni el packaging (para el encabezado del grupo)
 function tituloGrupo(r){
+  const k=r.g&&r.g.key;
+  if(k&&k.indexOf("RX::")===0){ const p=k.slice(4).split("|"); const droga=p[0]||"", conc=p[1]||"";
+    const cap=droga.toLowerCase().replace(/(^|[\s+/])(\S)/g,(m,a,b)=>a+b.toUpperCase());
+    return cap+(conc?" "+conc.toLowerCase():""); }   // medicamento: "Ibuprofeno 400mg" (la forma se ve por grupo)
   let t=cleanName(r.name).replace(/\(.*$/,"").trim();
   if(r.marca){ const b=r.marca.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"); t=t.replace(new RegExp("\\s*-?\\s*"+b+"\\b.*$","i"),"").trim(); }
   t=t.replace(/[\s\-–]+$/,"").trim();
