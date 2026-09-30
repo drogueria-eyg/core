@@ -2167,7 +2167,16 @@ window.EYG = (function(){
   const COMI_KEY="eyg.comisiones";
   const COMI_DEF={ metaMeses:3, metaMetodo:"promedio", metaCrecimiento:0.20, metaCuentaVacios:true,
     rates:{ inst:{base:.020,high:.030}, farm:{base:.025,high:.035}, externo:{base:.030,high:.040} },
-    perfilTicket:300000, externoCorte:50000000 };
+    perfilTicket:300000, externoCorte:50000000,
+    /* META POR OBJETIVO (desde octubre 2026). Hasta septiembre la meta salía del historial de cada
+       una (mediana de sus 3 meses + %); en 2 meses NADIE la superó, porque crecer subía la mediana
+       y con eso la meta del mes siguiente. Ahora Dirección fija un objetivo SEMANAL por perfil y la
+       meta del mes es ese objetivo por las semanas laborales que tenga el mes.
+         metaModo "objetivo" → objetivoSemanal[perfil] × (días hábiles − feriados) / 5
+         metaModo "historico" → el cálculo viejo (sigue rigiendo los meses anteriores a objetivoDesde) */
+    metaModo:"historico", objetivoDesde:"2026-10", semanaBase:"habiles",
+    objetivoSemanal:{ inst:25000000, farm:12500000, externo:0 },
+    feriados:[] };
   let _comiCfg=null;
   async function comisionesConfig(force){ if(_comiCfg && !force) return _comiCfg; let o={}; try{ o=JSON.parse(await rpc("ir.config_parameter","get_param",[COMI_KEY])||"{}")||{}; }catch(e){}
     _comiCfg=Object.assign({}, COMI_DEF, o); _comiCfg.rates=Object.assign({}, COMI_DEF.rates, (o&&o.rates)||{}); return _comiCfg; }
@@ -2177,8 +2186,40 @@ window.EYG = (function(){
   /* META pura: recibe fbk={"YYYY-MM":neto} (facturado neto por mes), el mes en curso y la config.
      Devuelve el baseline (promedio o mediana de los meses de la ventana) y la meta = baseline×(1+crecimiento).
      `meses` lista los N meses de la ventana con su neto (null si el mes no tiene datos) para mostrarlos. */
-  function metaDesde(fbk, curM, cfg){
+  /* Semanas laborales de un mes "YYYY-MM": días hábiles (lun-vie) menos los feriados que cargue
+     Dirección, divididos por 5. Con semanaBase "fijas4" son siempre 4, sin importar el calendario. */
+  function semanasDelMes(curM, cfg){
+    cfg=cfg||_comiCfg||COMI_DEF;
+    if(cfg.semanaBase==="fijas4") return 4;
+    const [y,m]=String(curM).split("-").map(Number);
+    const ult=new Date(y,m,0).getDate();
+    const fer=new Set(cfg.feriados||[]);
+    let hab=0;
+    for(let i=1;i<=ult;i++){
+      const w=new Date(y,m-1,i).getDay(); if(w===0||w===6) continue;
+      const f=y+"-"+String(m).padStart(2,"0")+"-"+String(i).padStart(2,"0");
+      if(!fer.has(f)) hab++;
+    }
+    return hab/5;
+  }
+  /* META por OBJETIVO: objetivo semanal del perfil × semanas laborales del mes. Devuelve null si
+     este mes todavía no entra en el régimen nuevo (o si el perfil no tiene objetivo cargado). */
+  function metaObjetivo(curM, cfg, perfil){
+    cfg=cfg||_comiCfg||COMI_DEF;
+    if(cfg.metaModo!=="objetivo") return null;
+    if(cfg.objetivoDesde && String(curM)<String(cfg.objetivoDesde)) return null;
+    const sem=(cfg.objetivoSemanal||{})[perfil];
+    if(!(sem>0)) return null;
+    const semanas=semanasDelMes(curM, cfg);
+    return { baseline:sem, meta:sem*semanas, semanas, modo:"objetivo", perfil };
+  }
+  function metaDesde(fbk, curM, cfg, perfil){
     cfg=cfg||_comiCfg||COMI_DEF; fbk=fbk||{};
+    // Desde octubre la meta la fija Dirección por objetivo semanal, no el historial de cada una.
+    if(perfil){
+      const o=metaObjetivo(curM, cfg, perfil);
+      if(o) return { baseline:o.baseline, meta:o.meta, meses:[], nUsados:0, modo:"objetivo", semanas:o.semanas };
+    }
     const n=Math.max(1, cfg.metaMeses||3);
     const keys=_mesesPrevios(curM, n);
     const meses=keys.map(k=>({key:k, net:(k in fbk)?fbk[k]:null}));
@@ -2190,7 +2231,7 @@ window.EYG = (function(){
       else baseline = nums.reduce((a,b)=>a+b,0)/nums.length;
     }
     const meta = baseline*(1+(cfg.metaCrecimiento||0));
-    return { baseline, meta, meses, nUsados:nums.length };
+    return { baseline, meta, meses, nUsados:nums.length, modo:"historico" };
   }
 
   /* ===== COSTO EFECTIVO — la MISMA regla que el motor (acción 1213) =====
@@ -2232,7 +2273,7 @@ window.EYG = (function(){
   }
 
   return { supa, rpc, rpcHead, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
-    COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde,
+    COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde, metaObjetivo, semanasDelMes,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,

@@ -132,6 +132,7 @@
   .knob .seg button.on{background:var(--teal);border-color:var(--teal);color:#fff}
   .knob .chk{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--ink);cursor:pointer}
   .knob .chk input{width:18px;height:18px}
+  .comi-obj{background:#FFFDF5;border:1px solid #EFE0B0;border-radius:12px;padding:14px 16px;margin:14px 0}
   .comi-adv{margin-top:6px}
   .comi-adv summary{cursor:pointer;font-size:12.5px;font-weight:800;color:var(--teal-med);padding:6px 0}
   .rate-grid{display:grid;grid-template-columns:1fr auto auto;gap:8px 12px;align-items:center;margin-top:8px}
@@ -208,8 +209,8 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=102"></script>
-<script src="../assets/liquidacion.js?v=1"></script>
+<script src="../assets/core.js?v=103"></script>
+<script src="../assets/liquidacion.js?v=2"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const MESES=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
@@ -747,6 +748,12 @@ function comiReadKnobs(){
     perfilTicket: num("k_ticket",D.perfilTicket),
     externoCorte: num("k_extcorte",D.externoCorte/1e6)*1e6,
     aplicaDesde: v("k_desde")||"2026-08",
+    // META POR OBJETIVO (desde octubre): Dirección fija cuánto tiene que vender por semana cada perfil
+    metaModo: (document.getElementById("k_modo_obj")||{}).checked ? "objetivo" : "historico",
+    objetivoDesde: v("k_obj_desde")||"2026-10",
+    semanaBase: COMI._semana||"habiles",
+    objetivoSemanal:{ inst:num("k_obj_inst",25)*1e6, farm:num("k_obj_farm",12.5)*1e6, externo:0 },
+    feriados: (v("k_feriados")||"").split(",").map(x=>x.trim()).filter(Boolean),
     rates:{
       inst:{ base:num("r_inst_b",D.rates.inst.base*100)/100, high:num("r_inst_h",D.rates.inst.high*100)/100 },
       farm:{ base:num("r_farm_b",D.rates.farm.base*100)/100, high:num("r_farm_h",D.rates.farm.high*100)/100 },
@@ -756,7 +763,7 @@ function comiReadKnobs(){
 }
 function comiRender(){
   const box=document.getElementById("comi"); if(!box)return;
-  const c=COMI.cfg||EYG.COMI_DEF; COMI._metodo=c.metaMetodo||"promedio";
+  const c=COMI.cfg||EYG.COMI_DEF; COMI._metodo=c.metaMetodo||"promedio"; COMI._semana=c.semanaBase||"habiles";
   const pct=Math.round((c.metaCrecimiento||0)*100);
   box.innerHTML=`
     <div class="comi-note">La comisión se calcula sobre el <b>facturado neto</b> (facturas − NC), atribuido a <b>quien generó el pedido</b> (o al dueño del cliente si el pedido quedó bajo la genérica). La <b>meta</b> = promedio o mediana de los últimos meses + un %. Cambiá los valores y mirá la meta <b>en vivo</b>; se guarda con el botón.</div>
@@ -773,6 +780,26 @@ function comiRender(){
       <div class="knob"><label>Meses flojos</label>
         <label class="chk"><input type="checkbox" id="k_vacios" ${c.metaCuentaVacios!==false?'checked':''} onchange="comiRecalc()"> Un mes sin ventas cuenta como $0</label>
         <div class="kd">Si se destilda, los meses sin ventas se saltean (la meta queda más alta).</div></div>
+    </div>
+    <div class="comi-obj">
+      <label class="chk" style="font-size:14px;font-weight:800"><input type="checkbox" id="k_modo_obj" ${c.metaModo==="objetivo"?"checked":""} onchange="comiRecalc()"> 🎯 La meta la fija Dirección (objetivo semanal), no el historial</label>
+      <div class="kd" style="margin:4px 0 12px">Con el método viejo la meta salía del propio historial de cada una, así que crecer subía la meta del mes siguiente: en agosto y septiembre <b>ninguna la superó</b>. Con el objetivo la meta es la misma para todo el perfil y no se mueve sola.</div>
+      <div class="comi-knobs">
+        <div class="knob"><label>💊 Farmacias · por semana</label>
+          <input type="number" id="k_obj_farm" step="0.5" value="${((c.objetivoSemanal&&c.objetivoSemanal.farm||12500000)/1e6)}" oninput="comiRecalc()"> <span style="font-size:12px;color:var(--gris2)">millones</span>
+          <div class="kd">Cada comercial de farmacias.</div></div>
+        <div class="knob"><label>🏥 Instituciones · por semana</label>
+          <input type="number" id="k_obj_inst" step="0.5" value="${((c.objetivoSemanal&&c.objetivoSemanal.inst||25000000)/1e6)}" oninput="comiRecalc()"> <span style="font-size:12px;color:var(--gris2)">millones</span>
+          <div class="kd">Cada comercial de instituciones.</div></div>
+        <div class="knob"><label>Cómo se cuenta el mes</label>
+          <div class="seg"><button type="button" id="s_hab" class="${(c.semanaBase||'habiles')!=='fijas4'?'on':''}" onclick="comiSetSemana('habiles')">Días hábiles</button><button type="button" id="s_fij" class="${c.semanaBase==='fijas4'?'on':''}" onclick="comiSetSemana('fijas4')">4 semanas fijas</button></div>
+          <div class="kd">Con <b>días hábiles</b>, octubre son 4,4 semanas (22 hábiles ÷ 5) y la meta acompaña el calendario de cada mes.</div></div>
+        <div class="knob"><label>Rige desde</label><input type="text" id="k_obj_desde" value="${c.objetivoDesde||'2026-10'}" placeholder="2026-10" oninput="comiRecalc()">
+          <div class="kd">Los meses anteriores siguen con el método viejo, aunque se prenda hoy.</div></div>
+        <div class="knob" style="grid-column:1/-1"><label>Feriados que no se trabajan</label>
+          <input type="text" id="k_feriados" value="${(c.feriados||[]).join(', ')}" placeholder="2026-10-12" oninput="comiRecalc()" style="width:100%">
+          <div class="kd">Separados por coma. Cada feriado descuenta un día hábil y baja la meta en proporción.</div></div>
+      </div>
     </div>
     <details class="comi-adv">
       <summary>⚙️ Avanzado — tasas de comisión y perfiles</summary>
@@ -820,7 +847,7 @@ function comiSegRender(cfg){
       if(cerrado(k)) return {fact:null,comi:null,frozen:true};   // el mes está liquidado y esta comercial quedó afuera
       const fact=(COMI.monthly[s.uid]||{})[k];
       if(fact==null) return {fact:null,comi:null};
-      const meta=EYG.metaDesde(COMI.monthly[s.uid]||{}, k, cfg).meta;
+      const meta=EYG.metaDesde(COMI.monthly[s.uid]||{}, k, cfg, perfil).meta;
       return {fact, comi:escal(fact,meta,perfil)}; });
     return {name:s.name, cells, tot:cells.reduce((a,c)=>a+(c.comi||0),0)};
   }).sort((a,b)=>b.tot-a.tot);
@@ -904,6 +931,7 @@ async function lqReabrir(mes){
     comiRecalc();
   }catch(e){ otoast("No se pudo reabrir: "+e.message); }
 }
+function comiSetSemana(s){ COMI._semana=s; const A=document.getElementById("s_hab"),B=document.getElementById("s_fij"); if(A)A.className=s!=="fijas4"?"on":""; if(B)B.className=s==="fijas4"?"on":""; comiRecalc(); }
 function comiSetMetodo(m){ COMI._metodo=m; const a=document.getElementById("m_prom"),b=document.getElementById("m_med"); if(a)a.className=m!=='mediana'?'on':''; if(b)b.className=m==='mediana'?'on':''; comiRecalc(); }
 function comiResetDef(){ COMI.cfg=JSON.parse(JSON.stringify(EYG.COMI_DEF)); comiRender(); otoast("Valores por defecto (sin guardar)", true); }
 function comiRecalc(){
@@ -913,7 +941,8 @@ function comiRecalc(){
   const [Y,Mo]=COMI.curM.split("-").map(Number); const cols=[];
   for(let i=cfg.metaMeses;i>=1;i--){ let m=Mo-i,y=Y; while(m<1){m+=12;y--;} cols.push(y+"-"+String(m).padStart(2,"0")); }
   const rows=COMI.sellers.map(s=>{
-    const r=EYG.metaDesde(COMI.monthly[s.uid]||{}, COMI.curM, cfg);
+    const _pf=/Samanta/i.test(s.name)?"externo":((((COMI.ticket||{})[s.uid]||0)>=(cfg.perfilTicket||300000))?"inst":"farm");
+    const r=EYG.metaDesde(COMI.monthly[s.uid]||{}, COMI.curM, cfg, _pf);
     return { uid:s.uid, name:s.name, meses:cols.map(k=>({k, net:(k in (COMI.monthly[s.uid]||{}))?COMI.monthly[s.uid][k]:null})), baseline:r.baseline, meta:r.meta, recu:COMI.recu[s.uid]||0 };
   }).sort((a,b)=>b.meta-a.meta);
   const metodoLbl=cfg.metaMetodo==='mediana'?'Mediana':'Promedio';

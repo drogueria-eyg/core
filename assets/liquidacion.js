@@ -94,8 +94,11 @@ async function cierreReabrir(mes){
 async function facturado(uid,r,exIds){
   const ex=(exIds&&exIds.length)?[["move_id","not in",exIds]]:[];
   const base=mt=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",r.ini],["date","<=",r.fin],...ex];
-  const A=mt=>[...base(mt),["sale_line_ids.order_id.user_id","=",uid]];
-  const B=mt=>[...base(mt),["sale_line_ids.order_id.user_id","=",GEN],["sale_line_ids.order_id.partner_id.user_id","=",uid]];
+  // Regla ÚNICA de atribución: la de EYG.domVendedor (core.js). Para un comercial es sólo lo que
+  // vendió él; los pedidos de la cuenta genérica NO se le reparten (van a Gerencia). La rama B —que
+  // antes se los daba al dueño del cliente— se sacó: un traspaso de cartera no puede mover ventas.
+  const A=mt=>[...base(mt),...EYG.domVendedor("sale_line_ids.order_id.", uid)];
+  const B=mt=>[...base(mt),["id","=",0]];   // rama B desactivada: queda en 0 y se sigue informando
   const g=(dom)=>rpc("account.move.line","read_group",[dom,["price_subtotal:sum","price_total:sum"],[]],{lazy:false}).catch(()=>[]);
   const [ai,ar,bi,br]=await Promise.all([g(A("out_invoice")),g(A("out_refund")),g(B("out_invoice")),g(B("out_refund"))]);
   const v=(x,f)=>((x[0]||{})[f])||0;
@@ -121,8 +124,7 @@ async function gamificacion(uid,r,ofertasMes){
   // Si el cliente cambia de manos, la deuda vieja no la hereda quien lo recibe. Los SALDOS INICIALES
   // (diarios 32 y 33, la deuda migrada con la que arrancó el sistema) quedan afuera: no son venta de nadie.
   const recv=extra=>rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["journal_id","not in",SALDOS_INI],...((r.enGracia||[]).length?[["date_maturity","not in",r.enGracia]]:[]),...extra,
-    "|",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",uid],
-        "&",["move_id.invoice_line_ids.sale_line_ids.order_id.user_id","=",GEN],["move_id.invoice_line_ids.sale_line_ids.order_id.partner_id.user_id","=",uid]],
+    ...EYG.domVendedor("move_id.invoice_line_ids.sale_line_ids.order_id.", uid)],
     ["amount_residual:sum"],[]],{lazy:false}).catch(()=>[]);
   const [cobMes,cob100,ordHist,nuevos,deuG,ovG,waMsgs,ofEnv]=await Promise.all([
     pay(r.ini,r.fin), pay(r.d100,r.fin),
@@ -226,7 +228,7 @@ async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
     const f=await facturado(s.uid,r,exIds);
     const neto=f.facturas-f.nc;
     const perfil=esExterno(s.name)?"externo":(((ticket||{})[s.uid]||0)>=(cfg.perfilTicket||300000)?"inst":"farm");
-    const md=EYG.metaDesde(monthly[s.uid]||{}, mes, cfg);
+    const md=EYG.metaDesde(monthly[s.uid]||{}, mes, cfg, perfil);   // el perfil decide el objetivo semanal
     const externo=perfil==="externo";
     const corte=externo?(cfg.externoCorte||50e6):md.meta;
     const rt=externo?rates.externo:(rates[perfil]||rates.farm);
