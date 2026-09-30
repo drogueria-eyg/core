@@ -2159,24 +2159,64 @@ window.EYG = (function(){
      y el del líder para calcular la META de facturación (y las tasas), así los dos coinciden.
        metaMeses        = cuántos meses cerrados se promedian (default 3).
        metaMetodo       = "promedio" | "mediana" (mediana no la distorsiona una licitación puntual).
-       metaCrecimiento  = cuánto se le suma por encima del promedio (0.20 = +20%).
+       metaCrecimiento  = cuánto se le suma por encima de la mediana (0.25 = +25%).
        metaCuentaVacios = si un mes flojo/sin facturar cuenta como $0 (true) o se saltea (false).
        rates            = tasas de la escalera por perfil (base = hasta la meta, high = por encima).
        perfilTicket     = ticket promedio que separa Instituciones de Farmacias.
-       externoCorte     = corte fijo del externo (Samanta), en $. */
+       externoCorte     = corte fijo del externo (Samanta), en $.
+       minimoSemanal    = la OBLIGACIÓN por rubro y por semana. Va aparte de la comisión.
+       rubros           = el rubro de cada comercial, fijado por Dirección (uid → rubro).
+       topeTasa         = techo de la comisión sobre lo facturado (0.03 = 3%).
+       paqueteDesde     = desde qué mes rigen las reglas nuevas (antes, las viejas). */
   const COMI_KEY="eyg.comisiones";
-  const COMI_DEF={ metaMeses:3, metaMetodo:"promedio", metaCrecimiento:0.20, metaCuentaVacios:true,
-    rates:{ inst:{base:.020,high:.030}, farm:{base:.025,high:.035}, externo:{base:.030,high:.040} },
+  const COMI_DEF={ metaMeses:3, metaMetodo:"mediana", metaCrecimiento:0.25, metaCuentaVacios:true,
+    rates:{ inst:{base:.020,high:.030}, farm:{base:.020,high:.030}, externo:{base:.030,high:.040} },
     perfilTicket:300000, externoCorte:50000000,
-    /* META POR OBJETIVO (desde octubre 2026). Hasta septiembre la meta salía del historial de cada
-       una (mediana de sus 3 meses + %); en 2 meses NADIE la superó, porque crecer subía la mediana
-       y con eso la meta del mes siguiente. Ahora Dirección fija un objetivo SEMANAL por perfil y la
-       meta del mes es ese objetivo por las semanas laborales que tenga el mes.
-         metaModo "objetivo" → objetivoSemanal[perfil] × (días hábiles − feriados) / 5
-         metaModo "historico" → el cálculo viejo (sigue rigiendo los meses anteriores a objetivoDesde) */
-    metaModo:"historico", objetivoDesde:"2026-10", semanaBase:"habiles",
-    objetivoSemanal:{ inst:25000000, farm:12500000, externo:0 },
-    feriados:[] };
+    /* ===== PAQUETE DEL 1/10/2026 =====
+       Todo lo que sigue rige desde paqueteDesde. Los meses anteriores se calculan con las reglas
+       viejas: un cambio de hoy no puede mover un mes que las comerciales ya vieron en vivo. */
+    paqueteDesde:"2026-10",
+    /* TOPE DE LA COMISIÓN. Regla de Dirección: la casa no puede pagar más del 3% de lo facturado.
+       Sin tope se pasaba: el tramo alto es 3% y el nivel Diamante multiplica por 1,20 → 3,6%.
+       El tope se aplica por comercial, y eso alcanza para garantizar el total: si nadie pasa el 3%
+       de LO SUYO, la suma no puede pasar el 3% del total. */
+    topeTasa:0.03,
+    /* RUBRO FIJO (uid → "inst" | "farm" | "externo"). Antes se adivinaba por el ticket promedio y
+       dejó de servir cuando Dirección empezó a asignar sectores: Maricruz pasó a Instituciones y el
+       ticket la seguía leyendo como farmacias. Sin cargar, se cae al criterio viejo del ticket. */
+    rubros:{},
+    /* MÍNIMO DE VENTA — la OBLIGACIÓN. La fija Dirección por rubro y por SEMANA. El mínimo del mes
+       es la suma de los mínimos de sus semanas, así la vara semanal y la mensual son el mismo
+       número visto de cerca y de lejos. NO es un tramo de comisión: no toca la tasa ni la meta.
+         · no llegar al mínimo de una SEMANA  → pega en el NIVEL (conducta, el ritmo del trabajo)
+         · no llegar al mínimo del MES        → pega en la SALUD (resultado acumulado)
+       En octubre 2026: 21 hábiles (22 − el feriado del 12) → 52,5 M farm / 105 M inst. */
+    minimoSemanal:{ inst:25000000, farm:12500000, externo:0 },
+    semanaBase:"habiles", feriados:["2026-10-12"],
+    /* MORA — reemplaza al "% de vencido", que dejaba pasar el peor caso: al 30/9 Natividad tenía
+       sólo el 10% vencido y no penalizaba nada, pero $7,3 M de eso estaba vencido hace más de 180
+       días (el peor, 375). Ahora cada peso vencido se pondera por lo viejo que es, y el índice sube
+       por los dos motivos a la vez: porque hay más vencido y porque es más viejo.
+         índice = suma de (saldo vencido × peso del tramo) ÷ total por cobrar
+       Franquicia 0,10: un atraso chico y fresco no penaliza, es normal en el rubro.
+       Tope 1,00: se pierden los 0,60 completos con toda la cartera vencida a 30 días, o con un 12%
+       vencido hace más de medio año. */
+    moraPesos:{ d30:1, d60:2, d90:3, d180:5, mas:8 },
+    moraFranquicia:0.10, moraTope:1.00,
+    /* PESOS DE LA SALUD (son los puntos de tasa que se pueden perder, sobre 100 = 1 punto; el tope
+       sigue siendo 1 punto, y como suman 115 se llega al máximo sin estar mal en todo). */
+    saludPesos:{ mora:60, minimo:30, fichas:25 },
+    saludUmbrales:{ minimoRango:0.50, fichasMin:0.40 },
+    /* PESOS DEL NIVEL (los siete ítems suman 100). Para hacerle lugar al ítem del mínimo semanal se
+       le sacaron 10 puntos al cobro y a la actividad: inst 38/12 → 30/10, farm 25/25 → 20/20. */
+    nivelPesos:{ inst:{valor:30,activ:10}, farm:{valor:20,activ:20}, semanal:10 },
+    /* METAS DEL NIVEL. Contactos por día pasó de 10 a 15. Los clientes nuevos pasaron de una meta
+       única de 3 a una por rubro, y "nuevo" dejó de ser una ficha dada de alta: cuenta el que
+       COMPRÓ. En septiembre se cargaron 62 fichas y compraron 14 — con el criterio viejo alcanzaba
+       con dar de alta para llevarse los 20 puntos. */
+    contactosDia:15,
+    nuevosMeta:{ inst:5, farm:10, externo:10 },
+    nuevosCuentan:"compraron" };
   let _comiCfg=null;
   async function comisionesConfig(force){ if(_comiCfg && !force) return _comiCfg; let o={}; try{ o=JSON.parse(await rpc("ir.config_parameter","get_param",[COMI_KEY])||"{}")||{}; }catch(e){}
     _comiCfg=Object.assign({}, COMI_DEF, o); _comiCfg.rates=Object.assign({}, COMI_DEF.rates, (o&&o.rates)||{}); return _comiCfg; }
@@ -2188,38 +2228,77 @@ window.EYG = (function(){
      `meses` lista los N meses de la ventana con su neto (null si el mes no tiene datos) para mostrarlos. */
   /* Semanas laborales de un mes "YYYY-MM": días hábiles (lun-vie) menos los feriados que cargue
      Dirección, divididos por 5. Con semanaBase "fijas4" son siempre 4, sin importar el calendario. */
-  function semanasDelMes(curM, cfg){
+  /* Las SEMANAS del mes, una por una: de lunes a viernes, con sus días hábiles (descontando los
+     feriados que carga Dirección). La primera y la última suelen estar cortadas por el mes, así que
+     el mínimo de esa semana va prorrateado por sus hábiles — si no, se le exigiría una semana
+     entera por dos días. La suma de los mínimos semanales da exactamente el mínimo del mes. */
+  function semanasDetalle(curM, cfg){
     cfg=cfg||_comiCfg||COMI_DEF;
-    if(cfg.semanaBase==="fijas4") return 4;
     const [y,m]=String(curM).split("-").map(Number);
     const ult=new Date(y,m,0).getDate();
     const fer=new Set(cfg.feriados||[]);
-    let hab=0;
+    const f2=n=>String(n).padStart(2,"0");
+    const out=[]; let cur=null;
     for(let i=1;i<=ult;i++){
-      const w=new Date(y,m-1,i).getDay(); if(w===0||w===6) continue;
-      const f=y+"-"+String(m).padStart(2,"0")+"-"+String(i).padStart(2,"0");
-      if(!fer.has(f)) hab++;
+      const w=new Date(y,m-1,i).getDay();
+      if(w===0||w===6){ cur=null; continue; }            // el fin de semana corta la semana
+      const f=y+"-"+f2(m)+"-"+f2(i);
+      if(!cur){ cur={desde:f, hasta:f, habiles:0, feriados:0}; out.push(cur); }
+      cur.hasta=f;
+      if(fer.has(f)) cur.feriados++; else cur.habiles++;
     }
-    return hab/5;
+    return out;
   }
-  /* META por OBJETIVO: objetivo semanal del perfil × semanas laborales del mes. Devuelve null si
-     este mes todavía no entra en el régimen nuevo (o si el perfil no tiene objetivo cargado). */
-  function metaObjetivo(curM, cfg, perfil){
+  function semanasDelMes(curM, cfg){
     cfg=cfg||_comiCfg||COMI_DEF;
-    if(cfg.metaModo!=="objetivo") return null;
-    if(cfg.objetivoDesde && String(curM)<String(cfg.objetivoDesde)) return null;
-    const sem=(cfg.objetivoSemanal||{})[perfil];
-    if(!(sem>0)) return null;
-    const semanas=semanasDelMes(curM, cfg);
-    return { baseline:sem, meta:sem*semanas, semanas, modo:"objetivo", perfil };
+    if(cfg.semanaBase==="fijas4") return 4;
+    return semanasDetalle(curM, cfg).reduce((s,w)=>s+w.habiles,0)/5;
   }
+  /* ¿rige ya el paquete nuevo para este mes? */
+  function paqueteRige(curM, cfg){
+    cfg=cfg||_comiCfg||COMI_DEF;
+    return !cfg.paqueteDesde || String(curM)>=String(cfg.paqueteDesde);
+  }
+  /* MÍNIMO DE VENTA del mes: semana por semana, con su mínimo prorrateado por días hábiles, y el
+     total del mes como suma de esas semanas. Devuelve null si el mes no entra en el paquete nuevo o
+     si el rubro no tiene mínimo cargado (el externo, por ejemplo). */
+  function minimoDeVenta(curM, cfg, perfil){
+    cfg=cfg||_comiCfg||COMI_DEF;
+    if(!paqueteRige(curM, cfg)) return null;
+    const sem=(cfg.minimoSemanal||{})[perfil];
+    if(!(sem>0)) return null;
+    const semanas=semanasDetalle(curM, cfg).map(w=>Object.assign({}, w, { minimo:sem*w.habiles/5 }));
+    const habiles=semanas.reduce((s,w)=>s+w.habiles,0);
+    return { semanal:sem, mensual:sem*habiles/5, semanas, habiles, perfil };
+  }
+  /* El RUBRO de una comercial: lo que fijó Dirección, y si no está cargado, el criterio viejo del
+     ticket. Una sola copia — estaba repetido en cuatro pantallas y ya se había desincronizado. */
+  function perfilDe(uid, ticket, cfg, nombre){
+    cfg=cfg||_comiCfg||COMI_DEF;
+    const fijo=(cfg.rubros||{})[String(uid)];
+    if(fijo) return fijo;
+    if(nombre && /Samanta/i.test(nombre)) return "externo";
+    return ((+ticket||0) >= (cfg.perfilTicket||300000)) ? "inst" : "farm";
+  }
+  /* ÍNDICE DE MORA. tramos = {d30,d60,d90,d180,mas} con el saldo vencido de cada antigüedad. */
+  function moraIndice(tramos, porCobrar, cfg){
+    cfg=cfg||_comiCfg||COMI_DEF;
+    const W=cfg.moraPesos||{d30:1,d60:2,d90:3,d180:5,mas:8}, t=tramos||{};
+    if(!(porCobrar>0)) return 0;
+    let p=0; for(const k of ["d30","d60","d90","d180","mas"]) p+=(+t[k]||0)*(+W[k]||0);
+    return p/porCobrar;
+  }
+  /* Los puntos de salud que se pierden por la mora, sobre el peso que tenga el ítem. */
+  function moraResta(indice, cfg, peso){
+    cfg=cfg||_comiCfg||COMI_DEF;
+    const F=(cfg.moraFranquicia!=null)?cfg.moraFranquicia:0.10, T=cfg.moraTope||1.00;
+    const w=(peso!=null)?peso:((cfg.saludPesos||{}).mora||60);
+    if(T<=F) return 0;
+    return Math.max(0, Math.min(((+indice||0)-F)/(T-F), 1))*w;
+  }
+
   function metaDesde(fbk, curM, cfg, perfil){
     cfg=cfg||_comiCfg||COMI_DEF; fbk=fbk||{};
-    // Desde octubre la meta la fija Dirección por objetivo semanal, no el historial de cada una.
-    if(perfil){
-      const o=metaObjetivo(curM, cfg, perfil);
-      if(o) return { baseline:o.baseline, meta:o.meta, meses:[], nUsados:0, modo:"objetivo", semanas:o.semanas };
-    }
     const n=Math.max(1, cfg.metaMeses||3);
     const keys=_mesesPrevios(curM, n);
     const meses=keys.map(k=>({key:k, net:(k in fbk)?fbk[k]:null}));
@@ -2231,7 +2310,11 @@ window.EYG = (function(){
       else baseline = nums.reduce((a,b)=>a+b,0)/nums.length;
     }
     const meta = baseline*(1+(cfg.metaCrecimiento||0));
-    return { baseline, meta, meses, nUsados:nums.length, modo:"historico" };
+    /* La META es la mediana de los 3 meses previos + 25%: mide crecimiento contra el propio ritmo
+       de cada una y es lo ÚNICO que mueve la tasa. El MÍNIMO DE VENTA que fija Dirección es otra
+       cosa y viaja aparte, sin entrar en este cálculo. */
+    const minimo = perfil ? minimoDeVenta(curM, cfg, perfil) : null;
+    return { baseline, meta, meses, nUsados:nums.length, modo:"historico", minimo };
   }
 
   /* ===== COSTO EFECTIVO — la MISMA regla que el motor (acción 1213) =====
@@ -2273,7 +2356,7 @@ window.EYG = (function(){
   }
 
   return { supa, rpc, rpcHead, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
-    COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde, metaObjetivo, semanasDelMes,
+    COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde, minimoDeVenta, semanasDelMes, semanasDetalle, perfilDe, paqueteRige, moraIndice, moraResta,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,

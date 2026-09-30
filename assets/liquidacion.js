@@ -15,7 +15,7 @@ const GEN=452;                                   // cuenta genérica "Drogueria 
 const SALDOS_INI=[32,33];                        // diarios "Saldos Iniciales" y "Saldos Iniciales B": deuda migrada, sin venta detrás
 const PERFIL={ inst:{valor:38,activ:12,nom:"Instituciones"}, farm:{valor:25,activ:25,nom:"Farmacias / Comercial"} };
 const OF_PTS_ENV=8, OF_META_ENV=30, OF_PTS_VEN=17, OF_META_VEN=10;
-const NUEVOS_META=3, NUEVOS_PTS=20, CONST_META=10, CONST_PTS=5;
+const NUEVOS_PTS=20, CONST_PTS=5;   // las METAS ahora salen de la config (contactosDia, nuevosMeta)
 const NIV=[{n:"Bronce",e:"🥉",m:1.00},{n:"Plata",e:"🥈",m:1.05},{n:"Oro",e:"🥇",m:1.10},{n:"Platino",e:"💎",m:1.15},{n:"Diamante",e:"👑",m:1.20}];
 const REQ=["name","tel","email","street","zip","city","state","idtype","vat","fiscal"];
 const PFIELDS=["id","name","street","city","zip","state_id","phone","mobile","email","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id"];
@@ -113,7 +113,7 @@ async function facturado(uid,r,exIds){
 }
 
 /* ===== los 6 ítems del nivel + los 3 de la salud, para un comercial y un mes ===== */
-async function gamificacion(uid,r,ofertasMes){
+async function gamificacion(uid,r,ofertasMes,cfgN){
   const u=await rpc("res.users","read",[[uid]],{fields:["id","name","partner_id"]});
   const uPartner=u[0]&&u[0].partner_id&&u[0].partner_id[0];
   const cart=await rpc("res.partner","search_read",[[["user_id","=",uid],["type","=","contact"],["parent_id","=",false]]],{fields:PFIELDS,limit:0});
@@ -126,15 +126,14 @@ async function gamificacion(uid,r,ofertasMes){
   const recv=extra=>rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["journal_id","not in",SALDOS_INI],...((r.enGracia||[]).length?[["date_maturity","not in",r.enGracia]]:[]),...extra,
     ...EYG.domVendedor("move_id.invoice_line_ids.sale_line_ids.order_id.", uid)],
     ["amount_residual:sum"],[]],{lazy:false}).catch(()=>[]);
-  const [cobMes,cob100,ordHist,nuevos,deuG,ovG,waMsgs,ofEnv]=await Promise.all([
+  const [cobMes,cob100,ordHist,nuevosAltas,deuG,ovG,waMsgs,ofEnv]=await Promise.all([
     pay(r.ini,r.fin), pay(r.d100,r.fin),
     rpc("sale.order","search_read",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",r.d190],["date_order","<=",r.finH]]],{fields:["partner_id","date_order"],limit:0}).catch(()=>[]),
-    rpc("res.partner","search_count",[[["user_id","=",uid],["type","=","contact"],["parent_id","=",false],["create_date",">=",r.ini],["create_date","<=",r.finH]]]).catch(()=>0),
+    rpc("res.partner","search_read",[[["user_id","=",uid],["type","=","contact"],["parent_id","=",false],["create_date",">=",r.ini],["create_date","<=",r.finH]]],{fields:["id","name","create_date"],limit:0}).catch(()=>[]),
     // una factura que vence HOY todavia no esta vencida: el corte es ESTRICTO. Con "<=" el motor
-    // penalizaba de mas y no coincidia con el panel de la comercial (Natividad, 30/9: $290.780 que
-    // vencian ese mismo dia movian 0,35 puntos de salud y $6.578 de comision).
-    recv([]), recv([["date_maturity","<",r.topeVenc]]),
-    ids.length?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",r.diaConstancia+" 00:00:00"],["date","<=",r.diaConstancia+" 23:59:59"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id"],limit:0}).catch(()=>[]):[],
+    // penalizaba de mas y no coincidia con el panel (Natividad, 30/9: $290.780 que vencian ese
+    // mismo dia movian 0,35 puntos de salud y $6.578 de comision).
+    recv([]), recv([["date_maturity","<",r.topeVenc]]),    ids.length?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",r.diaConstancia+" 00:00:00"],["date","<=",r.diaConstancia+" 23:59:59"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id"],limit:0}).catch(()=>[]):[],
     uPartner?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","=",uPartner],["date",">=",r.ini+" 00:00:00"],["date","<=",r.finH],["body","like","EyGOFENV"]]],{fields:["date"],limit:0}).catch(()=>[]):[],
   ]);
   // cobro
@@ -168,13 +167,17 @@ async function gamificacion(uid,r,ofertasMes){
   }
   const corte=(((EYG&&EYG.argToday)?EYG.argToday():r.fin)<r.fin)?((EYG&&EYG.argToday)?EYG.argToday():r.fin):r.fin;
   return { cartera:cart.length, fichas, cobradoMes, objetivoCobro, promPed, promCli, actPed, actCli,
-    porCobrar, vencido, ofEnviadas:(ofEnv||[]).length, ofVendidas, nuevos,
+    porCobrar, vencido, ofEnviadas:(ofEnv||[]).length, ofVendidas,
+    nuevos:nuevosAltas.length, nuevosAltas:nuevosAltas.length, nuevosCompraron, nuevosCuentan, nuevosDetalle,
     contactosUltDia:new Set((waMsgs||[]).map(m=>m.res_id)).size,
     diaConstancia:r.diaConstancia, findeCorregido:r.diaConstancia!==corte };
 }
 
 /* ===== nivel y salud, a partir de los datos crudos (función pura) ===== */
-function nivelDe(g,perfil){
+function nivelDe(g,perfil,cfg){
+  const _cMeta=(cfg&&cfg.contactosDia)||15;
+  const cuentanCompraron=((cfg&&cfg.nuevosCuentan)||"compraron")==="compraron";
+  const _nMeta=((cfg&&cfg.nuevosMeta)||{inst:5,farm:10,externo:10})[perfil]||10;
   const sp=PERFIL[perfil==="externo"?"farm":perfil]||PERFIL.farm;
   const rValor=g.objetivoCobro>0?Math.min(g.cobradoMes/g.objetivoCobro,1):0;
   const rPed=g.promPed>0?Math.min(g.actPed/g.promPed,1):0, rCli=g.promCli>0?Math.min(g.actCli/g.promCli,1):0;
@@ -185,8 +188,9 @@ function nivelDe(g,perfil){
     {ic:"📞",lab:"Actividad (pedidos y clientes)",max:sp.activ,pts:sp.activ*rAct,det:g.actPed+" pedidos (su promedio "+g.promPed+") y "+g.actCli+" clientes (promedio "+g.promCli+") = "+Math.round(rAct*100)+"%"},
     {ic:"📤",lab:"Ofertas enviadas",max:OF_PTS_ENV,pts:OF_PTS_ENV*Math.min(g.ofEnviadas/OF_META_ENV,1),det:g.ofEnviadas+" de "+OF_META_ENV},
     {ic:"🎁",lab:"Ofertas vendidas",max:OF_PTS_VEN,pts:OF_PTS_VEN*Math.min(g.ofVendidas/OF_META_VEN,1),det:g.ofVendidas+" clientes de "+OF_META_VEN},
-    {ic:"🆕",lab:"Clientes nuevos",max:NUEVOS_PTS,pts:NUEVOS_PTS*Math.min(g.nuevos/NUEVOS_META,1),det:g.nuevos+" de "+NUEVOS_META},
-    {ic:"🔥",lab:"Constancia (10 contactos/día)",max:CONST_PTS,pts:CONST_PTS*Math.min(g.contactosUltDia/CONST_META,1),det:g.contactosUltDia+" contactos el "+(g.diaConstancia||"último día")+(g.findeCorregido?" (último día hábil: sábados y domingos no descuentan)":"")},
+    {ic:"🆕",lab:"Clientes nuevos",max:NUEVOS_PTS,pts:NUEVOS_PTS*Math.min((g.nuevosCuentan||0)/_nMeta,1),
+      det:(g.nuevosCuentan||0)+" de "+_nMeta+(cuentanCompraron?(" que compraron"+(g.nuevosAltas>g.nuevosCompraron?"  ·  "+(g.nuevosAltas-g.nuevosCompraron)+" altas sin comprar":"")):" dados de alta")},
+    {ic:"🔥",lab:"Constancia ("+_cMeta+" contactos/día)",max:CONST_PTS,pts:CONST_PTS*Math.min(g.contactosUltDia/_cMeta,1),det:g.contactosUltDia+" contactos el "+(g.diaConstancia||"último día")+(g.findeCorregido?" (último día hábil: sábados y domingos no descuentan)":"")},
   ];
   const pts=items.reduce((s,i)=>s+i.pts,0);
   const idx=pts<40?0:pts<60?1:pts<80?2:pts<95?3:4;
@@ -194,17 +198,19 @@ function nivelDe(g,perfil){
 }
 /* prop = qué parte del mes transcurrió (1 = mes cerrado). El piso de facturación va PRORRATEADO,
    igual que en el panel: al día 5 no se le puede exigir el mes entero. */
-function saludDe(g,neto,baseline,prop){
+function saludDe(g,neto,baseline,prop,cfgSalud){
   const M=n=>"$"+Math.round(n||0).toLocaleString("es-AR");
   const venc=g.porCobrar>0?g.vencido/g.porCobrar:0;
   const esperado=(baseline||0)*(prop==null?1:prop);
   const factRatio=esperado>0?(neto||0)/esperado:1;
-  const pV=cl((venc-0.10)/0.40,0,1)*45, pF=cl((1-factRatio)/0.30,0,1)*30, pO=cl((0.40-g.fichas)/0.40,0,1)*25;
+  const P=(cfgSalud&&cfgSalud.saludPesos)||{vencido:60,facturado:30,fichas:25};
+  const U=(cfgSalud&&cfgSalud.saludUmbrales)||{vencidoDesde:0.10,vencidoRango:0.40,factRango:0.30,fichasMin:0.40};
+  const pV=cl((venc-U.vencidoDesde)/U.vencidoRango,0,1)*P.vencido, pF=cl((1-factRatio)/U.factRango,0,1)*P.facturado, pO=cl((U.fichasMin-g.fichas)/U.fichasMin,0,1)*P.fichas;
   const salud=Math.max(0,100-pV-pF-pO);
   return { salud, penaltyPt:(100-salud)/100, venc, fichas:g.fichas, factRatio,
-    items:[{ic:"🩸",lab:"Vencido de sus ventas",resta:pV,max:45,det:M(g.vencido)+" vencido = "+Math.round(venc*100)+"% de "+M(g.porCobrar)+" por cobrar (solo lo que vendió, sin saldos iniciales)"},
-           {ic:"📉",lab:"Facturado vs su piso",resta:pF,max:30,det:Math.round(factRatio*100)+"% del ritmo esperado"+((prop!=null&&prop<1)?" (piso prorrateado por días hábiles: "+M(esperado)+" al día de hoy)":"")},
-           {ic:"🗂️",lab:"Fichas completas",resta:pO,max:25,det:Math.round(g.fichas*100)+"% de la cartera"}]};
+    items:[{ic:"🩸",lab:"Vencido de sus ventas",resta:pV,max:P.vencido,det:M(g.vencido)+" vencido = "+Math.round(venc*100)+"% de "+M(g.porCobrar)+" por cobrar (solo lo que vendió, sin saldos iniciales)"},
+           {ic:"📉",lab:"Facturado vs su piso",resta:pF,max:P.facturado,det:Math.round(factRatio*100)+"% del ritmo esperado"+((prop!=null&&prop<1)?" (piso prorrateado por días hábiles: "+M(esperado)+" al día de hoy)":"")},
+           {ic:"🗂️",lab:"Fichas completas",resta:pO,max:P.fichas,det:Math.round(g.fichas*100)+"% de la cartera"}]};
 }
 
 /* ===== CIERRE COMPLETO DE UN MES =====
@@ -254,10 +260,10 @@ async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
     const comiBase=t1*rt.base+t2*rt.high;
     let nivel=null, salud=null, tasaAplicada={base:rt.base,high:rt.high}, comiFinal=comiBase;
     if(!externo){
-      const g=await gamificacion(s.uid,r,ofertasMes);
-      nivel=nivelDe(g,perfil);
+      const g=await gamificacion(s.uid,r,ofertasMes,cfg);
+      nivel=nivelDe(g,perfil,cfg);
       // si el mes todavía corre, el piso va prorrateado por los DÍAS HÁBILES transcurridos
-      salud=saludDe(g,neto,md.baseline,r.propHabil);
+      salud=saludDe(g,neto,md.baseline,r.propHabil,cfg);
       tasaAplicada={ base:Math.max(0,rt.base-salud.penaltyPt/100), high:Math.max(0,rt.high-salud.penaltyPt/100) };
       comiFinal=(t1*tasaAplicada.base+t2*tasaAplicada.high)*nivel.mult;
       nivel.crudo=g;
@@ -284,6 +290,19 @@ const esc=s=>String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").rep
 const MESES_L=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 const mesLargo=k=>{ const [y,m]=String(k).split("-"); return (MESES_L[(+m)-1]||k)+" "+y; };
 
+/* Los clientes nuevos con nombre y apellido: cuáles compraron y cuáles quedaron en una ficha.
+   Es el control que pidió Dirección — que no sean altas inventadas y se pueda seguir si se les vendió. */
+function nuevosHTML(r){
+  const d=(r.nivel&&r.nivel.crudo&&r.nivel.crudo.nuevosDetalle)||[];
+  if(!d.length) return "";
+  const si=d.filter(x=>x.compro), no=d.filter(x=>!x.compro);
+  const fila=x=>'<tr><td>'+esc(x.nombre)+'</td><td class="n">'+fD(x.alta)+'</td><td class="n">'+
+    (x.compro?('✅ '+x.pedidos+' ped · '+M(x.monto)):'<span style="color:var(--gris2)">sin comprar</span>')+'</td></tr>';
+  return '<div class="lqnuevos"><table>'+
+    '<tr><th>Cliente dado de alta</th><th class="n">Alta</th><th class="n">¿Compró?</th></tr>'+
+    si.map(fila).join("")+no.map(fila).join("")+
+    '</table><div class="lqnsub">'+si.length+' de '+d.length+' compraron. Los que no, quedan para revisar: un alta sin venta no suma puntos.</div></div>';
+}
 function hojaHTML(r){
   const ext=r.perfil==="externo";
   const rec=r.salud?(r.tasaTeorica.base-r.tasaAplicada.base):0;
@@ -320,7 +339,7 @@ function hojaHTML(r){
 
   h+=paso(4,`Su nivel: ${r.nivel.emoji} ${r.nivel.nombre} · multiplica ×${r.nivel.mult.toFixed(2)}`,
     "El nivel es <b>premio</b>: suma puntos cumpliendo sus objetivos y multiplica toda la comisión. Sobre 100 puntos: 🥉 menos de 40 · 🥈 40 · 🥇 60 · 💎 80 · 👑 95.",
-    `<table class="lqt pts">${r.nivel.items.map(i=>fila(`${i.ic||""} ${esc(i.lab)}<span class="det">${esc(i.det)}</span>`,`${P1(i.pts)} <span class="de">/ ${i.max}</span>`)).join("")}${fila("<b>Total</b>",`${P1(r.nivel.pts)} / 100 → ${r.nivel.emoji} ${r.nivel.nombre} ×${r.nivel.mult.toFixed(2)}`,"tot")}</table>`);
+    `<table class="lqt pts">${r.nivel.items.map(i=>fila(`${i.ic||""} ${esc(i.lab)}<span class="det">${esc(i.det)}</span>${/Clientes nuevos/.test(i.lab)?nuevosHTML(r):""}`,`${P1(i.pts)} <span class="de">/ ${i.max}</span>`)).join("")}${fila("<b>Total</b>",`${P1(r.nivel.pts)} / 100 → ${r.nivel.emoji} ${r.nivel.nombre} ×${r.nivel.mult.toFixed(2)}`,"tot")}</table>`);
 
   h+=paso(5,`Salud de la cuenta: ${Math.round(r.salud.salud)}%${rec>0.00005?` · recorta ${(rec*100).toFixed(2).replace(".",",")} puntos de tasa`:" · sin recorte"}`,
     "La salud es el <b>freno</b>: arranca en 100 y baja por deuda vencida, por facturar bajo su propio ritmo y por fichas incompletas. Lo que baja se descuenta de la tasa, hasta 1 punto como máximo.",
