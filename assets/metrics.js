@@ -14,12 +14,15 @@ window.EYGM = (function(){
     const venc=d.porCobrar>0?d.vencido/d.porCobrar:0;
     const esperado=(d.factBaseline||0)*(d.diaMesFrac||1);
     const factRatio=esperado>0?d.factMes/esperado:1;
-    const P=(d.saludPesos)||{vencido:60,facturado:30,fichas:25};
-    const pV=cl((venc-0.10)/0.40,0,1)*P.vencido, pF=cl((1-factRatio)/0.30,0,1)*P.facturado, pO=cl((0.40-(d.fichasPct||0))/0.40,0,1)*P.fichas;
+    /* Los mismos tres ítems que ve la comercial. Desde el paquete de octubre: mora ponderada por
+       antigüedad en lugar del % de vencido, y el mínimo de venta en lugar de su propia mediana. */
+    const P=(d.saludPesos)||{mora:60,minimo:30,fichas:10};
+    const pV=(d.moraIndice!=null&&EYG.moraResta)?EYG.moraResta(d.moraIndice,d.cfg,P.mora):cl((venc-0.10)/0.40,0,1)*(P.mora||P.vencido||60);
+    const pF=cl((1-factRatio)/((d.minimoRango)||0.50),0,1)*(P.minimo||P.facturado||30), pO=cl((0.40-(d.fichasPct||0))/0.40,0,1)*P.fichas;
     const s=Math.max(0,100-pV-pF-pO);
     return {salud:s, penaltyPt:(100-s)/100,
-      items:[{ic:"🩸",lab:"Vencido de cartera",pts:pV,max:P.vencido,det:Math.round(venc*100)+"% vencido"},
-             {ic:"📉",lab:"Facturado vs piso",pts:pF,max:P.facturado,det:Math.round(factRatio*100)+"% del ritmo"},
+      items:[{ic:"🩸",lab:"Mora de sus ventas",pts:pV,max:P.mora||P.vencido,det:Math.round(venc*100)+"% vencido"},
+             {ic:"📉",lab:"Mínimo de venta",pts:pF,max:P.minimo||P.facturado,det:Math.round(factRatio*100)+"% del ritmo"},
              {ic:"🗂️",lab:"Fichas",pts:pO,max:P.fichas,det:Math.round((d.fichasPct||0)*100)+"%"}]};
   }
   function nivel(d){

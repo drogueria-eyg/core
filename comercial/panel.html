@@ -744,7 +744,17 @@ async function rpc(model,method,args,kwargs={},intentos=3){
 }
 
 // ===== Config / objetivos =====
-const OBJ={diarioContactos:10, mensualNuevos:3, semanalFact:10000000}; // semanalFact = objetivo de VENTA NETA semanal (sin IVA, ya descontadas las notas de crédito)
+/* Las metas del día a día salen de la config (Dirección las cambia sin tocar código). Los valores
+   de acá abajo son sólo el respaldo si la config no cargó. El mínimo semanal ya no es un número
+   fijo de $10 M: lo fija Dirección por rubro (12,5 M farmacias / 25 M instituciones). */
+const OBJ_DEF={diarioContactos:15, mensualNuevos:10, semanalFact:12500000};
+function OBJnow(){
+  const c=CFGC()||{}, p=(ST.base&&ST.base.perfil)||"farm";
+  const sem=(ST.semanaActual&&ST.semanaActual.minimo)||((c.minimoSemanal||{})[p])||OBJ_DEF.semanalFact;
+  return { diarioContactos:c.contactosDia||OBJ_DEF.diarioContactos,
+           mensualNuevos:((c.nuevosMeta||{})[p])||OBJ_DEF.mensualNuevos,
+           semanalFact:sem };
+}
 const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador reversible en el chatter del contacto (misma bóveda que usa la líder en Contactos). La gerencia revisa lo archivado.
 const PPAL_TAG="[ENTREGA-PPAL]"; // marca reversible (chatter) de la dirección de entrega principal → Cargar Venta la usa por defecto
 const NUEVO_TAG="[CONTACTO-NUEVO]"; // constancia del alta: la MISMA marca que leen Contactos·CRM y Legajos
@@ -1003,12 +1013,22 @@ async function cargar(){
       const _gr=fechasEnGracia(hoyStr.slice(0,10));   // vencimientos de sáb/dom que se pagan el lunes
       const dSal=extra=>[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["journal_id","not in",[32,33]],...(_gr.length?[["date_maturity","not in",_gr]]:[]),...extra,
         ...EYG.domVendedor("move_id.invoice_line_ids.sale_line_ids.order_id.", ST.userId)];
-      const [dTot,dVen]=await Promise.all([
-        rpc("account.move.line","read_group",[dSal([]),["amount_residual:sum"],[]],{lazy:false}),
-        rpc("account.move.line","read_group",[dSal([["date_maturity","<",hoyStr.slice(0,10)]]),["amount_residual:sum"],[]],{lazy:false}),
-      ]);
-      ST.cc.saludPorCobrar=(dTot[0]?.amount_residual)||0;
-      ST.cc.saludVencido=(dVen[0]?.amount_residual)||0;
+      /* UNA sola consulta en lugar de dos: los renglones abiertos con su vencimiento. Con eso sale
+         el total, el vencido y los TRAMOS DE MORA, que es lo que ahora penaliza — no da lo mismo
+         deber hace una semana que hace un año. Mismo cálculo que el motor. */
+      const _lin=await rpc("account.move.line","search_read",[dSal([])],{fields:["amount_residual","date_maturity"],limit:0});
+      const _hoy=new Date(hoyStr.slice(0,10)+"T00:00:00");
+      let _pc=0,_ve=0; const _mora={d30:0,d60:0,d90:0,d180:0,mas:0};
+      for(const L of (_lin||[])){
+        const res=+L.amount_residual||0; if(!(res>0)) continue;
+        _pc+=res; if(!L.date_maturity) continue;
+        const d=Math.floor((_hoy-new Date(String(L.date_maturity).slice(0,10)+"T00:00:00"))/86400000);
+        if(d<=0) continue;
+        _ve+=res;
+        if(d<=30)_mora.d30+=res; else if(d<=60)_mora.d60+=res; else if(d<=90)_mora.d90+=res;
+        else if(d<=180)_mora.d180+=res; else _mora.mas+=res;
+      }
+      ST.cc.saludPorCobrar=_pc; ST.cc.saludVencido=_ve; ST.cc.mora=_mora;
     }catch(e){ ST.cc.saludPorCobrar=porCobrar; ST.cc.saludVencido=vencido; }
     /* DE DÓNDE SALE EL VENCIDO — para que el número se pueda explicar y no sorprenda.
        Un cliente puede haber cambiado de manos: la deuda de su cartera incluye ventas que hizo
@@ -1071,9 +1091,32 @@ async function cargar(){
       const avgTicket=ordHist.length?sumTot/ordHist.length:0;
       // META: desde octubre la fija Dirección (objetivo semanal por perfil × semanas del mes); antes
       // salía del historial de cada una (promedio/mediana de sus meses cerrados + %).
-      const _perfil = esExterno() ? "externo" : (avgTicket>=(cfg.perfilTicket||300000)?"inst":"farm");
+      const _perfil = EYG.perfilDe(ST.userId, avgTicket, cfg, (ST.usuario&&ST.usuario.name)||COMERCIAL);
       const md = EYG.metaDesde(fact, curM, cfg, _perfil);
-      ST.base={ objetivoCobro:(cobro3[0]?.amount||0)/3*1.1, promPed, promCli, perfil: avgTicket>=(cfg.perfilTicket||300000)?"inst":"farm", avgTicket, factBaseline:md.baseline, meta:md.meta, metaMeses:md.meses, metaModo:md.modo, metaSemanas:md.semanas, fact };
+      ST.base={ objetivoCobro:(cobro3[0]?.amount||0)/3*1.1, promPed, promCli, perfil: _perfil, avgTicket, factBaseline:md.baseline, meta:md.meta, metaMeses:md.meses, metaModo:md.modo, minimo:md.minimo, fact };
+      /* SEMANA POR SEMANA. El mínimo de venta es semanal, así que hace falta el facturado neto de
+         cada día para saber qué semanas llegaron. Se agrupa por "date:day" a propósito: agrupar por
+         un campo fecha sin granularidad devuelve el MES. Mismo cálculo que el motor. */
+      try{
+        if(md.minimo){
+          const domD=(mt)=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",curM+"-01"],["date","<=",inicioMes.slice(0,7)+"-31"],...exF,
+            ...EYG.domVendedor("sale_line_ids.order_id.", ST.userId)];
+          const [di,dr]=await Promise.all([
+            rpc("account.move.line","read_group",[domD("out_invoice"),["price_subtotal:sum"],["date:day"]],{lazy:false}),
+            rpc("account.move.line","read_group",[domD("out_refund"),["price_subtotal:sum"],["date:day"]],{lazy:false}),
+          ]);
+          const porDia={}; const sum=(rows,sg)=>(rows||[]).forEach(x=>{ const rg=x.__range&&x.__range["date:day"];
+            const k=rg?String(rg.from).slice(0,10):null; if(k) porDia[k]=(porDia[k]||0)+sg*(x.price_subtotal||0); });
+          sum(di,1); sum(dr,-1);
+          const hoyD=hoyStr.slice(0,10);
+          const ws=(md.minimo.semanas||[]).map(w=>{ let v=0; for(const k in porDia) if(k>=w.desde&&k<=w.hasta) v+=porDia[k];
+            return Object.assign({}, w, { facturado:v, cumple:w.minimo>0?v>=w.minimo:true, cerrada:w.hasta<hoyD }); });
+          const cerr=ws.filter(w=>w.cerrada);
+          ST.semanasMin={ lista:ws, total:cerr.length, ok:cerr.filter(w=>w.cumple).length,
+            habilesTot:cerr.reduce((s,w)=>s+w.habiles,0), habilesOk:cerr.filter(w=>w.cumple).reduce((s,w)=>s+w.habiles,0) };
+          ST.semanaActual=ws.find(w=>!w.cerrada)||null;
+        }
+      }catch(e){}
       ST.ventaMes = fact[curM]||0;         // BASE de la comisión = facturado NETO (por cruce) del mes
       ST.factTotalMes = factT[curM]||0;    // MÉTRICA = facturado TOTAL con IVA del mes (lo real)
       ST.pedMesMonto = ped[curM]||0;       // MÉTRICA = pedidos del mes (con IVA)
@@ -1150,7 +1193,9 @@ const PERFIL={ inst:{valor:38,activ:12,nom:"Instituciones"}, farm:{valor:25,acti
 // Fichas y Cartera-sana ya NO están acá: pasaron a la Salud de la cuenta (el freno). Ver saludCuenta().
 function nivel(){
   const b=ST.base||{objetivoCobro:0,promPed:0,promCli:0,perfil:"farm"};
-  const sp=PERFIL[b.perfil]||PERFIL.farm;
+  const _nuevoRegimen=EYG.paqueteRige(inicioMes.slice(0,7),CFGC());
+  // los pesos salen de la config: para hacerle lugar al mínimo semanal, cobro y actividad ceden 10
+  const sp=(_nuevoRegimen&&((CFGC().nivelPesos||{})[b.perfil]))||PERFIL[b.perfil]||PERFIL.farm;
   const act=ST.act||{ped:0,cli:0};
   const P=[];
   const rValor=b.objetivoCobro>0?Math.min(ST.cc.cobradoMes/b.objetivoCobro,1):0;
@@ -1164,12 +1209,24 @@ function nivel(){
   const cer=ST.ofVendCerradas||0;
   P.push({ic:"🎁",lab:"Ofertas vendidas",max:OF_PTS_VEN,pts:OF_PTS_VEN*rVen,
     det:ven+" de "+OF_META_VEN+" colocadas"+(cer?" · "+cer+" de ofertas que ya cerraron":"")});
-  const rN=Math.min(ST.nuevos/3,1);
-  P.push({ic:"🆕",lab:"Clientes nuevos (meta 3)",max:20,pts:20*rN,det:ST.nuevos+" este mes"});
+  const _O=OBJnow();
+  const _nHechos=(_nuevoRegimen&&(CFGC().nuevosCuentan||"compraron")==="compraron")?(ST.nuevosCompraron||0):ST.nuevos;
+  const rN=Math.min(_nHechos/_O.mensualNuevos,1);
+  P.push({ic:"🆕",lab:"Clientes nuevos (meta "+_O.mensualNuevos+")",max:20,pts:20*rN,
+    det:_nHechos+" este mes"+((_nuevoRegimen&&ST.nuevos>_nHechos)?" · "+(ST.nuevos-_nHechos)+" altas todavía sin comprar":"")});
   const co=constanciaHoy();
-  const rCo=Math.min(co.n/10,1);
-  P.push({ic:"🔥",lab:"Constancia (10 contactos/día)",max:5,pts:5*rCo,
+  const rCo=Math.min(co.n/_O.diarioContactos,1);
+  P.push({ic:"🔥",lab:"Constancia ("+_O.diarioContactos+" contactos/día)",max:5,pts:5*rCo,
     det: co.finde ? (co.n+" · el fin de semana no descuenta"+(co.propio?" (y hoy trabajaste)":"")) : (co.n+" hoy")});
+  /* MÍNIMO DE VENTA SEMANAL: la semana que no llega pega acá, en el nivel, porque el nivel mide
+     conducta y la semana es el ritmo. El mes que no llega pega en la salud. Se pondera por días
+     hábiles para que una semana cortada por el mes no valga lo mismo que una entera. */
+  if(_nuevoRegimen && ST.semanasMin && ST.semanasMin.total>0){
+    const sm=ST.semanasMin, _mx=((CFGC().nivelPesos||{}).semanal)||10;
+    const r=sm.habilesTot>0?sm.habilesOk/sm.habilesTot:0;
+    P.push({ic:"📅",lab:"Mínimo de venta semanal",max:_mx,pts:_mx*r,
+      det:sm.ok+" de "+sm.total+" semanas cerradas al mínimo"+(ST.semanaActual?" · esta semana "+money(ST.semanaActual.facturado)+" de "+money(ST.semanaActual.minimo):"")});
+  }
   const pts=P.reduce((s,p)=>s+p.pts,0);
   const idx=pts<40?0:pts<60?1:pts<80?2:pts<95?3:4; // Bronce<40 · Plata40 · Oro60 · Platino80 · Diamante95
   return {lv:idx+1, idx, pts, mult:NIV[idx].m, nombre:NIV[idx].n, emoji:NIV[idx].e, params:P, perfil:sp.nom, base:b};
@@ -1251,15 +1308,34 @@ function saludCuenta(){
   // exigir facturación. Al cerrar el mes la proporción llega a 1 igual que con días calendario.
   const esperado=(ST.base?.factBaseline||0)*propHabil(hoyStr.slice(0,10));
   const factRatio=esperado>0?(ST.ventaMes||0)/esperado:1;
-  const _SP=(CFGC().saludPesos)||{vencido:60,facturado:30,fichas:25};
-  const pV=cl((venc-0.10)/0.40,0,1)*_SP.vencido;   // vencido: desde 10%, tope 50%
-  const pF=cl((1-factRatio)/0.30,0,1)*_SP.facturado; // facturado < piso (prorrateado)
-  const pO=cl((0.40-fichas)/0.40,0,1)*_SP.fichas; // fichas < 40%
+  const _cfg=CFGC(), _curM=inicioMes.slice(0,7);
+  if(!EYG.paqueteRige(_curM,_cfg)){
+    // ——— reglas hasta septiembre de 2026: vencido 45 / facturado 30 / fichas 25, piso = su mediana
+    const pV=cl((venc-0.10)/0.40,0,1)*45, pF=cl((1-factRatio)/0.30,0,1)*30, pO=cl((0.40-fichas)/0.40,0,1)*25;
+    const salud=Math.max(0,100-pV-pF-pO);
+    return {salud, penaltyPt:esExterno()?0:(100-salud)/100, venc, fichas, factRatio,
+      items:[{ic:"🩸",lab:"Vencido de tus ventas",pts:pV,max:45,det:money(sVE)+" vencido ("+Math.round(venc*100)+"% de "+money(sPC)+" por cobrar) · solo lo que vendiste vos y ya pasó el plazo"},
+             {ic:"📉",lab:"Facturado vs tu piso",pts:pF,max:30,det:Math.round(factRatio*100)+"% del ritmo esperado"},
+             {ic:"🗂️",lab:"Fichas completas",pts:pO,max:25,det:Math.round(fichas*100)+"% de la cartera"}]};
+  }
+  const _SP=(_cfg.saludPesos)||{mora:60,minimo:30,fichas:10};
+  const _SU=(_cfg.saludUmbrales)||{minimoRango:0.50,fichasMin:0.40};
+  // MORA: el vencido ponderado por antigüedad. Un atraso chico y fresco no penaliza.
+  const _idx=EYG.moraIndice(ST.cc.mora, sPC, _cfg);
+  const pV=EYG.moraResta(_idx, _cfg, _SP.mora);
+  // MÍNIMO DE VENTA del mes, prorrateado por los días hábiles transcurridos
+  const _min=(ST.base&&ST.base.minimo)||null;
+  const _exig=(_min&&_min.mensual>0)?_min.mensual*propHabil(hoyStr.slice(0,10)):0;
+  const _cump=_exig>0?(ST.ventaMes||0)/_exig:1;
+  const pF=_exig>0?cl((1-_cump)/(_SU.minimoRango||0.50),0,1)*_SP.minimo:0;
+  const pO=cl(((_SU.fichasMin||0.40)-fichas)/(_SU.fichasMin||0.40),0,1)*_SP.fichas;
   const salud=Math.max(0,100-pV-pF-pO);
   const penaltyPt=esExterno()?0:(100-salud)/100; // hasta 1 punto de tasa
-  return {salud, penaltyPt, venc, fichas, factRatio,
-    items:[{ic:"🩸",lab:"Vencido de tus ventas",pts:pV,max:_SP.vencido,det:money(sVE)+" vencido ("+Math.round(venc*100)+"% de "+money(sPC)+" por cobrar) · solo lo que vendiste vos y ya pasó el plazo"},
-           {ic:"📉",lab:"Facturado vs tu piso",pts:pF,max:_SP.facturado,det:Math.round(factRatio*100)+"% del ritmo esperado"},
+  return {salud, penaltyPt, venc, fichas, factRatio:_cump, moraIndice:_idx, exigido:_exig,
+    items:[{ic:"🩸",lab:"Mora de tus ventas",pts:pV,max:_SP.mora,
+            det:money(sVE)+" vencido de "+money(sPC)+" por cobrar · índice "+_idx.toFixed(2).replace(".",",")+((ST.cc.mora&&ST.cc.mora.mas>0)?" · "+money(ST.cc.mora.mas)+" vencido hace más de 180 días":"")},
+           {ic:"📉",lab:"Mínimo de venta del mes",pts:pF,max:_SP.minimo,
+            det:_exig>0?(money(ST.ventaMes||0)+" de "+money(_exig)+" = "+Math.round(_cump*100)+"% (prorrateado por días hábiles)"):"sin mínimo cargado para tu rubro"},
            {ic:"🗂️",lab:"Fichas completas",pts:pO,max:_SP.fichas,det:Math.round(fichas*100)+"% de la cartera"}]};
 }
 
@@ -2119,11 +2195,19 @@ function render(){
   const ofH=ofHoy(), ofS=ofSem();
   const dHoy=ST.contactadosHoy.size+ofH, dObj=OBJ.diarioContactos;
   const msgHoy=envH.total+ofH, msgSem=envS+ofS;
-  const pDia=Math.min(100,Math.round(dHoy/dObj*100)), pNue=Math.min(100,Math.round(ST.nuevos/OBJ.mensualNuevos*100)), pFac=Math.min(100,Math.round((ST.ventaSem||0)/OBJ.semanalFact*100));
+  const _OB=OBJnow();
+  /* La semana se mide sobre el facturado NETO, igual que la comisión y que el mínimo. Antes se
+     miraba el monto de los pedidos con IVA contra un objetivo fijo de $10 M: dos varas distintas. */
+  const _vSem=(ST.semanaActual?ST.semanaActual.facturado:(ST.ventaSem||0));
+  const pDia=Math.min(100,Math.round(dHoy/dObj*100)), pNue=Math.min(100,Math.round((((CFGC().nuevosCuentan||"compraron")==="compraron"&&EYG.paqueteRige(inicioMes.slice(0,7),CFGC()))?(ST.nuevosCompraron||0):ST.nuevos)/_OB.mensualNuevos*100)), pFac=Math.min(100,Math.round(_vSem/_OB.semanalFact*100));
   const _dw=new Date(hoyStr.slice(0,10)+"T12:00:00").getDay(), esFinde=(_dw===0||_dw===6);   // sáb/dom: la meta diaria no corre
   const externo=esExterno();
   const nv=nivel(); const completas=ST.contactos.filter(c=>completar(c).pct>=100).length; const incompletas=ST.contactos.length-completas;
-  const cBase=comisionBase(ST.ventaMes), cTot=externo?cBase:cBase*nv.mult, desg=comisionDesglose(ST.ventaMes);
+  /* EL FRENO DEL 3%: desde octubre el nivel multiplica SÓLO el tramo base. Lo que pasa la meta ya
+     se paga al 3%, el máximo de la casa, así la tasa efectiva se acerca al 3% sin alcanzarlo. */
+  const cBase=comisionBase(ST.ventaMes), desg=comisionDesglose(ST.ventaMes);
+  const _freno=EYG.paqueteRige(inicioMes.slice(0,7),CFGC()) && CFGC().nivelSoloTramoBase!==false;
+  const cTot=externo?cBase:(_freno?((desg[0]?desg[0].comi:0)*nv.mult+(desg[1]?desg[1].comi:0)):cBase*nv.mult);
   const corte=corteObjetivo(), rt=comisionRates();
   const sd=externo?null:saludCuenta();
   const scol=sd?(sd.salud>=80?'var(--teal)':sd.salud>=60?'var(--gold)':'var(--coral)'):'';
@@ -2146,7 +2230,7 @@ function render(){
     <div class="goals">
       <div class="goal ${pDia>=100||esFinde?'done':''}"><span class="chk">${esFinde?'☕':'✅'}</span>${ring(esFinde?100:pDia,dHoy,dObj,esFinde?'var(--gris2)':'var(--teal)')}<div><div class="gt">Hoy · contactos</div><div class="gn">${dHoy}/${dObj}</div><div class="gs">${esFinde?'Fin de semana · no descuenta':(dHoy>=dObj?'¡Meta cumplida! 🎉':(dObj-dHoy)+' para tu meta')}${msgHoy?` · 📤 ${msgHoy} msg`:''}</div></div></div>
       <div class="goal ${pNue>=100?'done':''}"><span class="chk">✅</span>${ring(pNue,ST.nuevos,OBJ.mensualNuevos,'var(--coral)')}<div><div class="gt">Mes · nuevos</div><div class="gn">${ST.nuevos}/${OBJ.mensualNuevos}</div><div class="gs">clientes nuevos</div></div></div>
-      <div class="goal ${pFac>=100?'done':''}"><span class="chk">✅</span>${ring(pFac,pFac+'%','','var(--gold)')}<div><div class="gt">Semana · ventas</div><div class="gn">${money(ST.ventaSem)}</div><div class="gs">meta ${money(OBJ.semanalFact)} · con IVA</div></div></div>
+      <div class="goal ${pFac>=100?'done':''}"><span class="chk">✅</span>${ring(pFac,pFac+'%','','var(--gold)')}<div><div class="gt">Semana · ventas</div><div class="gn">${money(_vSem)}</div><div class="gs">mínimo ${money(_OB.semanalFact)} · facturado neto</div></div></div>
     </div>
     <div class="secrow"><h2 class="sec">📊 Tus ventas</h2></div>
     ${externo?'':`<div style="font-size:12px;color:var(--gris2);margin:-4px 0 12px">Tu comisión se calcula sobre el <b>facturado neto</b>. <a onclick="ctrlPanel('ayuda')" style="color:var(--teal-deep);font-weight:700;cursor:pointer">Cómo se calcula →</a></div>`}
@@ -2164,7 +2248,7 @@ function render(){
       <div class="kpi">
         <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">📅</span><div class="kmeta"><div class="kl">Semana</div><div class="kv">${money(ST.ventaSem)}</div><div class="ks">${pFac}% de la meta · ${ST.diag.pedSem} pedidos</div></div><span class="kchev">▾</span></div>
         <div class="acc"><div class="accw"><div class="accin">
-          <div class="prow"><div class="pl"><span>Ventas semana · meta ${money(OBJ.semanalFact)}</span><b>${pFac}%</b></div><div class="pbar"><i style="width:${Math.min(100,pFac)}%;background:var(--gold)"></i></div></div>
+          <div class="prow"><div class="pl"><span>Ventas semana · mínimo ${money(_OB.semanalFact)}</span><b>${pFac}%</b></div><div class="pbar"><i style="width:${Math.min(100,pFac)}%;background:var(--gold)"></i></div></div>
           <div class="drow"><span>📦 Pedidos (esta semana)</span><b>${ST.diag.pedSem}</b></div>
           <div class="drow"><span>👥 Clientes activos (esta semana)</span><b>${ST.diag.cliSem}</b></div>
           <div class="drow"><span>🆕 Nuevos del mes · meta ${OBJ.mensualNuevos}</span><b>${ST.nuevos}</b></div>

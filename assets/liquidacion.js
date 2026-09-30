@@ -100,9 +100,19 @@ async function facturado(uid,r,exIds){
   const A=mt=>[...base(mt),...EYG.domVendedor("sale_line_ids.order_id.", uid)];
   const B=mt=>[...base(mt),["id","=",0]];   // rama B desactivada: queda en 0 y se sigue informando
   const g=(dom)=>rpc("account.move.line","read_group",[dom,["price_subtotal:sum","price_total:sum"],[]],{lazy:false}).catch(()=>[]);
-  const [ai,ar,bi,br]=await Promise.all([g(A("out_invoice")),g(A("out_refund")),g(B("out_invoice")),g(B("out_refund"))]);
+  // el neto DÍA POR DÍA, para saber qué semanas llegaron al mínimo de venta. Se agrupa por
+  // "date:day" a propósito: agrupar por un campo fecha sin granularidad devuelve el MES.
+  const gd=(dom)=>rpc("account.move.line","read_group",[dom,["price_subtotal:sum"],["date:day"]],{lazy:false}).catch(()=>[]);
+  const [ai,ar,bi,br,di,dr]=await Promise.all([g(A("out_invoice")),g(A("out_refund")),g(B("out_invoice")),g(B("out_refund")),
+    gd(A("out_invoice")),gd(A("out_refund"))]);
+  const porDia={};
+  const sumaDias=(rows,signo)=>(rows||[]).forEach(x=>{
+    const rg=x.__range&&x.__range["date:day"]; const k=rg?String(rg.from).slice(0,10):null;
+    if(k) porDia[k]=(porDia[k]||0)+signo*(x.price_subtotal||0);
+  });
+  sumaDias(di,1); sumaDias(dr,-1);
   const v=(x,f)=>((x[0]||{})[f])||0;
-  return {
+  return { porDia,
     facturas: v(ai,"price_subtotal")+v(bi,"price_subtotal"),
     nc:       v(ar,"price_subtotal")+v(br,"price_subtotal"),
     facturasIVA: v(ai,"price_total")+v(bi,"price_total"),
@@ -123,17 +133,17 @@ async function gamificacion(uid,r,ofertasMes,cfgN){
   // DEUDA POR QUIEN VENDIO (no por cartera): la factura impaga se le cuenta a quien generó el pedido.
   // Si el cliente cambia de manos, la deuda vieja no la hereda quien lo recibe. Los SALDOS INICIALES
   // (diarios 32 y 33, la deuda migrada con la que arrancó el sistema) quedan afuera: no son venta de nadie.
-  const recv=extra=>rpc("account.move.line","read_group",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["journal_id","not in",SALDOS_INI],...((r.enGracia||[]).length?[["date_maturity","not in",r.enGracia]]:[]),...extra,
-    ...EYG.domVendedor("move_id.invoice_line_ids.sale_line_ids.order_id.", uid)],
-    ["amount_residual:sum"],[]],{lazy:false}).catch(()=>[]);
-  const [cobMes,cob100,ordHist,nuevosAltas,deuG,ovG,waMsgs,ofEnv]=await Promise.all([
+  // UNA sola consulta en lugar de dos: se traen los renglones abiertos con su vencimiento y acá se
+  // arma el total, el vencido y los TRAMOS DE MORA. Menos viajes al conector y más información.
+  const recvLineas=()=>rpc("account.move.line","search_read",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["journal_id","not in",SALDOS_INI],...((r.enGracia||[]).length?[["date_maturity","not in",r.enGracia]]:[]),
+    ...EYG.domVendedor("move_id.invoice_line_ids.sale_line_ids.order_id.", uid)]],
+    {fields:["amount_residual","date_maturity"],limit:0}).catch(()=>[]);
+  const [cobMes,cob100,ordHist,nuevosAltas,deuLin,waMsgs,ofEnv]=await Promise.all([
     pay(r.ini,r.fin), pay(r.d100,r.fin),
     rpc("sale.order","search_read",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",r.d190],["date_order","<=",r.finH]]],{fields:["partner_id","date_order"],limit:0}).catch(()=>[]),
     rpc("res.partner","search_read",[[["user_id","=",uid],["type","=","contact"],["parent_id","=",false],["create_date",">=",r.ini],["create_date","<=",r.finH]]],{fields:["id","name","create_date"],limit:0}).catch(()=>[]),
-    // una factura que vence HOY todavia no esta vencida: el corte es ESTRICTO. Con "<=" el motor
-    // penalizaba de mas y no coincidia con el panel (Natividad, 30/9: $290.780 que vencian ese
-    // mismo dia movian 0,35 puntos de salud y $6.578 de comision).
-    recv([]), recv([["date_maturity","<",r.topeVenc]]),    ids.length?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",r.diaConstancia+" 00:00:00"],["date","<=",r.diaConstancia+" 23:59:59"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id"],limit:0}).catch(()=>[]):[],
+    recvLineas(),
+    ids.length?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",r.diaConstancia+" 00:00:00"],["date","<=",r.diaConstancia+" 23:59:59"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id"],limit:0}).catch(()=>[]):[],
     uPartner?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","=",uPartner],["date",">=",r.ini+" 00:00:00"],["date","<=",r.finH],["body","like","EyGOFENV"]]],{fields:["date"],limit:0}).catch(()=>[]):[],
   ]);
   // cobro
@@ -143,13 +153,40 @@ async function gamificacion(uid,r,ofertasMes,cfgN){
   const bk={};
   for(const o of ordHist){ const m=(o.date_order||"").slice(0,7); if(!m)continue; (bk[m]=bk[m]||{ped:0,cli:new Set()}); bk[m].ped++; if(o.partner_id)bk[m].cli.add(o.partner_id[0]); }
   const mes=r.ini.slice(0,7);
+  /* LA VARA DE LA ACTIVIDAD. El promedio de 6 meses regalaba el ítem: en septiembre las cinco
+     sacaron el 100% porque el negocio creció y el promedio quedó muy atrás (Ruth hizo 117 pedidos
+     contra un promedio de 56). Desde el paquete de octubre la vara es el MEJOR de los 3 meses
+     previos: igualar su propio récord reciente. */
   const prev=Object.keys(bk).filter(m=>m<mes), nP=prev.length||1;
-  const promPed=Math.round(prev.reduce((s,m)=>s+bk[m].ped,0)/nP)||1;
-  const promCli=Math.round(prev.reduce((s,m)=>s+bk[m].cli.size,0)/nP)||1;
+  const _vara=(EYG.paqueteRige(mes,cfgN)&&((cfgN&&cfgN.actividadVara)||"mejor3"))||"prom";
+  let promPed, promCli;
+  if(_vara==="mejor3"||_vara==="prom3"){
+    const tres=[]; { let [y,m]=mes.split("-").map(Number);
+      for(let i=0;i<3;i++){ m--; if(m<1){m=12;y--;} tres.unshift(y+"-"+String(m).padStart(2,"0")); } }
+    const hay=tres.filter(k=>bk[k]);
+    const peds=hay.map(k=>bk[k].ped), clis=hay.map(k=>bk[k].cli.size);
+    const f=a=>!a.length?1:(_vara==="mejor3"?Math.max(...a):Math.round(a.reduce((x,y)=>x+y,0)/a.length));
+    promPed=f(peds)||1; promCli=f(clis)||1;
+  }else{
+    promPed=Math.round(prev.reduce((s,m)=>s+bk[m].ped,0)/nP)||1;
+    promCli=Math.round(prev.reduce((s,m)=>s+bk[m].cli.size,0)/nP)||1;
+  }
   const actPed=bk[mes]?bk[mes].ped:0, actCli=bk[mes]?bk[mes].cli.size:0;
-  // deuda / vencido — de SUS ventas, saldos iniciales afuera
-  const porCobrar=((deuG[0]||{}).amount_residual)||0;
-  const vencido=((ovG[0]||{}).amount_residual)||0;
+  /* DEUDA de SUS ventas (saldos iniciales afuera), repartida por ANTIGÜEDAD. Los tramos son lo que
+     alimenta el índice de mora: no da lo mismo deber $1 M hace una semana que hace un año. */
+  let porCobrar=0, vencido=0;
+  const mora={d30:0,d60:0,d90:0,d180:0,mas:0};
+  const _tope=new Date(r.topeVenc+"T00:00:00");
+  for(const L of (deuLin||[])){
+    const res=+L.amount_residual||0; if(!(res>0)) continue;
+    porCobrar+=res;
+    if(!L.date_maturity) continue;
+    const d=Math.floor((_tope-new Date(String(L.date_maturity).slice(0,10)+"T00:00:00"))/86400000);
+    if(d<=0) continue;
+    vencido+=res;
+    if(d<=30) mora.d30+=res; else if(d<=60) mora.d60+=res; else if(d<=90) mora.d90+=res;
+    else if(d<=180) mora.d180+=res; else mora.mas+=res;
+  }
   // ofertas colocadas (clientes de su cartera que compraron una oferta dentro de su vigencia)
   let ofVendidas=0; const idset=new Set(ids);
   for(const o of (ofertasMes||[])){
@@ -167,18 +204,27 @@ async function gamificacion(uid,r,ofertasMes,cfgN){
   }
   const corte=(((EYG&&EYG.argToday)?EYG.argToday():r.fin)<r.fin)?((EYG&&EYG.argToday)?EYG.argToday():r.fin):r.fin;
   return { cartera:cart.length, fichas, cobradoMes, objetivoCobro, promPed, promCli, actPed, actCli,
-    porCobrar, vencido, ofEnviadas:(ofEnv||[]).length, ofVendidas,
+    porCobrar, vencido, mora, ofEnviadas:(ofEnv||[]).length, ofVendidas,
     nuevos:nuevosAltas.length, nuevosAltas:nuevosAltas.length, nuevosCompraron, nuevosCuentan, nuevosDetalle,
     contactosUltDia:new Set((waMsgs||[]).map(m=>m.res_id)).size,
     diaConstancia:r.diaConstancia, findeCorregido:r.diaConstancia!==corte };
 }
 
 /* ===== nivel y salud, a partir de los datos crudos (función pura) ===== */
-function nivelDe(g,perfil,cfg){
-  const _cMeta=(cfg&&cfg.contactosDia)||15;
-  const cuentanCompraron=((cfg&&cfg.nuevosCuentan)||"compraron")==="compraron";
-  const _nMeta=((cfg&&cfg.nuevosMeta)||{inst:5,farm:10,externo:10})[perfil]||10;
-  const sp=PERFIL[perfil==="externo"?"farm":perfil]||PERFIL.farm;
+/* NIVEL. Desde el paquete de octubre entra un séptimo ítem: las SEMANAS en que llegó al mínimo de
+   venta. Va acá y no en la salud porque el nivel mide conducta —el ritmo del trabajo— y la semana es
+   el ritmo; el resultado del mes, en cambio, pega en la salud. Para hacerle lugar se le sacaron 10
+   puntos al cobro y a la actividad, así los siete ítems siguen sumando 100. */
+function nivelDe(g,perfil,cfg,mes){
+  const nuevo=EYG.paqueteRige(mes,cfg);
+  const pk=perfil==="externo"?"farm":perfil;
+  // antes del paquete: 10 contactos/día y una meta única de 3 clientes nuevos dados de alta
+  const _cMeta=nuevo?((cfg&&cfg.contactosDia)||15):10;
+  const cuentanCompraron=nuevo&&(((cfg&&cfg.nuevosCuentan)||"compraron")==="compraron");
+  const _nMeta=nuevo?(((cfg&&cfg.nuevosMeta)||{inst:5,farm:10,externo:10})[perfil]||10):3;
+  const _nHechos=cuentanCompraron?(g.nuevosCompraron||0):(g.nuevosAltas||g.nuevos||0);
+  const NP=(nuevo&&cfg&&cfg.nivelPesos)||null;
+  const sp=(NP&&NP[pk])||PERFIL[pk]||PERFIL.farm;
   const rValor=g.objetivoCobro>0?Math.min(g.cobradoMes/g.objetivoCobro,1):0;
   const rPed=g.promPed>0?Math.min(g.actPed/g.promPed,1):0, rCli=g.promCli>0?Math.min(g.actCli/g.promCli,1):0;
   const rAct=(rPed+rCli)/2;
@@ -188,28 +234,61 @@ function nivelDe(g,perfil,cfg){
     {ic:"📞",lab:"Actividad (pedidos y clientes)",max:sp.activ,pts:sp.activ*rAct,det:g.actPed+" pedidos (su promedio "+g.promPed+") y "+g.actCli+" clientes (promedio "+g.promCli+") = "+Math.round(rAct*100)+"%"},
     {ic:"📤",lab:"Ofertas enviadas",max:OF_PTS_ENV,pts:OF_PTS_ENV*Math.min(g.ofEnviadas/OF_META_ENV,1),det:g.ofEnviadas+" de "+OF_META_ENV},
     {ic:"🎁",lab:"Ofertas vendidas",max:OF_PTS_VEN,pts:OF_PTS_VEN*Math.min(g.ofVendidas/OF_META_VEN,1),det:g.ofVendidas+" clientes de "+OF_META_VEN},
-    {ic:"🆕",lab:"Clientes nuevos",max:NUEVOS_PTS,pts:NUEVOS_PTS*Math.min((g.nuevosCuentan||0)/_nMeta,1),
-      det:(g.nuevosCuentan||0)+" de "+_nMeta+(cuentanCompraron?(" que compraron"+(g.nuevosAltas>g.nuevosCompraron?"  ·  "+(g.nuevosAltas-g.nuevosCompraron)+" altas sin comprar":"")):" dados de alta")},
+    {ic:"🆕",lab:"Clientes nuevos",max:NUEVOS_PTS,pts:NUEVOS_PTS*Math.min(_nHechos/_nMeta,1),
+      det:_nHechos+" de "+_nMeta+(cuentanCompraron?(" que compraron"+((g.nuevosAltas||0)>(g.nuevosCompraron||0)?"  ·  "+((g.nuevosAltas||0)-(g.nuevosCompraron||0))+" altas sin comprar":"")):" dados de alta")},
     {ic:"🔥",lab:"Constancia ("+_cMeta+" contactos/día)",max:CONST_PTS,pts:CONST_PTS*Math.min(g.contactosUltDia/_cMeta,1),det:g.contactosUltDia+" contactos el "+(g.diaConstancia||"último día")+(g.findeCorregido?" (último día hábil: sábados y domingos no descuentan)":"")},
   ];
+  if(nuevo && g.semanasMin && g.semanasMin.total>0){
+    const sm=g.semanasMin, max=(NP&&NP.semanal)||10;
+    // se pondera por días hábiles: una semana cortada por el mes no vale lo mismo que una entera
+    const ratio=sm.habilesTot>0?sm.habilesOk/sm.habilesTot:0;
+    items.push({ic:"📅",lab:"Mínimo de venta semanal",max,pts:max*ratio,
+      det:sm.ok+" de "+sm.total+" semanas al mínimo ("+Math.round(ratio*100)+"% de los días hábiles)"});
+  }
   const pts=items.reduce((s,i)=>s+i.pts,0);
   const idx=pts<40?0:pts<60?1:pts<80?2:pts<95?3:4;
   return {pts,idx,mult:NIV[idx].m,nombre:NIV[idx].n,emoji:NIV[idx].e,items};
 }
-/* prop = qué parte del mes transcurrió (1 = mes cerrado). El piso de facturación va PRORRATEADO,
-   igual que en el panel: al día 5 no se le puede exigir el mes entero. */
-function saludDe(g,neto,baseline,prop,cfgSalud){
+/* SALUD. prop = qué parte del mes transcurrió (1 = mes cerrado); la vara de facturación va
+   prorrateada por días hábiles, porque al día 5 no se le puede exigir el mes entero.
+   Desde el paquete de octubre cambian dos de los tres ítems:
+     · el vencido pasa a medirse por MORA (ponderada por antigüedad), no por porcentaje
+     · la vara de facturación pasa a ser el MÍNIMO DE VENTA del mes, no su propia mediana
+   Antes de paqueteDesde se calcula con las reglas viejas, tal como las vieron las comerciales. */
+function saludDe(g,neto,baseline,prop,cfg,mes,minimo){
   const M=n=>"$"+Math.round(n||0).toLocaleString("es-AR");
+  const nuevo=EYG.paqueteRige(mes,cfg);
   const venc=g.porCobrar>0?g.vencido/g.porCobrar:0;
-  const esperado=(baseline||0)*(prop==null?1:prop);
-  const factRatio=esperado>0?(neto||0)/esperado:1;
-  const P=(cfgSalud&&cfgSalud.saludPesos)||{vencido:60,facturado:30,fichas:25};
-  const U=(cfgSalud&&cfgSalud.saludUmbrales)||{vencidoDesde:0.10,vencidoRango:0.40,factRango:0.30,fichasMin:0.40};
-  const pV=cl((venc-U.vencidoDesde)/U.vencidoRango,0,1)*P.vencido, pF=cl((1-factRatio)/U.factRango,0,1)*P.facturado, pO=cl((U.fichasMin-g.fichas)/U.fichasMin,0,1)*P.fichas;
+  if(!nuevo){
+    // ——— reglas hasta septiembre de 2026: vencido 45 / facturado 30 / fichas 25, piso = su mediana
+    const esperado=(baseline||0)*(prop==null?1:prop);
+    const factRatio=esperado>0?(neto||0)/esperado:1;
+    const pV=cl((venc-0.10)/0.40,0,1)*45, pF=cl((1-factRatio)/0.30,0,1)*30, pO=cl((0.40-g.fichas)/0.40,0,1)*25;
+    const salud=Math.max(0,100-pV-pF-pO);
+    return { salud, penaltyPt:(100-salud)/100, venc, fichas:g.fichas, factRatio,
+      items:[{ic:"🩸",lab:"Vencido de sus ventas",resta:pV,max:45,det:M(g.vencido)+" vencido = "+Math.round(venc*100)+"% de "+M(g.porCobrar)+" por cobrar (solo lo que vendió, sin saldos iniciales)"},
+             {ic:"📉",lab:"Facturado vs su piso",resta:pF,max:30,det:Math.round(factRatio*100)+"% del ritmo esperado"+((prop!=null&&prop<1)?" (piso prorrateado por días hábiles: "+M(esperado)+" al día de hoy)":"")},
+             {ic:"🗂️",lab:"Fichas completas",resta:pO,max:25,det:Math.round(g.fichas*100)+"% de la cartera"}]};
+  }
+  const P=(cfg&&cfg.saludPesos)||{mora:60,minimo:30,fichas:10};
+  const U=(cfg&&cfg.saludUmbrales)||{minimoRango:0.50,fichasMin:0.40};
+  // MORA: el vencido ponderado por antigüedad. Reemplaza al porcentaje, que dejaba pasar el peor
+  // caso — una cartera con poco vencido pero muy viejo no penalizaba nada.
+  const indice=EYG.moraIndice(g.mora, g.porCobrar, cfg);
+  const pV=EYG.moraResta(indice, cfg, P.mora);
+  // MÍNIMO DE VENTA del mes, prorrateado por los días hábiles transcurridos
+  const exigido=(minimo&&minimo.mensual>0)?minimo.mensual*(prop==null?1:prop):0;
+  const cumpl=exigido>0?(neto||0)/exigido:1;
+  const pF=exigido>0?cl((1-cumpl)/(U.minimoRango||0.50),0,1)*P.minimo:0;
+  const pO=cl(((U.fichasMin||0.40)-g.fichas)/(U.fichasMin||0.40),0,1)*P.fichas;
   const salud=Math.max(0,100-pV-pF-pO);
-  return { salud, penaltyPt:(100-salud)/100, venc, fichas:g.fichas, factRatio,
-    items:[{ic:"🩸",lab:"Vencido de sus ventas",resta:pV,max:P.vencido,det:M(g.vencido)+" vencido = "+Math.round(venc*100)+"% de "+M(g.porCobrar)+" por cobrar (solo lo que vendió, sin saldos iniciales)"},
-           {ic:"📉",lab:"Facturado vs su piso",resta:pF,max:P.facturado,det:Math.round(factRatio*100)+"% del ritmo esperado"+((prop!=null&&prop<1)?" (piso prorrateado por días hábiles: "+M(esperado)+" al día de hoy)":"")},
+  const _vj=v=>v.toFixed(2).replace(".",",");
+  return { salud, penaltyPt:(100-salud)/100, venc, fichas:g.fichas, factRatio:cumpl, moraIndice:indice, mora:g.mora, exigido,
+    items:[{ic:"🩸",lab:"Mora de sus ventas",resta:pV,max:P.mora,
+            det:M(g.vencido)+" vencido de "+M(g.porCobrar)+" por cobrar · índice de mora "+_vj(indice)+
+                ((g.mora&&g.mora.mas>0)?"  ·  "+M(g.mora.mas)+" vencido hace más de 180 días":"")},
+           {ic:"📉",lab:"Mínimo de venta del mes",resta:pF,max:P.minimo,
+            det:exigido>0?(M(neto)+" de "+M(exigido)+" = "+Math.round(cumpl*100)+"%"+((prop!=null&&prop<1)?" (mínimo prorrateado por días hábiles al día de hoy)":"")):"sin mínimo cargado para su rubro"},
            {ic:"🗂️",lab:"Fichas completas",resta:pO,max:P.fichas,det:Math.round(g.fichas*100)+"% de la cartera"}]};
 }
 
@@ -251,8 +330,8 @@ async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
     if(onPaso) onPaso(s.name);
     const f=await facturado(s.uid,r,exIds);
     const neto=f.facturas-f.nc;
-    const perfil=esExterno(s.name)?"externo":(((ticket||{})[s.uid]||0)>=(cfg.perfilTicket||300000)?"inst":"farm");
-    const md=EYG.metaDesde(monthly[s.uid]||{}, mes, cfg, perfil);   // el perfil decide el objetivo semanal
+    const perfil=EYG.perfilDe(s.uid,(ticket||{})[s.uid],cfg,s.name);
+    const md=EYG.metaDesde(monthly[s.uid]||{}, mes, cfg, perfil);   // trae la meta y, aparte, el mínimo de venta
     const externo=perfil==="externo";
     const corte=externo?(cfg.externoCorte||50e6):md.meta;
     const rt=externo?rates.externo:(rates[perfil]||rates.farm);
@@ -261,11 +340,29 @@ async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
     let nivel=null, salud=null, tasaAplicada={base:rt.base,high:rt.high}, comiFinal=comiBase;
     if(!externo){
       const g=await gamificacion(s.uid,r,ofertasMes,cfg);
-      nivel=nivelDe(g,perfil,cfg);
-      // si el mes todavía corre, el piso va prorrateado por los DÍAS HÁBILES transcurridos
-      salud=saludDe(g,neto,md.baseline,r.propHabil,cfg);
+      // SEMANAS AL MÍNIMO: con el neto día por día se mira cada semana contra su propio mínimo
+      // (prorrateado por hábiles, así una semana cortada por el mes no exige lo mismo que una entera).
+      if(md.minimo){
+        const ws=(md.minimo.semanas||[]).map(w=>{
+          let v=0; for(const k in (f.porDia||{})) if(k>=w.desde&&k<=w.hasta) v+=f.porDia[k];
+          return Object.assign({}, w, { facturado:v, cumple:w.minimo>0?v>=w.minimo:true });
+        });
+        const cerradas=ws.filter(w=>w.hasta<=r.topeVenc);   // una semana en curso no se juzga todavía
+        g.semanasMin={ lista:ws, total:cerradas.length, ok:cerradas.filter(w=>w.cumple).length,
+          habilesTot:cerradas.reduce((s,w)=>s+w.habiles,0),
+          habilesOk:cerradas.filter(w=>w.cumple).reduce((s,w)=>s+w.habiles,0) };
+      }
+      nivel=nivelDe(g,perfil,cfg,mes);
+      // si el mes todavía corre, la vara va prorrateada por los DÍAS HÁBILES transcurridos
+      salud=saludDe(g,neto,md.baseline,r.propHabil,cfg,mes,md.minimo);
       tasaAplicada={ base:Math.max(0,rt.base-salud.penaltyPt/100), high:Math.max(0,rt.high-salud.penaltyPt/100) };
-      comiFinal=(t1*tasaAplicada.base+t2*tasaAplicada.high)*nivel.mult;
+      /* EL FRENO DEL 3%: desde el paquete de octubre el nivel multiplica SÓLO el tramo base. Lo que
+         pasa la meta ya se paga al 3%, que es el máximo de la casa, y así la tasa efectiva se acerca
+         al 3% desde abajo sin alcanzarlo nunca — sin recortar al final, que sería castigar a quien
+         vendió mucho. Antes, 3% × Diamante 1,20 daba 3,6%. */
+      comiFinal=(cfg.nivelSoloTramoBase!==false && EYG.paqueteRige(mes,cfg))
+        ? (t1*tasaAplicada.base*nivel.mult + t2*tasaAplicada.high)
+        : (t1*tasaAplicada.base+t2*tasaAplicada.high)*nivel.mult;
       nivel.crudo=g;
     }
     filas.push({ uid:s.uid, nombre:s.name, equipo:s.team||"", perfil, perfilNom:externo?"Externo":PERFIL[perfil].nom,
