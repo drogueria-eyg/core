@@ -170,6 +170,13 @@
   .mt .calc .v{text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
   .mt .calc .tot{border-top:2px solid var(--ink);padding-top:7px;margin-top:5px;font-size:16px;font-weight:900}
   .mt .calc .sug{font-size:11.5px;color:var(--gris2)}
+  .mt .sitfila{display:flex;flex-wrap:wrap;gap:8px 10px;margin:4px 0 0}
+  .mt .sf{display:inline-flex;flex-direction:column;gap:1px;border:1px solid var(--line);border-radius:9px;padding:6px 11px;font-size:13px;font-weight:700;background:var(--surface)}
+  .mt .sf i{font-style:normal;font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--gris2);font-weight:800}
+  .mt .sf.ok{border-color:#BFE3CD;background:var(--okbg)} .mt .sf.warn{border-color:#EBD9A8;background:var(--warnbg)}
+  .mt .sf.bad{border-color:#EFC9C7;background:var(--badbg)}
+  .mt .chkcert{display:flex;align-items:center;gap:8px;margin:12px 0 0;padding:9px 12px;border:1px solid var(--line);
+    border-radius:9px;font-size:13.5px;cursor:pointer;background:var(--bg)}
   .mt .calcbox{border:1px solid var(--line);border-radius:11px;padding:12px 14px;margin:12px 0 0;background:var(--bg)}
   .mt .calcbox .ch-t{font-size:11.5px;font-weight:900;color:var(--teal-deep);margin-bottom:8px;letter-spacing:.2px}
   .mt .calcbox .calc{max-width:none}
@@ -243,6 +250,7 @@ const RG830_CAT=[
 const RG830_FUENTE="catálogo oficial de ARCA, traído el 30/09/2026";
 /* El régimen por defecto es el 78: EyG compra mercadería. */
 const RG830=Object.assign({}, RG830_CAT[0], {mni:RG830_CAT[0].noSujeto, alicuota:RG830_CAT[0].alic/100,
+  alic:RG830_CAT[0].alic, alicNoInsc:10, minRet:RG830_CAT[0].minRet,
   regimen:RG830_CAT[0].lbl, codigo:String(RG830_CAT[0].cod)});
 /* IIBB Santa Fe: las dos alícuotas que aparecen en esta base. La que corresponde
    depende del padrón de la provincia, así que se elige; no se adivina. */
@@ -257,7 +265,7 @@ const PREFIJO_CERT="RET-GAN-";
    la última vez y la persona confirma. */
 
 const ST={banco:"credicoop", prov:null, opciones:null, buscando:false,
-  facturas:[], sel:new Set(), retGan:null, retIIBB:null, iibbHist:null, alicIIBB:null, q:"",
+  facturas:[], sel:new Set(), retGan:null, retIIBB:null, iibbHist:null, alicIIBB:null, q:"", sit:null, certExencion:false,
   acum:null, cheques:[], fecha:EYG.argToday(), trabajando:false, logs:[]};
 
 function log(t,k){ ST.logs.unshift({t,k:k||"",h:new Date().toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}); pintarLog(); }
@@ -310,7 +318,8 @@ function pintarOpciones(){
       : '<div class="muted" style="padding:8px">Ningún proveedor con ese nombre o CUIT.</div>');
 }
 window.elegirProv=(id,nombre)=>conTrabajo(async()=>{
-  ST.prov={id,nombre}; ST.opciones=null; ST.sel=new Set(); ST.retGan=null; ST.retIIBB=null; ST.alicIIBB=null; ST.cheques=[];
+  ST.prov={id,nombre}; ST.opciones=null; ST.sel=new Set(); ST.retGan=null; ST.retIIBB=null; ST.alicIIBB=null; ST.cheques=[]; ST.sit=null; ST.certExencion=false;
+  await cargarSituacion(id);
   await cargarDeuda(id);
   /* Los números de cheque ya usados se traen en segundo plano apenas se elige el
      proveedor: son 1.587 y pedirlos recién al confirmar dejaba la pantalla quieta
@@ -346,6 +355,62 @@ async function cargarDeuda(pid){
   log("Traídos "+ST.facturas.length+" comprobantes abiertos de "+ST.prov.nombre);
   render();
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   LA SITUACIÓN FISCAL DEL PROVEEDOR
+   Todo esto Odoo ya lo tiene; antes el módulo asumía "inscripto, régimen 78" y
+   eso está mal en varios casos reales de la base.
+
+   · imp_ganancias_padron  viene del padrón de AFIP:
+       AC = activo (inscripto) · NI = no inscripto · EX = EXENTO · NC = no corresponde
+     Es el dato que responde por el certificado de exención: si dice EX, no se retiene.
+   · default_regimen_ganancias_id  es el régimen del proveedor, con su propia alícuota
+     para inscripto y para no inscripto y su monto no sujeto — la tabla de Odoo coincide
+     con el catálogo de ARCA (régimen 78: 2% / 10% / $224.000).
+   · monotributo_padron  S = monotributista, que no está alcanzado por la RG 830.
+   · El TIPO DE PERSONA sale del CUIT: 20/23/24/27 humana, 30/33/34 jurídica.
+
+   Medido el 30/09/2026 sobre los 46 proveedores a los que se les paga con cheque:
+   37 con padrón AC, 8 sin consultar nunca, 1 NC; y 20 SIN RÉGIMEN configurado.
+   Por eso cuando falta un dato el módulo lo dice y no inventa. */
+const PADRON_GAN={AC:"Inscripto y activo", NI:"NO inscripto", EX:"EXENTO", NC:"No corresponde"};
+
+async function cargarSituacion(pid){
+  ST.sit=null;
+  const c=(await rpc("res.partner","read",[[pid],
+    ["name","vat","l10n_ar_afip_responsibility_type_id","default_regimen_ganancias_id",
+     "imp_ganancias_padron","monotributo_padron","estado_padron","last_update_padron"]]))[0];
+  const d=String(c.vat||"").replace(/[^0-9]/g,"");
+  const pre=d.slice(0,2);
+  const persona = ["20","23","24","27"].indexOf(pre)>=0 ? "humana"
+                : ["30","33","34"].indexOf(pre)>=0 ? "jurídica" : null;
+  /* El régimen: el del proveedor si lo tiene; si no, ninguno — y se avisa. */
+  let reg=null;
+  if(c.default_regimen_ganancias_id){
+    try{ reg=(await rpc("afip.tabla_ganancias.alicuotasymontos","read",
+      [[c.default_regimen_ganancias_id[0]],
+       ["codigo_de_regimen","anexo_referencia","concepto_referencia",
+        "porcentaje_inscripto","porcentaje_no_inscripto","montos_no_sujetos_a_retencion"]]))[0];
+    }catch(e){ log("No pude leer el régimen del proveedor: "+(e.message||e),"e"); }
+  }
+  const gan=c.imp_ganancias_padron||null;
+  const mono=c.monotributo_padron==="S";
+  /* Por qué NO habría que retener. Cada motivo se muestra y frena el cálculo. */
+  let noRetener=null;
+  if(gan==="EX") noRetener="El padrón de AFIP lo marca EXENTO de Ganancias.";
+  else if(gan==="NC") noRetener="El padrón dice que Ganancias no le corresponde.";
+  else if(mono) noRetener="Es monotributista: no está alcanzado por la RG 830.";
+  /* Qué falta para poder calcular con confianza. */
+  const faltan=[];
+  if(!gan) faltan.push("nunca se consultó el padrón de AFIP, así que no se sabe si está inscripto");
+  if(!reg) faltan.push("no tiene régimen de Ganancias configurado en su ficha");
+  if(!persona) faltan.push("el CUIT no permite saber si es persona humana o jurídica");
+  ST.sit={nombre:c.name, vat:c.vat, persona, gan, mono, reg, noRetener, faltan,
+    resp:c.l10n_ar_afip_responsibility_type_id?c.l10n_ar_afip_responsibility_type_id[1]:null,
+    estado:c.estado_padron||null, padronAl:c.last_update_padron||null,
+    inscripto: gan==="AC" ? true : gan==="NI" ? false : null};
+}
+
 
 /* Cuánto se le retuvo YA a este proveedor en el mes, y sobre qué base. Sin esto el
    mínimo no imponible se descontaría dos veces y la retención saldría de menos. */
@@ -383,25 +448,45 @@ function calculo(){
   const fs=elegidas();
   const bruto=r2(fs.reduce((s,f)=>s+f.saldo,0));
   const neto =r2(fs.reduce((s,f)=>s+f.neto ,0));
+  /* Los parámetros salen del RÉGIMEN DEL PROVEEDOR y de su situación en el padrón,
+     no de un valor fijo. Si falta el régimen se usa el 78 como propuesta y se avisa. */
+  const S=ST.sit||{};
+  const reg=S.reg;
+  const alicPct = reg ? (S.inscripto===false ? reg.porcentaje_no_inscripto : reg.porcentaje_inscripto)
+                      : (S.inscripto===false ? RG830.alicNoInsc : RG830.alic);
+  const mni     = reg ? reg.montos_no_sujetos_a_retencion : RG830.mni;
+  const codReg  = reg ? reg.codigo_de_regimen : RG830.codigo;
+  /* Tres motivos para no retener: el certificado que tildó la persona, lo que dice el
+     padrón (exento o no corresponde) y el monotributo. Cualquiera pone la retención en cero. */
+  const exento  = !!ST.certExencion || !!S.noRetener;
+  const motivoExento = ST.certExencion ? "Tiene certificado de exención presentado" : (S.noRetener||null);
+
   /* RG 830: la alícuota se aplica al acumulado del mes menos el mínimo, y se le
      resta lo ya retenido. Así el mínimo se computa una sola vez por mes. */
   const accBase=r2((ST.acum?ST.acum.base:0)+neto);
   const yaRet  =r2(ST.acum?ST.acum.ret:0);
-  const ganSug =r2(Math.max(0,(accBase-RG830.mni)*RG830.alicuota-yaRet));
+  let ganSug = exento ? 0 : r2(Math.max(0,(accBase-mni)*(alicPct/100)-yaRet));
+  /* Por debajo del piso de $240 no corresponde retener (es igual para los 25
+     regímenes de sujeto inscripto del catálogo de ARCA). */
+  const bajoPiso = !exento && ganSug>0 && ganSug<RG830.minRet;
+  if(bajoPiso) ganSug=0;
   const al = ST.alicIIBB!=null ? ST.alicIIBB : ST.iibbHist;
   const iibbSug = al ? r2(neto*al/100) : (al===0?0:null);
   const gan  = ST.retGan ==null ? ganSug  : ST.retGan;
-  const iibb = ST.retIIBB==null ? (iibbSug||0) : ST.retIIBB;
+  const iibb = exento ? (ST.retIIBB||0) : (ST.retIIBB==null ? (iibbSug||0) : ST.retIIBB);
   /* Los pasos intermedios, para mostrarlos: es la cuenta que hoy se hace afuera. */
-  const mniUsado = Math.min(RG830.mni, Math.max(0, RG830.mni-(ST.acum?ST.acum.base:0)));
-  const sujeta   = r2(Math.max(0, accBase-RG830.mni));
-  const ganBruta = r2(sujeta*RG830.alicuota);
+  const sujeta   = r2(Math.max(0, accBase-mni));
+  const ganBruta = r2(sujeta*(alicPct/100));
   return {fs, bruto, neto, accBase, yaRet, ganSug, iibbSug, gan, iibb,
-          mniUsado:r2(mniUsado), sujeta, ganBruta, alicIIBB:(ST.alicIIBB!=null?ST.alicIIBB:(ST.iibbHist||0)),
+          reg, codReg, alicPct, mni, exento, motivoExento, bajoPiso,
+          sujeta, ganBruta, alicIIBB:(ST.alicIIBB!=null?ST.alicIIBB:(ST.iibbHist||0)),
           ret:r2(gan+iibb), pagar:r2(bruto-gan-iibb)};
 }
 window.setRet=(cual,v)=>{ const n=num(v); if(cual==="gan") ST.retGan=n; else ST.retIIBB=n; repintarCalc(); };
 window.setAlicIIBB=(v)=>{ ST.alicIIBB=parseFloat(v); ST.retIIBB=null; repintarCalc(); };
+/* El certificado de exención es un papel que presenta el proveedor. El padrón puede
+   estar desactualizado, así que esto lo decide la persona y pisa cualquier cálculo. */
+window.setExencion=(v)=>{ ST.certExencion=!!v; ST.retGan=null; ST.retIIBB=null; render(); };
 window.volverSug=()=>{ ST.retGan=null; ST.retIIBB=null; render(); };
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -553,7 +638,7 @@ window.confirmar=()=>conTrabajo(async()=>{
    ══════════════════════════════════════════════════════════════════════════ */
 function render(){
   const app=document.getElementById("app"); if(!app) return;
-  app.innerHTML = bloqueProveedor() + (ST.prov?bloqueDeuda()+bloqueCalculo()+bloqueCheques():"") +
+  app.innerHTML = bloqueProveedor() + (ST.prov?bloqueSituacion()+bloqueDeuda()+bloqueCalculo()+bloqueCheques():"") +
     '<div class="panel"><h3>📋 Registro de lo que se hizo</h3><div class="log" id="log"></div></div>';
   pintarLog();
 }
@@ -573,6 +658,30 @@ function bloqueProveedor(){
   }
   return h+'</div>';
 }
+function bloqueSituacion(){
+  const S=ST.sit; if(!S) return "";
+  const c=calculo();
+  const dato=(l,v,cls)=>'<span class="sf'+(cls?" "+cls:"")+'"><i>'+l+'</i>'+v+'</span>';
+  const gan = S.gan ? (PADRON_GAN[S.gan]||S.gan) : "sin consultar";
+  let h='<div class="panel"><h3>📇 Situación del proveedor</h3>'+
+    '<div class="sub">Todo esto sale de la ficha en Odoo y del padrón de AFIP: es lo que define la alícuota y el mínimo.</div>'+
+    '<div class="sitfila">'+
+      dato("Ganancias en el padrón", esc(gan), S.gan==="AC"?"ok":S.gan?"warn":"bad")+
+      dato("Responsabilidad", esc(S.resp||"sin dato"), S.resp?"":"bad")+
+      dato("Tipo de persona", S.persona?esc(S.persona):"no se deduce del CUIT", S.persona?"":"bad")+
+      dato("Régimen de Ganancias", S.reg?("N° "+esc(S.reg.codigo_de_regimen)+" · "+esc(S.reg.anexo_referencia)):"sin configurar", S.reg?"ok":"warn")+
+      (S.reg?dato("Alícuota que le toca", c.alicPct+" %"+(S.inscripto===false?" (no inscripto)":""), "ok"):"")+
+      (S.reg?dato("No sujeto a retención", money(c.mni), ""):"")+
+      (S.padronAl?dato("Padrón consultado", esc(S.padronAl), ""):"")+
+    '</div>'+
+    '<label class="chkcert"><input type="checkbox" '+(ST.certExencion?"checked":"")+' onchange="setExencion(this.checked)"> '+
+      '<b>Presentó certificado de exención</b> <span class="muted">— tildalo cuando el proveedor mandó el certificado: no se le retiene nada</span></label>';
+  if(c.exento) h+='<div class="aviso ok" style="margin:11px 0 0">🚫 <div><b>No se le retiene.</b> '+esc(c.motivoExento)+'</div></div>';
+  else if(S.faltan.length) h+='<div class="aviso warn" style="margin:11px 0 0">⚠️ <div><b>Faltan datos para calcular con seguridad:</b> '+
+    esc(S.faltan.join(" · "))+'. Se calcula con el régimen 78 al 2 % como propuesta, pero <b>verificá el número antes de confirmar</b>.</div></div>';
+  return h+'</div>';
+}
+
 function bloqueDeuda(){
   const tot=r2(ST.facturas.reduce((s,f)=>s+f.saldo,0));
   const venc=r2(ST.facturas.filter(f=>f.vencida).reduce((s,f)=>s+f.saldo,0));
@@ -623,29 +732,35 @@ function contenidoCalc(){
     paso("de eso, neto sin IVA — <b>es la base</b>", money(c.neto), "sug")+
   '</div>'+
 
-  '<div class="calcbox"><div class="ch-t">🧮 Retención de Ganancias · RG 830, régimen '+RG830.codigo+' — '+esc(RG830.regimen)+'</div>'+
+  '<div class="calcbox"><div class="ch-t">🧮 Retención de Ganancias · RG 830, régimen '+esc(c.codReg)+
+    ' — '+esc(c.reg?c.reg.concepto_referencia:RG830.regimen)+(c.reg?"":" <span class=\"sug\">(propuesto: el proveedor no lo tiene configurado)</span>")+'</div>'+
+  (c.exento
+    ? '<div class="aviso ok" style="margin:0">🚫 <div><b>No corresponde retener.</b> '+esc(c.motivoExento)+'</div></div>'
+    :
   '<div class="calc">'+
     (hayAcum
       ? paso("Base de este pago", money(c.neto), "sug")+
         paso("+ ya acumulado este mes", money(ST.acum.base), "sug")+
         paso("<b>= base acumulada del mes</b>", money(c.accBase))
       : paso("Base del mes", money(c.accBase)))+
-    paso("− mínimo no imponible"+(hayAcum?' <span class="sug">(se computa una sola vez por mes)</span>':""), "−"+money(RG830.mni), "sug")+
+    paso("− mínimo no imponible"+(hayAcum?' <span class="sug">(se computa una sola vez por mes)</span>':""), "−"+money(c.mni), "sug")+
     paso("<b>= sujeto a retención</b>", money(c.sujeta))+
-    paso("× alícuota "+(RG830.alicuota*100).toFixed(0)+" %", money(c.ganBruta), "sug")+
+    paso("× alícuota "+c.alicPct+" %"+((ST.sit&&ST.sit.inscripto===false)?' <span class="sug">(no inscripto)</span>':""), money(c.ganBruta), "sug")+
     (c.yaRet?paso("− retenido antes este mes", "−"+money(c.yaRet), "sug"):"")+
+    (c.bajoPiso?paso('<span class="sug">queda por debajo del piso de '+money(RG830.minRet)+': no corresponde retener</span>', "0,00", "sug"):"")+
     paso("<b>Retención a practicar</b>", inpGan)+
-  '</div>'+
+  '</div>')+
   (Math.abs(c.gan-c.ganSug)>0.005?'<div class="nota" style="margin:7px 0 0">Lo calculado era <b>'+money(c.ganSug)+'</b> y está puesto <b>'+money(c.gan)+'</b>. Manda el tuyo.</div>':"")+
   '</div>'+
 
   '<div class="calcbox"><div class="ch-t">🧮 Retención de IIBB Santa Fe</div>'+
+  (c.exento ? '<div class="aviso ok" style="margin:0">🚫 <div>Tampoco se le retiene IIBB.</div></div>' :
   '<div class="calc">'+
     paso("Alícuota"+(haySug?' <span class="sug">(la última vez fue '+ST.iibbHist+' %)</span>':""),
          '<select onchange="setAlicIIBB(this.value)">'+opsIIBB+'</select>')+
     paso("sobre la base", c.alicIIBB?money(c.neto)+" × "+c.alicIIBB+" %":"—", "sug")+
     paso("<b>Retención a practicar</b>", inpIIBB)+
-  '</div>'+
+  '</div>')+
   '<div class="nota" style="margin:7px 0 0">La alícuota depende del padrón de Santa Fe, así que no se adivina: se elige. En esta base aparecen 0,7 % y 2,75 %.</div></div>'+
 
   '<div class="calc" style="margin-top:13px">'+
