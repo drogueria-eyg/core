@@ -841,7 +841,7 @@ const OF_PTS_ENV=8,  OF_META_ENV=30;   // ofertas ENVIADAS este mes → 8 pts
 const OF_PTS_VEN=17, OF_META_VEN=10;   // ofertas VENDIDAS este mes (cliente×oferta) → 17 pts (fuerte)
 let OFERTAS=[], OFPIDS=[];   // OFPIDS = ids de variante de todas las ofertas vigentes
 
-let ST={userId:null, contactos:[], catFiscal:[], catId:[], catProv:[], fact:{sem:0,mes:0,semPed:0,semNC:0,mesPed:0,mesNC:0}, cc:{porP:{},porCobrar:0,vencido:0,cobradoMes:0,aFacturar:0,aParcial:0,nDeud:0}, nuevos:0, contactadosHoy:new Set(), msgs:[], orders:{}, ofertas:{}, ofEnviadas:0, ofVendidas:0, ofMsgs:[], userPartner:null, base:null, act:{ped:0,cli:0}, diag:{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}, alFondo:new Set(), filtro:"todos", q:"", waMsgs:[], pp:null, drafts:[], pedMesList:[], vista:null, bcra:{}, _bcraRun:false, conquistar:[], _tomando:null, portal:{}};
+let ST={userId:null, contactos:[], catFiscal:[], catId:[], catProv:[], fact:{sem:0,mes:0,semPed:0,semNC:0,mesPed:0,mesNC:0}, cc:{porP:{},porCobrar:0,vencido:0,cobradoMes:0,aFacturar:0,aParcial:0,nDeud:0}, nuevos:0, contactadosHoy:new Set(), msgs:[], orders:{}, ofertas:{}, ofMes:{}, ofEnviadas:0, ofVendidas:0, ofVendCerradas:0, ofMsgs:[], userPartner:null, base:null, act:{ped:0,cli:0}, diag:{ventasHoy:0,pedHoy:0,pedSem:0,cliSem:0}, alFondo:new Set(), filtro:"todos", q:"", waMsgs:[], pp:null, drafts:[], pedMesList:[], vista:null, bcra:{}, _bcraRun:false, conquistar:[], _tomando:null, portal:{}};
 // CUIT del contacto (11 dígitos) para cruzar con el BCRA; "" si no tiene.
 function cuitDe(c){ const d=String((c&&c.vat)||"").replace(/\D/g,""); return d.length===11?d:""; }
 let WA_PICK=null, BELL_OPTS=null;
@@ -1069,9 +1069,11 @@ async function cargar(){
       const promPed=Math.round(prev.reduce((s,m)=>s+bk[m].ped,0)/nP)||1;
       const promCli=Math.round(prev.reduce((s,m)=>s+bk[m].cli.size,0)/nP)||1;
       const avgTicket=ordHist.length?sumTot/ordHist.length:0;
-      // META = promedio (o mediana) de los últimos N meses CERRADOS de FACTURADO NETO + % (config)
-      const md = EYG.metaDesde(fact, curM, cfg);
-      ST.base={ objetivoCobro:(cobro3[0]?.amount||0)/3*1.1, promPed, promCli, perfil: avgTicket>=(cfg.perfilTicket||300000)?"inst":"farm", avgTicket, factBaseline:md.baseline, meta:md.meta, metaMeses:md.meses, fact };
+      // META: desde octubre la fija Dirección (objetivo semanal por perfil × semanas del mes); antes
+      // salía del historial de cada una (promedio/mediana de sus meses cerrados + %).
+      const _perfil = esExterno() ? "externo" : (avgTicket>=(cfg.perfilTicket||300000)?"inst":"farm");
+      const md = EYG.metaDesde(fact, curM, cfg, _perfil);
+      ST.base={ objetivoCobro:(cobro3[0]?.amount||0)/3*1.1, promPed, promCli, perfil: avgTicket>=(cfg.perfilTicket||300000)?"inst":"farm", avgTicket, factBaseline:md.baseline, meta:md.meta, metaMeses:md.meses, metaModo:md.modo, metaSemanas:md.semanas, fact };
       ST.ventaMes = fact[curM]||0;         // BASE de la comisión = facturado NETO (por cruce) del mes
       ST.factTotalMes = factT[curM]||0;    // MÉTRICA = facturado TOTAL con IVA del mes (lo real)
       ST.pedMesMonto = ped[curM]||0;       // MÉTRICA = pedidos del mes (con IVA)
@@ -1159,7 +1161,9 @@ function nivel(){
   const env=ST.ofEnviadas||0, rEnv=Math.min(env/OF_META_ENV,1);
   P.push({ic:"📤",lab:"Ofertas enviadas",max:OF_PTS_ENV,pts:OF_PTS_ENV*rEnv,det:env+" de "+OF_META_ENV+" este mes"});
   const ven=ST.ofVendidas||0, rVen=Math.min(ven/OF_META_VEN,1);
-  P.push({ic:"🎁",lab:"Ofertas vendidas",max:OF_PTS_VEN,pts:OF_PTS_VEN*rVen,det:ven+" de "+OF_META_VEN+" colocadas"});
+  const cer=ST.ofVendCerradas||0;
+  P.push({ic:"🎁",lab:"Ofertas vendidas",max:OF_PTS_VEN,pts:OF_PTS_VEN*rVen,
+    det:ven+" de "+OF_META_VEN+" colocadas"+(cer?" · "+cer+" de ofertas que ya cerraron":"")});
   const rN=Math.min(ST.nuevos/3,1);
   P.push({ic:"🆕",lab:"Clientes nuevos (meta 3)",max:20,pts:20*rN,det:ST.nuevos+" este mes"});
   const co=constanciaHoy();
@@ -1191,7 +1195,7 @@ function ayudaHTML(){
       <li><b>Cobro</b> (${sp.valor} pts): lo cobrado del mes vs tu objetivo de cobranza.</li>
       <li><b>Actividad</b> (${sp.activ} pts): tus pedidos y clientes del mes vs tu promedio mensual (${b.promPed||0} ped / ${b.promCli||0} cli).</li>
       <li><b>Ofertas enviadas</b> (${OF_PTS_ENV} pts): compartir ofertas por WhatsApp, meta ${OF_META_ENV}/mes.</li>
-      <li><b>Ofertas vendidas</b> (${OF_PTS_VEN} pts): clientes que compraron esas ofertas, meta ${OF_META_VEN} (puntúa fuerte).</li>
+      <li><b>Ofertas vendidas</b> (${OF_PTS_VEN} pts): clientes que compraron esas ofertas <b>durante este mes</b>, meta ${OF_META_VEN} (puntúa fuerte). Cuentan también las ofertas que <b>ya vencieron o se dieron de baja</b>: lo que vendiste no se borra cuando la oferta sale de la lista.</li>
       <li><b>Clientes nuevos</b> (20 pts): meta ${OBJ.mensualNuevos}/mes.</li>
       <li><b>Constancia</b> (5 pts): ${OBJ.diarioContactos} contactos trabajados por día. <b>Sábados y domingos no descuentan</b> — esos días se mantiene lo del último día hábil. Si igual trabajás el fin de semana y hacés más, cuenta lo tuyo.</li>
     </ul>
@@ -2976,7 +2980,7 @@ function ofertasHTML(){
       <span class="of-pts">+${Math.round(ofPuntos())} de ${OF_PTS_ENV+OF_PTS_VEN} pts</span></div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin:2px 0 12px;font-size:12.5px;font-weight:800;color:rgba(255,255,255,.9)">
       <span>📤 ${ST.ofEnviadas||0} enviada${(ST.ofEnviadas||0)===1?'':'s'} este mes</span>
-      <span>🛒 ${ST.ofVendidas||0} vendida${(ST.ofVendidas||0)===1?'':'s'} este mes</span>
+      <span title="Incluye las ofertas que ya cerraron: lo vendido este mes no se borra cuando la oferta sale de la lista">🛒 ${ST.ofVendidas||0} vendida${(ST.ofVendidas||0)===1?'':'s'} este mes</span>
     </div>
     <div class="of-grid">${cards}</div>
   </div>`;
@@ -3043,61 +3047,151 @@ async function normalizarSync(sync){
 
 /* Trae TODO lo activo —lo confirmado en Oportunidades y lo creado en Configuración de
    precios— y, para lo que apunta a productos concretos, cuenta contra Odoo a qué
-   clientes de esta cartera se les colocó dentro de la vigencia. */
+   clientes de esta cartera se les colocó dentro de la vigencia.
+
+   DOS LISTAS, a propósito (30/9/2026):
+   - OFERTAS = las VIGENTES hoy. Son las tarjetas que la comercial ve y comparte.
+   - OF_MES  = todo lo que estuvo en oferta EN ALGÚN MOMENTO DE ESTE MES, incluso lo que
+               ya venció o se dio de baja. Es lo que PUNTÚA en el nivel.
+   Antes las dos eran la misma lista, y ahí había un agujero que cuesta plata: al vencer
+   el mes —o al limpiar las ofertas para arrancar el mes nuevo— las ventas YA HECHAS
+   dejaban de contar y el nivel se desplomaba de un día para el otro, con él la comisión.
+   El trabajo del mes no puede depender de que la oferta siga publicada. Lo dado de baja
+   se guarda en eyg.ofertas_hist (lo escribe Oportunidades y Ofertas al eliminar). */
 async function cargarOfertas(ids){
+  let OF_MES=[];
   try{
-    const [rawOf,rawSync]=await Promise.all([
+    const [rawOf,rawSync,rawHist]=await Promise.all([
       rpc("ir.config_parameter","get_param",["eyg.ofertas"]).catch(()=>"[]"),
-      rpc("ir.config_parameter","get_param",["eyg.sync_ofertas"]).catch(()=>"[]")
+      rpc("ir.config_parameter","get_param",["eyg.sync_ofertas"]).catch(()=>"[]"),
+      rpc("ir.config_parameter","get_param",["eyg.ofertas_hist"]).catch(()=>"[]")
     ]);
-    const propias=(JSON.parse(rawOf||"[]")||[]).filter(o=>o && o.id && (!o.hasta || o.hasta>=hoyStr));
+    const vigente=o=>(!o.hasta || o.hasta>=hoyStr);
+    // "tocó el mes" = su vigencia se cruza con [1° del mes, hoy]
+    const delMes=o=>(!o.hasta || o.hasta>=inicioMes) && ofDesde(o).slice(0,10)<=hoyStr;
+
+    const todasProp=(JSON.parse(rawOf||"[]")||[]).filter(o=>o && o.id);
+    const propias=todasProp.filter(vigente);
     // productos (variantes) ya cubiertos por una oferta confirmada, para no duplicar
     const propiaPids=new Set(propias.flatMap(o=>(o.items||[]).map(i=>i.id)));
-    // las de sync nacen activas: alcanza con que no estén pausadas y sigan vigentes.
+    // las de sync nacen activas: alcanza con que no estén pausadas.
     // Al confirmar una oportunidad se crea la oferta (eyg.ofertas) Y su regla de precio
     // (eyg.sync_ofertas con id "opo_<variante>"): son la MISMA oferta. Se descartan acá
     // para que no aparezca dos veces la misma tarjeta.
-    let sync=(JSON.parse(rawSync||"[]")||[]).filter(o=>o && o.id && !o.pausada && (!o.hasta || o.hasta>=hoyStr))
+    const todasSync=(JSON.parse(rawSync||"[]")||[]).filter(o=>o && o.id && !o.pausada)
       .filter(o=>{ const m=/^opo_(\d+)$/.exec(o.id||""); return !(m && propiaPids.has(+m[1])); });
-    let syncNorm = sync.length?await normalizarSync(sync):[];
-    // por si quedara algún producto ya cubierto por una oferta propia, se saca también
+    // se normalizan TODAS de una (vigentes y vencidas): normalizarSync lee Odoo en tanda,
+    // así que sumar las vencidas no agrega viajes al conector.
+    let syncNorm = todasSync.length?await normalizarSync(todasSync):[];
     syncNorm = syncNorm.filter(o=>{ const pv=(o.items||[])[0]&&o.items[0].id; return !(pv && propiaPids.has(pv)); });
-    OFERTAS=propias.concat(syncNorm);
+
+    OFERTAS=propias.concat(syncNorm.filter(vigente));
     // Sin stock real = la oferta se apaga sola de este panel (el producto no se puede vender).
     // Queda en gris "Agotada" en Oportunidades y Ofertas, para que Inventario reponga o la elimine.
+    // OJO: esto saca la TARJETA, nunca el puntaje — lo que se vendió cuando había stock, se vendió.
     try{
       const sm=await EYG.ofStockMap(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i&&i.id)));
       if(sm) OFERTAS=OFERTAS.filter(o=>!EYG.ofAgotada(o,sm));
     }catch(e){}
+
+    // ---- lo que puntúa: vigentes + vencidas + dadas de baja (historial), sin repetir ----
+    const hist=(JSON.parse(rawHist||"[]")||[]).filter(o=>o && o.id);
+    const vistos=new Set();
+    for(const o of todasProp.concat(syncNorm).concat(hist)){
+      if(vistos.has(o.id)) continue;      // lo vivo gana sobre el historial
+      vistos.add(o.id);
+      if(delMes(o)) OF_MES.push(o);
+    }
   }catch(e){ OFERTAS=[]; return; }
-  await Promise.all(OFERTAS.map(async o=>{
-    const pids=(o.items||[]).map(i=>i.id).filter(Boolean);
-    if(!pids.length || !ids.length){ ST.ofertas[o.id]={colocados:0,cli:[]}; return; }
+
+  const activas=new Set(OFERTAS.map(o=>o.id));
+  const idset=new Set(ids);
+  /* Una consulta por oferta y por ventana. El resultado es GLOBAL (toda la droguería, no
+     esta cartera), o sea idéntico para todos los comerciales: se comparte por clave en el
+     cache de Supabase y lo mío se deriva abajo cruzando con mi cartera. */
+  const filas=(clave,pids,desde,hasta)=>EYG.cacheOdoo(clave, 600, ()=>rpc("sale.order.line","read_group",
+    [[["product_id","in",pids],["state","in",["sale","done"]],
+      ["order_id.date_order",">=",desde],["order_id.date_order","<=",hasta+" 23:59:59"]],
+     ["price_subtotal:sum"],["order_partner_id"]],{lazy:false}))
+    .then(g=>g.map(x=>({p:x.order_partner_id&&x.order_partner_id[0], m:x.price_subtotal||0})).filter(x=>x.p));
+
+  /* EL PUNTAJE SE PIDE POR VENTANA, NO POR OFERTA.
+     Casi todas las ofertas del mes comparten la misma ventana de conteo: las que venían
+     de antes miran [1° del mes, hoy], y las que salieron el mismo día miran ese día. Así
+     que se agrupan por ventana y va UNA consulta por ventana, agrupada por cliente Y
+     producto, que después se reparte oferta por oferta. Verificado contra Odoo con las 25
+     ofertas de septiembre que cubrían el mes entero: los mismos clientes en las 25, y de
+     31 s a 1,3 s. Donde se nota es el 1° de cada mes, con el cache frío y varios paneles
+     abriendo a la vez. Si una tanda falla, esa oferta se cuenta sola: más lento, mismo número. */
+  const INI_MES=inicioMes+" 00:00:00";
+  const ventanaMes=o=>{
     const desde=ofDesde(o), hasta=(o.hasta||hoyStr).slice(0,10);
+    const d=desde>INI_MES?desde:INI_MES, h=hasta<hoyStr?hasta:hoyStr;
+    return h<d.slice(0,10) ? null : {d,h,k:d+"|"+h};
+  };
+  const grupos={};
+  OF_MES.forEach(o=>{
+    const pids=(o.items||[]).map(i=>i&&i.id).filter(Boolean); if(!pids.length) return;
+    const v=ventanaMes(o); if(!v) return;
+    o._vent=v.k;
+    const g=(grupos[v.k]=grupos[v.k]||{d:v.d,h:v.h,pids:new Set()});
+    pids.forEach(p=>g.pids.add(p));
+  });
+  const porVent={};
+  await Promise.all(Object.entries(grupos).map(async ([k,g])=>{
+    const pids=[...g.pids];
+    // la clave lleva la ventana y la huella del conjunto: si entra o sale una oferta, cambia
+    const clave="ofertas-mes-"+k.replace(/[^0-9]/g,"")+"-"+pids.length+"x"+pids.reduce((a,b)=>a+b,0);
     try{
-      // GLOBAL: clientes de TODA la droguería que compraron la oferta en su vigencia (sin
-      // restringir a la cartera del comercial). De acá se derivan: lo mío (intersección con
-      // mi cartera) y lo de TODOS (para las estadísticas de rendimiento de la oferta).
-      // MISMA consulta que hace core.js para la tarjeta del líder, y una por
-      // oferta: con 9 ofertas eran 9 read_group caros cada vez que un comercial
-      // abría el panel. El resultado es GLOBAL (a propósito, ver el comentario
-      // de arriba), o sea idéntico para todos: se comparte por la clave
-      // "oferta-ventas-<id>". Lo mío se sigue derivando abajo, de este mismo
-      // resultado, cruzando con mi cartera.
-      const g=await EYG.cacheOdoo("oferta-ventas-"+o.id, 600, ()=>rpc("sale.order.line","read_group",
+      const rows=await EYG.cacheOdoo(clave, 600, ()=>rpc("sale.order.line","read_group",
         [[["product_id","in",pids],["state","in",["sale","done"]],
-          ["order_id.date_order",">=",desde],["order_id.date_order","<=",hasta+" 23:59:59"]],
-         ["price_subtotal:sum"],["order_partner_id"]],{lazy:false}));
-      const idset=new Set(ids);
-      const rows=g.map(x=>({p:x.order_partner_id&&x.order_partner_id[0], m:x.price_subtotal||0})).filter(x=>x.p);
-      const mios=rows.filter(x=>idset.has(x.p));
-      ST.ofertas[o.id]={ colocados:mios.length, cli:mios.map(x=>x.p), monto:mios.reduce((s,x)=>s+x.m,0),
-        gVen:rows.length, gMonto:rows.reduce((s,x)=>s+x.m,0) };
-    }catch(e){ ST.ofertas[o.id]={colocados:0,cli:[],gVen:0,gMonto:0,err:true}; }
+          ["order_id.date_order",">=",g.d],["order_id.date_order","<=",g.h+" 23:59:59"]],
+         ["price_subtotal:sum"],["order_partner_id","product_id"]],{lazy:false}));
+      const m={};
+      rows.forEach(r=>{ const p=r.product_id&&r.product_id[0], c=r.order_partner_id&&r.order_partner_id[0];
+        if(p&&c) (m[p]=m[p]||new Set()).add(c); });
+      porVent[k]=m;
+    }catch(e){ porVent[k]=null; }
   }));
-  // ---- Puntaje/encabezado: VENDIDAS = suma de "colocados" por oferta (cliente × oferta).
-  // Cada colocados ya usa la ventana correcta [publicación exacta → cierre], así que NO
-  // cuenta compras de rutina previas a la oferta. Consistente con lo que muestra cada tarjeta. ----
+
+  const pendientes=[...new Map(OFERTAS.concat(OF_MES).map(o=>[o.id,o])).values()];
+  await Promise.all(pendientes.map(async o=>{
+    const esActiva=activas.has(o.id);
+    const pids=(o.items||[]).map(i=>i.id).filter(Boolean);
+    if(!pids.length || !ids.length){ if(esActiva) ST.ofertas[o.id]={colocados:0,cli:[]}; ST.ofMes[o.id]=0; return; }
+    const desde=ofDesde(o), hasta=(o.hasta||hoyStr).slice(0,10);
+    // Ventana del MES: arranca en lo más tarde entre la publicación y el 1°, termina en lo
+    // más temprano entre el cierre y hoy. Es lo único que puede puntuar en este nivel.
+    const dMes=desde>(inicioMes+" 00:00:00")?desde:(inicioMes+" 00:00:00");
+    const hMes=hasta<hoyStr?hasta:hoyStr;
+    try{
+      let rows=null;
+      // TARJETA: la vigencia entera (cuántos clientes tomaron esta oferta desde que salió)
+      if(esActiva){
+        rows=await filas("oferta-ventas-"+o.id, pids, desde, hasta);
+        const mios=rows.filter(x=>idset.has(x.p));
+        ST.ofertas[o.id]={ colocados:mios.length, cli:mios.map(x=>x.p), monto:mios.reduce((s,x)=>s+x.m,0),
+          gVen:rows.length, gMonto:rows.reduce((s,x)=>s+x.m,0) };
+      }
+      // PUNTAJE: sólo lo colocado dentro del mes
+      if(hMes<dMes.slice(0,10)){ ST.ofMes[o.id]=0; return; }
+      const mapa=o._vent?porVent[o._vent]:undefined;
+      if(mapa){                            // ya vino en la tanda de su ventana
+        const cli=new Set(); pids.forEach(p=>(mapa[p]||[]).forEach(c=>cli.add(c)));
+        ST.ofMes[o.id]=[...cli].filter(c=>idset.has(c)).length;
+        return;
+      }
+      const mismaVentana=(dMes===desde && hMes===hasta);
+      const rowsMes = (mismaVentana && rows) ? rows
+        : await filas("oferta-ventas-mes-"+o.id+"-"+inicioMes.slice(0,7), pids, dMes, hMes);
+      ST.ofMes[o.id]=rowsMes.filter(x=>idset.has(x.p)).length;
+    }catch(e){ if(esActiva) ST.ofertas[o.id]={colocados:0,cli:[],gVen:0,gMonto:0,err:true}; ST.ofMes[o.id]=0; }
+  }));
+  /* ---- VENDIDAS del nivel = clientes × oferta colocados ESTE MES, vengan de una oferta
+     vigente, vencida o ya dada de baja. Cada ventana arranca en la publicación exacta, así
+     que no cuenta compras de rutina anteriores a la oferta. ---- */
+  ST.ofVendidas=OF_MES.reduce((s,o)=>s+(ST.ofMes[o.id]||0),0);
+  ST.ofVendCerradas=OF_MES.filter(o=>!activas.has(o.id)).reduce((s,o)=>s+(ST.ofMes[o.id]||0),0);
   OFPIDS=[...new Set(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i.id)).filter(Boolean))];
   // Vencimiento del producto para el mensaje de WhatsApp. gg_lot_expiration_date = fecha del
   // lote MÁS PRÓXIMO con stock (verificado: coincide con el vencimiento a despachar por FEFO).
@@ -3119,7 +3213,6 @@ async function cargarOfertas(ids){
     const envTexts=allEnv.map(m=>(m.body||"").replace(/<[^>]+>/g,""));
     OFERTAS.forEach(o=>{ const tit=o.titulo||ofItems(o); const g=(ST.ofertas[o.id]=ST.ofertas[o.id]||{}); g.gEnv=tit?envTexts.filter(b=>b.includes(tit)).length:0; });
   }catch(e){}
-  ST.ofVendidas=OFERTAS.reduce((s,o)=>s+(((ST.ofertas[o.id]||{}).colocados)||0),0);
   try{
     if(ST.userPartner){
       // Notas [EyGOFENV] del mes en el partner del propio comercial: sirven para el puntaje

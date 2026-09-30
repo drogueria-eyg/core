@@ -707,10 +707,36 @@ window.restaurarStock=async pid=>{
    producto, en modo descuento y con el precio sugerido si lo hay. */
 function ofertarDesde(pid){ const o=OPOS.find(x=>x.id===pid)||ARCH.find(x=>x.id===pid); if(!o) return; rgDesde(o, null, 'opo', pid); }
 window.cerrarModal=()=>{ document.getElementById("modal").innerHTML=""; };
+
+/* ---- Historial de ofertas (eyg.ofertas_hist) ----
+   El panel de las comerciales PUNTÚA por ofertas vendidas, y ese puntaje multiplica la
+   comisión. Si al dar de baja una oferta desapareciera del sistema, las ventas ya hechas
+   con ella dejarían de contar y el nivel se caería de un día para el otro — pasó el
+   30/9/2026 al limpiar las ofertas para el mes nuevo. Así que acá no se borra nada: se
+   archiva con su ventana (desde/hasta) y el panel lo sigue contando dentro del mes.
+   La entrada guarda el id EXACTO con el que la conoce el panel ("of..." las propias,
+   "sync:of..." las de precios) y la variante ya resuelta, para no depender de Odoo después. */
+async function histGuardar(entradas){
+  if(!entradas || !entradas.length) return;
+  try{
+    const prev=JSON.parse(await getParam("eyg.ofertas_hist","[]")||"[]")||[];
+    const vistos=new Set(prev.map(x=>x&&x.id));
+    const nuevas=entradas.filter(e=>e && e.id && !vistos.has(e.id));
+    if(!nuevas.length) return;
+    await setParam("eyg.ofertas_hist", JSON.stringify(prev.concat(nuevas)));
+  }catch(e){}   // el historial nunca puede impedir dar de baja una oferta
+}
+// la fecha de publicación vive en el id ("of<timestamp ms>"); si no, lo que traiga la oferta
+const histDesde=o=>{ const m=/of(\d{13})/.exec(o.id||""); return o.desde||o.creada||(m?new Date(+m[1]).toISOString().slice(0,19).replace("T"," "):"");};
+// se cierra HOY si todavía estaba vigente: lo vendido hasta hoy cuenta, de mañana en adelante no
+const histHasta=o=>{ const h=(o.hasta||"").slice(0,10), hoy=EYG.argToday(); return (!h||h>hoy)?hoy:h; };
 window.eliminarOferta=async id=>{
   if(!confirm("¿Eliminar esta oferta? Vuelve el precio normal del producto.")) return;
   const of=OFERTAS.find(x=>x.id===id);
   OFERTAS=OFERTAS.filter(o=>o.id!==id);
+  // primero al historial: si se vendió con esta oferta, el puntaje de la comercial no se toca
+  if(of) await histGuardar([{ id:of.id, titulo:of.titulo||"", items:(of.items||[]).map(i=>({id:i.id,sku:i.sku,nombre:i.nombre})),
+    desde:histDesde(of), hasta:histHasta(of), tipo:of.tipo||"oferta", fin:EYG.argToday(), motivo:"baja" }]);
   try{
     await setParam("eyg.ofertas", JSON.stringify(OFERTAS.map(o=>{const c={...o};delete c._venc;delete c._cat;delete c._agotada;return c;})));
     if(of&&of.items) for(const it of of.items){ try{ await quitarPrecioOferta(it.id); }catch(e){} }
@@ -1468,7 +1494,22 @@ window.rgGuardarCombo=async()=>{
   }
 };
 window.rgPausar=async id=>{ const o=SYNC_OF.find(x=>x.id===id); if(!o)return; o.pausada=!o.pausada; await rgSave(o.tipo==='p'?o.target:null); render(); toast(o.pausada?"Oferta pausada ✓":"Oferta reanudada ✓"); };
-window.rgEliminar=async id=>{ const o=SYNC_OF.find(x=>x.id===id); if(!o)return; if(!confirm("¿Eliminar esta oferta? Vuelve la escalera normal.")) return; const tgt=o.tipo==='p'?o.target:null; SYNC_OF=SYNC_OF.filter(x=>x.id!==id); await rgSave(tgt); render(); toast("Oferta eliminada ✓"); };
+window.rgEliminar=async id=>{
+  const o=SYNC_OF.find(x=>x.id===id); if(!o)return;
+  if(!confirm("¿Eliminar esta oferta? Vuelve la escalera normal.")) return;
+  const tgt=o.tipo==='p'?o.target:null;
+  // al historial antes de sacarla: el panel la cuenta como "sync:<id>" y con la VARIANTE
+  if(o.tipo==='p' && o.target){
+    let pv=0;
+    try{ const t=await EYG.rpc("product.template","read",[[o.target],["product_variant_id"]],LANG);
+         pv=t&&t[0]&&t[0].product_variant_id&&t[0].product_variant_id[0]; }catch(e){}
+    if(pv) await histGuardar([{ id:"sync:"+o.id, titulo:o.targetName||("#"+o.target),
+      items:[{id:pv, nombre:o.targetName||("#"+o.target)}],
+      desde:histDesde(o), hasta:histHasta(o), tipo:"oferta", fin:EYG.argToday(), motivo:"baja" }]);
+  }
+  SYNC_OF=SYNC_OF.filter(x=>x.id!==id);
+  await rgSave(tgt); render(); toast("Oferta eliminada ✓");
+};
 
 EYG.requireAuth(["inventario"], perfil=>{
   document.body.innerHTML = EYG.layout(perfil,"oportunidades",'<div id="cont"></div><div id="modal"></div>',"Oportunidades y Ofertas");
