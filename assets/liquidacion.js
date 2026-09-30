@@ -152,7 +152,12 @@ async function gamificacion(uid,r,ofertasMes){
   let ofVendidas=0; const idset=new Set(ids);
   for(const o of (ofertasMes||[])){
     const pids=(o.items||[]).map(i=>i&&i.id).filter(Boolean); if(!pids.length||!ids.length) continue;
-    const d=(o.desde||r.ini).slice(0,10), h=(o.hasta||r.fin).slice(0,10);
+    // la ventana se acota al mes liquidado: una oferta publicada en julio no puede sumar
+    // sus clientes de julio al nivel de septiembre (misma regla que comercial/panel.html)
+    let d=(o.desde||r.ini).slice(0,10), h=(o.hasta||r.fin).slice(0,10);
+    if(d<r.ini) d=r.ini;
+    if(h>r.fin) h=r.fin;
+    if(h<d) continue;
     try{
       const g=await rpc("sale.order.line","read_group",[[["product_id","in",pids],["state","in",["sale","done"]],["order_id.date_order",">=",d],["order_id.date_order","<=",h+" 23:59:59"]],["price_subtotal:sum"],["order_partner_id"]],{lazy:false});
       ofVendidas+=g.map(x=>x.order_partner_id&&x.order_partner_id[0]).filter(p=>p&&idset.has(p)).length;
@@ -207,15 +212,25 @@ async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
   const ex=new Set(excluir||[]);
   const esExterno=nm=>/Samanta/i.test(nm||"");
   const rates=cfg.rates||EYG.COMI_DEF.rates;
-  // ofertas cuya vigencia toca este mes (para "ofertas vendidas")
+  /* Ofertas cuya vigencia toca este mes (para "ofertas vendidas", 17 de los 100 puntos
+     del nivel, y el nivel multiplica la comisión).
+     EL HISTORIAL NO ES OPCIONAL ACÁ: una liquidación se cierra DESPUÉS de que terminó el
+     mes, cuando esas ofertas ya vencieron y probablemente se dieron de baja para publicar
+     las del mes nuevo. Leyendo sólo los parámetros vivos, liquidar septiembre en octubre
+     daba cero ofertas vendidas para todas. eyg.ofertas_hist guarda lo dado de baja con su
+     ventana, y además trae las de precios con la variante ya resuelta — que por no tener
+     'items' nunca habían entrado en esta cuenta. */
   let ofertasMes=[];
   try{
-    const [a,b]=await Promise.all([
+    const [a,b,c]=await Promise.all([
       rpc("ir.config_parameter","get_param",["eyg.ofertas"]).catch(()=>"[]"),
       rpc("ir.config_parameter","get_param",["eyg.sync_ofertas"]).catch(()=>"[]"),
+      rpc("ir.config_parameter","get_param",["eyg.ofertas_hist"]).catch(()=>"[]"),
     ]);
     const P=s=>{ try{ return JSON.parse(s||"[]")||[]; }catch(e){ return []; } };
-    ofertasMes=[...P(a),...P(b)].filter(o=>o&&o.id&&(o.items||[]).length)
+    const vistos=new Set();
+    ofertasMes=[...P(a),...P(b),...P(c)].filter(o=>o&&o.id&&(o.items||[]).length)
+      .filter(o=>{ if(vistos.has(o.id)) return false; vistos.add(o.id); return true; })   // lo vivo gana
       .filter(o=>(o.desde||"2000-01-01").slice(0,10)<=r.fin && (o.hasta||"2999-12-31").slice(0,10)>=r.ini);
   }catch(e){}
 

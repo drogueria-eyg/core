@@ -1011,25 +1011,87 @@ function renderChart(){
 }
 function renderTabla(){ renderEquipo(); }   // (compat) alias histórico
 let SEL=null, AGG=null, FICHAS_LOADING=false, FICHAS_STALE=false;
-let OFPIDS_LIDER=[], PARTMAP={}, PREP_OF=false;
-/* Prepara, una sola vez, los ids de producto de las ofertas vigentes y el partner de
-   cada comercial (para contar ofertas vendidas/enviadas en fichaData). */
+let OFMES_LIDER=[], OFVENT_LIDER={}, PARTMAP={}, PREP_OF=false;
+/* Prepara, una sola vez, QUÉ OFERTAS PUNTÚAN este mes y quién compró cada una, más el
+   partner de cada comercial (para contar ofertas vendidas/enviadas en fichaData).
+
+   OJO — esto miraba "los productos en oferta HOY", y ahí había un agujero que cuesta
+   plata: al vencer el mes o al limpiar las ofertas para el mes nuevo, las ventas ya
+   hechas dejaban de contar y el nivel de la comercial se caía de un día para el otro
+   (pasó el 30/9/2026, las siete quedaron en cero). Cuenta lo que estuvo en oferta EN
+   ALGÚN MOMENTO DEL MES: vigente, vencida o dada de baja (eyg.ofertas_hist).
+   Misma regla y MISMAS CLAVES DE CACHE que comercial/panel.html, así el líder y la
+   comercial ven el mismo número y la consulta se paga una sola vez. */
+const ofDesdeL=o=>{ const m=/of(\d{13})/.exec(o.id||"");
+  const d=String(o.desde||o.creada||(m?new Date(+m[1]).toISOString().slice(0,19).replace("T"," "):""));
+  return d?(d.length<=10?d+" 00:00:00":d):""; };
 async function prepOfertasLider(){
   if(PREP_OF) return; PREP_OF=true;
   try{
-    const hoy=argToday();
-    const [ofR,syncR,users]=await Promise.all([
+    const hoy=argToday(), iniMes=hoy.slice(0,7)+"-01", INI=iniMes+" 00:00:00";
+    const [ofR,syncR,histR,users]=await Promise.all([
       EYG.rpc("ir.config_parameter","get_param",["eyg.ofertas"]).catch(()=>"[]"),
       EYG.rpc("ir.config_parameter","get_param",["eyg.sync_ofertas"]).catch(()=>"[]"),
+      EYG.rpc("ir.config_parameter","get_param",["eyg.ofertas_hist"]).catch(()=>"[]"),
       EYG.rpc("res.users","read",[UIDS,["partner_id"]]).catch(()=>[]),
     ]);
     for(const u of users) if(u.partner_id) PARTMAP[u.id]=u.partner_id[0];
-    const of=JSON.parse(ofR||"[]")||[], sync=JSON.parse(syncR||"[]")||[]; const pids=new Set();
-    for(const o of of){ if(o&&(!o.hasta||o.hasta>=hoy)) (o.items||[]).forEach(i=>i.id&&pids.add(i.id)); }
-    const tmpls=[...new Set(sync.filter(o=>o&&o.tipo==="p"&&o.target&&!o.pausada&&(!o.hasta||o.hasta>=hoy)).map(o=>o.target))];
-    if(tmpls.length){ const tps=await EYG.rpc("product.template","read",[tmpls,["product_variant_id"]],{context:{lang:"es_AR"}}).catch(()=>[]); for(const t of tps) if(t.product_variant_id) pids.add(t.product_variant_id[0]); }
-    OFPIDS_LIDER=[...pids];
+    const P=x=>{ try{ return JSON.parse(x||"[]")||[]; }catch(e){ return []; } };
+    const prop=P(ofR).filter(o=>o&&o.id&&(o.items||[]).length);
+    // las de precios apuntan a la PLANTILLA: hay que resolver la variante, como en el panel
+    const sync=P(syncR).filter(o=>o&&o.id&&!o.pausada&&o.tipo==="p"&&o.target);
+    const vari={};
+    const tmpls=[...new Set(sync.map(o=>o.target))];
+    if(tmpls.length){ const tps=await EYG.rpc("product.template","read",[tmpls,["product_variant_id"]],{context:{lang:"es_AR"}}).catch(()=>[]);
+      for(const t of tps) if(t.product_variant_id) vari[t.id]=t.product_variant_id[0]; }
+    const syncN=sync.filter(o=>vari[o.target]).map(o=>({ id:"sync:"+o.id, titulo:o.targetName||("#"+o.target),
+      items:[{id:vari[o.target]}], hasta:o.hasta||"", desde:ofDesdeL(o) }));
+    const hist=P(histR).filter(o=>o&&o.id&&(o.items||[]).length);
+    const vistos=new Set(); OFMES_LIDER=[];
+    for(const o of prop.concat(syncN).concat(hist)){        // lo vivo le gana al historial
+      if(vistos.has(o.id)) continue; vistos.add(o.id);
+      const d=ofDesdeL(o)||INI;
+      if((!o.hasta||o.hasta>=iniMes) && d.slice(0,10)<=hoy) OFMES_LIDER.push(o);
+    }
+    /* Una consulta por VENTANA, no por oferta: casi todas comparten la misma ventana de
+       conteo. Agrupada por cliente Y producto, se reparte después. */
+    const grupos={};
+    OFMES_LIDER.forEach(o=>{
+      const pids=(o.items||[]).map(i=>i&&i.id).filter(Boolean); if(!pids.length) return;
+      const dd=ofDesdeL(o)||INI, hh=(o.hasta||hoy).slice(0,10);
+      const d=dd>INI?dd:INI, h=hh<hoy?hh:hoy;
+      if(h<d.slice(0,10)) return;
+      o._vent=d+"|"+h;
+      const g=(grupos[o._vent]=grupos[o._vent]||{d,h,pids:new Set()});
+      pids.forEach(p=>g.pids.add(p));
+    });
+    await Promise.all(Object.entries(grupos).map(async([k,g])=>{
+      const pids=[...g.pids];
+      const clave="ofertas-mes-"+k.replace(/[^0-9]/g,"")+"-"+pids.length+"x"+pids.reduce((a,b)=>a+b,0);
+      try{
+        const rows=await EYG.cacheOdoo(clave, 600, ()=>EYG.rpc("sale.order.line","read_group",
+          [[["product_id","in",pids],["state","in",["sale","done"]],
+            ["order_id.date_order",">=",g.d],["order_id.date_order","<=",g.h+" 23:59:59"]],
+           ["price_subtotal:sum"],["order_partner_id","product_id"]],{lazy:false}));
+        const m={};
+        rows.forEach(r=>{ const p=r.product_id&&r.product_id[0], c=r.order_partner_id&&r.order_partner_id[0];
+          if(p&&c) (m[p]=m[p]||new Set()).add(c); });
+        OFVENT_LIDER[k]=m;
+      }catch(e){ OFVENT_LIDER[k]=null; }
+    }));
   }catch(e){}
+}
+/* Ofertas colocadas por una cartera este mes: cliente × oferta, sin repetir cliente
+   dentro de la misma oferta (un combo de tres productos cuenta una vez). */
+function ofVendidasDe(cartera){
+  const S=new Set(cartera); let n=0;
+  for(const o of OFMES_LIDER){
+    const m=o._vent?OFVENT_LIDER[o._vent]:null; if(!m) continue;
+    const cli=new Set();
+    (o.items||[]).forEach(i=>{ if(i&&i.id)(m[i.id]||[]).forEach(c=>cli.add(c)); });
+    cli.forEach(c=>{ if(S.has(c)) n++; });
+  }
+  return n;
 }
 
 /* ===== Pieza 1: Ofertas/combos con estadísticas por comercial (solo lectura) =====
@@ -1880,7 +1942,7 @@ async function fichaData(uid, name, carteraIn, pfIn){
   // cartera (ids) y ficha (pf) pueden venir pre-cargadas a nivel equipo (1 consulta reutilizada);
   // si no, se traen acá (camino de 1 comercial, ej. al seleccionar).
   const cartera=carteraIn||await EYG.rpc("res.partner","search",[[["user_id","=",uid]]]);
-  const [movG,payG,ml,ordG,estG,pf,mg,waMsgs,ofVenG,ofEnvC]=await Promise.all([
+  const [movG,payG,ml,ordG,estG,pf,mg,waMsgs,ofEnvC]=await Promise.all([
     // facturas+NC por mes y tipo (190d) → factMes, baseline y desglose de facturación
     EYG.rpc("account.move","read_group",[[["partner_id","in",cartera],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",EYG.hace(190)]],["amount_total:sum"],["invoice_date:month","move_type"]],{lazy:false}),
     // cobros entrantes por mes (100d) → cobrado del mes + objetivo (prom 3m)
@@ -1897,8 +1959,6 @@ async function fichaData(uid, name, carteraIn, pfIn){
     EYG.rpc("sale.order.line","read_group",[[["order_id.user_id","=",uid],["order_id.state","in",["sale","done"]],["order_id.date_order",">=",inicioAno]],["margin:sum","price_subtotal:sum"],[]],{lazy:false}),
     // mensajes WA confirmados de la semana sobre su cartera
     EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",cartera],["date",">=",EYG.hace(7)+" 00:00:00"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id","date","body"],limit:0}),
-    // ofertas VENDIDAS este mes (cliente × oferta) sobre productos en oferta
-    EYG.rpc("sale.order.line","read_group",[[["order_partner_id","in",cartera],["product_id","in",OFPIDS_LIDER.length?OFPIDS_LIDER:[0]],["state","in",["sale","done"]],["order_id.date_order",">=",inicioMes]],["price_subtotal:sum"],["order_partner_id","product_id"]],{lazy:false}),
     // ofertas ENVIADAS este mes (notas [EyGOFENV] en el partner del comercial)
     EYG.rpc("mail.message","search_count",[[["model","=","res.partner"],["res_id","=",PARTMAP[uid]||0],["date",">=",inicioMes+" 00:00:00"],["body","like","EyGOFENV"]]]),
   ]);
@@ -1961,7 +2021,9 @@ async function fichaData(uid, name, carteraIn, pfIn){
   _md = EYG.metaDesde(fact, mo, _cfg, perfil);   // desde octubre la meta es el objetivo semanal del perfil
   metaMes=_md.meta; factBaseline=_md.baseline;
   const desglose={ pedN, pedM, canN, canM, draN, draM, facN, facMonto, ncN, ncMonto };
-  const ofVendidas=(ofVenG||[]).length, ofEnviadas=ofEnvC||0;
+  // vendidas del mes: sale de prepOfertasLider (vigentes + vencidas + dadas de baja),
+  // con la misma regla que el panel de la comercial. Una consulta menos por comercial.
+  const ofVendidas=ofVendidasDe(cartera), ofEnviadas=ofEnvC||0;
   const d={nombre:name, perfil, factMes, factMesTotal, factBaseline, meta:metaMes, metaMetodo:_cfg.metaMetodo, rates:_cfg.rates, externoCorte:_cfg.externoCorte, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, ofEnviadas, ofVendidas, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg, pedMes:pedM, desglose};
   d.nivel=EYGM.nivel(d); d.salud=EYGM.salud(d); d.com=EYGM.comision(d);
   return d;
