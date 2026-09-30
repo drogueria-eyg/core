@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../assets/core.css?v=88">
+<link rel="stylesheet" href="../assets/core.css?v=89">
 <style>
   .intro{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:15px 18px;box-shadow:var(--shadow);margin-bottom:16px;font-size:13.5px;color:var(--gris);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
   .intro b{color:var(--ink)}
@@ -199,7 +199,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=88"></script>
+<script src="../assets/core.js?v=89"></script>
 <script src="../assets/inventario-oportunidades.js"></script>
 <script>
 /* ============ EyG Core · Inventario · Oportunidades y Ofertas ============ */
@@ -1115,15 +1115,16 @@ window.rgCargarCatSim=async(catId)=>{
   if(rgCatSim.catId===catId && rgCatSim.estado==="ok") return;
   rgCatSim={estado:"cargando", filas:[], catId:catId}; render();
   try{
-    const rs=await EYG.rpc("product.product","search_read",[[["categ_id","child_of",catId],["active","=",true]],["default_code","name","product_tmpl_id","categ_id","x_costo_motor","x_iva_compra","taxes_id","qty_available"]],{limit:800,context:{lang:"es_AR"}});
+    const rs=await EYG.rpc("product.product","search_read",[[["categ_id","child_of",catId],["active","=",true]],["default_code","name","product_tmpl_id","categ_id","x_costo_motor","x_iva_compra","taxes_id","qty_available","list_price"]],{limit:800,context:{lang:"es_AR"}});
     const tIds=[...new Set(rs.map(r=>r.product_tmpl_id&&r.product_tmpl_id[0]).filter(Boolean))];
     const its=tIds.length?await EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",tIds]],["product_tmpl_id","fixed_price"]],{limit:5000,context:{lang:"es_AR"}}):[];
     const mx={}, mn={};
     its.forEach(i=>{ const t=i.product_tmpl_id&&i.product_tmpl_id[0]; if(!t) return;
       if(mx[t]==null||i.fixed_price>mx[t]) mx[t]=i.fixed_price;
       if(mn[t]==null||i.fixed_price<mn[t]) mn[t]=i.fixed_price; });
-    const tp=tIds.length?await EYG.rpc("product.template","read",[tIds,["list_price","categ_id"]],LANG):[];
-    const lp={}; tp.forEach(t=>{ if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) lp[t.id]=t.list_price||0; });
+    // el PVP de los éticos ya vino con los productos: un viaje menos al conector
+    const lp={}; rs.forEach(r=>{ const t=(r.product_tmpl_id&&r.product_tmpl_id[0])||0;
+      if(t && /[EÉ]TICO/i.test((r.categ_id&&r.categ_id[1])||"")) lp[t]=r.list_price||0; });
     rgCatSim={estado:"ok", catId:catId, filas:rs.map(r=>{
       const t=(r.product_tmpl_id&&r.product_tmpl_id[0])||0;
       const c=costoEfectivo(r);
@@ -1138,16 +1139,28 @@ window.rgCargarCatSim=async(catId)=>{
 async function rgCargarRent(tmplId){
   rgPvp=0;
   try{
-    const t=await EYG.rpc("product.template","read",[[tmplId],["product_variant_id","list_price","categ_id"]],LANG);
-    const th=(t&&t[0])||{};
+    /* VELOCIDAD: cada viaje al conector cuesta ~1,3 s, así que pesa la CANTIDAD de viajes,
+       no el tamaño de la consulta. Antes eran tres encadenados (plantilla → variante →
+       escalera) = casi 4 segundos para abrir el editor. Ahora son dos y salen juntos:
+       todo lo que se usaba de la plantilla (list_price, categ_id) vive también en la
+       variante, y la escalera no depende de nada. */
+    const [pv, its0] = await Promise.all([
+      EYG.rpc("product.product","search_read",
+        [[["product_tmpl_id","=",tmplId]],
+         ["list_price","categ_id","x_costo_manual","x_costo_manual_date","standard_price","x_costo_motor","x_iva_compra","taxes_id"]],
+        {limit:1, context:{lang:"es_AR"}}),
+      EYG.rpc("product.pricelist.item","search_read",
+        [[["pricelist_id","=",3],["product_tmpl_id","=",tmplId],["compute_price","=","fixed"]],["min_quantity","fixed_price"]],
+        {limit:50, context:{lang:"es_AR"}})
+    ]);
+    const th=(pv&&pv[0])||{};
     if(rgDraft) rgDraft._cat=(th.categ_id&&th.categ_id[1])||"";   // para el badge de categoría
     if(/[EÉ]TICO/i.test((th.categ_id&&th.categ_id[1])||"")) rgPvp=Math.round(th.list_price||0);
     if(rgDraft) rgDraft._pvp=rgPvp;   // ético: el descuento se calcula sobre el PVP (mecánica propia)
-    const vid=th.product_variant_id&&th.product_variant_id[0];
+    const vid=th.id;
     let costo=0; rgCostoFuente=""; rgPiso=0; rgCatId=(th.categ_id&&th.categ_id[0])||0;
     if(vid){
-      const pv=await EYG.rpc("product.product","read",[[vid],["x_costo_manual","x_costo_manual_date","standard_price","x_costo_motor","x_iva_compra","taxes_id","categ_id"]],LANG);
-      const p=(pv&&pv[0])||{};
+      const p=th;
       rgIvaCompra=p.x_iva_compra||0; rgTildeIva=tildeIvaDe(p.taxes_id);
       /* x_costo_motor = el costo con el que el MOTOR calcula el precio (su regla de 3 fuentes:
          costo manual / última compra / standard_price, el más reciente). Usar el mismo número es
@@ -1173,7 +1186,7 @@ async function rgCargarRent(tmplId){
     if(costo>0 && rgTildeIva) costo=costo*(1+rgIvaCompra);
     rgCosto=costo>0?costo:null;
     rgPiso=pisoDe(costo, rgCatId);
-    const its=await EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","=",tmplId],["compute_price","=","fixed"]],["min_quantity","fixed_price"]],{limit:50,context:{lang:"es_AR"}});
+    const its=(its0||[]).slice();
     its.sort((a,b)=>a.min_quantity-b.min_quantity);
     rgTramos=its.map(i=>({q:i.min_quantity,p:i.fixed_price}));
     rgTramosBase=rgTramosBaseFrom(rgTramos, rgApplied);   // deshace la oferta ya aplicada para no descontar dos veces
