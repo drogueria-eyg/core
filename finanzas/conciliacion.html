@@ -664,9 +664,13 @@ function accionDe(m,i){
         ? "El cheque "+esc(m.cpbte||"")+" no tiene su pago cargado en Odoo. El banco no dice a quién se le pagó: hay que buscar el beneficiario en el home banking y cargarlo acá."
         : "Elegí el cliente y a qué facturas se imputa.")+'">'+
       (RES.i===i?"Cerrar":"Resolver")+'</button>';
-  /* Destino único (impuesto, cargo, o un solo candidato): no hay nada que decidir, lo
-     hace el botón de arriba. Se dice, porque una celda vacía se lee como "no se puede". */
-  if(m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1)
+  /* Un solo candidato: no hay nada que decidir, pero igual se puede cerrar de a uno. */
+  if(m.cands.length===1)
+    return '<button class="btn sm gh" onclick="conciliarUno('+i+')" title="'+
+      (m.porCheque?"El N° de cheque "+esc(m.cpbte)+" lo identifica sin ambigüedad. ":"")+
+      'Concilia este movimiento contra su único candidato. También lo hace el botón de arriba, junto con los demás.">Conciliar</button>';
+  /* Impuestos y cargos: su destino es único y no tienen candidato que mostrar. */
+  if(m.tipo==="impuesto"||m.tipo==="cargo")
     return '<span class="muted" style="font-size:11.5px">lo resuelve el botón de arriba</span>';
   /* Transferencia entre cuentas propias con el otro banco ya identificado: se puede
      resolver de una, sin esperar el extracto del otro banco. */
@@ -832,7 +836,8 @@ window.accionResolver=()=>conTrabajo(async()=>{
       const cta = m.tipo==="cobro" ? CTA_RECIBOS : CTA_PAGOS;
       await rpc("account.move.line","write",[[tra.id],{account_id:cta}]);
       await rpc("account.move.line","reconcile",[[tra.id,m.cands[0].id]]);
-      con++; log("Conciliado "+money(m.importe)+(m.cliente?" — "+m.cliente.nombre:""));
+      const q=m.cands[0].partner_id?m.cands[0].partner_id[1]:(m.cliente?m.cliente.nombre:"");
+      con++; log("Conciliado "+money(m.importe)+(q?" — "+q:"")+(m.porCheque?"  (cheque "+m.cpbte+")":""));
     }
   }
   log("Resueltos: "+imp+" impuestos · "+car+" cargos · "+trf+" transferencias entre cuentas · "+con+" conciliaciones","o");
@@ -1050,6 +1055,27 @@ async function conciliarLinea(m, apunteId, cta){
   await rpc("account.move.line","write",[[tra.id],{account_id:cta}]);
   await rpc("account.move.line","reconcile",[[tra.id, apunteId]]);
 }
+
+/* Conciliar UNO solo. Antes esto lo hacía únicamente el botón masivo: o se resolvían
+   todos o ninguno, y no había forma de cerrar un movimiento y dejar el resto para
+   mirarlo con calma. Vuelve a verificar el importe contra el candidato, porque entre
+   que se leyó el archivo y se aprieta el botón alguien pudo tocar ese apunte. */
+window.conciliarUno=(i)=>conTrabajo(async()=>{
+  const m=ST.movs[i];
+  if(!m.yaEsta){ log("Primero hay que cargar el movimiento a Odoo","e"); return; }
+  if(m.yaEsta.is_reconciled){ log("Ese movimiento ya está conciliado","e"); return; }
+  if(m.cands.length!==1){ log("Ese movimiento no tiene un único candidato","e"); return; }
+  const c=m.cands[0];
+  const vivo=await rpc("account.move.line","read",[[c.id],["amount_residual","full_reconcile_id","partner_id","name"]]);
+  if(!vivo.length||vivo[0].full_reconcile_id){ log("El candidato ya fue conciliado por otro lado — volvé a subir el archivo","e"); return; }
+  if(Math.abs(Math.abs(vivo[0].amount_residual)-Math.abs(m.importe))>0.005){
+    log("El saldo del candidato cambió ("+money(vivo[0].amount_residual)+" contra "+money(m.importe)+"): no concilio","e"); return; }
+  const cta = sale(m) ? CTA_PAGOS : CTA_RECIBOS;
+  await conciliarLinea(m, c.id, cta);
+  m.yaEsta.is_reconciled=true;
+  const quien=vivo[0].partner_id?vivo[0].partner_id[1]:"";
+  log("Conciliado "+money(m.importe)+(quien?" — "+quien:"")+(m.porCheque?"  (por N° de cheque "+m.cpbte+")":""),"o");
+});
 
 window.elegirCand=(i)=>conTrabajo(async()=>{
   const m=ST.movs[i]; const sel=document.getElementById("sel"+i);
