@@ -191,6 +191,9 @@
   .mt input.ch{font-family:inherit;font-size:12.5px;padding:5px 7px;border:1px solid var(--line);border-radius:7px}
   .mt input.ch.n{width:110px} .mt input.ch.f{width:135px} .mt input.ch.i{width:130px;text-align:right;font-variant-numeric:tabular-nums}
   .mt input.ch.mal{border-color:var(--bad);background:var(--badbg)}
+  .mt input.ch.avi{border-color:var(--warn);background:var(--warnbg)}
+  .mt .fmal{font-size:10.5px;color:var(--bad);font-weight:700;margin-top:2px}
+  .mt .favi{font-size:10.5px;color:var(--warn);font-weight:700;margin-top:2px}
   .mt .cuadre{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 13px;border-radius:10px;
     border:1px solid var(--line);font-size:13.5px;font-weight:700;margin:10px 0 0}
   .mt .cuadre.ok{background:var(--okbg);border-color:#BFE3CD;color:#14603F}
@@ -602,6 +605,14 @@ async function numerosUsados(){
     (m[n]=m[n]||[]).push(p); });
   _numsOdoo=m; return m;
 }
+/* Dos categorías distintas, a propósito:
+   · ERROR    frena la carga. Son datos que faltan o que romperían algo: sin número,
+              número repetido entre filas o ya usado en Odoo, sin fecha, sin importe.
+   · AVISO    se marca en rojo pero NO frena. Una fecha de cobro anterior a hoy es
+              perfectamente normal —los cheques se cargan después de emitidos— y una
+              fecha muy lejana suele ser un error de tipeo, pero puede ser real.
+   Pedido de Dirección el 30/09/2026: "está bien que lo adviertas y lo marques en rojo,
+   pero permitime igual cargar los cheques". */
 function validarCheques(usados){
   const c=calculo(), res=[];
   const vistos={};
@@ -609,7 +620,7 @@ function validarCheques(usados){
   const limite=new Date(hoy+"T12:00:00Z"); limite.setUTCFullYear(limite.getUTCFullYear()+2);
   const limiteTxt=limite.toISOString().slice(0,10);
   ST.cheques.forEach((ch,i)=>{
-    const e={n:null,f:null,i:null};
+    const e={n:null,f:null,i:null}, a={n:null,f:null,i:null};
     const n=String(ch.n||"").replace(/[^0-9]/g,"").replace(/^0+/,"");
     if(!n) e.n="falta el número";
     else if(vistos[n]!=null) e.n="repetido con la fila "+(vistos[n]+1);
@@ -618,15 +629,17 @@ function validarCheques(usados){
     const f=String(ch.f||"");
     if(!f) e.f="falta la fecha";
     else if(f.length!==10) e.f="fecha incompleta";
-    else if(f<hoy) e.f="es anterior a hoy";
-    else if(f>limiteTxt) e.f="está a más de 2 años";
+    else if(f<hoy)        a.f="ya pasó — el cheque vencía el "+f.slice(8,10)+"/"+f.slice(5,7);
+    else if(f>limiteTxt)  a.f="está a más de 2 años: revisá el año";
     const im=num(ch.i);
     if(!im) e.i="falta el importe";
     else if(im<0) e.i="no puede ser negativo";
-    res.push(e);
+    res.push(Object.assign({}, e, {_a:a}));
   });
   const suma=r2(ST.cheques.reduce((s,ch)=>s+num(ch.i),0));
-  return {filas:res, suma, dif:r2(c.pagar-suma), hayError:res.some(e=>e.n||e.f||e.i)};
+  return {filas:res, suma, dif:r2(c.pagar-suma),
+          hayError:res.some(e=>e.n||e.f||e.i),
+          hayAviso:res.some(e=>e._a.n||e._a.f||e._a.i)};
 }
 let _val=null;
 window.revisarNumeros=()=>conTrabajo(async()=>{
@@ -981,28 +994,37 @@ function zonaPdf(){
 }
 function tablaCheques(){
   const v=validarCheques(_val);
+  /* El ERROR pinta el borde rojo y frena; el AVISO pinta ámbar y deja seguir. */
+  const msg=(err,avi)=>err?'<div class="fmal">'+esc(err)+'</div>'
+                      :avi?'<div class="favi">⚠ '+esc(avi)+'</div>':"";
   return '<div style="overflow:auto"><table class="fc"><thead><tr><th>#</th><th>N° de cheque</th><th>Se cobra el</th>'+
     '<th class="num">Importe</th><th></th></tr></thead><tbody>'+
-    ST.cheques.map((ch,i)=>{ const e=v.filas[i]||{};
+    ST.cheques.map((ch,i)=>{ const e=v.filas[i]||{}, a=(e._a||{});
       return '<tr><td class="muted">'+(i+1)+'</td>'+
-      '<td><input class="ch n'+(e.n?" mal":"")+'" value="'+esc(ch.n)+'" placeholder="40855518" onchange="setCheque('+i+',\'n\',this.value)" title="'+esc(e.n||"")+'">'+
-        (e.n?'<div class="muted" style="font-size:10.5px;color:var(--bad)">'+esc(e.n)+'</div>':"")+'</td>'+
-      '<td><input class="ch f'+(e.f?" mal":"")+'" type="date" value="'+esc(ch.f)+'" onchange="setCheque('+i+',\'f\',this.value)">'+
-        (e.f?'<div class="muted" style="font-size:10.5px;color:var(--bad)">'+esc(e.f)+'</div>':"")+'</td>'+
-      '<td class="num"><input class="ch i'+(e.i?" mal":"")+'" value="'+esc(ch.i)+'" placeholder="1.058.250,00" onchange="setCheque('+i+',\'i\',this.value)"></td>'+
+      '<td><input class="ch n'+(e.n?" mal":a.n?" avi":"")+'" value="'+esc(ch.n)+'" placeholder="40855518" '+
+        'onchange="setCheque('+i+',&quot;n&quot;,this.value)" title="'+esc(e.n||a.n||"")+'">'+msg(e.n,a.n)+'</td>'+
+      '<td><input class="ch f'+(e.f?" mal":a.f?" avi":"")+'" type="date" value="'+esc(ch.f)+'" '+
+        'onchange="setCheque('+i+',&quot;f&quot;,this.value)" title="'+esc(e.f||a.f||"")+'">'+msg(e.f,a.f)+'</td>'+
+      '<td class="num"><input class="ch i'+(e.i?" mal":"")+'" value="'+esc(ch.i)+'" placeholder="1.058.250,00" '+
+        'onchange="setCheque('+i+',&quot;i&quot;,this.value)">'+msg(e.i,a.i)+'</td>'+
       '<td><button class="btn gh sm" onclick="quitarCheque('+i+')">quitar</button></td></tr>'; }).join("")+
     '</tbody></table></div>';
 }
 function contenidoCuadre(){
   const c=calculo(), v=validarCheques(_val);
   if(!ST.cheques.length) return "";
+  /* Sólo los ERRORES frenan. Los avisos —una fecha de cobro ya cumplida, por ejemplo—
+     se marcan pero dejan cargar: un cheque emitido hace meses es un caso normal. */
   const ok=Math.abs(v.dif)<0.005 && !v.hayError;
   return '<div class="cuadre '+(ok?"ok":"mal")+'">'+
     '<span>Suma de los cheques <b>'+money(v.suma)+'</b></span>'+
     '<span>A pagar <b>'+money(c.pagar)+'</b></span>'+
     '<span>'+(Math.abs(v.dif)<0.005?"✔ cierra exacto":"Diferencia <b>"+money(v.dif)+"</b>")+'</span>'+
-    (v.hayError?'<span>⚠️ hay filas con error</span>':"")+
+    (v.hayError?'<span>⛔ hay filas que no se pueden cargar</span>':"")+
     '</div>'+
+    (v.hayAviso&&!v.hayError?'<div class="aviso warn" style="margin:9px 0 0">⚠️ <div>Hay fechas marcadas. '+
+      '<b>Se cargan igual</b>: un cheque emitido hace tiempo ya tiene la fecha de cobro cumplida y eso es normal. '+
+      'Verificá que sean las del comprobante y seguí.</div></div>':"")+
     '<div class="acciones" style="margin-top:11px">'+
       '<button class="btn wide" onclick="confirmar()" '+(ok&&!ST.trabajando?"":"disabled")+'>'+
       (ST.trabajando?'<span class="spin"></span> ':"")+
