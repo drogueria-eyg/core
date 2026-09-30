@@ -2166,7 +2166,7 @@ window.EYG = (function(){
        externoCorte     = corte fijo del externo (Samanta), en $.
        minimoSemanal    = la OBLIGACIÓN por rubro y por semana. Va aparte de la comisión.
        rubros           = el rubro de cada comercial, fijado por Dirección (uid → rubro).
-       topeTasa         = techo de la comisión sobre lo facturado (0.03 = 3%).
+       nivelSoloTramoBase = el nivel multiplica sólo el tramo base, para no pasar el 3%.
        paqueteDesde     = desde qué mes rigen las reglas nuevas (antes, las viejas). */
   const COMI_KEY="eyg.comisiones";
   const COMI_DEF={ metaMeses:3, metaMetodo:"mediana", metaCrecimiento:0.25, metaCuentaVacios:true,
@@ -2176,15 +2176,17 @@ window.EYG = (function(){
        Todo lo que sigue rige desde paqueteDesde. Los meses anteriores se calculan con las reglas
        viejas: un cambio de hoy no puede mover un mes que las comerciales ya vieron en vivo. */
     paqueteDesde:"2026-10",
-    /* TOPE DE LA COMISIÓN. Regla de Dirección: la casa no puede pagar más del 3% de lo facturado.
-       Sin tope se pasaba: el tramo alto es 3% y el nivel Diamante multiplica por 1,20 → 3,6%.
-       El tope se aplica por comercial, y eso alcanza para garantizar el total: si nadie pasa el 3%
-       de LO SUYO, la suma no puede pasar el 3% del total. */
-    topeTasa:0.03,
+    /* EL FRENO DEL 3%. Regla de Dirección: la casa apunta a no pagar más del 3% de lo facturado.
+       No es un recorte al final —eso sería castigar a quien vendió mucho—, es la forma de pagar: el
+       NIVEL multiplica sólo el tramo base (2%), no el tramo alto (3%). El premio por nivel se paga
+       sobre su venta base; lo que pasa la meta ya se paga al máximo de la casa.
+       Con esto la tasa efectiva se acerca al 3% desde abajo y nunca lo alcanza: al doble de la meta
+       con Diamante da 2,70% donde antes daba 3,00%, y al triple 2,80% donde daba 3,20%. */
+    nivelSoloTramoBase:true,
     /* RUBRO FIJO (uid → "inst" | "farm" | "externo"). Antes se adivinaba por el ticket promedio y
-       dejó de servir cuando Dirección empezó a asignar sectores: Maricruz pasó a Instituciones y el
-       ticket la seguía leyendo como farmacias. Sin cargar, se cae al criterio viejo del ticket. */
-    rubros:{},
+       dejó de servir cuando Dirección empezó a asignar sectores. Maricruz quedó definida en
+       FARMACIAS el 30/9/2026. Sin cargar, se cae al criterio viejo del ticket. */
+    rubros:{ "18":"inst", "8":"farm", "215":"farm", "28":"farm" },
     /* MÍNIMO DE VENTA — la OBLIGACIÓN. La fija Dirección por rubro y por SEMANA. El mínimo del mes
        es la suma de los mínimos de sus semanas, así la vara semanal y la mensual son el mismo
        número visto de cerca y de lejos. NO es un tramo de comisión: no toca la tasa ni la meta.
@@ -2203,13 +2205,21 @@ window.EYG = (function(){
        vencido hace más de medio año. */
     moraPesos:{ d30:1, d60:2, d90:3, d180:5, mas:8 },
     moraFranquicia:0.10, moraTope:1.00,
-    /* PESOS DE LA SALUD (son los puntos de tasa que se pueden perder, sobre 100 = 1 punto; el tope
-       sigue siendo 1 punto, y como suman 115 se llega al máximo sin estar mal en todo). */
-    saludPesos:{ mora:60, minimo:30, fichas:25 },
+    /* PESOS DE LA SALUD. Reparten UN punto de tasa exacto (60+30+10=100): así se llega al máximo
+       sólo fallando en todo. Antes sumaban 115 y el tope se alcanzaba antes de tiempo. */
+    saludPesos:{ mora:60, minimo:30, fichas:10 },
     saludUmbrales:{ minimoRango:0.50, fichasMin:0.40 },
     /* PESOS DEL NIVEL (los siete ítems suman 100). Para hacerle lugar al ítem del mínimo semanal se
        le sacaron 10 puntos al cobro y a la actividad: inst 38/12 → 30/10, farm 25/25 → 20/20. */
     nivelPesos:{ inst:{valor:30,activ:10}, farm:{valor:20,activ:20}, semanal:10 },
+    /* LA VARA DE LA ACTIVIDAD. Hasta septiembre se comparaba contra el promedio de 6 meses y las
+       cinco sacaban el 100%: el negocio creció y ese promedio ya no medía nada (Ruth hizo 117
+       pedidos contra un promedio de 56). Pasa a ser el MEJOR de los 3 meses previos — igualar su
+       propio récord reciente. Con los números de septiembre eso da 87% a 100% en lugar de 100% a
+       todas. No se le agrega un % arriba a propósito: superar el récord todos los meses no es
+       sostenible y en medio año la vara sería imposible.
+         "mejor3" = el mejor de los 3 meses previos · "prom3" · "prom" = el promedio viejo */
+    actividadVara:"mejor3",
     /* METAS DEL NIVEL. Contactos por día pasó de 10 a 15. Los clientes nuevos pasaron de una meta
        única de 3 a una por rubro, y "nuevo" dejó de ser una ficha dada de alta: cuenta el que
        COMPRÓ. En septiembre se cargaron 62 fichas y compraron 14 — con el criterio viejo alcanzaba
