@@ -702,15 +702,21 @@ async function comiLoadData(){
   }
   COMI.sellers=sellers; COMI.names={}; sellers.forEach(s=>COMI.names[s.uid]=s.name);
   const monthly={}; COMI.recu={}; COMI.ticket={};
-  // FACTURADO NETO por mes con la regla HÍBRIDA: vendedor del pedido; o dueño del cliente si el pedido
-  // quedó bajo la cuenta genérica (recupera lo mal cargado). Igual que el panel del comercial.
+  /* FACTURADO NETO por mes con la regla ÚNICA de atribución (EYG.domVendedor): sólo lo que cargó la
+     comercial. Los pedidos de la cuenta genérica NO se le reparten al dueño del cliente.
+     ESTO ARMA LA META, así que el criterio tiene que ser el MISMO que usa el panel de cada una. Con
+     la genérica adentro la mediana de Natividad se corría de agosto a julio, su meta subía $7,6 M y
+     esta pantalla le mostraba $3,28 M contra los $4,02 M que ella veía en su panel todo el mes: la
+     genérica le aportaba $57-77 M por mes hasta junio y nada desde julio, y junio justo cae en la
+     ventana de la meta de septiembre.
+     Lo que aportó la genérica se sigue mostrando aparte (COMI.recu), como información. */
   // comprobantes que Dirección sacó del cálculo a mano (con su motivo) — mismo criterio que el panel
   let exMoves=[]; try{ exMoves=EYGLIQ.exclIds(await EYGLIQ.excluidos(true)); }catch(e){}
   COMI.excl=exMoves;
   const exD=exMoves.length?[["move_id","not in",exMoves]]:[];
   const dom=(uid,mt,soloGen)=>{ const base=[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",desde],...exD];
     return soloGen ? [...base,["sale_line_ids.order_id.user_id","=",GEN_UID],["sale_line_ids.order_id.partner_id.user_id","=",uid]]
-                   : [...base,"|",["sale_line_ids.order_id.user_id","=",uid],"&",["sale_line_ids.order_id.user_id","=",GEN_UID],["sale_line_ids.order_id.partner_id.user_id","=",uid]]; };
+                   : [...base,...EYG.domVendedor("sale_line_ids.order_id.", uid)]; };
   for(const s of sellers){
     monthly[s.uid]={};
     const [fi,fr,gi,gr,to]=await Promise.all([
@@ -759,7 +765,7 @@ function comiRender(){
   const c=COMI.cfg||EYG.COMI_DEF; COMI._metodo=c.metaMetodo||"promedio";
   const pct=Math.round((c.metaCrecimiento||0)*100);
   box.innerHTML=`
-    <div class="comi-note">La comisión se calcula sobre el <b>facturado neto</b> (facturas − NC), atribuido a <b>quien generó el pedido</b> (o al dueño del cliente si el pedido quedó bajo la genérica). La <b>meta</b> = promedio o mediana de los últimos meses + un %. Cambiá los valores y mirá la meta <b>en vivo</b>; se guarda con el botón.</div>
+    <div class="comi-note">La comisión se calcula sobre el <b>facturado neto</b> (facturas − NC), atribuido a <b>quien generó el pedido</b> (los pedidos de la cuenta genérica no se reparten). La <b>meta</b> = promedio o mediana de los últimos meses + un %. Cambiá los valores y mirá la meta <b>en vivo</b>; se guarda con el botón.</div>
     <div class="comi-knobs">
       <div class="knob"><label>Meses que promedia</label>
         <input type="number" id="k_meses" min="1" max="6" step="1" value="${c.metaMeses||3}" oninput="comiRecalc()">
