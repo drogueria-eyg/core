@@ -854,7 +854,7 @@ window.RES={i:null, cliente:null, facturas:[], sel:new Set(), buscando:false};
 window.abrirResolver=async(i)=>{
   const m=ST.movs[i];
   if(RES.i===i){ RES.i=null; render(); return; }
-  RES.i=i; RES.cliente=m.cliente||null; RES.facturas=[]; RES.sel=new Set(); render();
+  RES.i=i; RES.cliente=m.cliente||null; RES.facturas=[]; RES.sel=new Set(); RES.sug=null; RES.sugCargando=false; render();
   if(RES.cliente) await cargarFacturas(RES.cliente.id);
 };
 window.cerrarResolver=()=>{ RES.i=null; render(); };
@@ -890,6 +890,79 @@ window.elegirCliente=async(id,nombre)=>{
 };
 window.toggleFac=(id)=>{ RES.sel.has(id)?RES.sel.delete(id):RES.sel.add(id); render(); };
 
+/* ---------- DE QUÉ PROVEEDOR ES ESTE CHEQUE ----------
+   Federico arma el pago al revés de como lo ve el banco: mira la deuda del proveedor,
+   elige las facturas, le descuenta las retenciones y emite el cheque por lo que queda.
+   Así que el importe del cheque es una FIRMA: hay que buscar qué proveedor tiene
+   facturas abiertas que, netas de retención, den exactamente ese número.
+
+   El rango de retención sale de las 60 últimas medidas en esta base: Ganancias 2%
+   (con un mínimo no imponible de $224.000 que se consume una vez al mes) más IIBB
+   Santa Fe 0,7% o 2,75%. En total nunca pasó del 5,5%, así que el bruto que se busca
+   está entre el importe del cheque y ese importe dividido 0,945.
+
+   Esto NO calcula la retención ni decide nada: reduce cientos de proveedores a unos
+   pocos candidatos con su retención implícita a la vista, y elige la persona. Calcular
+   la retención acá sería peligroso —depende del régimen, de la jurisdicción y de lo que
+   ya se retuvo en el mes— y de eso se encarga Odoo cuando se confirma el pago. */
+const RET_MAX=0.055;
+async function sugerirProveedores(neto){
+  RES.sug=null; RES.sugCargando=true; render();
+  try{
+    const ls=await rpc("account.move.line","search_read",
+      [[["account_id","=",CTA_PROVEEDORES],["parent_state","=","posted"],["full_reconcile_id","=",false],["credit",">",0]],
+       ["move_id","partner_id","date","date_maturity","amount_residual"]],{limit:0,order:"partner_id,date_maturity,date"});
+    const porProv={};
+    ls.forEach(x=>{ if(!x.partner_id) return;
+      (porProv[x.partner_id[0]]=porProv[x.partner_id[0]]||{id:x.partner_id[0],nombre:x.partner_id[1],facs:[]}).facs.push(x); });
+    const lo=neto, hi=neto/(1-RET_MAX), out=[];
+    Object.values(porProv).forEach(p=>{
+      /* Acumulado de la más vieja a la más nueva, que es el orden en que se imputa. */
+      let acc=0;
+      for(let i=0;i<p.facs.length;i++){
+        acc+=Math.abs(p.facs[i].amount_residual);
+        if(acc>=lo-0.5 && acc<=hi+0.5){ out.push({id:p.id, nombre:p.nombre, n:i+1, total:acc, ret:acc-neto, pct:(acc-neto)/acc*100}); break; }
+        if(acc>hi) break;
+      }
+    });
+    RES.sug=out.sort((a,b)=>a.pct-b.pct).slice(0,8);
+  }catch(e){ RES.sug=[]; log("No pude buscar proveedores por importe: "+(e.message||e),"e"); }
+  RES.sugCargando=false; render();
+}
+/* Cuántos movimientos IGUALES a éste hay sin resolver el mismo día. Fede parte un
+   pago grande en varios cheques del mismo importe, así que el neto que hay que buscar
+   puede ser el de uno o el de todos juntos. */
+function hermanos(m){
+  return ST.movs.filter(x=>x!==m && abierto(x) && x.fecha===m.fecha &&
+    Math.abs(x.importe-m.importe)<0.005 && x.tipo===m.tipo).length + 1;
+}
+window.sugerirPor=(veces)=>{ const m=ST.movs[RES.i]; if(m) sugerirProveedores(Math.abs(m.importe)*veces); };
+
+/* Buscar al proveedor por el importe, cuando no se sabe el nombre. */
+function buscarPorImporte(m){
+  const n=hermanos(m), uno=Math.abs(m.importe);
+  let h='<div class="sub" style="margin:14px 0 6px"><b>¿No sabés de quién es?</b> '+
+    'Buscalo al revés: por lo que Federico tuvo que pagar. El cheque sale de las facturas '+
+    'menos las retenciones, así que el importe alcanza para encontrar al proveedor.</div>'+
+    '<div class="acciones" style="margin-bottom:10px">'+
+      '<button class="btn gh sm" onclick="sugerirPor(1)">Buscar por '+money(uno)+'</button>'+
+      (n>1?'<button class="btn gh sm" onclick="sugerirPor('+n+')" title="Hay '+n+' movimientos iguales sin resolver este mismo día: puede ser un solo pago partido en '+n+' cheques.">Buscar por los '+n+' juntos · '+money(uno*n)+'</button>':"")+
+    '</div>';
+  if(RES.sugCargando) return h+'<div class="cargando">Buscando proveedores con facturas abiertas que den ese importe…</div>';
+  if(!RES.sug) return h;
+  if(!RES.sug.length) return h+'<div class="aviso warn" style="margin:0">⚠️ <div>'+
+    '<b>Ningún proveedor tiene facturas abiertas que den ese importe</b> descontando hasta un 5,5% de retención. '+
+    'Puede que la factura todavía no esté cargada, o que el pago cancele facturas ya imputadas por otro lado. '+
+    'El beneficiario del e-cheq se ve en el home banking.</div></div>';
+  return h+'<div class="sub" style="margin:0 0 6px">Proveedores cuya deuda más vieja da ese importe. '+
+    'La <b>retención implícita</b> es lo que habría que haber retenido para llegar al número del cheque: '+
+    'si es plausible (Ganancias 2% más IIBB 0,7% o 2,75%), es el candidato.</div>'+
+    '<div class="opts">'+RES.sug.map(o=>
+      '<button class="opt" onclick="elegirCliente('+o.id+','+JSON.stringify(o.nombre).replace(/"/g,"&quot;")+')">'+
+      esc(o.nombre)+' <span class="muted">· '+o.n+' factura'+(o.n===1?"":"s")+' por '+money(o.total)+
+      ' · retención implícita '+money(o.ret)+' ('+o.pct.toFixed(2)+'%)</span></button>').join("")+'</div>';
+}
+
 function panelResolver(){
   if(RES.i===null) return "";
   const m=ST.movs[RES.i]; if(!m) return "";
@@ -904,6 +977,7 @@ function panelResolver(){
         : 'No pude identificar de quién es este cobro. Buscalo por nombre o CUIT:')+'</div>'+
       '<input class="busca" id="qcli" placeholder="Nombre del '+(sale(m)?"proveedor":"cliente")+' o CUIT…" oninput="buscarCliente(this.value)" autocomplete="off">'+
       (RES.sinRol?'<div class="aviso warn" style="margin:8px 0 0">⚠️ <div>Ninguno tiene rol de '+(sale(m)?"proveedor":"cliente")+' en Odoo. Los de abajo salieron del padrón completo: verificá que sea el correcto.</div></div>':"")+
+      (sale(m)?buscarPorImporte(m):"")+
       (RES.opciones?'<div class="opts">'+(RES.opciones.length?RES.opciones.map(o=>
         '<button class="opt" onclick="elegirCliente('+o.id+','+JSON.stringify(o.name).replace(/"/g,"&quot;")+')">'+
         esc(o.name)+(o.vat?' <span class="muted">· '+esc(o.vat)+'</span>':"")+'</button>').join("")
