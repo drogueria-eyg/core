@@ -343,7 +343,7 @@ async function analizar(movs){
   const necesitaRec=movs.some(m=>m.tipo==="cobro"&&abierto(m)), necesitaPag=movs.some(m=>(m.tipo==="echeq"||m.tipo==="interna")&&abierto(m));
   const abiertas=async cta=>await rpc("account.move.line","search_read",
     [[["account_id","=",cta],["parent_state","=","posted"],["full_reconcile_id","=",false]],
-     ["date","debit","credit","move_id","partner_id","amount_residual"]],{limit:0});
+     ["date","debit","credit","move_id","partner_id","amount_residual","name"]],{limit:0});
   const recibos=necesitaRec?await abiertas(CTA_RECIBOS):[];
   const pagos  =necesitaPag?await abiertas(CTA_PAGOS):[];
   log("Partidas abiertas para emparejar: "+recibos.length+" recibos · "+pagos.length+" pagos");
@@ -353,6 +353,18 @@ async function analizar(movs){
     if(!abierto(m)) return;
     const pool2 = m.tipo==="cobro" ? recibos : (m.tipo==="echeq"||m.tipo==="interna") ? pagos : [];
     const mismos=pool2.filter(r=>Math.abs(Math.abs(r.amount_residual)-Math.abs(m.importe))<0.005);
+    /* E-CHEQ: el banco no dice el proveedor, pero el "Cpbte" del resumen son los
+       ULTIMOS 6 DIGITOS del numero de cheque. Verificado el 30/09/2026: Cpbte 448651
+       es el cheque 29448651 (Drogueria del Sud, $2.500.000) y Cpbte 825224 es el
+       29825224 (Total Medic, $1.000.000), importe exacto en los dos.
+       Esto es lo que resuelve el caso que antes era imposible: cuando hay varios pagos
+       identicos al mismo proveedor, el importe no alcanza y el numero si. */
+    if(m.tipo==="echeq" && m.cpbte && m.cpbte!=="0"){
+      const porCh=mismos.filter(r=>{
+        const n=(String(r.name||"").match(/Cheque\s+(\d+)/)||[])[1];
+        return n && n.endsWith(m.cpbte); });
+      if(porCh.length===1){ m.cands=porCh; m.porCheque=true; return; }
+    }
     /* El importe solo no alcanza: si además sabemos el cliente, filtramos por él.
        Esto es lo que evita imputarle el cobro al cliente equivocado. */
     const porCli = m.cliente ? mismos.filter(r=>r.partner_id&&r.partner_id[0]===m.cliente.id) : [];
@@ -442,6 +454,15 @@ async function construirMapaCuit(){
 /* Da trabajo mientras no esté cargado Y conciliado. Es el criterio que manda en
    toda la pantalla: estar en Odoo no es estar resuelto. */
 function abierto(m){ return !(m.yaEsta && m.yaEsta.is_reconciled); }
+
+/* El SIGNO del movimiento decide todo el circuito: si la plata SALE es un pago a un
+   proveedor (cuenta Proveedores, payment outbound, contra Pagos pendientes); si ENTRA
+   es un cobro de un cliente. El panel de resolver es el mismo para los dos lados. */
+function sale(m){ return (m.importe||0) < 0; }
+const CTA_CLIENTES=52;
+const LADO = m => sale(m)
+  ? {cta:CTA_PROVEEDORES, tipo:"outbound", parte:"supplier", transit:CTA_PAGOS,   quien:"proveedor", doc:"orden de pago"}
+  : {cta:CTA_CLIENTES,    tipo:"inbound",  parte:"customer", transit:CTA_RECIBOS, quien:"cliente",   doc:"recibo"};
 
 /* ══════════════════════════════════════════════════════════════════════════
    RENDER
@@ -615,7 +636,7 @@ function estadoDe(m){
       (m.yaEsta.to_check?' <span class="badge b-warn">a revisar</span>':"")+' ';
     if(m.tipo==="impuesto") return pre+'<span class="badge b-ok">va a su cuenta</span>';
     if(m.tipo==="cargo")    return pre+'<span class="badge b-warn">va a la liquidación</span>';
-    if(m.cands.length===1)  return pre+'<span class="badge b-ok">'+(m.porCliente?"cliente + importe":"un candidato")+'</span>';
+    if(m.cands.length===1)  return pre+'<span class="badge b-ok">'+(m.porCheque?"por N° de cheque":m.porCliente?"cliente + importe":"un candidato")+'</span>';
     if(m.cands.length>1)    return pre+'<span class="badge b-warn">'+m.cands.length+' candidatos</span>';
     if(m.tipo==="interna"&&m.otroBanco) return pre+'<span class="badge b-ok">'+esc(m.otroBanco.nombre)+'</span>';
     if(["cobro","echeq","interna"].includes(m.tipo)) return pre+'<span class="badge b-bad">falta la contraparte</span>';
@@ -623,9 +644,10 @@ function estadoDe(m){
   }
   if(m.tipo==="impuesto") return '<span class="badge b-ok">va a su cuenta</span>';
   if(m.tipo==="cargo")    return '<span class="badge b-warn">va a la liquidación</span>';
-  if(m.cands.length===1)  return '<span class="badge b-ok">'+(m.porCliente?"cliente + importe":"un candidato")+'</span>';
+  if(m.cands.length===1)  return '<span class="badge b-ok">'+(m.porCheque?"por N° de cheque":m.porCliente?"cliente + importe":"un candidato")+'</span>';
   if(m.cands.length>1)    return '<span class="badge b-warn">'+m.cands.length+' candidatos</span>';
   if(m.tipo==="interna"&&m.otroBanco) return '<span class="badge b-ok">'+esc(m.otroBanco.nombre)+'</span>';
+  if(m.tipo==="echeq"&&m.cpbte) return '<span class="badge b-bad">cheque '+esc(m.cpbte)+' sin pago cargado</span>';
   if(["cobro","echeq","interna"].includes(m.tipo)) return '<span class="badge b-bad">falta la contraparte</span>';
   return '<span class="badge b-nu">sin clasificar</span>';
 }
@@ -636,8 +658,11 @@ function accionDe(m,i){
   if(m.cands.length>1) return '<select class="cand" id="sel'+i+'"><option value="">Elegí cuál…</option>'+
     m.cands.map(c=>'<option value="'+c.id+'">'+esc(String(c.move_id[1]).slice(0,26))+" · "+(c.partner_id?esc(String(c.partner_id[1]).slice(0,22)):"sin cliente")+'</option>').join("")+
     '</select> <button class="btn sm" onclick="elegirCand('+i+')">Aplicar</button>';
-  if(m.cands.length===0&&m.tipo==="cobro")
-    return '<button class="btn sm '+(RES.i===i?"":"gh")+'" onclick="abrirResolver('+i+')">'+
+  if(m.cands.length===0&&(m.tipo==="cobro"||m.tipo==="echeq"))
+    return '<button class="btn sm '+(RES.i===i?"":"gh")+'" onclick="abrirResolver('+i+')" '+
+      'title="'+(m.tipo==="echeq"
+        ? "El cheque "+esc(m.cpbte||"")+" no tiene su pago cargado en Odoo. El banco no dice a quién se le pagó: hay que buscar el beneficiario en el home banking y cargarlo acá."
+        : "Elegí el cliente y a qué facturas se imputa.")+'">'+
       (RES.i===i?"Cerrar":"Resolver")+'</button>';
   /* Destino único (impuesto, cargo, o un solo candidato): no hay nada que decidir, lo
      hace el botón de arriba. Se dice, porque una celda vacía se lee como "no se puede". */
@@ -648,8 +673,8 @@ function accionDe(m,i){
   if(m.tipo==="interna"&&m.otroBanco&&m.cands.length===0)
     return '<button class="btn sm" onclick="crearTransferencia('+i+')" title="Crea la transferencia interna en Odoo. La contrapartida en '+esc(m.otroBanco.nombre)+' la genera Odoo sola, y después se concilia esta línea.">'+
       'Transferir '+(m.otroBanco.entra?"desde":"a")+' '+esc(m.otroBanco.nombre.replace(/^Banco /,""))+'</button>';
-  if(m.cands.length===0&&["echeq","interna"].includes(m.tipo))
-    return '<span class="muted" style="font-size:11.5px">falta cargar '+(m.tipo==="echeq"?"el pago del cheque":"el otro extracto")+'</span>';
+  if(m.cands.length===0&&m.tipo==="interna")
+    return '<span class="muted" style="font-size:11.5px">falta cargar el otro extracto</span>';
   return '<span class="muted">—</span>';
 }
 
@@ -831,19 +856,28 @@ window.cerrarResolver=()=>{ RES.i=null; render(); };
 
 async function cargarFacturas(pid){
   RES.buscando=true; render();
-  /* facturas del cliente con saldo abierto, de la más vieja a la más nueva */
+  const m=ST.movs[RES.i]||{}; const L=LADO(m);
+  /* Comprobantes abiertos del tercero, del más viejo al más nuevo. Del lado del
+     cliente la deuda está al DEBE (nos debe); del lado del proveedor, al HABER. */
   const ls=await rpc("account.move.line","search_read",
-    [[["partner_id","=",pid],["account_id","=",52],["parent_state","=","posted"],
-      ["full_reconcile_id","=",false],["debit",">",0]],
-     ["move_id","date","date_maturity","debit","amount_residual"]],{limit:0,order:"date_maturity,date"});
+    [[["partner_id","=",pid],["account_id","=",L.cta],["parent_state","=","posted"],
+      ["full_reconcile_id","=",false],[sale(m)?"credit":"debit",">",0]],
+     ["move_id","date","date_maturity","debit","credit","amount_residual"]],{limit:0,order:"date_maturity,date"});
   RES.facturas=ls.filter(l=>Math.abs(l.amount_residual)>0.005);
   RES.buscando=false; render();
 }
 window.buscarCliente=async(txt)=>{
   if(!txt||txt.length<3){ RES.opciones=null; render(); return; }
-  RES.opciones=await rpc("res.partner","search_read",
-    [["|",["name","ilike",txt],["vat","like",txt.replace(/\D/g,"")]],["id","name","vat"]],{limit:12});
-  render();
+  const m=ST.movs[RES.i]||{};
+  /* Cuando se está pagando se buscan proveedores, y al revés: ofrecer el padrón entero
+     es la forma más fácil de imputarle el movimiento al tercero equivocado. Si no
+     aparece ninguno con ese rol, se busca sin filtro y se avisa en el panel. */
+  const rank = sale(m) ? ["supplier_rank",">",0] : ["customer_rank",">",0];
+  const dom  = ["|",["name","ilike",txt],["vat","like",txt.replace(/[^0-9]/g,"")]];
+  let r=await rpc("res.partner","search_read",[[rank].concat(dom),["id","name","vat"]],{limit:12});
+  RES.sinRol=false;
+  if(!r.length){ r=await rpc("res.partner","search_read",[dom,["id","name","vat"]],{limit:12}); RES.sinRol=r.length>0; }
+  RES.opciones=r; render();
 };
 window.elegirCliente=async(id,nombre)=>{
   RES.cliente={id,nombre}; RES.opciones=null; RES.sel=new Set();
@@ -860,8 +894,11 @@ function panelResolver(){
 
   let cuerpo="";
   if(!RES.cliente){
-    cuerpo='<div class="sub">No pude identificar de quién es este cobro. Buscalo por nombre o CUIT:</div>'+
-      '<input class="busca" id="qcli" placeholder="Nombre del cliente o CUIT…" oninput="buscarCliente(this.value)" autocomplete="off">'+
+    cuerpo='<div class="sub">'+(sale(m)
+        ? 'El banco no dice a quién se le pagó: el resumen sólo trae el número de cheque. Buscá el <b>proveedor</b> por nombre o CUIT.'
+        : 'No pude identificar de quién es este cobro. Buscalo por nombre o CUIT:')+'</div>'+
+      '<input class="busca" id="qcli" placeholder="Nombre del '+(sale(m)?"proveedor":"cliente")+' o CUIT…" oninput="buscarCliente(this.value)" autocomplete="off">'+
+      (RES.sinRol?'<div class="aviso warn" style="margin:8px 0 0">⚠️ <div>Ninguno tiene rol de '+(sale(m)?"proveedor":"cliente")+' en Odoo. Los de abajo salieron del padrón completo: verificá que sea el correcto.</div></div>':"")+
       (RES.opciones?'<div class="opts">'+(RES.opciones.length?RES.opciones.map(o=>
         '<button class="opt" onclick="elegirCliente('+o.id+','+JSON.stringify(o.name).replace(/"/g,"&quot;")+')">'+
         esc(o.name)+(o.vat?' <span class="muted">· '+esc(o.vat)+'</span>':"")+'</button>').join("")
@@ -871,12 +908,13 @@ function panelResolver(){
   } else {
     cuerpo='<div class="clienteEl">👤 <b>'+esc(RES.cliente.nombre)+'</b>'+
       (m.cliente?' <span class="badge b-ok">identificado por CUIT</span>':' <span class="badge b-warn">elegido a mano</span>')+
+      (sale(m)?' <span class="badge b-nu">proveedor</span>':"")+
       ' <button class="btn gh sm" onclick="RES.cliente=null;RES.facturas=[];RES.sel=new Set();render()">Cambiar</button></div>';
     if(!RES.facturas.length){
-      cuerpo+='<div class="aviso warn" style="margin:10px 0 0">⚠️ <div><b>Este cliente no tiene facturas abiertas.</b> '+
-        'El cobro se puede registrar igual: queda <b>a cuenta</b> y se imputa cuando se facture.</div></div>';
+      cuerpo+='<div class="aviso warn" style="margin:10px 0 0">⚠️ <div><b>Este '+LADO(m).quien+' no tiene comprobantes abiertos.</b> '+
+        'El movimiento se puede registrar igual: queda <b>a cuenta</b> y se imputa cuando haya factura.</div></div>';
     } else {
-      cuerpo+='<div class="sub" style="margin:11px 0 7px">Tildá qué facturas cancela este cobro. '+
+      cuerpo+='<div class="sub" style="margin:11px 0 7px">Tildá qué facturas cancela este '+(sale(m)?"pago":"cobro")+'. '+
         'Las más viejas primero, que es como se imputa normalmente.</div>'+
         '<div class="facs">'+RES.facturas.map(f=>{
           const on=RES.sel.has(f.id);
@@ -902,7 +940,7 @@ function panelResolver(){
         (ST.trabajando?'<span class="spin"></span> ':"")+'Crear el recibo'+(RES.sel.size?" e imputar "+RES.sel.size+" factura(s)":" a cuenta")+'</button>'+
       '<button class="btn gh" onclick="cerrarResolver()">Cancelar</button></div>';
   }
-  return '<div class="panel resolver"><h3>🔧 Resolver este movimiento</h3>'+
+  return '<div class="panel resolver"><h3>🔧 Resolver este movimiento'+(sale(m)?" · pago a proveedor":"")+'</h3>'+
     '<div class="movres"><span>'+m.fecha+'</span><b class="'+(m.importe<0?"neg":"pos")+'">'+money(m.importe)+'</b>'+
     '<span class="cp">'+esc(m.concepto.slice(0,80))+'</span></div>'+cuerpo+'</div>';
 }
@@ -911,23 +949,27 @@ function panelResolver(){
    tildadas y lo concilia contra la línea del extracto. Todo o nada. */
 window.crearRecibo=()=>conTrabajo(async()=>{
   const m=ST.movs[RES.i]; const B=BANCOS[ST.banco];
-  if(!m||!RES.cliente){ log("Falta elegir el cliente","e"); return; }
+  if(!m||!RES.cliente){ log("Falta elegir el "+LADO(m||{}).quien,"e"); return; }
   if(!m.yaEsta){ log("Primero hay que cargar el movimiento a Odoo","e"); return; }
+  const L=LADO(m);
+  /* Un e-cheq se paga CON CHEQUE, y ese método tiene su propia cuenta: usar Manual
+     mandaría el asiento a otro lado. Es el molde de Fede (OP-X 7947, Dnm Farma). */
+  const metodo = sale(m) ? (m.tipo==="echeq" ? 22 : 21) : 20;
 
   const p=await rpc("account.payment","create",[[{
     partner_id:RES.cliente.id, journal_id:B.diario,
-    payment_type:"inbound", partner_type:"customer",
-    payment_method_line_id:20, destination_account_id:52,
+    payment_type:L.tipo, partner_type:L.parte,
+    payment_method_line_id:metodo, destination_account_id:L.cta,
     amount:Math.abs(m.importe), date:m.fecha}]]);
   const pid=Array.isArray(p)?p[0]:p;
   await rpc("account.payment","action_post",[[pid]]);
   const pv=await rpc("account.payment","read",[[pid],["name","move_id"]]);
-  log("Recibo "+pv[0].name+" por "+money(Math.abs(m.importe))+" — "+RES.cliente.nombre,"o");
+  log((sale(m)?"Orden de pago ":"Recibo ")+pv[0].name+" por "+money(Math.abs(m.importe))+" — "+RES.cliente.nombre,"o");
 
   const lins=await rpc("account.move.line","search_read",
     [[["move_id","=",pv[0].move_id[0]]],["account_id","id"]],{limit:0});
-  const lCred=lins.find(l=>l.account_id[0]===52);
-  const lRec =lins.find(l=>l.account_id[0]===CTA_RECIBOS);
+  const lCred=lins.find(l=>l.account_id[0]===L.cta);
+  const lRec =lins.find(l=>l.account_id[0]===L.transit);
 
   if(RES.sel.size&&lCred){
     await rpc("account.move.line","reconcile",[[lCred.id,...[...RES.sel]]]);
@@ -939,7 +981,7 @@ window.crearRecibo=()=>conTrabajo(async()=>{
   const ext=await rpc("account.move.line","read",[mv[0].line_ids,["account_id"]]);
   const tra=ext.find(x=>x.account_id[0]===CTA_TRANSIT);
   if(tra&&lRec){
-    await rpc("account.move.line","write",[[tra.id],{account_id:CTA_RECIBOS}]);
+    await rpc("account.move.line","write",[[tra.id],{account_id:L.transit}]);
     await rpc("account.move.line","reconcile",[[tra.id,lRec.id]]);
     log("Conciliado con el movimiento del banco","o");
   }
