@@ -311,7 +311,11 @@ async function analizar(movs){
   movs.forEach(m=>{ m.cliente=(m.cuit&&ST.mapaCuit[m.cuit])?ST.mapaCuit[m.cuit]:null; });
 
   /* ---- 4) candidatos para conciliar ---- */
-  const necesitaRec=movs.some(m=>m.tipo==="cobro"&&!m.yaEsta), necesitaPag=movs.some(m=>(m.tipo==="echeq"||m.tipo==="interna")&&!m.yaEsta);
+  /* Un movimiento da trabajo mientras no esté cargado Y conciliado. Que ya esté en
+     Odoo no quiere decir que esté resuelto: lo normal, cuando se vuelve a subir un día
+     que ya se importó, es que la línea exista pero le falte el recibo. Antes acá se
+     miraba sólo !m.yaEsta y por eso la pantalla se quedaba sin una sola acción. */
+  const necesitaRec=movs.some(m=>m.tipo==="cobro"&&abierto(m)), necesitaPag=movs.some(m=>(m.tipo==="echeq"||m.tipo==="interna")&&abierto(m));
   const abiertas=async cta=>await rpc("account.move.line","search_read",
     [[["account_id","=",cta],["parent_state","=","posted"],["full_reconcile_id","=",false]],
      ["date","debit","credit","move_id","partner_id","amount_residual"]],{limit:0});
@@ -321,7 +325,7 @@ async function analizar(movs){
 
   movs.forEach(m=>{
     m.cands=[];
-    if(m.yaEsta) return;
+    if(!abierto(m)) return;
     const pool2 = m.tipo==="cobro" ? recibos : (m.tipo==="echeq"||m.tipo==="interna") ? pagos : [];
     const mismos=pool2.filter(r=>Math.abs(Math.abs(r.amount_residual)-Math.abs(m.importe))<0.005);
     /* El importe solo no alcanza: si además sabemos el cliente, filtramos por él.
@@ -356,6 +360,10 @@ async function construirMapaCuit(){
   log("Mapa CUIT→cliente aprendido de "+hist.length+" cobros: "+unicos+" clientes identificables");
 }
 
+/* Da trabajo mientras no esté cargado Y conciliado. Es el criterio que manda en
+   toda la pantalla: estar en Odoo no es estar resuelto. */
+function abierto(m){ return !(m.yaEsta && m.yaEsta.is_reconciled); }
+
 /* ══════════════════════════════════════════════════════════════════════════
    RENDER
    ══════════════════════════════════════════════════════════════════════════ */
@@ -363,17 +371,20 @@ function render(){
   const app=document.getElementById("app");
   if(!ST.listo){ app.innerHTML=zonaCarga(); engancharDrop(); return; }
   const M=ST.movs;
-  const nuevos=M.filter(m=>!m.yaEsta), dups=M.filter(m=>m.yaEsta);
+  const nuevos  = M.filter(m=>!m.yaEsta);                          // no están en Odoo
+  const pendConc= M.filter(m=>m.yaEsta&&!m.yaEsta.is_reconciled);  // están, pero sin conciliar
+  const cerrados= M.filter(m=>m.yaEsta&&m.yaEsta.is_reconciled);   // cargados y conciliados
+  const abiertos= M.filter(abierto);                               // todo lo que falta: nuevos + pendConc
   const porTipo={}; M.forEach(m=>{(porTipo[m.tipo]=porTipo[m.tipo]||[]).push(m);});
-  const listos=nuevos.filter(m=>m.tipo==="impuesto"||m.tipo==="cargo"||(m.cands.length===1));
-  const dudas=nuevos.filter(m=>m.cands.length>1||(m.cands.length===0&&(m.tipo==="cobro"||m.tipo==="echeq"||m.tipo==="interna"))||m.tipo==="otro");
+  const listos=abiertos.filter(m=>m.tipo==="impuesto"||m.tipo==="cargo"||(m.cands.length===1));
+  const dudas =abiertos.filter(m=>m.cands.length>1||(m.cands.length===0&&(m.tipo==="cobro"||m.tipo==="echeq"||m.tipo==="interna"))||m.tipo==="otro");
 
   app.innerHTML=
     zonaCarga()+
     avisoValidacion()+
-    kpis(M,nuevos,dups,listos,dudas)+
+    kpis(M,nuevos,pendConc,cerrados,listos,dudas)+
     composicion(porTipo)+
-    panelAcciones(nuevos,listos,dudas)+
+    panelAcciones(nuevos,pendConc,cerrados,listos,dudas)+
     panelResolver()+
     tablas(filtrar(M))+
     '<div class="panel"><h3>📋 Registro de lo que se hizo</h3>'+
@@ -435,7 +446,7 @@ function avisoValidacion(){
     '</div></div>';
 }
 
-function kpis(M,nuevos,dups,listos,dudas){
+function kpis(M,nuevos,pendConc,cerrados,listos,dudas){
   const k=(id,clase,lbl,n,s,ayuda)=>
     '<button class="kpi '+clase+(ST.filtro===id?" on":"")+'" onclick="filtrar_('+JSON.stringify(id)+')" title="'+esc(ayuda)+'">'+
     '<div class="l">'+esc(lbl)+'</div><div class="n">'+n+'</div><div class="s">'+esc(s)+'</div></button>';
@@ -443,8 +454,9 @@ function kpis(M,nuevos,dups,listos,dudas){
   return '<div class="kpis">'+
     k(null,"","Movimientos",M.length,suma(M),"Todo lo que trae el archivo. Clic para ver todos.")+
     k("nuevo","ok","Nuevos",nuevos.length,suma(nuevos),"Movimientos que todavía no están en Odoo. Son los que se van a cargar.")+
-    k("dup","dup","Ya cargados",dups.length,suma(dups),"Ya estaban en Odoo. No se vuelven a crear: se respeta lo que hay.")+
-    k("listo","ok","Se resuelven solos",listos.length,suma(listos),"Tienen un único destino posible. Se pueden cargar y conciliar sin decidir nada.")+
+    k("pend","warn","Cargados sin conciliar",pendConc.length,suma(pendConc),"Ya están en Odoo pero les falta el recibo o el pago: siguen dando trabajo. Clic para verlos.")+
+    k("cerrado","dup","Conciliados",cerrados.length,suma(cerrados),"Cargados y conciliados. Están cerrados: no hay nada que hacer con ellos.")+
+    k("listo","ok","Se resuelven solos",listos.length,suma(listos),"Tienen un único destino posible. Se resuelven sin decidir nada, estén cargados o no.")+
     k("duda","warn","Necesitan que decidas",dudas.length,suma(dudas),"O tienen varios candidatos, o no tienen ninguno, o el código no está en el mapa.")+
   '</div>';
 }
@@ -463,29 +475,48 @@ function composicion(porTipo){
       esc(TIPOS[t].lbl)+' · '+porTipo[t].length+'</span>').join("")+'</div></div>';
 }
 
-function panelAcciones(nuevos,listos,dudas){
+/* Antes este panel desaparecía en cuanto no había movimientos NUEVOS, y con él todos
+   los botones: subir de nuevo un día ya importado dejaba la pantalla muerta aunque
+   quedaran cobros sin recibo. Ahora el panel vive mientras quede algo ABIERTO, venga
+   de un archivo nuevo o de una importación anterior. */
+function panelAcciones(nuevos,pendConc,cerrados,listos,dudas){
   if(!ST.validacion||!ST.validacion.ok) return "";
-  if(!nuevos.length) return '<div class="aviso info">ℹ️ <div><b>Este archivo ya está íntegramente cargado.</b> '+
-    'Los '+ST.movs.length+' movimientos ya estaban en Odoo, así que no hay nada nuevo que hacer. Podés subir otro día.</div></div>';
-  const t=ST.trabajando;
+  const t=ST.trabajando, abiertos=nuevos.length+pendConc.length;
+
+  if(!abiertos) return '<div class="aviso ok">✔️ <div><b>Este día ya está cerrado.</b> '+
+    'Los '+ST.movs.length+' movimientos están cargados y conciliados: no queda nada por hacer. Podés subir otro día.</div></div>';
+
+  const bCargar = nuevos.length
+    ? '<button class="btn" onclick="accionCargar()" '+(t?"disabled":"")+'>'+(t?'<span class="spin"></span> ':"")+
+      'Cargar los '+nuevos.length+' movimientos nuevos</button>' : "";
+  const bResolver = listos.length
+    ? '<button class="btn'+(nuevos.length?" gh":"")+'" onclick="accionResolver()" '+(t?"disabled":"")+'>'+(t&&!nuevos.length?'<span class="spin"></span> ':"")+
+      'Resolver los '+listos.length+' que no tienen dudas</button>' : "";
+
+  /* De dónde viene el trabajo, dicho en una línea, para que no haya que deducirlo. */
+  const origen = nuevos.length && pendConc.length
+      ? '<b>'+nuevos.length+'</b> movimientos son nuevos y <b>'+pendConc.length+'</b> ya estaban cargados pero sin conciliar.'
+    : nuevos.length
+      ? '<b>'+nuevos.length+'</b> movimientos son nuevos.'
+      : 'Los '+ST.movs.length+' movimientos <b>ya estaban cargados</b>, pero <b>'+pendConc.length+'</b> siguen sin conciliar: les falta el recibo o el pago.';
+
   return '<div class="panel"><h3>⚙️ Qué se puede hacer ahora</h3>'+
     '<div class="sub">Se carga <b>todo</b> el extracto (si no, el saldo del banco no cuadra) y se resuelve solo lo que no deja dudas. '+
     'Lo ambiguo queda abajo para que lo decidas vos.</div>'+
-    '<div class="acciones">'+
-      '<button class="btn" onclick="accionCargar()" '+(t?"disabled":"")+'>'+(t?'<span class="spin"></span> ':"")+
-        'Cargar los '+nuevos.length+' movimientos nuevos</button>'+
-      '<button class="btn gh" onclick="accionResolver()" '+(t?"disabled":"")+'>Resolver los '+listos.length+' que no tienen dudas</button>'+
-    '</div>'+
-    '<div class="aviso info" style="margin:0">💡 <div>De los '+nuevos.length+' nuevos, <b>'+listos.length+'</b> tienen un destino único '+
-    'y <b>'+dudas.length+'</b> necesitan una decisión tuya. Nada se concilia si hay más de un candidato posible.</div></div></div>';
+    (bCargar||bResolver ? '<div class="acciones">'+bCargar+bResolver+'</div>' : "")+
+    '<div class="aviso info" style="margin:0">💡 <div>'+origen+' De los <b>'+abiertos+'</b> que dan trabajo, '+
+    '<b>'+listos.length+'</b> tienen un destino único y <b>'+dudas.length+'</b> necesitan una decisión tuya'+
+    (dudas.length?', abajo uno por uno':"")+'. Nada se concilia si hay más de un candidato posible.'+
+    (cerrados.length?' Los otros '+cerrados.length+' ya están conciliados.':"")+'</div></div></div>';
 }
 
 function filtrar(M){
   if(!ST.filtro) return M;
-  if(ST.filtro==="nuevo") return M.filter(m=>!m.yaEsta);
-  if(ST.filtro==="dup")   return M.filter(m=>m.yaEsta);
-  if(ST.filtro==="listo") return M.filter(m=>!m.yaEsta&&(m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1));
-  if(ST.filtro==="duda")  return M.filter(m=>!m.yaEsta&&(m.cands.length>1||(m.cands.length===0&&["cobro","echeq","interna"].includes(m.tipo))||m.tipo==="otro"));
+  if(ST.filtro==="nuevo")   return M.filter(m=>!m.yaEsta);
+  if(ST.filtro==="pend")    return M.filter(m=>m.yaEsta&&!m.yaEsta.is_reconciled);
+  if(ST.filtro==="cerrado") return M.filter(m=>m.yaEsta&&m.yaEsta.is_reconciled);
+  if(ST.filtro==="listo")   return M.filter(m=>abierto(m)&&(m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1));
+  if(ST.filtro==="duda")    return M.filter(m=>abierto(m)&&(m.cands.length>1||(m.cands.length===0&&["cobro","echeq","interna"].includes(m.tipo))||m.tipo==="otro"));
   if(ST.filtro.startsWith("t:")) return M.filter(m=>m.tipo===ST.filtro.slice(2));
   return M;
 }
@@ -493,9 +524,20 @@ window.filtrar_=id=>{ ST.filtro=(ST.filtro===id?null:id); render(); };
 window.filtrarTipo_=t=>{ const k="t:"+t; ST.filtro=(ST.filtro===k?null:k); render(); };
 
 function estadoDe(m){
-  if(m.yaEsta) return m.yaEsta.is_reconciled
-    ? '<span class="badge b-dup">ya cargado · conciliado</span>'
-    : '<span class="badge b-dup">ya cargado</span>'+(m.yaEsta.to_check?' <span class="badge b-warn">a revisar</span>':"");
+  if(m.yaEsta && m.yaEsta.is_reconciled)
+    return '<span class="badge b-dup">ya cargado · conciliado</span>';
+  if(m.yaEsta){
+    /* Cargado pero sin conciliar: sigue dando trabajo, y el badge tiene que decirlo.
+       Debajo se agrega el estado normal, porque a este también se le buscan candidatos. */
+    const pre='<span class="badge b-warn">cargado · falta conciliar</span>'+
+      (m.yaEsta.to_check?' <span class="badge b-warn">a revisar</span>':"")+' ';
+    if(m.tipo==="impuesto") return pre+'<span class="badge b-ok">va a su cuenta</span>';
+    if(m.tipo==="cargo")    return pre+'<span class="badge b-warn">va a la liquidación</span>';
+    if(m.cands.length===1)  return pre+'<span class="badge b-ok">'+(m.porCliente?"cliente + importe":"un candidato")+'</span>';
+    if(m.cands.length>1)    return pre+'<span class="badge b-warn">'+m.cands.length+' candidatos</span>';
+    if(["cobro","echeq","interna"].includes(m.tipo)) return pre+'<span class="badge b-bad">falta la contraparte</span>';
+    return pre;
+  }
   if(m.tipo==="impuesto") return '<span class="badge b-ok">va a su cuenta</span>';
   if(m.tipo==="cargo")    return '<span class="badge b-warn">va a la liquidación</span>';
   if(m.cands.length===1)  return '<span class="badge b-ok">'+(m.porCliente?"cliente + importe":"un candidato")+'</span>';
@@ -504,13 +546,19 @@ function estadoDe(m){
   return '<span class="badge b-nu">sin clasificar</span>';
 }
 function accionDe(m,i){
-  if(m.yaEsta) return '<span class="muted">—</span>';
+  /* Sólo lo conciliado queda sin acción. Lo que está cargado pero sin conciliar
+     sigue siendo accionable: es justamente el trabajo pendiente de Tesorería. */
+  if(!abierto(m)) return '<span class="muted">—</span>';
   if(m.cands.length>1) return '<select class="cand" id="sel'+i+'"><option value="">Elegí cuál…</option>'+
     m.cands.map(c=>'<option value="'+c.id+'">'+esc(String(c.move_id[1]).slice(0,26))+" · "+(c.partner_id?esc(String(c.partner_id[1]).slice(0,22)):"sin cliente")+'</option>').join("")+
     '</select> <button class="btn sm" onclick="elegirCand('+i+')">Aplicar</button>';
   if(m.cands.length===0&&m.tipo==="cobro")
     return '<button class="btn sm '+(RES.i===i?"":"gh")+'" onclick="abrirResolver('+i+')">'+
       (RES.i===i?"Cerrar":"Resolver")+'</button>';
+  /* Destino único (impuesto, cargo, o un solo candidato): no hay nada que decidir, lo
+     hace el botón de arriba. Se dice, porque una celda vacía se lee como "no se puede". */
+  if(m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1)
+    return '<span class="muted" style="font-size:11.5px">lo resuelve el botón de arriba</span>';
   if(m.cands.length===0&&["echeq","interna"].includes(m.tipo))
     return '<span class="muted" style="font-size:11.5px">falta cargar '+(m.tipo==="echeq"?"el pago del cheque":"el otro extracto")+'</span>';
   return '<span class="muted">—</span>';
