@@ -12,15 +12,41 @@
 /* ══════════════════════════════════════════════════════════════════════════
    1) EL PROVEEDOR Y SU DEUDA
    ══════════════════════════════════════════════════════════════════════════ */
-window.buscarProv=async(txt)=>{
-  if(!txt||txt.length<3){ ST.opciones=null; render(); return; }
-  ST.opciones=await rpc("res.partner","search_read",
-    [[["supplier_rank",">",0],"|",["name","ilike",txt],["vat","like",txt.replace(/[^0-9]/g,"")]],["id","name","vat"]],{limit:14});
-  render();
+/* Al escribir NO se redibuja la pantalla: se reemplaza sólo la lista de resultados.
+   Antes cada tecla llamaba a render(), que reconstruía el input y se llevaba el foco
+   y lo tipeado — escribir se volvía imposible y parecía que se colgaba.
+   Además espera a que la persona deje de tipear, para no disparar una consulta por letra. */
+let _tBusca=null;
+window.buscarProv=(txt)=>{
+  ST.q=txt;
+  clearTimeout(_tBusca);
+  if(!txt||txt.length<3){ ST.opciones=null; pintarOpciones(); return; }
+  _tBusca=setTimeout(async()=>{
+    const mio=txt;
+    try{
+      const r=await rpc("res.partner","search_read",
+        [[["supplier_rank",">",0],"|",["name","ilike",txt],["vat","like",txt.replace(/[^0-9]/g,"")]],["id","name","vat"]],{limit:14});
+      if(ST.q!==mio) return;              // llegó tarde: ya tipeó otra cosa
+      ST.opciones=r;
+    }catch(e){ ST.opciones=[]; log("No pude buscar: "+(e.message||e),"e"); }
+    pintarOpciones();
+  }, 280);
 };
+function pintarOpciones(){
+  const el=document.getElementById("opts"); if(!el) return;
+  el.innerHTML = !ST.opciones ? "" :
+    (ST.opciones.length ? ST.opciones.map(o=>
+      '<button class="opt" onclick="elegirProv('+o.id+','+JSON.stringify(o.name).split('"').join("&quot;")+')">'+
+      esc(o.name)+(o.vat?' <span class="muted">· '+esc(o.vat)+'</span>':"")+'</button>').join("")
+      : '<div class="muted" style="padding:8px">Ningún proveedor con ese nombre o CUIT.</div>');
+}
 window.elegirProv=(id,nombre)=>conTrabajo(async()=>{
-  ST.prov={id,nombre}; ST.opciones=null; ST.sel=new Set(); ST.retGan=null; ST.retIIBB=null; ST.cheques=[];
+  ST.prov={id,nombre}; ST.opciones=null; ST.sel=new Set(); ST.retGan=null; ST.retIIBB=null; ST.alicIIBB=null; ST.cheques=[];
   await cargarDeuda(id);
+  /* Los números de cheque ya usados se traen en segundo plano apenas se elige el
+     proveedor: son 1.587 y pedirlos recién al confirmar dejaba la pantalla quieta
+     unos segundos justo en el momento más delicado. */
+  numerosUsados().then(u=>{ _val=u; render(); }).catch(()=>{});
 });
 window.cambiarProv=()=>{ ST.prov=null; ST.facturas=[]; ST.sel=new Set(); ST.retGan=null; ST.retIIBB=null; ST.cheques=[]; ST.acum=null; render(); };
 
@@ -91,13 +117,20 @@ function calculo(){
   const accBase=r2((ST.acum?ST.acum.base:0)+neto);
   const yaRet  =r2(ST.acum?ST.acum.ret:0);
   const ganSug =r2(Math.max(0,(accBase-RG830.mni)*RG830.alicuota-yaRet));
-  const iibbSug=ST.iibbHist!=null ? r2(neto*ST.iibbHist/100) : null;
+  const al = ST.alicIIBB!=null ? ST.alicIIBB : ST.iibbHist;
+  const iibbSug = al ? r2(neto*al/100) : (al===0?0:null);
   const gan  = ST.retGan ==null ? ganSug  : ST.retGan;
   const iibb = ST.retIIBB==null ? (iibbSug||0) : ST.retIIBB;
+  /* Los pasos intermedios, para mostrarlos: es la cuenta que hoy se hace afuera. */
+  const mniUsado = Math.min(RG830.mni, Math.max(0, RG830.mni-(ST.acum?ST.acum.base:0)));
+  const sujeta   = r2(Math.max(0, accBase-RG830.mni));
+  const ganBruta = r2(sujeta*RG830.alicuota);
   return {fs, bruto, neto, accBase, yaRet, ganSug, iibbSug, gan, iibb,
+          mniUsado:r2(mniUsado), sujeta, ganBruta, alicIIBB:(ST.alicIIBB!=null?ST.alicIIBB:(ST.iibbHist||0)),
           ret:r2(gan+iibb), pagar:r2(bruto-gan-iibb)};
 }
 window.setRet=(cual,v)=>{ const n=num(v); if(cual==="gan") ST.retGan=n; else ST.retIIBB=n; repintarCalc(); };
+window.setAlicIIBB=(v)=>{ ST.alicIIBB=parseFloat(v); ST.retIIBB=null; repintarCalc(); };
 window.volverSug=()=>{ ST.retGan=null; ST.retIIBB=null; render(); };
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -259,11 +292,8 @@ function bloqueProveedor(){
   let h='<div class="panel"><div class="paso">Paso 1</div><h3>🏭 De qué proveedor y de qué banco</h3>';
   if(!ST.prov){
     h+='<div class="sub">Buscá el proveedor al que le vas a pagar. Se listan solo los que tienen ese rol en Odoo.</div>'+
-      '<input class="busca" placeholder="Nombre del proveedor o CUIT…" oninput="buscarProv(this.value)" autocomplete="off">'+
-      (ST.opciones?'<div class="opts">'+(ST.opciones.length?ST.opciones.map(o=>
-        '<button class="opt" onclick="elegirProv('+o.id+','+JSON.stringify(o.name).split('"').join("&quot;")+')">'+
-        esc(o.name)+(o.vat?' <span class="muted">· '+esc(o.vat)+'</span>':"")+'</button>').join("")
-        :'<div class="muted" style="padding:8px">Ningún proveedor con ese nombre o CUIT.</div>')+'</div>':"");
+      '<input class="busca" id="qprov" placeholder="Nombre del proveedor o CUIT…" value="'+esc(ST.q||"")+'" oninput="buscarProv(this.value)" autocomplete="off">'+
+      '<div class="opts" id="opts"></div>';
   } else {
     h+='<div class="prov">🏭 <b>'+esc(ST.prov.nombre)+'</b>'+
       '<button class="btn gh sm" onclick="cambiarProv()">Cambiar</button>'+
@@ -299,30 +329,64 @@ function bloqueDeuda(){
 }
 function bloqueCalculo(){
   const c=calculo();
-  const mni = (ST.acum&&ST.acum.base>=RG830.mni) ? "ya consumido este mes" : "se descuenta una vez por mes";
   return '<div class="panel" id="p-calc"><div class="paso">Paso 3</div><h3>🧮 Cuánto hay que pagar</h3>'+
     '<div class="sub">La retención se calcula por la <b>RG 830</b>, régimen de <i>'+esc(RG830.regimen)+'</i>: '+
     '2% sobre el neto sin IVA, con un mínimo no imponible de '+money(RG830.mni)+' que '+mni+'. '+
     'El número es editable: si Fede lo cambia, manda el suyo.</div>'+
-    contenidoCalc()+'</div>';
+    '<div id="calc-box">'+contenidoCalc()+'</div></div>';
 }
 function contenidoCalc(){
   const c=calculo();
   const editado=(ST.retGan!=null||ST.retIIBB!=null);
-  return '<div class="calc" id="calc">'+
-    '<div>Comprobantes tildados ('+c.fs.length+')</div><div class="v">'+money(c.bruto)+'</div>'+
-    '<div class="sug">neto sin IVA, que es la base</div><div class="v sug">'+money(c.neto)+'</div>'+
-    (ST.acum&&ST.acum.ret?'<div class="sug">ya retenido este mes sobre '+money(ST.acum.base)+'</div><div class="v sug">'+money(ST.acum.ret)+'</div>':"")+
-    '<div>Retención Ganancias <span class="sug">(sugerido '+money(c.ganSug)+')</span></div>'+
-    '<div class="v"><input class="ret" value="'+money(c.gan).replace("$","")+'" onchange="setRet(\'gan\',this.value)"></div>'+
-    '<div>Retención IIBB '+(c.iibbSug!=null?'<span class="sug">(última vez '+ST.iibbHist+'% = '+money(c.iibbSug)+')</span>':'<span class="sug">(sin antecedente)</span>')+'</div>'+
-    '<div class="v"><input class="ret" value="'+money(c.iibb).replace("$","")+'" onchange="setRet(\'iibb\',this.value)"></div>'+
+  const opsIIBB=IIBB_ALIC.map(a=>'<option value="'+a.v+'"'+(c.alicIIBB===a.v?" selected":"")+'>'+esc(a.l)+'</option>').join("");
+  const haySug=ST.iibbHist!=null && ST.alicIIBB==null;
+  const hayAcum=(ST.acum&&ST.acum.base>0);
+  /* La cuenta paso a paso: es la misma que hoy se hace afuera, en la calculadora de
+     ARCA. Se muestra entera para poder seguirla y discutirla, no sólo el total. */
+  const paso=(l,v,cls)=>'<div class="'+(cls||"")+'">'+l+'</div><div class="v '+(cls||"")+'">'+v+'</div>';
+  const inpGan ='<input class="ret" value="'+money(c.gan).split("$").join("")+'" onchange="setRet(&quot;gan&quot;,this.value)">';
+  const inpIIBB='<input class="ret" value="'+money(c.iibb).split("$").join("")+'" onchange="setRet(&quot;iibb&quot;,this.value)">';
+
+  return '<div class="calc">'+
+    paso("Comprobantes tildados ("+c.fs.length+")", money(c.bruto))+
+    paso("de eso, neto sin IVA — <b>es la base</b>", money(c.neto), "sug")+
+  '</div>'+
+
+  '<div class="calcbox"><div class="ch-t">🧮 Retención de Ganancias · RG 830, régimen '+RG830.codigo+' — '+esc(RG830.regimen)+'</div>'+
+  '<div class="calc">'+
+    (hayAcum
+      ? paso("Base de este pago", money(c.neto), "sug")+
+        paso("+ ya acumulado este mes", money(ST.acum.base), "sug")+
+        paso("<b>= base acumulada del mes</b>", money(c.accBase))
+      : paso("Base del mes", money(c.accBase)))+
+    paso("− mínimo no imponible"+(hayAcum?' <span class="sug">(se computa una sola vez por mes)</span>':""), "−"+money(RG830.mni), "sug")+
+    paso("<b>= sujeto a retención</b>", money(c.sujeta))+
+    paso("× alícuota "+(RG830.alicuota*100).toFixed(0)+" %", money(c.ganBruta), "sug")+
+    (c.yaRet?paso("− retenido antes este mes", "−"+money(c.yaRet), "sug"):"")+
+    paso("<b>Retención a practicar</b>", inpGan)+
+  '</div>'+
+  (Math.abs(c.gan-c.ganSug)>0.005?'<div class="nota" style="margin:7px 0 0">Lo calculado era <b>'+money(c.ganSug)+'</b> y está puesto <b>'+money(c.gan)+'</b>. Manda el tuyo.</div>':"")+
+  '</div>'+
+
+  '<div class="calcbox"><div class="ch-t">🧮 Retención de IIBB Santa Fe</div>'+
+  '<div class="calc">'+
+    paso("Alícuota"+(haySug?' <span class="sug">(la última vez fue '+ST.iibbHist+' %)</span>':""),
+         '<select onchange="setAlicIIBB(this.value)">'+opsIIBB+'</select>')+
+    paso("sobre la base", c.alicIIBB?money(c.neto)+" × "+c.alicIIBB+" %":"—", "sug")+
+    paso("<b>Retención a practicar</b>", inpIIBB)+
+  '</div>'+
+  '<div class="nota" style="margin:7px 0 0">La alícuota depende del padrón de Santa Fe, así que no se adivina: se elige. En esta base aparecen 0,7 % y 2,75 %.</div></div>'+
+
+  '<div class="calc" style="margin-top:13px">'+
+    paso("Comprobantes", money(c.bruto))+
+    paso("− retenciones", "−"+money(c.ret), "sug")+
     '<div class="tot">A pagar con cheques</div><div class="v tot">'+money(c.pagar)+'</div>'+
-    '</div>'+
-    (editado?'<div class="acciones" style="margin-top:9px"><button class="btn gh sm" onclick="volverSug()">Volver al calculado</button></div>':"");
+  '</div>'+
+  (editado?'<div class="acciones" style="margin-top:9px"><button class="btn gh sm" onclick="volverSug()">Volver a lo calculado</button></div>':"");
 }
-function repintarCalc(){ const el=document.getElementById("calc");
-  if(el&&el.parentNode) el.parentNode.innerHTML=contenidoCalc(); repintarCuadre(); }
+
+function repintarCalc(){ const el=document.getElementById("calc-box");
+  if(el) el.innerHTML=contenidoCalc(); repintarCuadre(); }
 
 function bloqueCheques(){
   const c=calculo();
@@ -541,6 +605,10 @@ EYG.guard(["finanzas","direccion","admin"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a
   .mt .calc .v{text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
   .mt .calc .tot{border-top:2px solid var(--ink);padding-top:7px;margin-top:5px;font-size:16px;font-weight:900}
   .mt .calc .sug{font-size:11.5px;color:var(--gris2)}
+  .mt .calcbox{border:1px solid var(--line);border-radius:11px;padding:12px 14px;margin:12px 0 0;background:var(--bg)}
+  .mt .calcbox .ch-t{font-size:11.5px;font-weight:900;color:var(--teal-deep);margin-bottom:8px;letter-spacing:.2px}
+  .mt .calcbox .calc{max-width:none}
+  .mt .calcbox select{font-family:inherit;font-size:12.5px;padding:4px 7px;border:1px solid var(--line);border-radius:7px}
   .mt input.ret{width:130px;text-align:right;font-family:inherit;font-size:13px;font-weight:700;padding:5px 8px;
     border:1px solid var(--line);border-radius:7px;font-variant-numeric:tabular-nums}
   .mt input.ch{font-family:inherit;font-size:12.5px;padding:5px 7px;border:1px solid var(--line);border-radius:7px}
@@ -588,7 +656,12 @@ const BANCOS={
 
    Verificado contra los pagos reales de septiembre 2026: Denver Farma 3 de 3,
    El Español 4 de 4, Ofar 5 de 5, Grupo Farmacéutico y Fideicomiso 100%. */
-const RG830={mni:224000, alicuota:0.02, regimen:"Enajenación de bienes muebles y bienes de cambio"};
+const RG830={mni:224000, alicuota:0.02, regimen:"Enajenación de bienes muebles y bienes de cambio", codigo:"78"};
+/* IIBB Santa Fe: las dos alícuotas que aparecen en esta base. La que corresponde
+   depende del padrón de la provincia, así que se elige; no se adivina. */
+const IIBB_ALIC=[{v:0,    l:"No corresponde"},
+                 {v:0.7,  l:"0,7 % — alícuota general"},
+                 {v:2.75, l:"2,75 % — alícuota agravada"}];
 const TAX_GAN=76;            // "Retención Ganancias Aplicada" — es el que usan los 39 pagos a proveedor
 const TAX_IIBB=89;           // "Ret IIBB Santa Fe S"
 const PREFIJO_CERT="RET-GAN-";
@@ -597,7 +670,7 @@ const PREFIJO_CERT="RET-GAN-";
    la última vez y la persona confirma. */
 
 const ST={banco:"credicoop", prov:null, opciones:null, buscando:false,
-  facturas:[], sel:new Set(), retGan:null, retIIBB:null, iibbHist:null,
+  facturas:[], sel:new Set(), retGan:null, retIIBB:null, iibbHist:null, alicIIBB:null, q:"",
   acum:null, cheques:[], fecha:EYG.argToday(), trabajando:false, logs:[]};
 
 function log(t,k){ ST.logs.unshift({t,k:k||"",h:new Date().toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}); pintarLog(); }
