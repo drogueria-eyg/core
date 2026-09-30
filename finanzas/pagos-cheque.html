@@ -186,11 +186,13 @@
 </style>
 </head>
 <body>
-<div class="mt">
-<div class="top">
+<div class="topbar">
+  <div class="mono">E<span class="y">y</span>G</div>
+  <span class="tag">Core</span>
   <span class="title">Pagos con cheque a proveedores</span>
   <a class="back" href="../index.html">← Volver</a>
 </div>
+<div class="mt">
 <div class="wrap" id="app">
   <div class="cargando">Cargando…</div>
 </div>
@@ -285,9 +287,14 @@ window.buscarProv=(txt)=>{
   if(!txt||txt.length<3){ ST.opciones=null; pintarOpciones(); return; }
   _tBusca=setTimeout(async()=>{
     const mio=txt;
+    const digitos=txt.replace(/[^0-9]/g,"");
+    /* El CUIT entra en el OR SÓLO si el texto trae dígitos: ["vat","like",""] le
+       matchea a todo el padrón y volvía inútil el filtro por nombre. */
+    const dom = digitos.length>=3
+      ? [["supplier_rank",">",0],"|",["name","ilike",txt],["vat","like",digitos]]
+      : [["supplier_rank",">",0],["name","ilike",txt]];
     try{
-      const r=await rpc("res.partner","search_read",
-        [[["supplier_rank",">",0],"|",["name","ilike",txt],["vat","like",txt.replace(/[^0-9]/g,"")]],["id","name","vat"]],{limit:14});
+      const r=await rpc("res.partner","search_read",[dom,["id","name","vat"]],{limit:14});
       if(ST.q!==mio) return;              // llegó tarde: ya tipeó otra cosa
       ST.opciones=r;
     }catch(e){ ST.opciones=[]; log("No pude buscar: "+(e.message||e),"e"); }
@@ -345,10 +352,12 @@ async function cargarDeuda(pid){
 async function cargarAcumulado(pid){
   ST.acum={base:0, ret:0, iibb:null};
   try{
-    const mes=ST.fecha.slice(0,7);
+    const mes=ST.fecha.slice(0,7), desde=mes+"-01";
+    const d=new Date(desde+"T12:00:00Z"); d.setUTCMonth(d.getUTCMonth()+1);
+    const hasta=d.toISOString().slice(0,10);      // el 1° del mes siguiente, con < estricto
     const pays=await rpc("account.payment","search_read",
       [[["partner_id","=",pid],["partner_type","=","supplier"],["state","=","posted"],
-        ["date",">=",mes+"-01"],["date","<=",mes+"-31"]],["id","name","date"]],{limit:0});
+        ["date",">=",desde],["date","<",hasta]],["id","name","date"]],{limit:0});
     if(!pays.length) return;
     const ws=await rpc("l10n_ar.payment.withholding","search_read",
       [[["payment_id","in",pays.map(p=>p.id)]],["payment_id","amount","base_amount","tax_id"]],{limit:0});
@@ -592,9 +601,9 @@ function bloqueDeuda(){
 function bloqueCalculo(){
   const c=calculo();
   return '<div class="panel" id="p-calc"><div class="paso">Paso 3</div><h3>🧮 Cuánto hay que pagar</h3>'+
-    '<div class="sub">La retención se calcula por la <b>RG 830</b>, régimen de <i>'+esc(RG830.regimen)+'</i>: '+
-    '2% sobre el neto sin IVA, con un mínimo no imponible de '+money(RG830.mni)+' que '+mni+'. '+
-    'El número es editable: si Fede lo cambia, manda el suyo.</div>'+
+    '<div class="sub">La cuenta entera, paso a paso: la misma que se hace en la calculadora de ARCA. '+
+    'Los parámetros salen del catálogo oficial ('+RG830_FUENTE+'). '+
+    'Los dos importes son editables — si ponés otro, manda el tuyo.</div>'+
     '<div id="calc-box">'+contenidoCalc()+'</div></div>';
 }
 function contenidoCalc(){
