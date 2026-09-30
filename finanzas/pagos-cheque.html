@@ -511,7 +511,7 @@ window.leerPdf=(files)=>conTrabajo(async()=>{
   let ch=[];
   try{
     const cont=await textoDelPdf(await f.arrayBuffer());
-    if(!cont) throw new Error("no pude descomprimir el PDF");
+    if(!cont || !cont.trim()) throw new Error("no pude leer el contenido del PDF. Si es un PDF escaneado o protegido, cargá los cheques a mano.");
     ch=chequesDelPdf(lineasPdf(cont));
   }catch(e){ log("No pude leer "+f.name+": "+(e.message||e),"e"); return; }
   if(!ch.length){ log("En "+f.name+" no encontré ningún cheque. ¿Es el comprobante de e-cheq del home banking?","e"); return; }
@@ -651,14 +651,29 @@ window.revisarNumeros=()=>conTrabajo(async()=>{
 
    Verificado el 30/09/2026 contra "Pago Factura A - 2-40929 - 29-06-2026.pdf":
    17 cheques, números 29581513 a 29581529, $10.296.029,50 en total. */
+/* DecompressionStream es ESTRICTO: si después del bloque comprimido sobra un solo
+   byte, falla con "Trailing junk found after the end of the compressed stream". Y los
+   PDF casi siempre dejan un salto de línea entre el final del stream y la palabra
+   "endstream". Por eso se recorta el whitespace del final antes de inflar, y si aún
+   falla se van sacando bytes de a uno: el zlib de Node lo tolera solo, el navegador no. */
+async function inflarUno(bytes, fmt){
+  const ds=new DecompressionStream(fmt);
+  const buf=await new Response(new Blob([bytes]).stream().pipeThrough(ds)).arrayBuffer();
+  return new Uint8Array(buf);
+}
 async function inflar(bytes){
-  if(typeof DecompressionStream==="undefined") throw new Error("Este navegador no puede descomprimir el PDF. Cargá los cheques a mano.");
-  for(const fmt of ["deflate","deflate-raw"]){
-    try{
-      const ds=new DecompressionStream(fmt);
-      const buf=await new Response(new Blob([bytes]).stream().pipeThrough(ds)).arrayBuffer();
-      return new Uint8Array(buf);
-    }catch(e){}
+  if(typeof DecompressionStream==="undefined")
+    throw new Error("este navegador no sabe descomprimir (DecompressionStream). Cargá los cheques a mano.");
+  /* whitespace del final: 10 = salto, 13 = retorno, 32 = espacio */
+  let fin=bytes.length;
+  while(fin>0 && (bytes[fin-1]===10||bytes[fin-1]===13||bytes[fin-1]===32)) fin--;
+  const candidatos=[bytes.subarray(0,fin), bytes];
+  for(let corte=1; corte<=4; corte++) candidatos.push(bytes.subarray(0, Math.max(0,fin-corte)));
+  for(const c of candidatos){
+    if(!c.length) continue;
+    for(const fmt of ["deflate","deflate-raw"]){
+      try{ return await inflarUno(c, fmt); }catch(e){}
+    }
   }
   return null;
 }
