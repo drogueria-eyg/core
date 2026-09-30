@@ -170,6 +170,11 @@
   .mt .calc .v{text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
   .mt .calc .tot{border-top:2px solid var(--ink);padding-top:7px;margin-top:5px;font-size:16px;font-weight:900}
   .mt .calc .sug{font-size:11.5px;color:var(--gris2)}
+  .mt .droppdf{border:2px dashed var(--line);border-radius:12px;padding:16px 18px;text-align:center;background:var(--bg);transition:border-color .15s,background .15s}
+  .mt .droppdf.hover{border-color:var(--teal);background:var(--agua)}
+  .mt .droppdf .dz-t{font-weight:900;font-size:14px;color:var(--teal-deep)}
+  .mt .droppdf .dz-s{font-size:12.5px;color:var(--gris);margin-top:4px}
+  .mt .fakelink{color:var(--teal);font-weight:800;cursor:pointer;text-decoration:underline}
   .mt .sitfila{display:flex;flex-wrap:wrap;gap:8px 10px;margin:4px 0 0}
   .mt .sf{display:inline-flex;flex-direction:column;gap:1px;border:1px solid var(--line);border-radius:9px;padding:6px 11px;font-size:13px;font-weight:700;background:var(--surface)}
   .mt .sf i{font-style:normal;font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--gris2);font-weight:800}
@@ -265,7 +270,7 @@ const PREFIJO_CERT="RET-GAN-";
    la última vez y la persona confirma. */
 
 const ST={banco:"credicoop", prov:null, opciones:null, buscando:false,
-  facturas:[], sel:new Set(), retGan:null, retIIBB:null, iibbHist:null, alicIIBB:null, q:"", sit:null, certExencion:false,
+  facturas:[], sel:new Set(), retGan:null, retIIBB:null, iibbHist:null, alicIIBB:null, q:"", sit:null, certExencion:false, pdf:null,
   acum:null, cheques:[], fecha:EYG.argToday(), trabajando:false, logs:[]};
 
 function log(t,k){ ST.logs.unshift({t,k:k||"",h:new Date().toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}); pintarLog(); }
@@ -498,6 +503,67 @@ window.volverSug=()=>{ ST.retGan=null; ST.retIIBB=null; render(); };
    Los dos controles nacen de errores reales: en los 1.587 pagos con cheque de la
    base hay 4 números repetidos y un cheque con fecha de cobro en el año 2206.
    ══════════════════════════════════════════════════════════════════════════ */
+/* Al soltar el PDF: se leen los cheques, se identifica al proveedor por el CUIT,
+   el banco por la cuenta emisora, y se avisa cuáles ya están cargados en Odoo. */
+window.leerPdf=(files)=>conTrabajo(async()=>{
+  const f=files&&files[0]; if(!f) return;
+  ST.pdf=null;
+  let ch=[];
+  try{
+    const cont=await textoDelPdf(await f.arrayBuffer());
+    if(!cont) throw new Error("no pude descomprimir el PDF");
+    ch=chequesDelPdf(lineasPdf(cont));
+  }catch(e){ log("No pude leer "+f.name+": "+(e.message||e),"e"); return; }
+  if(!ch.length){ log("En "+f.name+" no encontré ningún cheque. ¿Es el comprobante de e-cheq del home banking?","e"); return; }
+
+  const cuits=[...new Set(ch.map(c=>c.cuit).filter(Boolean))];
+  const ctas =[...new Set(ch.map(c=>c.cuenta).filter(Boolean))];
+  const avisos=[];
+  if(cuits.length>1) avisos.push("el archivo tiene cheques de "+cuits.length+" beneficiarios distintos");
+  if(ctas.length>1)  avisos.push("hay cheques de "+ctas.length+" cuentas emisoras distintas");
+
+  /* El banco sale de la cuenta emisora, comparando sin los separadores. */
+  const soloNum=x=>String(x||"").replace(/[^0-9]/g,"");
+  let banco=null;
+  Object.keys(BANCOS).forEach(k=>{ if(ctas[0] && soloNum(BANCOS[k].cuentaBanco)===soloNum(ctas[0])) banco=k; });
+  if(banco && banco!==ST.banco){ ST.banco=banco; log("El PDF dice que los cheques salen de "+BANCOS[banco].nombre,"o"); }
+  else if(!banco && ctas[0]) avisos.push("la cuenta emisora "+ctas[0]+" no es de ninguno de los bancos configurados");
+
+  /* El proveedor, por el CUIT del beneficiario. */
+  if(cuits[0]){
+    const con=cuits[0], conGuion=con.slice(0,2)+"-"+con.slice(2,10)+"-"+con.slice(10);
+    const ps=await rpc("res.partner","search_read",[[["vat","in",[con,conGuion]]],["id","name"]],{limit:4});
+    if(ps.length===1){
+      if(!ST.prov || ST.prov.id!==ps[0].id){
+        log("Beneficiario identificado por CUIT: "+ps[0].name,"o");
+        await window.elegirProv(ps[0].id, ps[0].name);
+      }
+    } else if(ps.length>1) avisos.push("el CUIT "+con+" está en "+ps.length+" fichas: elegí el proveedor a mano");
+    else avisos.push("el CUIT "+con+" no figura en ninguna ficha: elegí el proveedor a mano");
+  }
+
+  /* Los que ya están en Odoo no se vuelven a cargar. */
+  const usados=await numerosUsados(); _val=usados;
+  const yaEstan=ch.filter(c=>usados[String(c.n).replace(/^0+/,"")]);
+  const nuevos =ch.filter(c=>!usados[String(c.n).replace(/^0+/,"")]);
+  ST.pdf={archivo:f.name, total:ch.length, suma:r2(ch.reduce((s,c)=>s+c.i,0)),
+          emision:ch[0].emision||"", yaEstan:yaEstan.length, avisos};
+  if(yaEstan.length) log(yaEstan.length+" de los "+ch.length+" cheques YA estaban cargados: no se agregan","e");
+  ST.cheques=nuevos.map(c=>({n:c.n, f:c.f, i:String(c.i)}));
+  /* La fecha del pago es la de emisión de los cheques, no la de hoy. */
+  if(ch[0].emision) ST.fecha=ch[0].emision;
+  log("Leídos "+ch.length+" cheques de "+f.name+" por "+money(ST.pdf.suma)+
+      (nuevos.length!==ch.length?" — se cargan "+nuevos.length:""),"o");
+  avisos.forEach(a=>log("Ojo: "+a,"e"));
+  render();
+});
+function engancharDropPdf(){
+  const z=document.getElementById("dropPdf"); if(!z) return;
+  ["dragenter","dragover"].forEach(e=>z.addEventListener(e,ev=>{ev.preventDefault();z.classList.add("hover");}));
+  ["dragleave","drop"].forEach(e=>z.addEventListener(e,ev=>{ev.preventDefault();z.classList.remove("hover");}));
+  z.addEventListener("drop",ev=>{ const fs=ev.dataTransfer&&ev.dataTransfer.files; if(fs&&fs.length) window.leerPdf(fs); });
+}
+
 window.agregarCheque=()=>{ ST.cheques.push({n:"",f:"",i:""}); render(); };
 window.quitarCheque=(i)=>{ ST.cheques.splice(i,1); render(); };
 window.setCheque=(i,campo,v)=>{ if(!ST.cheques[i]) return; ST.cheques[i][campo]=v; repintarCuadre(); };
@@ -573,6 +639,101 @@ window.revisarNumeros=()=>conTrabajo(async()=>{
 });
 
 /* ══════════════════════════════════════════════════════════════════════════
+   LEER EL COMPROBANTE DE E-CHEQ DEL HOME BANKING
+   El PDF que baja Credicoop cuando se emiten los cheques trae, por cada uno:
+   número, fecha de pago, moneda, monto, beneficiario, CUIT, id del cheque,
+   estado, motivo, banco, carácter, fecha de emisión, código de banco y cuenta
+   emisora. Con eso se llena la tanda entera sin tipear.
+
+   Se extrae sin librerías: los streams del PDF vienen con FlateDecode y el
+   navegador sabe inflarlos con DecompressionStream. El texto son los literales
+   entre paréntesis de los operadores Tj/TJ.
+
+   Verificado el 30/09/2026 contra "Pago Factura A - 2-40929 - 29-06-2026.pdf":
+   17 cheques, números 29581513 a 29581529, $10.296.029,50 en total. */
+async function inflar(bytes){
+  if(typeof DecompressionStream==="undefined") throw new Error("Este navegador no puede descomprimir el PDF. Cargá los cheques a mano.");
+  for(const fmt of ["deflate","deflate-raw"]){
+    try{
+      const ds=new DecompressionStream(fmt);
+      const buf=await new Response(new Blob([bytes]).stream().pipeThrough(ds)).arrayBuffer();
+      return new Uint8Array(buf);
+    }catch(e){}
+  }
+  return null;
+}
+async function textoDelPdf(arrayBuffer){
+  const u=new Uint8Array(arrayBuffer);
+  let crudo=""; for(let i=0;i<u.length;i++) crudo+=String.fromCharCode(u[i]);
+  const partes=[];
+  let i=0;
+  while((i=crudo.indexOf("stream",i))>=0){
+    let s=i+6; if(crudo[s]==="\r")s++; if(crudo[s]==="\n")s++;
+    const e=crudo.indexOf("endstream",s); if(e<0) break;
+    const sub=u.subarray(s,e);
+    const inf=await inflar(sub);
+    if(inf){ let t=""; for(let k=0;k<inf.length;k++) t+=String.fromCharCode(inf[k]); partes.push(t); }
+    i=e+9;
+  }
+  return partes.join("\n");
+}
+/* Los literales ( ... ) del contenido, con su posición, para poder cortar por línea. */
+function literalesPdf(str){
+  const B=String.fromCharCode(92), res=[];
+  let k=0;
+  while(k<str.length){
+    if(str[k]==="("){
+      let d=1,j=k+1,buf="";
+      while(j<str.length&&d>0){
+        const ch=str[j];
+        if(ch===B){ buf+=str[j+1]||""; j+=2; continue; }
+        if(ch==="("){d++;} else if(ch===")"){d--; if(!d){j++;break;}}
+        buf+=ch; j++;
+      }
+      res.push({txt:buf,pos:k}); k=j;
+    } else k++;
+  }
+  return res;
+}
+function lineasPdf(contenido){
+  const lits=literalesPdf(contenido), out=[];
+  let linea="", prev=0;
+  lits.forEach(l=>{
+    const entre=contenido.slice(prev,l.pos);
+    if(prev && (entre.indexOf("Td")>=0||entre.indexOf("TD")>=0||entre.indexOf("T*")>=0||entre.indexOf("ET")>=0)){
+      if(linea.trim()) out.push(linea.trim()); linea="";
+    }
+    linea+=l.txt; prev=l.pos+l.txt.length;
+  });
+  if(linea.trim()) out.push(linea.trim());
+  return out;
+}
+const esFecha = s => s.length===10 && s[2]==="/" && s[5]==="/" && /^[0-9/]+$/.test(s);
+const aISO = s => s.slice(6,10)+"-"+s.slice(3,5)+"-"+s.slice(0,2);
+/* Un cheque arranca donde hay un número largo seguido de una fecha. El resto de
+   los campos se toma por posición dentro del bloque, que el banco respeta. */
+function chequesDelPdf(lineas){
+  const out=[];
+  for(let i=0;i<lineas.length-3;i++){
+    const n=lineas[i];
+    if(!/^[0-9]{6,10}$/.test(n)) continue;
+    if(!esFecha(lineas[i+1])) continue;
+    if(String(lineas[i+2]||"").toLowerCase().indexOf("peso")<0) continue;   // moneda
+    const monto=num(lineas[i+3]);
+    if(!monto) continue;
+    const bloque=lineas.slice(i, i+16);
+    const cuit=(bloque.find(x=>/^[0-9]{2}-[0-9]{8}-[0-9]$/.test(x))||"").replace(/[^0-9]/g,"");
+    const cuenta=bloque.find(x=>x.indexOf("/")>0 && x.indexOf("-")>0 && /^[0-9-]+\/[0-9]$/.test(x))||"";
+    const benef=lineas[i+4]||"";
+    const emision=bloque.filter(esFecha)[1]||"";
+    out.push({n, f:aISO(lineas[i+1]), i:monto, benef, cuit, cuenta,
+              emision:emision?aISO(emision):"", id:lineas[i+6]||"", estado:bloque.find(x=>x==="ACTIVO")?"ACTIVO":""});
+    i+=12;
+  }
+  return out;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    4) CONFIRMAR: un account.payment por cheque
    Molde verificado contra los pagos de Federico (OP-X 7944 a 7953, Dnm Farma,
    28/09/2026). La retención va en el PRIMER cheque de la tanda, que es como la
@@ -640,7 +801,7 @@ function render(){
   const app=document.getElementById("app"); if(!app) return;
   app.innerHTML = bloqueProveedor() + (ST.prov?bloqueSituacion()+bloqueDeuda()+bloqueCalculo()+bloqueCheques():"") +
     '<div class="panel"><h3>📋 Registro de lo que se hizo</h3><div class="log" id="log"></div></div>';
-  pintarLog();
+  pintarLog(); engancharDropPdf();
 }
 function bloqueProveedor(){
   const ops=Object.keys(BANCOS).map(k=>'<option value="'+k+'"'+(k===ST.banco?" selected":"")+'>'+
@@ -782,11 +943,26 @@ function bloqueCheques(){
     '<div class="sub">Una fila por cheque, con el número y la fecha en que se puede cobrar. '+
     'Los cheques son diferidos: en esta casa el plazo va de 28 a 65 días. '+
     'Se controla que el número no esté usado y que la suma dé exacto.</div>'+
+    zonaPdf()+
     '<div class="acciones"><button class="btn" onclick="agregarCheque()">+ Agregar cheque</button>'+
     (ST.cheques.length?'<button class="btn gh" onclick="repartir()" title="Divide el total entre las filas que hay, ajustando en la última.">Repartir el total entre las '+ST.cheques.length+'</button>'+
       '<button class="btn gh" onclick="revisarNumeros()">Revisar los números contra Odoo</button>':"")+'</div>'+
     (ST.cheques.length?tablaCheques():'<div class="muted" style="padding:10px 0">Todavía no agregaste ningún cheque.</div>')+
     '<div id="cuadre">'+contenidoCuadre()+'</div></div>';
+}
+function zonaPdf(){
+  const P=ST.pdf;
+  let h='<div class="droppdf" id="dropPdf">'+
+    '<div class="dz-t">📄 Soltá acá el comprobante de e-cheq del home banking</div>'+
+    '<div class="dz-s">Lee los cheques, el beneficiario y la cuenta emisora, y completa la tabla sola. '+
+    'También podés <label class="fakelink">elegir el archivo<input type="file" accept=".pdf" hidden onchange="leerPdf(this.files)"></label> '+
+    'o cargarlos a mano más abajo.</div></div>';
+  if(P) h+='<div class="aviso '+(P.avisos.length?"warn":"ok")+'" style="margin:10px 0 0">'+(P.avisos.length?"⚠️":"✅")+' <div>'+
+    '<b>'+esc(P.archivo)+'</b>: '+P.total+' cheques por <b>'+money(P.suma)+'</b>'+
+    (P.emision?', emitidos el '+esc(P.emision):"")+'. '+
+    (P.yaEstan?'<b>'+P.yaEstan+' ya estaban cargados</b> y no se repiten. ':"")+
+    (P.avisos.length?'<br>'+esc(P.avisos.join(" · ")):"")+'</div></div>';
+  return h;
 }
 function tablaCheques(){
   const v=validarCheques(_val);
