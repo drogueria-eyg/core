@@ -308,7 +308,8 @@ async function analizar(movs){
 
   /* ---- 3) mapa CUIT → cliente, aprendido del historial ---- */
   await construirMapaCuit();
-  movs.forEach(m=>{ m.cliente=(m.cuit&&ST.mapaCuit[m.cuit])?ST.mapaCuit[m.cuit]:null; });
+  movs.forEach(m=>{ m.cliente=(m.cuit&&ST.mapaCuit[m.cuit])?ST.mapaCuit[m.cuit]:null; m.porPadron=false; });
+  await resolverPorPadron(movs);
 
   /* ---- 4) candidatos para conciliar ---- */
   /* Un movimiento da trabajo mientras no esté cargado Y conciliado. Que ya esté en
@@ -335,6 +336,37 @@ async function analizar(movs){
     m.porCliente = porCli.length>0;
   });
   return movs;
+}
+
+/* Lo que el historial no sabe, lo sabe el padrón: si el CUIT del concepto es el de
+   un cliente, es él. Va DESPUÉS del mapa aprendido y nunca lo pisa, porque el mapa
+   captura algo que el padrón no puede: quién paga POR quién. Muchos cobros vienen del
+   CUIT del dueño, del contador o de un familiar, y ahí el CUIT no es el del cliente.
+
+   Sin esto, un cliente que paga por primera vez queda sin identificar aunque su CUIT
+   esté en la ficha — y el cliente NO se puede escribir después: Odoo rechaza tocar una
+   línea de extracto ya posteada. O se acierta al cargar, o se corrige a mano en Odoo. */
+async function resolverPorPadron(movs){
+  const faltan=[...new Set(movs.filter(m=>m.cuit&&!m.cliente).map(m=>m.cuit))];
+  if(!faltan.length) return;
+  /* El vat se guarda con guiones (27-32331706-8) y el concepto trae los 11 dígitos
+     pegados: se buscan las dos formas. El formato es fijo 2-8-1. */
+  const variantes=[];
+  faltan.forEach(c=>{ variantes.push(c, c.slice(0,2)+"-"+c.slice(2,10)+"-"+c.slice(10)); });
+  let ps=[];
+  try{
+    ps=await rpc("res.partner","search_read",[[["vat","in",variantes]],["id","name","vat","customer_rank"]],{limit:0});
+  }catch(e){ log("No pude consultar el padrón por CUIT: "+e.message,"e"); return; }
+  const idx={};
+  ps.forEach(x=>{ const d=String(x.vat||"").replace(/D/g,""); if(!d) return; (idx[d]=idx[d]||[]).push(x); });
+  let n=0;
+  movs.forEach(m=>{
+    if(!m.cuit||m.cliente) return;
+    const c=idx[m.cuit];
+    if(!c||c.length!==1) return;             // si el CUIT está repetido en dos fichas, no se adivina
+    m.cliente={id:c[0].id, nombre:c[0].name}; m.porPadron=true; n++;
+  });
+  if(n) log("Identificados por CUIT en el padrón (no estaban en el historial): "+n,"o");
 }
 
 /* El mapa se construye leyendo los cobros que Cobranzas ya imputó: cada uno
@@ -604,7 +636,12 @@ function filasDe(M){
     M.map((m,i)=>'<tr>'+
       '<td class="muted">'+m.fecha.slice(8)+"/"+m.fecha.slice(5,7)+'</td>'+
       '<td class="cpto">'+esc(m.concepto.slice(0,92))+(m.concepto.length>92?"…":"")+
-        (m.cliente?'<span class="cli">→ '+esc(m.cliente.nombre)+'</span>':(m.cuit?'<span class="cli muted">CUIT '+m.cuit+' · sin identificar</span>':""))+'</td>'+
+        (m.cliente
+          ? '<span class="cli" title="'+(m.porPadron
+              ? "El CUIT del concepto es el de este cliente en su ficha. Es la primera vez que paga desde este CUIT, así que no estaba en el historial."
+              : "Aprendido del historial: este CUIT ya pagó antes por este cliente.")+'">→ '+esc(m.cliente.nombre)+
+            (m.porPadron?' <span class="badge b-ok" style="font-size:9.5px">por CUIT</span>':"")+'</span>'
+          : (m.cuit?'<span class="cli muted" title="El CUIT no figura en ninguna ficha ni pagó antes. Si sabés quién es, elegilo al resolver: después de cargar la línea Odoo ya no deja escribir el cliente.">CUIT '+m.cuit+' · sin identificar</span>':""))+'</td>'+
       '<td><span class="badge b-nu" title="'+esc(TIPOS[m.tipo].ayuda)+'">'+esc(m.sub)+'</span></td>'+
       '<td class="r '+(m.importe<0?"neg":"pos")+'"><b>'+money(m.importe)+'</b></td>'+
       '<td>'+estadoDe(m)+'</td>'+
