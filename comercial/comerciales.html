@@ -132,6 +132,7 @@
   .knob .seg button.on{background:var(--teal);border-color:var(--teal);color:#fff}
   .knob .chk{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--ink);cursor:pointer}
   .knob .chk input{width:18px;height:18px}
+  .lqbase{font-size:8.5px;font-weight:800;color:#9A6B12;background:#FBF0DA;border-radius:4px;padding:1px 4px;vertical-align:middle}
   .comi-adv{margin-top:6px}
   .comi-adv summary{cursor:pointer;font-size:12.5px;font-weight:800;color:var(--teal-med);padding:6px 0}
   .rate-grid{display:grid;grid-template-columns:1fr auto auto;gap:8px 12px;align-items:center;margin-top:8px}
@@ -818,33 +819,41 @@ function comiSegRender(cfg){
   const cerrado=k=>!!(COMI.cierres||{})[k];
   // de un mes LIQUIDADO se lee lo congelado (incluye nivel y salud); de uno abierto, el cálculo en vivo (solo base)
   const congelado=(k,name)=>{ const c=(COMI.cierres||{})[k]; if(!c)return null; return (c.comerciales||[]).find(x=>x.nombre===name)||null; };
+  /* El mes EN CURSO no está congelado, así que su comisión se calcula al vuelo. El cálculo completo
+     (nivel y salud) lee cobranza, pedidos, ofertas y fichas de cada comercial: son decenas de viajes
+     a Odoo, demasiado para hacerlo al abrir la pantalla. Por eso arranca mostrando sólo la BASE y se
+     completa a pedido —con el botón, o al abrir Ver detalle, que hace exactamente el mismo cálculo. */
+  const enVivo=(k,name)=>{ const d=(COMI.vivo||{})[k]; if(!d)return null; return (d.comerciales||[]).find(x=>x.nombre===name)||null; };
   const rows=COMI.sellers.map(s=>{
     const perfil=esExt(s.name)?"externo":(((COMI.ticket||{})[s.uid]||0)>=(cfg.perfilTicket||300000)?"inst":"farm");
     const cells=cols.map(k=>{
       const cg=congelado(k,s.name);
       if(cg) return {fact:cg.neto, comi:cg.comiFinal, frozen:true, nivel:cg.nivel?cg.nivel.emoji:null};
       if(cerrado(k)) return {fact:null,comi:null,frozen:true};   // el mes está liquidado y esta comercial quedó afuera
+      const vv=enVivo(k,s.name);
+      if(vv) return {fact:vv.neto, comi:vv.comiFinal, nivel:vv.nivel?vv.nivel.emoji:null};
       const fact=(COMI.monthly[s.uid]||{})[k];
       if(fact==null) return {fact:null,comi:null};
       const meta=EYG.metaDesde(COMI.monthly[s.uid]||{}, k, cfg).meta;
-      return {fact, comi:escal(fact,meta,perfil)}; });
+      return {fact, comi:escal(fact,meta,perfil), base:true}; });
     return {name:s.name, cells, tot:cells.reduce((a,c)=>a+(c.comi||0),0)};
   }).sort((a,b)=>b.tot-a.tot);
   let html=`<div style="font-size:13px;font-weight:800;margin-bottom:8px">📅 Comisiones por mes <span style="font-weight:600;color:var(--gris2);font-size:11.5px">· desde mayo · sobre facturado neto</span></div>
     <div style="overflow-x:auto"><table class="comi-prev"><tr><th class="nm">Comercial</th>${cols.map(k=>`<th>${MESLBL(k)}${cerrado(k)?'<br><span class="lqlock">🔒 liquidado</span>':(k===curK?'<br><span style="color:var(--teal);font-size:9px">EN CURSO</span>':'')}</th>`).join("")}<th>Total</th></tr>`;
   for(const r of rows){
-    html+=`<tr><td class="nm">${esc(r.name)}</td>`+r.cells.map((c,i)=>c.comi==null?'<td><span style="color:var(--gris2)">—</span></td>':`<td${cols[i]===curK?' style="background:#F3FAF8"':''}><b>${Mc(c.comi)}</b>${c.nivel?' <span title="incluye nivel y salud">'+c.nivel+'</span>':''}<br><span style="font-size:10px;color:var(--gris2)">fact ${Mc(c.fact)}</span></td>`).join("")+`<td class="meta">${Mc(r.tot)}</td></tr>`;
+    html+=`<tr><td class="nm">${esc(r.name)}</td>`+r.cells.map((c,i)=>c.comi==null?'<td><span style="color:var(--gris2)">—</span></td>':`<td${cols[i]===curK?' style="background:#F3FAF8"':''}><b>${Mc(c.comi)}</b>${c.nivel?' <span title="incluye nivel y salud">'+c.nivel+'</span>':''}${c.base?' <span class="lqbase" title="Comisión base: todavía no incluye el nivel ni la salud. Apretá Completar o Ver detalle.">base</span>':''}<br><span style="font-size:10px;color:var(--gris2)">fact ${Mc(c.fact)}</span></td>`).join("")+`<td class="meta">${Mc(r.tot)}</td></tr>`;
   }
   // fila de acciones: ver la liquidación completa de cada mes y darle el corte
   html+=`<tr><td class="nm" style="font-size:11px;color:var(--gris2);font-weight:600">Liquidación</td>`+
     cols.map(k=>{ const cd=cerrado(k), viejo=k<DESDE;
       return `<td><div class="lqacc">
         <button class="lqbt" onclick="lqAbrir('${k}')">${cd?"📄 Ver":"👁 Ver detalle"}</button>
+        ${(!cd && !(COMI.vivo||{})[k] && !viejo)?`<button class="lqbt" onclick="lqCompletar('${k}')">⚡ Completar</button>`:""}
         ${viejo?'<span style="font-size:9.5px;color:var(--gris2)">liquidado antes</span>'
           :(cd?`<button class="lqbt" onclick="lqReabrir('${k}')">🔓 Reabrir</button>`
               :`<button class="lqbt pay" onclick="lqLiquidar('${k}')">🔒 Liquidar</button>`)}
       </div></td>`; }).join("")+`<td></td></tr>`;
-  html+=`</table></div><div style="font-size:11px;color:var(--gris2);margin-top:6px">Un mes <b>abierto</b> se recalcula solo a medida que se factura y se cobra. Al apretar <b>Liquidar</b> se congela: quedan fijos el facturado, el nivel y la salud de cada comercial, y ese es el número que se paga. Los meses anteriores a ${MESLBL(DESDE)} se liquidaron con el criterio viejo y no se tocan.</div>`;
+  html+=`</table></div><div style="font-size:11px;color:var(--gris2);margin-top:6px">Un mes <b>abierto</b> se recalcula solo a medida que se factura y se cobra; arranca mostrando la comisión <b>base</b> y con ⚡ Completar (o Ver detalle) se le suman el nivel y la salud. Al apretar <b>Liquidar</b> se congela: quedan fijos el facturado, el nivel y la salud de cada comercial, y ese es el número que se paga. Los meses anteriores a ${MESLBL(DESDE)} se liquidaron con el criterio viejo y no se tocan.</div>`;
   wrap.innerHTML=html;
 }
 
@@ -872,10 +881,24 @@ async function lqAbrir(mes){
   try{
     const {data,cerrado}=await lqDatos(mes);
     COMI._lqUlt={mes,data,cerrado};
+    // ya que se calculó el mes entero, la tabla de arriba deja de mostrar sólo la base
+    if(!cerrado){ COMI.vivo=COMI.vivo||{}; COMI.vivo[mes]=data; try{ comiSegRender(comiReadKnobs()); }catch(e){} }
     const acc=`<button onclick="window.print()">🖨 Imprimir / PDF</button>`+
       (cerrado?"":`<button onclick="lqLiquidar('${mes}')">🔒 Liquidar</button>`);
     lqWin("Liquidación · "+MESLBL(mes), EYGLIQ.docHTML(data,cerrado), acc);
   }catch(e){ const b=document.getElementById("lqBody"); if(b)b.innerHTML='<div class="errbox">No pude armar la liquidación: '+esc(e.message)+'</div>'; }
+}
+/* Calcula el mes en curso completo (nivel y salud) y con eso completa la columna, sin abrir la
+   hoja. Es el mismo cálculo que Ver detalle; tarda porque lee comercial por comercial. */
+async function lqCompletar(mes){
+  lqWin("Calculando "+MESLBL(mes),'<div class="comi-note"><span class="spin-sm"></span> Preparando…</div>',"");
+  try{
+    const {data}=await lqDatos(mes);
+    COMI.vivo=COMI.vivo||{}; COMI.vivo[mes]=data;
+    lqCerrarWin();
+    comiSegRender(comiReadKnobs());
+    otoast(MESLBL(mes)+": ya muestra nivel y salud", true);
+  }catch(e){ const b=document.getElementById("lqBody"); if(b)b.innerHTML='<div class="errbox">No pude calcularlo: '+esc(e.message)+'</div>'; }
 }
 async function lqLiquidar(mes){
   const enCurso = mes===COMI.curM;
