@@ -174,7 +174,7 @@ const rpc=EYG.rpc;
    ══════════════════════════════════════════════════════════════════════════ */
 const BANCOS={
   credicoop:{
-    nombre:"Credicoop", cuentaBanco:"191-274-015650/8", diario:24, cuenta:359, partner:2043,
+    nombre:"Credicoop", cuentaBanco:"191-274-015650/8", diario:24, cuenta:359, partner:2043, metodoSalida:21,
     /* OJO: 974 y 1273 NO son comisiones aunque el código lo parezca.
        974 = Transf. Interbanking (un COBRO) · 1273 = entre cuentas propias. */
     codigos:{
@@ -206,6 +206,29 @@ const BANCOS={
   nacion:    {nombre:"Nación",            cuentaBanco:"30354480100005",   diario:14, cuenta:345, partner:4045, codigos:null}
 };
 const CTA_TRANSIT=349, CTA_RECIBOS=350, CTA_PAGOS=351, CTA_PROVEEDORES=148;
+const CTA_PUENTE=356;                 // 6.0.00.00.01 Transferencia de liquidez
+const EYG_CUIT="30716356988";         // el CUIT propio: marca las transferencias entre cuentas nuestras
+const EYG_PARTNER=1;                  // Droguería EyG S.R.L. como contraparte de la transferencia
+
+/* ---------- QUÉ BANCO ES CADA CBU ----------
+   Los 3 primeros dígitos del CBU son la entidad. OJO: los números de cuenta que los
+   diarios tienen cargados en Odoo NO son CBU (Nación figura como 30354480100005), así
+   que no sirven para esto. Este mapa se armó cruzando las líneas del extracto que traen
+   CBU contra las transferencias internas que la casa ya había resuelto, el 30/09/2026:
+   065 acertó 29 de 29 · 285 4 de 4 · 011 3 de 3 más un precedente idéntico · 330 6 de 7.
+
+   'metodo' es el payment_method_line_id Manual OUTBOUND de ese diario, que es el que se
+   necesita para crear la transferencia desde el banco de origen. */
+const CBU_BANCO={
+  "191":{diario:24, nombre:"Banco Credicoop",        metodo:21},
+  "011":{diario:14, nombre:"Banco Nación",           metodo:16},
+  "285":{diario:26, nombre:"Banco Macro",            metodo:27},
+  "017":{diario:25, nombre:"Banco BBVA",             metodo:24},
+  "330":{diario:77, nombre:"Banco Santa Fe",         metodo:96},
+  "065":{diario:87, nombre:"Banco Municipal Rosario",metodo:106},
+  "016":{diario:27, nombre:"Mercado Pago",           metodo:31},
+  "322":{diario:27, nombre:"Mercado Pago",           metodo:31},
+};
 const TIPOS={
   cargo:   {lbl:"Comisiones e IVA", color:"#B7791F", ayuda:"Cargos del banco que van a la liquidación (LI-A): comisiones, IVA e intereses."},
   impuesto:{lbl:"Impuestos",        color:"#8E5FBF", ayuda:"SIRCREB e Impuesto Ley 25.413. Se imputan directo a su cuenta, sin pago de por medio."},
@@ -310,6 +333,7 @@ async function analizar(movs){
   await construirMapaCuit();
   movs.forEach(m=>{ m.cliente=(m.cuit&&ST.mapaCuit[m.cuit])?ST.mapaCuit[m.cuit]:null; m.porPadron=false; });
   await resolverPorPadron(movs);
+  identificarBancoPropio(movs);
 
   /* ---- 4) candidatos para conciliar ---- */
   /* Un movimiento da trabajo mientras no esté cargado Y conciliado. Que ya esté en
@@ -338,6 +362,29 @@ async function analizar(movs){
   return movs;
 }
 
+/* De qué banco viene (o a cuál va) una transferencia entre cuentas propias.
+   Dos condiciones: el concepto trae el CUIT de EyG —sin eso el prefijo 322 aparece en
+   más de mil cobros de clientes— y trae un CBU de 22 dígitos. El SIGNO da la dirección
+   y el texto la confirma: positivo dice "CBU Origen" (la plata viene de ahí), negativo
+   dice "CBU Destino" (la plata va para allá). */
+function identificarBancoPropio(movs){
+  let n=0, sinMapa=[];
+  movs.forEach(m=>{
+    m.otroBanco=null;
+    if(m.tipo!=="interna") return;
+    const txt=String(m.concepto||"");
+    if(txt.indexOf(EYG_CUIT)<0) return;              // no es entre cuentas nuestras
+    const cbu=txt.match(/\b(\d{22})\b/); if(!cbu) return;
+    const pref=cbu[1].slice(0,3), b=CBU_BANCO[pref];
+    if(!b){ sinMapa.push(pref); return; }
+    if(b.diario===BANCOS[ST.banco].diario) return;   // el CBU es el de la propia cuenta
+    m.otroBanco=Object.assign({}, b, {pref, cbu:cbu[1], entra:m.importe>0});
+    n++;
+  });
+  if(n) log("Transferencias entre cuentas propias con el otro banco identificado por el CBU: "+n,"o");
+  if(sinMapa.length) log("Prefijos de CBU que no están en el mapa: "+[...new Set(sinMapa)].join(", "),"e");
+}
+
 /* Lo que el historial no sabe, lo sabe el padrón: si el CUIT del concepto es el de
    un cliente, es él. Va DESPUÉS del mapa aprendido y nunca lo pisa, porque el mapa
    captura algo que el padrón no puede: quién paga POR quién. Muchos cobros vienen del
@@ -358,7 +405,7 @@ async function resolverPorPadron(movs){
     ps=await rpc("res.partner","search_read",[[["vat","in",variantes]],["id","name","vat","customer_rank"]],{limit:0});
   }catch(e){ log("No pude consultar el padrón por CUIT: "+e.message,"e"); return; }
   const idx={};
-  ps.forEach(x=>{ const d=String(x.vat||"").replace(/D/g,""); if(!d) return; (idx[d]=idx[d]||[]).push(x); });
+  ps.forEach(x=>{ const d=String(x.vat||"").replace(/\D/g,""); if(!d) return; (idx[d]=idx[d]||[]).push(x); });
   let n=0;
   movs.forEach(m=>{
     if(!m.cuit||m.cliente) return;
@@ -408,8 +455,9 @@ function render(){
   const cerrados= M.filter(m=>m.yaEsta&&m.yaEsta.is_reconciled);   // cargados y conciliados
   const abiertos= M.filter(abierto);                               // todo lo que falta: nuevos + pendConc
   const porTipo={}; M.forEach(m=>{(porTipo[m.tipo]=porTipo[m.tipo]||[]).push(m);});
-  const listos=abiertos.filter(m=>m.tipo==="impuesto"||m.tipo==="cargo"||(m.cands.length===1));
-  const dudas =abiertos.filter(m=>m.cands.length>1||(m.cands.length===0&&(m.tipo==="cobro"||m.tipo==="echeq"||m.tipo==="interna"))||m.tipo==="otro");
+  const auto = m => m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1||(m.tipo==="interna"&&m.otroBanco);
+  const listos=abiertos.filter(auto);
+  const dudas =abiertos.filter(m=>!auto(m)&&(m.cands.length>1||m.cands.length===0&&["cobro","echeq","interna"].includes(m.tipo)||m.tipo==="otro"));
 
   app.innerHTML=
     zonaCarga()+
@@ -533,8 +581,9 @@ function panelAcciones(nuevos,pendConc,cerrados,listos,dudas){
       : 'Los '+ST.movs.length+' movimientos <b>ya estaban cargados</b>, pero <b>'+pendConc.length+'</b> siguen sin conciliar: les falta el recibo o el pago.';
 
   return '<div class="panel"><h3>⚙️ Qué se puede hacer ahora</h3>'+
-    '<div class="sub">Se carga <b>todo</b> el extracto (si no, el saldo del banco no cuadra) y se resuelve solo lo que no deja dudas. '+
-    'Lo ambiguo queda abajo para que lo decidas vos.</div>'+
+    '<div class="sub">Se carga <b>todo</b> el extracto (si no, el saldo del banco no cuadra) y se resuelve solo lo que no deja dudas: '+
+    'impuestos y cargos a su cuenta, cobros con un único recibo posible, y <b>transferencias entre cuentas propias</b> '+
+    '(crea la transferencia en Odoo y su contrapartida). Lo ambiguo queda abajo para que lo decidas vos.</div>'+
     (bCargar||bResolver ? '<div class="acciones">'+bCargar+bResolver+'</div>' : "")+
     '<div class="aviso info" style="margin:0">💡 <div>'+origen+' De los <b>'+abiertos+'</b> que dan trabajo, '+
     '<b>'+listos.length+'</b> tienen un destino único y <b>'+dudas.length+'</b> necesitan una decisión tuya'+
@@ -547,8 +596,9 @@ function filtrar(M){
   if(ST.filtro==="nuevo")   return M.filter(m=>!m.yaEsta);
   if(ST.filtro==="pend")    return M.filter(m=>m.yaEsta&&!m.yaEsta.is_reconciled);
   if(ST.filtro==="cerrado") return M.filter(m=>m.yaEsta&&m.yaEsta.is_reconciled);
-  if(ST.filtro==="listo")   return M.filter(m=>abierto(m)&&(m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1));
-  if(ST.filtro==="duda")    return M.filter(m=>abierto(m)&&(m.cands.length>1||(m.cands.length===0&&["cobro","echeq","interna"].includes(m.tipo))||m.tipo==="otro"));
+  const auto = m => m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1||(m.tipo==="interna"&&m.otroBanco);
+  if(ST.filtro==="listo")   return M.filter(m=>abierto(m)&&auto(m));
+  if(ST.filtro==="duda")    return M.filter(m=>abierto(m)&&!auto(m)&&(m.cands.length>1||m.cands.length===0&&["cobro","echeq","interna"].includes(m.tipo)||m.tipo==="otro"));
   if(ST.filtro.startsWith("t:")) return M.filter(m=>m.tipo===ST.filtro.slice(2));
   return M;
 }
@@ -567,6 +617,7 @@ function estadoDe(m){
     if(m.tipo==="cargo")    return pre+'<span class="badge b-warn">va a la liquidación</span>';
     if(m.cands.length===1)  return pre+'<span class="badge b-ok">'+(m.porCliente?"cliente + importe":"un candidato")+'</span>';
     if(m.cands.length>1)    return pre+'<span class="badge b-warn">'+m.cands.length+' candidatos</span>';
+    if(m.tipo==="interna"&&m.otroBanco) return pre+'<span class="badge b-ok">'+esc(m.otroBanco.nombre)+'</span>';
     if(["cobro","echeq","interna"].includes(m.tipo)) return pre+'<span class="badge b-bad">falta la contraparte</span>';
     return pre;
   }
@@ -574,6 +625,7 @@ function estadoDe(m){
   if(m.tipo==="cargo")    return '<span class="badge b-warn">va a la liquidación</span>';
   if(m.cands.length===1)  return '<span class="badge b-ok">'+(m.porCliente?"cliente + importe":"un candidato")+'</span>';
   if(m.cands.length>1)    return '<span class="badge b-warn">'+m.cands.length+' candidatos</span>';
+  if(m.tipo==="interna"&&m.otroBanco) return '<span class="badge b-ok">'+esc(m.otroBanco.nombre)+'</span>';
   if(["cobro","echeq","interna"].includes(m.tipo)) return '<span class="badge b-bad">falta la contraparte</span>';
   return '<span class="badge b-nu">sin clasificar</span>';
 }
@@ -591,6 +643,11 @@ function accionDe(m,i){
      hace el botón de arriba. Se dice, porque una celda vacía se lee como "no se puede". */
   if(m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1)
     return '<span class="muted" style="font-size:11.5px">lo resuelve el botón de arriba</span>';
+  /* Transferencia entre cuentas propias con el otro banco ya identificado: se puede
+     resolver de una, sin esperar el extracto del otro banco. */
+  if(m.tipo==="interna"&&m.otroBanco&&m.cands.length===0)
+    return '<button class="btn sm" onclick="crearTransferencia('+i+')" title="Crea la transferencia interna en Odoo. La contrapartida en '+esc(m.otroBanco.nombre)+' la genera Odoo sola, y después se concilia esta línea.">'+
+      'Transferir '+(m.otroBanco.entra?"desde":"a")+' '+esc(m.otroBanco.nombre.replace(/^Banco /,""))+'</button>';
   if(m.cands.length===0&&["echeq","interna"].includes(m.tipo))
     return '<span class="muted" style="font-size:11.5px">falta cargar '+(m.tipo==="echeq"?"el pago del cheque":"el otro extracto")+'</span>';
   return '<span class="muted">—</span>';
@@ -706,9 +763,22 @@ window.accionCargar=()=>conTrabajo(async()=>{
 /* Resuelve sólo lo inequívoco. Si hay más de un candidato, no toca nada. */
 window.accionResolver=()=>conTrabajo(async()=>{
   const B=BANCOS[ST.banco];
-  let imp=0,car=0,con=0;
+  let imp=0,car=0,con=0,trf=0;
   for(const m of ST.movs){
     if(!m.yaEsta || m.yaEsta.is_reconciled) continue;      // sólo lo cargado y sin resolver
+    /* Las transferencias entre cuentas propias van primero y por su propio camino:
+       crean el par en Odoo y después concilian, así que no pasan por la cuenta
+       transitoria de la misma forma que el resto. */
+    if(m.tipo==="interna" && m.otroBanco){
+      try{
+        const r=await transferenciaInterna(m);
+        await conciliarLinea(m, r.apunteId, r.cta);
+        m.yaEsta.is_reconciled=true; trf++;
+        log("Transferencia "+r.pago.name+" + "+r.par.name+" — "+money(m.importe)+" "+
+            (m.otroBanco.entra? "desde "+m.otroBanco.nombre : "hacia "+m.otroBanco.nombre));
+      }catch(e){ log("No se pudo transferir "+money(m.importe)+": "+(e.message||e),"e"); }
+      continue;
+    }
     const linea=m.yaEsta;
     const mv=await rpc("account.move","read",[[linea.move_id[0]],["line_ids"]]);
     const lins=await rpc("account.move.line","read",[mv[0].line_ids,["account_id"]]);
@@ -740,7 +810,7 @@ window.accionResolver=()=>conTrabajo(async()=>{
       con++; log("Conciliado "+money(m.importe)+(m.cliente?" — "+m.cliente.nombre:""));
     }
   }
-  log("Resueltos: "+imp+" impuestos · "+car+" cargos · "+con+" conciliaciones","o");
+  log("Resueltos: "+imp+" impuestos · "+car+" cargos · "+trf+" transferencias entre cuentas · "+con+" conciliaciones","o");
 });
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -877,6 +947,68 @@ window.crearRecibo=()=>conTrabajo(async()=>{
 });
 
 /* El usuario eligió cuál de los candidatos es el correcto. */
+/* ---------- TRANSFERENCIA ENTRE CUENTAS PROPIAS ----------
+   Se crea UN SOLO account.payment en el diario de ORIGEN con is_internal_transfer:
+   al postearlo Odoo crea el asiento del otro banco y concilia las dos patas de la
+   cuenta puente entre sí. Es exactamente lo que hace Federico desde Contabilidad
+   (verificado contra su par PBNK11/2026/00131 + PBCRED/2026/00441 del 25/09).
+
+   Después queda conciliar la línea del extracto contra la pata que quedó abierta:
+   Recibos pendientes si la plata ENTRA a este banco, Pagos pendientes si SALE. */
+async function transferenciaInterna(m){
+  const B=BANCOS[ST.banco], o=m.otroBanco;
+  const esteDiario=B.diario, otroDiario=o.diario;
+  /* El pago se crea siempre en el diario de donde SALE la plata. */
+  const origen = o.entra ? otroDiario : esteDiario;
+  const destino= o.entra ? esteDiario : otroDiario;
+  const metodo = o.entra ? o.metodo : B.metodoSalida;
+  if(!metodo) throw new Error("No tengo el método de pago Manual de "+(o.entra?o.nombre:B.nombre)+": hay que agregarlo al mapa antes de poder crear la transferencia.");
+  const id=await rpc("account.payment","create",[[{
+    date:m.fecha, amount:Math.abs(m.importe),
+    payment_type:"outbound", partner_type:"supplier", partner_id:EYG_PARTNER,
+    journal_id:origen, destination_journal_id:destino, is_internal_transfer:true,
+    payment_method_line_id:metodo, destination_account_id:CTA_PUENTE }]]);
+  const pid=Array.isArray(id)?id[0]:id;
+  await rpc("account.payment","action_post",[[pid]]);
+  const pago=(await rpc("account.payment","read",[[pid],["name","move_id","paired_internal_transfer_payment_id"]]))[0];
+  if(!pago.paired_internal_transfer_payment_id) throw new Error("Odoo no creó la contrapartida del pago "+pago.name+". No concilio nada: hay que mirarlo a mano.");
+  const par=(await rpc("account.payment","read",[[pago.paired_internal_transfer_payment_id[0]],["name","move_id"]]))[0];
+  /* La pata a conciliar está en el asiento de ESTE banco, no en el del otro. */
+  const mioEs = o.entra ? par : pago;
+  const cta   = o.entra ? CTA_RECIBOS : CTA_PAGOS;
+  const mv=(await rpc("account.move","read",[[mioEs.move_id[0]],["line_ids"]]))[0];
+  const lins=await rpc("account.move.line","read",[mv.line_ids,["id","account_id"]]);
+  const apunte=lins.find(x=>x.account_id[0]===cta);
+  if(!apunte) throw new Error("El asiento "+mioEs.name+" no tiene la pata esperada en "+(o.entra?"Recibos":"Pagos")+" pendientes.");
+  return {pago, par, apunteId:apunte.id, cta};
+}
+
+window.crearTransferencia=(i)=>conTrabajo(async()=>{
+  const m=ST.movs[i];
+  if(!m.otroBanco){ log("No pude identificar el otro banco: sin eso no creo nada","e"); return; }
+  if(!m.yaEsta){ log("Primero hay que cargar el movimiento a Odoo","e"); return; }
+  if(m.yaEsta.is_reconciled){ log("Ese movimiento ya está conciliado","e"); return; }
+  try{
+    const r=await transferenciaInterna(m);
+    log("Creada la transferencia "+r.pago.name+" y su contrapartida "+r.par.name+" — "+
+        (m.otroBanco.entra? m.otroBanco.nombre+" → "+BANCOS[ST.banco].nombre : BANCOS[ST.banco].nombre+" → "+m.otroBanco.nombre),"o");
+    await conciliarLinea(m, r.apunteId, r.cta);
+    log("Conciliado "+money(m.importe),"o");
+    m.yaEsta.is_reconciled=true;
+  }catch(e){ log("No se pudo: "+(e.message||e),"e"); }
+});
+
+/* Cambia la cuenta transitoria de la línea del extracto por la que corresponde y la
+   concilia contra el apunte. Es el mismo paso final de todas las acciones. */
+async function conciliarLinea(m, apunteId, cta){
+  const mv=await rpc("account.move","read",[[m.yaEsta.move_id[0]],["line_ids"]]);
+  const lins=await rpc("account.move.line","read",[mv[0].line_ids,["id","account_id"]]);
+  const tra=lins.find(x=>x.account_id[0]===CTA_TRANSIT);
+  if(!tra) throw new Error("La línea del extracto ya no tiene su pata en la cuenta transitoria");
+  await rpc("account.move.line","write",[[tra.id],{account_id:cta}]);
+  await rpc("account.move.line","reconcile",[[tra.id, apunteId]]);
+}
+
 window.elegirCand=(i)=>conTrabajo(async()=>{
   const m=ST.movs[i]; const sel=document.getElementById("sel"+i);
   if(!sel||!sel.value){ log("No elegiste ningún candidato"); return; }
