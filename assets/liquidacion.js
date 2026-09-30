@@ -130,7 +130,10 @@ async function gamificacion(uid,r,ofertasMes){
     pay(r.ini,r.fin), pay(r.d100,r.fin),
     rpc("sale.order","search_read",[[["user_id","=",uid],["state","in",["sale","done"]],["date_order",">=",r.d190],["date_order","<=",r.finH]]],{fields:["partner_id","date_order"],limit:0}).catch(()=>[]),
     rpc("res.partner","search_count",[[["user_id","=",uid],["type","=","contact"],["parent_id","=",false],["create_date",">=",r.ini],["create_date","<=",r.finH]]]).catch(()=>0),
-    recv([]), recv([["date_maturity","<=",r.topeVenc]]),
+    // una factura que vence HOY todavia no esta vencida: el corte es ESTRICTO. Con "<=" el motor
+    // penalizaba de mas y no coincidia con el panel de la comercial (Natividad, 30/9: $290.780 que
+    // vencian ese mismo dia movian 0,35 puntos de salud y $6.578 de comision).
+    recv([]), recv([["date_maturity","<",r.topeVenc]]),
     ids.length?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",r.diaConstancia+" 00:00:00"],["date","<=",r.diaConstancia+" 23:59:59"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id"],limit:0}).catch(()=>[]):[],
     uPartner?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","=",uPartner],["date",">=",r.ini+" 00:00:00"],["date","<=",r.finH],["body","like","EyGOFENV"]]],{fields:["date"],limit:0}).catch(()=>[]):[],
   ]);
