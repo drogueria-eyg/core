@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pagos con cheque · EyG Core</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/core.css?v=83">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">
+/* ══════════════════════════════════════════════════════════════════════════
+   1) EL PROVEEDOR Y SU DEUDA
+   ══════════════════════════════════════════════════════════════════════════ */
+window.buscarProv=async(txt)=>{
+  if(!txt||txt.length<3){ ST.opciones=null; render(); return; }
+  ST.opciones=await rpc("res.partner","search_read",
+    [[["supplier_rank",">",0],"|",["name","ilike",txt],["vat","like",txt.replace(/[^0-9]/g,"")]],["id","name","vat"]],{limit:14});
+  render();
+};
+window.elegirProv=(id,nombre)=>conTrabajo(async()=>{
+  ST.prov={id,nombre}; ST.opciones=null; ST.sel=new Set(); ST.retGan=null; ST.retIIBB=null; ST.cheques=[];
+  await cargarDeuda(id);
+});
+window.cambiarProv=()=>{ ST.prov=null; ST.facturas=[]; ST.sel=new Set(); ST.retGan=null; ST.retIIBB=null; ST.cheques=[]; ST.acum=null; render(); };
+
+async function cargarDeuda(pid){
+  /* Comprobantes abiertos del proveedor, de la más vieja a la más nueva, que es el
+     orden en que se imputa. El saldo vive al HABER de la cuenta Proveedores. */
+  const ls=await rpc("account.move.line","search_read",
+    [[["partner_id","=",pid],["account_id","=",CTA_PROV],["parent_state","=","posted"],
+      ["full_reconcile_id","=",false],["credit",">",0]],
+     ["move_id","date","date_maturity","credit","amount_residual"]],{limit:0,order:"date_maturity,date"});
+  const abiertas=ls.filter(l=>Math.abs(l.amount_residual)>0.005);
+  /* Hace falta el NETO SIN IVA de cada comprobante: la retención de Ganancias se
+     calcula sobre el neto, no sobre el total. */
+  const mids=[...new Set(abiertas.map(l=>l.move_id[0]))];
+  const movs={};
+  for(let i=0;i<mids.length;i+=200){
+    (await rpc("account.move","read",[mids.slice(i,i+200),["name","invoice_date","invoice_date_due","amount_total","amount_untaxed"]]))
+      .forEach(m=>movs[m.id]=m); }
+  const hoy=EYG.argToday();
+  ST.facturas=abiertas.map(l=>{ const m=movs[l.move_id[0]]||{};
+    const saldo=Math.abs(l.amount_residual), total=Math.abs(m.amount_total||saldo);
+    /* Si el comprobante está pago a medias, el neto se prorratea igual que el saldo. */
+    const neto=total?r2(Math.abs(m.amount_untaxed||0)*saldo/total):0;
+    const vto=m.invoice_date_due||l.date_maturity||l.date;
+    return {id:l.id, nombre:m.name||("apunte "+l.id), fecha:m.invoice_date||l.date, vence:vto,
+            saldo:r2(saldo), neto, vencida: vto && vto<hoy}; });
+  await cargarAcumulado(pid);
+  log("Traídos "+ST.facturas.length+" comprobantes abiertos de "+ST.prov.nombre);
+  render();
+}
+
+/* Cuánto se le retuvo YA a este proveedor en el mes, y sobre qué base. Sin esto el
+   mínimo no imponible se descontaría dos veces y la retención saldría de menos. */
+async function cargarAcumulado(pid){
+  ST.acum={base:0, ret:0, iibb:null};
+  try{
+    const mes=ST.fecha.slice(0,7);
+    const pays=await rpc("account.payment","search_read",
+      [[["partner_id","=",pid],["partner_type","=","supplier"],["state","=","posted"],
+        ["date",">=",mes+"-01"],["date","<=",mes+"-31"]],["id","name","date"]],{limit:0});
+    if(!pays.length) return;
+    const ws=await rpc("l10n_ar.payment.withholding","search_read",
+      [[["payment_id","in",pays.map(p=>p.id)]],["payment_id","amount","base_amount","tax_id"]],{limit:0});
+    ws.forEach(w=>{ const t=String(w.tax_id?w.tax_id[1]:"");
+      if(t.toLowerCase().indexOf("ganancias")>=0){ ST.acum.base+=w.base_amount||0; ST.acum.ret+=w.amount||0; } });
+    if(ST.acum.ret) log("Este mes ya se le retuvo "+money(ST.acum.ret)+" de Ganancias sobre una base de "+money(ST.acum.base));
+    /* La alícuota de IIBB que se le aplicó la última vez, como propuesta. */
+    const hist=await rpc("l10n_ar.payment.withholding","search_read",
+      [[["payment_id.partner_id","=",pid]],["amount","base_amount","tax_id"]],{limit:12,order:"id desc"});
+    const ii=hist.find(w=>String(w.tax_id?w.tax_id[1]:"").toLowerCase().indexOf("iibb")>=0);
+    if(ii&&ii.base_amount) ST.iibbHist=r2(ii.amount/ii.base_amount*10000)/100;
+  }catch(e){ log("No pude leer las retenciones del mes: "+(e.message||e),"e"); }
+}
+window.toggleFc=(id)=>{ ST.sel.has(id)?ST.sel.delete(id):ST.sel.add(id); ST.retGan=null; ST.retIIBB=null; render(); };
+window.tildarHasta=(i)=>{ ST.sel=new Set(ST.facturas.slice(0,i+1).map(f=>f.id)); ST.retGan=null; ST.retIIBB=null; render(); };
+window.tildarVencidas=()=>{ ST.sel=new Set(ST.facturas.filter(f=>f.vencida).map(f=>f.id)); ST.retGan=null; ST.retIIBB=null; render(); };
+
+/* ══════════════════════════════════════════════════════════════════════════
+   2) EL CÁLCULO
+   ══════════════════════════════════════════════════════════════════════════ */
+function elegidas(){ return ST.facturas.filter(f=>ST.sel.has(f.id)); }
+function calculo(){
+  const fs=elegidas();
+  const bruto=r2(fs.reduce((s,f)=>s+f.saldo,0));
+  const neto =r2(fs.reduce((s,f)=>s+f.neto ,0));
+  /* RG 830: la alícuota se aplica al acumulado del mes menos el mínimo, y se le
+     resta lo ya retenido. Así el mínimo se computa una sola vez por mes. */
+  const accBase=r2((ST.acum?ST.acum.base:0)+neto);
+  const yaRet  =r2(ST.acum?ST.acum.ret:0);
+  const ganSug =r2(Math.max(0,(accBase-RG830.mni)*RG830.alicuota-yaRet));
+  const iibbSug=ST.iibbHist!=null ? r2(neto*ST.iibbHist/100) : null;
+  const gan  = ST.retGan ==null ? ganSug  : ST.retGan;
+  const iibb = ST.retIIBB==null ? (iibbSug||0) : ST.retIIBB;
+  return {fs, bruto, neto, accBase, yaRet, ganSug, iibbSug, gan, iibb,
+          ret:r2(gan+iibb), pagar:r2(bruto-gan-iibb)};
+}
+window.setRet=(cual,v)=>{ const n=num(v); if(cual==="gan") ST.retGan=n; else ST.retIIBB=n; repintarCalc(); };
+window.volverSug=()=>{ ST.retGan=null; ST.retIIBB=null; render(); };
+
+/* ══════════════════════════════════════════════════════════════════════════
+   3) LA TANDA DE CHEQUES
+   Una fila por cheque, cargada a mano. Se valida cada una: número sin repetir
+   (ni entre las filas ni contra lo que ya está en Odoo), fecha de cobro dentro
+   de un rango razonable, y la suma tiene que dar exacto el total a pagar.
+
+   Los dos controles nacen de errores reales: en los 1.587 pagos con cheque de la
+   base hay 4 números repetidos y un cheque con fecha de cobro en el año 2206.
+   ══════════════════════════════════════════════════════════════════════════ */
+window.agregarCheque=()=>{ ST.cheques.push({n:"",f:"",i:""}); render(); };
+window.quitarCheque=(i)=>{ ST.cheques.splice(i,1); render(); };
+window.setCheque=(i,campo,v)=>{ if(!ST.cheques[i]) return; ST.cheques[i][campo]=v; repintarCuadre(); };
+window.repartir=()=>{
+  /* Reparte el total entre las filas que ya existen, dejando el ajuste en la última. */
+  const c=calculo(), n=ST.cheques.length;
+  if(!n){ log("Agregá al menos una fila de cheque","e"); return; }
+  const base=Math.floor(c.pagar/n*100)/100;
+  ST.cheques.forEach((ch,i)=>{ ch.i=String(i===n-1 ? r2(c.pagar-base*(n-1)) : base); });
+  render();
+};
+
+/* El certificado de retención es correlativo. Se busca el último y se sigue. */
+async function siguienteCertificado(){
+  try{
+    const ws=await rpc("l10n_ar.payment.withholding","search_read",
+      [[["name","like",PREFIJO_CERT]],["name"]],{limit:0});
+    let max=0;
+    ws.forEach(w=>{ const n=parseInt(String(w.name||"").split(PREFIJO_CERT).join(""),10); if(n>max) max=n; });
+    if(!max){ log("No encontré certificados anteriores: reviso antes de numerar","e"); return null; }
+    const sig=max+1;
+    return PREFIJO_CERT+String(sig).padStart(8,"0");
+  }catch(e){ log("No pude leer el último certificado: "+(e.message||e),"e"); return null; }
+}
+
+let _numsOdoo=null;
+async function numerosUsados(){
+  if(_numsOdoo) return _numsOdoo;
+  /* l10n_latam_check_number NO está almacenado: filtrar por él devuelve cualquier
+     cosa. Hay que traer los pagos con cheque y comparar del lado del cliente. */
+  const ps=await rpc("account.payment","search_read",
+    [[["payment_method_line_id","in",[BANCOS.credicoop.metodo,BANCOS.macro.metodo]]],
+     ["name","date","l10n_latam_check_number","amount","partner_id"]],{limit:0});
+  const m={};
+  ps.forEach(p=>{ const n=String(p.l10n_latam_check_number||"").replace(/^0+/,""); if(!n) return;
+    (m[n]=m[n]||[]).push(p); });
+  _numsOdoo=m; return m;
+}
+function validarCheques(usados){
+  const c=calculo(), res=[];
+  const vistos={};
+  const hoy=EYG.argToday();
+  const limite=new Date(hoy+"T12:00:00Z"); limite.setUTCFullYear(limite.getUTCFullYear()+2);
+  const limiteTxt=limite.toISOString().slice(0,10);
+  ST.cheques.forEach((ch,i)=>{
+    const e={n:null,f:null,i:null};
+    const n=String(ch.n||"").replace(/[^0-9]/g,"").replace(/^0+/,"");
+    if(!n) e.n="falta el número";
+    else if(vistos[n]!=null) e.n="repetido con la fila "+(vistos[n]+1);
+    else if(usados&&usados[n]) e.n="ya existe en Odoo ("+usados[n][0].name+", "+money(usados[n][0].amount)+")";
+    else vistos[n]=i;
+    const f=String(ch.f||"");
+    if(!f) e.f="falta la fecha";
+    else if(f.length!==10) e.f="fecha incompleta";
+    else if(f<hoy) e.f="es anterior a hoy";
+    else if(f>limiteTxt) e.f="está a más de 2 años";
+    const im=num(ch.i);
+    if(!im) e.i="falta el importe";
+    else if(im<0) e.i="no puede ser negativo";
+    res.push(e);
+  });
+  const suma=r2(ST.cheques.reduce((s,ch)=>s+num(ch.i),0));
+  return {filas:res, suma, dif:r2(c.pagar-suma), hayError:res.some(e=>e.n||e.f||e.i)};
+}
+let _val=null;
+window.revisarNumeros=()=>conTrabajo(async()=>{
+  const u=await numerosUsados();
+  const rep=[];
+  ST.cheques.forEach((ch,i)=>{ const n=String(ch.n||"").replace(/[^0-9]/g,"").replace(/^0+/,"");
+    if(n&&u[n]) rep.push("el "+n+" ya es de "+u[n][0].name); });
+  log(rep.length ? "Números ya usados: "+rep.join(" · ") : "Ninguno de los números está usado en Odoo","o"+(rep.length?"":""));
+  _val=u; render();
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   4) CONFIRMAR: un account.payment por cheque
+   Molde verificado contra los pagos de Federico (OP-X 7944 a 7953, Dnm Farma,
+   28/09/2026). La retención va en el PRIMER cheque de la tanda, que es como la
+   carga él: no se reparte entre todos.
+   ══════════════════════════════════════════════════════════════════════════ */
+window.confirmar=()=>conTrabajo(async()=>{
+  const B=BANCOS[ST.banco], c=calculo();
+  const u=await numerosUsados();
+  const v=validarCheques(u);
+  if(v.hayError){ log("Hay filas con error: no se crea nada","e"); render(); return; }
+  if(Math.abs(v.dif)>0.005){ log("Los cheques suman "+money(v.suma)+" y hay que pagar "+money(c.pagar)+": difieren en "+money(v.dif),"e"); return; }
+  if(!c.fs.length){ log("No hay comprobantes tildados","e"); return; }
+
+  /* La retención va en el PRIMER cheque de la tanda, que es como la carga Federico.
+     El pago sale por el importe del cheque y la retención se suma aparte: entre los
+     dos imputan el bruto de las facturas a la cuenta Proveedores. */
+  const cert = c.gan>0 ? await siguienteCertificado() : null;
+  const creados=[];
+  for(let i=0;i<ST.cheques.length;i++){
+    const ch=ST.cheques[i];
+    const vals={
+      date:ST.fecha, amount:num(ch.i),
+      payment_type:"outbound", partner_type:"supplier", partner_id:ST.prov.id,
+      journal_id:B.diario, payment_method_line_id:B.metodo,
+      destination_account_id:CTA_PROV,
+      l10n_latam_document_type_id:DOC_ORDEN,
+      l10n_latam_check_number:String(ch.n).replace(/[^0-9]/g,""),
+      l10n_latam_check_payment_date:ch.f,
+    };
+    if(i===0){
+      const rets=[];
+      if(c.gan>0)  rets.push([0,0,{tax_id:TAX_GAN,  base_amount:c.neto, amount:c.gan,  name:cert}]);
+      if(c.iibb>0) rets.push([0,0,{tax_id:TAX_IIBB, base_amount:c.neto, amount:c.iibb, name:cert}]);
+      if(rets.length) vals.l10n_ar_withholding_line_ids=rets;
+    }
+    const id=await rpc("account.payment","create",[[vals]]);
+    const pid=Array.isArray(id)?id[0]:id;
+    await rpc("account.payment","action_post",[[pid]]);
+    const p=(await rpc("account.payment","read",[[pid],["name","move_id"]]))[0];
+    creados.push(p);
+    log("Cheque "+ch.n+" por "+money(num(ch.i))+" a cobrar el "+ch.f+" — "+p.name,"o");
+  }
+  /* Imputar: las patas de Proveedores de los pagos contra las de los comprobantes. */
+  const patas=[];
+  for(const p of creados){
+    const mv=(await rpc("account.move","read",[[p.move_id[0]],["line_ids"]]))[0];
+    const ls=await rpc("account.move.line","read",[mv.line_ids,["id","account_id"]]);
+    const l=ls.find(x=>x.account_id[0]===CTA_PROV); if(l) patas.push(l.id);
+  }
+  if(patas.length){
+    await rpc("account.move.line","reconcile",[patas.concat(c.fs.map(f=>f.id))]);
+    log("Imputado a "+c.fs.length+" comprobante(s) de "+ST.prov.nombre,"o");
+  }
+  if(c.ret>0) log("Retención de "+money(c.ret)+" cargada en "+creados[0].name+
+    (cert?" (certificado "+cert+")":"")+" — Ganancias "+money(c.gan)+(c.iibb?" · IIBB "+money(c.iibb):""),"o");
+  log("Listo: "+creados.length+" cheque(s) por "+money(v.suma),"o");
+  ST.cheques=[]; ST.sel=new Set(); _numsOdoo=null;
+  await cargarDeuda(ST.prov.id);
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   RENDER
+   ══════════════════════════════════════════════════════════════════════════ */
+function render(){
+  const app=document.getElementById("app"); if(!app) return;
+  app.innerHTML = bloqueProveedor() + (ST.prov?bloqueDeuda()+bloqueCalculo()+bloqueCheques():"") +
+    '<div class="panel"><h3>📋 Registro de lo que se hizo</h3><div class="log" id="log"></div></div>';
+  pintarLog();
+}
+function bloqueProveedor(){
+  const ops=Object.keys(BANCOS).map(k=>'<option value="'+k+'"'+(k===ST.banco?" selected":"")+'>'+
+    esc(BANCOS[k].nombre)+'</option>').join("");
+  let h='<div class="panel"><div class="paso">Paso 1</div><h3>🏭 De qué proveedor y de qué banco</h3>';
+  if(!ST.prov){
+    h+='<div class="sub">Buscá el proveedor al que le vas a pagar. Se listan solo los que tienen ese rol en Odoo.</div>'+
+      '<input class="busca" placeholder="Nombre del proveedor o CUIT…" oninput="buscarProv(this.value)" autocomplete="off">'+
+      (ST.opciones?'<div class="opts">'+(ST.opciones.length?ST.opciones.map(o=>
+        '<button class="opt" onclick="elegirProv('+o.id+','+JSON.stringify(o.name).split('"').join("&quot;")+')">'+
+        esc(o.name)+(o.vat?' <span class="muted">· '+esc(o.vat)+'</span>':"")+'</button>').join("")
+        :'<div class="muted" style="padding:8px">Ningún proveedor con ese nombre o CUIT.</div>')+'</div>':"");
+  } else {
+    h+='<div class="prov">🏭 <b>'+esc(ST.prov.nombre)+'</b>'+
+      '<button class="btn gh sm" onclick="cambiarProv()">Cambiar</button>'+
+      '<span style="margin-left:auto">Banco <select onchange="ST.banco=this.value;render()">'+ops+'</select></span>'+
+      '<span>Fecha <input class="ch f" type="date" value="'+esc(ST.fecha)+'" onchange="ST.fecha=this.value;render()"></span></div>';
+  }
+  return h+'</div>';
+}
+function bloqueDeuda(){
+  const tot=r2(ST.facturas.reduce((s,f)=>s+f.saldo,0));
+  const venc=r2(ST.facturas.filter(f=>f.vencida).reduce((s,f)=>s+f.saldo,0));
+  const c=calculo();
+  let h='<div class="panel"><div class="paso">Paso 2</div><h3>🧾 Qué le debemos</h3>'+
+    '<div class="deuda"><span>Deuda total <b>'+money(tot)+'</b></span>'+
+    '<span>Vencido <b style="color:var(--bad)">'+money(venc)+'</b></span>'+
+    '<span>'+ST.facturas.length+' comprobantes abiertos</span>'+
+    '<span>Tildados <b>'+c.fs.length+'</b> por <b>'+money(c.bruto)+'</b></span></div>';
+  if(!ST.facturas.length) return h+'<div class="aviso ok">✔️ <div>Este proveedor no tiene comprobantes abiertos.</div></div></div>';
+  h+='<div class="acciones"><button class="btn gh sm" onclick="tildarVencidas()">Tildar lo vencido</button>'+
+     '<button class="btn gh sm" onclick="ST.sel=new Set();ST.retGan=null;ST.retIIBB=null;render()">Destildar todo</button></div>'+
+    '<div style="overflow:auto"><table class="fc"><thead><tr><th></th><th>Comprobante</th><th>Fecha</th><th>Vence</th>'+
+    '<th class="num">Saldo</th><th class="num">Neto sin IVA</th><th></th></tr></thead><tbody>'+
+    ST.facturas.map((f,i)=>'<tr class="'+(ST.sel.has(f.id)?"on":"")+(f.vencida?" venc":"")+'">'+
+      '<td><input type="checkbox" '+(ST.sel.has(f.id)?"checked":"")+' onchange="toggleFc('+f.id+')"></td>'+
+      '<td>'+esc(f.nombre)+'</td><td>'+esc(f.fecha||"")+'</td>'+
+      '<td>'+esc(f.vence||"")+(f.vencida?' <span class="chip-v">vencida</span>':"")+'</td>'+
+      '<td class="num">'+money(f.saldo)+'</td><td class="num muted">'+money(f.neto)+'</td>'+
+      '<td><button class="btn gh sm" onclick="tildarHasta('+i+')" title="Tilda desde la más vieja hasta ésta.">hasta acá</button></td></tr>').join("")+
+    '</tbody></table></div>'+
+    '<div class="nota">Ordenados del más viejo al más nuevo, que es el orden en que se imputa. '+
+    'El <b>neto sin IVA</b> es la base sobre la que se calcula la retención de Ganancias.</div></div>';
+  return h;
+}
+function bloqueCalculo(){
+  const c=calculo();
+  const mni = (ST.acum&&ST.acum.base>=RG830.mni) ? "ya consumido este mes" : "se descuenta una vez por mes";
+  return '<div class="panel" id="p-calc"><div class="paso">Paso 3</div><h3>🧮 Cuánto hay que pagar</h3>'+
+    '<div class="sub">La retención se calcula por la <b>RG 830</b>, régimen de <i>'+esc(RG830.regimen)+'</i>: '+
+    '2% sobre el neto sin IVA, con un mínimo no imponible de '+money(RG830.mni)+' que '+mni+'. '+
+    'El número es editable: si Fede lo cambia, manda el suyo.</div>'+
+    contenidoCalc()+'</div>';
+}
+function contenidoCalc(){
+  const c=calculo();
+  const editado=(ST.retGan!=null||ST.retIIBB!=null);
+  return '<div class="calc" id="calc">'+
+    '<div>Comprobantes tildados ('+c.fs.length+')</div><div class="v">'+money(c.bruto)+'</div>'+
+    '<div class="sug">neto sin IVA, que es la base</div><div class="v sug">'+money(c.neto)+'</div>'+
+    (ST.acum&&ST.acum.ret?'<div class="sug">ya retenido este mes sobre '+money(ST.acum.base)+'</div><div class="v sug">'+money(ST.acum.ret)+'</div>':"")+
+    '<div>Retención Ganancias <span class="sug">(sugerido '+money(c.ganSug)+')</span></div>'+
+    '<div class="v"><input class="ret" value="'+money(c.gan).replace("$","")+'" onchange="setRet(\'gan\',this.value)"></div>'+
+    '<div>Retención IIBB '+(c.iibbSug!=null?'<span class="sug">(última vez '+ST.iibbHist+'% = '+money(c.iibbSug)+')</span>':'<span class="sug">(sin antecedente)</span>')+'</div>'+
+    '<div class="v"><input class="ret" value="'+money(c.iibb).replace("$","")+'" onchange="setRet(\'iibb\',this.value)"></div>'+
+    '<div class="tot">A pagar con cheques</div><div class="v tot">'+money(c.pagar)+'</div>'+
+    '</div>'+
+    (editado?'<div class="acciones" style="margin-top:9px"><button class="btn gh sm" onclick="volverSug()">Volver al calculado</button></div>':"");
+}
+function repintarCalc(){ const el=document.getElementById("calc");
+  if(el&&el.parentNode) el.parentNode.innerHTML=contenidoCalc(); repintarCuadre(); }
+
+function bloqueCheques(){
+  const c=calculo();
+  if(!c.fs.length) return '<div class="panel"><div class="paso">Paso 4</div><h3>💳 Los cheques</h3>'+
+    '<div class="aviso info">ℹ️ <div>Primero tildá los comprobantes que va a cancelar este pago.</div></div></div>';
+  return '<div class="panel"><div class="paso">Paso 4</div><h3>💳 Los cheques que se emitieron</h3>'+
+    '<div class="sub">Una fila por cheque, con el número y la fecha en que se puede cobrar. '+
+    'Los cheques son diferidos: en esta casa el plazo va de 28 a 65 días. '+
+    'Se controla que el número no esté usado y que la suma dé exacto.</div>'+
+    '<div class="acciones"><button class="btn" onclick="agregarCheque()">+ Agregar cheque</button>'+
+    (ST.cheques.length?'<button class="btn gh" onclick="repartir()" title="Divide el total entre las filas que hay, ajustando en la última.">Repartir el total entre las '+ST.cheques.length+'</button>'+
+      '<button class="btn gh" onclick="revisarNumeros()">Revisar los números contra Odoo</button>':"")+'</div>'+
+    (ST.cheques.length?tablaCheques():'<div class="muted" style="padding:10px 0">Todavía no agregaste ningún cheque.</div>')+
+    '<div id="cuadre">'+contenidoCuadre()+'</div></div>';
+}
+function tablaCheques(){
+  const v=validarCheques(_val);
+  return '<div style="overflow:auto"><table class="fc"><thead><tr><th>#</th><th>N° de cheque</th><th>Se cobra el</th>'+
+    '<th class="num">Importe</th><th></th></tr></thead><tbody>'+
+    ST.cheques.map((ch,i)=>{ const e=v.filas[i]||{};
+      return '<tr><td class="muted">'+(i+1)+'</td>'+
+      '<td><input class="ch n'+(e.n?" mal":"")+'" value="'+esc(ch.n)+'" placeholder="40855518" onchange="setCheque('+i+',\'n\',this.value)" title="'+esc(e.n||"")+'">'+
+        (e.n?'<div class="muted" style="font-size:10.5px;color:var(--bad)">'+esc(e.n)+'</div>':"")+'</td>'+
+      '<td><input class="ch f'+(e.f?" mal":"")+'" type="date" value="'+esc(ch.f)+'" onchange="setCheque('+i+',\'f\',this.value)">'+
+        (e.f?'<div class="muted" style="font-size:10.5px;color:var(--bad)">'+esc(e.f)+'</div>':"")+'</td>'+
+      '<td class="num"><input class="ch i'+(e.i?" mal":"")+'" value="'+esc(ch.i)+'" placeholder="1.058.250,00" onchange="setCheque('+i+',\'i\',this.value)"></td>'+
+      '<td><button class="btn gh sm" onclick="quitarCheque('+i+')">quitar</button></td></tr>'; }).join("")+
+    '</tbody></table></div>';
+}
+function contenidoCuadre(){
+  const c=calculo(), v=validarCheques(_val);
+  if(!ST.cheques.length) return "";
+  const ok=Math.abs(v.dif)<0.005 && !v.hayError;
+  return '<div class="cuadre '+(ok?"ok":"mal")+'">'+
+    '<span>Suma de los cheques <b>'+money(v.suma)+'</b></span>'+
+    '<span>A pagar <b>'+money(c.pagar)+'</b></span>'+
+    '<span>'+(Math.abs(v.dif)<0.005?"✔ cierra exacto":"Diferencia <b>"+money(v.dif)+"</b>")+'</span>'+
+    (v.hayError?'<span>⚠️ hay filas con error</span>':"")+
+    '</div>'+
+    '<div class="acciones" style="margin-top:11px">'+
+      '<button class="btn wide" onclick="confirmar()" '+(ok&&!ST.trabajando?"":"disabled")+'>'+
+      (ST.trabajando?'<span class="spin"></span> ':"")+
+      'Crear '+ST.cheques.length+' cheque'+(ST.cheques.length===1?"":"s")+' por '+money(v.suma)+
+      (c.ret>0?' + retención '+money(c.ret):"")+'</button></div>'+
+    (ok?'<div class="nota">Se va a crear <b>una orden de pago por cheque</b> en '+esc(BANCOS[ST.banco].nombre)+
+      ', imputada a los '+c.fs.length+' comprobante(s) tildados'+
+      (c.ret>0?', con la retención en el primero de la tanda':"")+'. Se puede deshacer solo desde Odoo.</div>':"");
+}
+function repintarCuadre(){ const el=document.getElementById("cuadre"); if(el) el.innerHTML=contenidoCuadre(); }
+
+EYG.guard(["finanzas","direccion","admin"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(function(){
+  render();
+});
+</script>
+</body>
+</html>
+
+
+<script src="../assets/core.js?v=102"></script>
+<style>
+  :root{
+    --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
+    --agua:#E2F1EF; --coral:#EC8B5E; --ink:#0E1F1D; --gris:#5F716E; --gris2:#8A9A97;
+    --surface:#fff; --bg:#F4F8F7; --line:#DCE8E6; --radius:12px;
+    --shadow:0 1px 2px rgba(6,65,62,.05), 0 6px 24px rgba(6,65,62,.06);
+    --ok:#1F8A5F; --okbg:#E7F6EC; --warn:#B7791F; --warnbg:#FBF3D9;
+    --bad:#C0392B; --badbg:#FBE2E1; --info:#5B8DEF; --infobg:#EAF1FD;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Archivo',system-ui,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+  .topbar{background:var(--teal-deep);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:13px;position:sticky;top:0;z-index:30}
+  .mono{font-family:Georgia,serif;font-weight:700;font-size:23px;letter-spacing:.5px;line-height:1}
+  .mono .y{color:var(--aqua)}
+  .topbar .tag{font-weight:700;font-size:11px;letter-spacing:2px;text-transform:uppercase;background:rgba(255,255,255,.14);padding:3px 9px;border-radius:20px}
+  .topbar .title{font-weight:700;font-size:15px;margin-left:4px}
+  .topbar .back{margin-left:auto;color:#fff;text-decoration:none;font-size:13px;font-weight:600;opacity:.85}
+  .topbar .back:hover{opacity:1}
+  .wrap{max-width:1320px;margin:0 auto;padding:20px 22px 90px}
+
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 18px;margin-bottom:16px}
+  .panel h3{font-size:14.5px;font-weight:800;color:var(--teal-deep);margin-bottom:3px;display:flex;align-items:center;gap:7px}
+  .panel .sub{font-size:12px;color:var(--gris);margin-bottom:14px;line-height:1.5}
+
+  /* zona de carga */
+  .drop{border:2px dashed var(--teal-med);border-radius:14px;background:linear-gradient(180deg,#F7FCFB,#EDF7F5);
+        padding:28px 22px;text-align:center;cursor:pointer;transition:.15s}
+  .drop:hover,.drop.over{border-color:var(--teal);background:#E6F4F2;transform:translateY(-1px)}
+  .drop .ic{font-size:34px;line-height:1}
+  .drop .t{font-size:15px;font-weight:800;color:var(--teal-deep);margin-top:8px}
+  .drop .s{font-size:12.5px;color:var(--gris);margin-top:4px}
+  .drop input{display:none}
+  .selbanco{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 12px;background:#F7FBFA;border:1px solid var(--line);border-radius:10px}
+  .selbanco label{font-size:12px;font-weight:800;color:var(--teal-deep);display:flex;align-items:center;gap:8px;cursor:help;text-transform:uppercase;letter-spacing:.5px}
+  .selbanco select{font-family:inherit;font-size:13px;font-weight:700;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);cursor:pointer}
+  .selbanco .cta-num{font-size:11.5px;color:var(--gris);font-weight:600;cursor:help}
+  .archivos{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}
+  .arch{font-size:11.5px;font-weight:700;background:var(--agua);color:var(--teal-deep);padding:4px 10px;border-radius:20px;cursor:help}
+  .arch b{background:rgba(4,135,130,.16);padding:0 5px;border-radius:9px;margin-left:3px}
+
+  /* KPIs */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:11px;margin-bottom:16px}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:13px 14px;box-shadow:var(--shadow);text-align:left;font-family:inherit;cursor:pointer;transition:transform .12s,box-shadow .12s;border-left:3px solid var(--teal-med)}
+  .kpi:hover{transform:translateY(-2px);box-shadow:0 4px 8px rgba(6,65,62,.09),0 12px 30px rgba(6,65,62,.10)}
+  .kpi.on{border-color:var(--teal);background:var(--agua)}
+  .kpi.ok{border-left-color:var(--ok)} .kpi.warn{border-left-color:var(--warn)}
+  .kpi.bad{border-left-color:var(--bad)} .kpi.dup{border-left-color:var(--info)}
+  .kpi .l{font-size:10.5px;color:var(--gris);font-weight:700;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:5px}
+  .kpi .n{font-size:21px;font-weight:800;line-height:1.15;margin-top:5px}
+  .kpi .s{font-size:11px;color:var(--gris2);font-weight:600;margin-top:2px}
+  .neg{color:var(--bad)}.pos{color:var(--ok)}
+
+  /* avisos */
+  .aviso{border-radius:10px;padding:11px 14px;font-size:12.5px;line-height:1.55;margin-bottom:12px;display:flex;gap:9px;align-items:flex-start}
+  .aviso.ok{background:var(--okbg);border:1px solid #BFE3CD;color:#14603F}
+  .aviso.warn{background:var(--warnbg);border:1px solid #EAD9A0;color:#8A6D1A}
+  .aviso.bad{background:var(--badbg);border:1px solid #F0C3C0;color:#8E2A20}
+  .aviso.info{background:var(--infobg);border:1px solid #C6D8F8;color:#2E5AA8}
+  .aviso b{font-weight:800}
+
+  /* barra de composicion */
+  .compo{display:flex;height:26px;border-radius:7px;overflow:hidden;margin:4px 0 8px;border:1px solid var(--line)}
+  .compo div{display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:800;color:#fff;cursor:pointer;transition:.12s}
+  .compo div:hover{filter:brightness(1.12)}
+  .leyenda{display:flex;flex-wrap:wrap;gap:12px;font-size:11.5px;color:var(--gris);font-weight:600}
+  .leyenda span{display:flex;align-items:center;gap:5px}
+  .leyenda i{width:10px;height:10px;border-radius:3px;display:inline-block}
+
+  /* tabla */
+  .tw{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:900px}
+  thead th{background:#F1F7F6;color:var(--teal-deep);font-weight:800;font-size:11px;text-transform:uppercase;letter-spacing:.4px;
+           padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap;cursor:help}
+  tbody td{padding:9px 10px;border-bottom:1px solid #EEF4F3;vertical-align:top}
+  tbody tr:hover{background:#FAFDFC}
+  tbody tr:last-child td{border-bottom:0}
+  td.r,th.r{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .muted{color:var(--gris2)}
+  .cpto{max-width:330px;line-height:1.4}
+  .cpto .cli{font-size:11px;font-weight:800;color:var(--teal-deep);display:block;margin-top:2px}
+
+  .badge{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:800;padding:2px 7px;border-radius:20px;white-space:nowrap;text-transform:uppercase;letter-spacing:.3px}
+  .b-ok{background:var(--okbg);color:#14603F} .b-warn{background:var(--warnbg);color:#8A6D1A}
+  .b-bad{background:var(--badbg);color:#8E2A20} .b-dup{background:var(--infobg);color:#2E5AA8}
+  .b-nu{background:#EDF3F2;color:var(--gris)}
+
+  .btn{font-family:inherit;font-size:12px;font-weight:700;padding:6px 12px;border-radius:8px;border:1px solid var(--teal);
+       background:var(--teal);color:#fff;cursor:pointer;white-space:nowrap}
+  .btn:hover{background:var(--teal-deep)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn.gh{background:#fff;color:var(--teal-deep)}
+  .btn.gh:hover{background:var(--agua)}
+  .btn.sm{font-size:11px;padding:4px 9px}
+  .btn.wide{width:100%;padding:11px;font-size:13.5px}
+  .acciones{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:14px}
+
+  select.cand{font-family:inherit;font-size:11.5px;padding:4px 7px;border:1px solid var(--line);border-radius:7px;background:#fff;max-width:280px}
+
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .cargando{text-align:center;padding:40px;color:var(--gris);font-size:13px}
+
+  .log{background:#0E1F1D;color:#9FE8DF;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.6;
+       border-radius:10px;padding:12px 14px;max-height:230px;overflow:auto;margin-top:12px;white-space:pre-wrap}
+  .log .e{color:#FF9B8F} .log .o{color:#8FE3A8}
+
+  /* panel de resolución */
+  .resolver{border:2px solid var(--teal);box-shadow:0 6px 28px rgba(4,135,130,.16)}
+  .movres{display:flex;align-items:center;gap:13px;flex-wrap:wrap;background:#F4FAF9;border:1px solid var(--line);
+          border-radius:9px;padding:9px 12px;margin-bottom:13px;font-size:12.5px}
+  .movres b{font-size:16px;font-variant-numeric:tabular-nums}
+  .movres .cp{color:var(--gris);flex:1;min-width:180px}
+  .busca{width:100%;font-family:inherit;font-size:13.5px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;margin-top:4px}
+  .busca:focus{outline:none;border-color:var(--teal)}
+  .opts{display:flex;flex-direction:column;gap:3px;margin-top:8px;max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:9px;padding:5px}
+  .opt{font-family:inherit;font-size:12.5px;text-align:left;padding:7px 10px;border:0;background:none;border-radius:7px;cursor:pointer;color:var(--ink)}
+  .opt:hover{background:var(--agua)}
+  .clienteEl{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:13.5px}
+  .facs{display:flex;flex-direction:column;gap:4px;max-height:290px;overflow:auto;border:1px solid var(--line);border-radius:9px;padding:6px}
+  .fac{display:grid;grid-template-columns:24px 1fr auto auto;gap:10px;align-items:center;font-family:inherit;font-size:12.5px;
+       text-align:left;padding:7px 9px;border:0;background:none;border-radius:7px;cursor:pointer;color:var(--ink)}
+  .fac>*{min-width:0}
+  .fac:hover{background:#F4FAF9}
+  .fac.on{background:var(--agua);font-weight:700}
+  .fac .tk{font-size:15px;color:var(--teal)}
+  .fac .fn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fac .fd{font-size:11px;white-space:nowrap}
+  .fac .fm{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+  .cuadre{margin-top:11px;border-radius:9px;padding:10px 13px;font-size:12.5px;border:1px solid}
+  .cuadre.ok{background:var(--okbg);border-color:#BFE3CD}
+  .cuadre.warn{background:var(--warnbg);border-color:#EAD9A0}
+  .cuadre.bad{background:var(--badbg);border-color:#F0C3C0}
+  .cuadre div{display:flex;justify-content:space-between;padding:2px 0}
+  .cuadre b{font-variant-numeric:tabular-nums}
+  .cuadre .dif{border-top:1px dashed rgba(0,0,0,.18);margin-top:5px;padding-top:6px;font-weight:800}
+  .tot-sec{margin-left:auto;font-size:12.5px;font-weight:800;color:var(--gris);font-variant-numeric:tabular-nums}
+  .seccion-conc h3{user-select:none}
+  .seccion-conc h3:hover{color:var(--teal)}
+</style>
+<style>
+  /* propios de esta pantalla */
+  .mt .paso{border-left:3px solid var(--teal);padding-left:11px;margin:0 0 6px;font-size:11px;letter-spacing:.7px;
+    text-transform:uppercase;color:var(--teal-deep);font-weight:900}
+  .mt .prov{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--agua);border:1px solid var(--line);
+    border-radius:10px;padding:10px 13px;font-size:13.5px}
+  .mt .deuda{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 4px;font-size:12.5px;color:var(--gris)}
+  .mt .deuda b{color:var(--ink);font-variant-numeric:tabular-nums}
+  .mt table.fc{width:100%;border-collapse:collapse;font-size:12.5px}
+  .mt table.fc th{text-align:left;font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--gris2);
+    font-weight:800;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+  .mt table.fc td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+  .mt table.fc td.num,.mt table.fc th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .mt table.fc tr.on{background:var(--agua)}
+  .mt table.fc tr.venc td{color:var(--bad)}
+  .mt .chip-v{font-size:10px;font-weight:800;padding:2px 6px;border-radius:99px;background:var(--badbg);color:var(--bad)}
+  .mt .calc{display:grid;grid-template-columns:1fr auto;gap:5px 18px;font-size:13.5px;max-width:520px;margin:4px 0 0}
+  .mt .calc .v{text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
+  .mt .calc .tot{border-top:2px solid var(--ink);padding-top:7px;margin-top:5px;font-size:16px;font-weight:900}
+  .mt .calc .sug{font-size:11.5px;color:var(--gris2)}
+  .mt input.ret{width:130px;text-align:right;font-family:inherit;font-size:13px;font-weight:700;padding:5px 8px;
+    border:1px solid var(--line);border-radius:7px;font-variant-numeric:tabular-nums}
+  .mt input.ch{font-family:inherit;font-size:12.5px;padding:5px 7px;border:1px solid var(--line);border-radius:7px}
+  .mt input.ch.n{width:110px} .mt input.ch.f{width:135px} .mt input.ch.i{width:130px;text-align:right;font-variant-numeric:tabular-nums}
+  .mt input.ch.mal{border-color:var(--bad);background:var(--badbg)}
+  .mt .cuadre{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 13px;border-radius:10px;
+    border:1px solid var(--line);font-size:13.5px;font-weight:700;margin:10px 0 0}
+  .mt .cuadre.ok{background:var(--okbg);border-color:#BFE3CD;color:#14603F}
+  .mt .cuadre.mal{background:var(--badbg);border-color:#EFC9C7;color:var(--bad)}
+</style>
+</head>
+<body>
+<div class="mt">
+<div class="top">
+  <span class="title">Pagos con cheque a proveedores</span>
+  <a class="back" href="../index.html">← Volver</a>
+</div>
+<div class="wrap" id="app">
+  <div class="cargando">Cargando…</div>
+</div>
+<script>
+const money=n=>"$"+(n||0).toLocaleString("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2});
+const esc=EYG.esc, rpc=EYG.rpc;
+const r2=n=>Math.round((n||0)*100)/100;
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CONFIGURACIÓN
+   Relevado el 30/09/2026 sobre los 1.587 pagos con cheque propio de la base.
+   Un cheque emitido es un account.payment outbound con el método "Cheques" del
+   diario del banco: deja Proveedores al debe y Pagos pendientes al haber. Cuando
+   el banco lo cobra, la línea del extracto se concilia contra Pagos pendientes.
+   ══════════════════════════════════════════════════════════════════════════ */
+const CTA_PROV=148;          // 2.1.1.01.010 Proveedores
+const CTA_PAGOS=351;         // 1.1.1.02.004 Pagos pendientes
+const DOC_ORDEN=148;         // ORDEN DE PAGO X
+const BANCOS={
+  credicoop:{nombre:"Banco Credicoop", diario:24, metodo:22, usos:1125},
+  macro:    {nombre:"Banco Macro",     diario:26, metodo:28, usos:462},
+};
+/* RG 830, Anexo II inciso f — ENAJENACIÓN DE BIENES MUEBLES Y BIENES DE CAMBIO.
+   Es el régimen que corresponde a las compras de EyG. Alícuota 2% sobre el neto
+   sin IVA, con un mínimo no imponible de $224.000 que se computa UNA VEZ POR MES
+   y por proveedor: si ya se consumió con un pago anterior del mismo mes, no se
+   descuenta de nuevo.
+
+   Verificado contra los pagos reales de septiembre 2026: Denver Farma 3 de 3,
+   El Español 4 de 4, Ofar 5 de 5, Grupo Farmacéutico y Fideicomiso 100%. */
+const RG830={mni:224000, alicuota:0.02, regimen:"Enajenación de bienes muebles y bienes de cambio"};
+const TAX_GAN=76;            // "Retención Ganancias Aplicada" — es el que usan los 39 pagos a proveedor
+const TAX_IIBB=89;           // "Ret IIBB Santa Fe S"
+const PREFIJO_CERT="RET-GAN-";
+/* IIBB Santa Fe NO se calcula: la alícuota depende del padrón de la provincia y en
+   esta base aparece 0,7% o 2,75% según el proveedor. Se propone la que se le aplicó
+   la última vez y la persona confirma. */
+
+const ST={banco:"credicoop", prov:null, opciones:null, buscando:false,
+  facturas:[], sel:new Set(), retGan:null, retIIBB:null, iibbHist:null,
+  acum:null, cheques:[], fecha:EYG.argToday(), trabajando:false, logs:[]};
+
+function log(t,k){ ST.logs.unshift({t,k:k||"",h:new Date().toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}); pintarLog(); }
+function pintarLog(){ const el=document.getElementById("log"); if(!el) return;
+  el.innerHTML=ST.logs.map(l=>'<div class="l '+l.k+'"><span class="h">'+l.h+'</span>'+esc(l.t)+'</div>').join("")||'<div class="muted">Todavía no se hizo nada.</div>'; }
+const conTrabajo=fn=>{ if(ST.trabajando) return; ST.trabajando=true; render();
+  Promise.resolve().then(fn).catch(e=>log("Error: "+(e.message||e),"e")).finally(()=>{ ST.trabajando=false; render(); }); };
+/* Acepta 1.058.250,00 y 1058250.00: decide por el último separador. */
+function num(s){ const t=String(s==null?"":s).replace(/\s/g,"").replace(/\$/g,""); if(!t) return 0;
+  const c=t.lastIndexOf(","), p=t.lastIndexOf(".");
+  let v=t;
+  if(c>p) v=t.split(".").join("").split(",").join(".");
+  else if(p>c && t.length-p-1<=2) v=t.split(",").join("");
+  else v=t.split(".").join("").split(",").join("");
+  const n=parseFloat(v); return isNaN(n)?0:n; }
+</script>

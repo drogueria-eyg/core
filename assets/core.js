@@ -566,6 +566,17 @@ window.EYG = (function(){
     {key:"conciliacion", dept:"finanzas", cat:"Administración", ico:"🏦", titulo:"Conciliación bancaria", desc:"Subís el resumen del banco y se carga solo: valida que el saldo cierre, detecta lo que ya estaba, imputa impuestos, crea los pagos de comisiones y empareja los cobros con su cliente. Lo que queda en duda te lo muestra para que decidas.", roles:["finanzas","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/conciliacion.html"},
+    /* EN PRUEBAS: emision de cheques propios para pagar a proveedores. Es el circuito
+       INVERSO al de "Cargar cheques", que son los de terceros que entran, y por eso va
+       en un modulo aparte: distinta cuenta, distinto diario y distinto sentido.
+       Calcula la retencion de Ganancias por la RG 830 (enajenacion de bienes: 2% sobre
+       el neto sin IVA con minimo no imponible de $224.000 que se computa una vez por
+       mes) y valida la tanda antes de escribir: numero sin repetir contra Odoo y contra
+       las otras filas, fecha de cobro razonable, y suma exacta.
+       Para liberarlo: borrar la linea pruebas de aca y el {pruebas:...} del guard. */
+    {key:"pagoscheque", dept:"finanzas", cat:"Administración", ico:"💳", titulo:"Pagos con cheque", desc:"Elegís el proveedor, ves su deuda con lo vencido marcado, tildás qué comprobantes cancela el pago y calcula la retención de Ganancias sola. Cargás la tanda de cheques emitidos y los crea en Odoo, imputados a esas facturas.", roles:["finanzas","direccion"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"finanzas/pagos-cheque.html"},
     /* EN PRUEBAS: carga de cheques de terceros (lo urgente de Federico). Crea el recibo RE-X
        en el diario "Cheques de terceros" igual que Odoo, y lo imputa a las facturas del cliente.
        Para liberarlo: borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/cheques.html. */
