@@ -705,9 +705,10 @@ async function comiLoadData(){
      lista de la que salen la tabla, la meta y la liquidación, para que no quede en una pantalla sí
      y en otra no. Los meses ya liquidados se leen del cierre guardado y no se tocan. */
   const _bajas=(COMI.cfg&&COMI.cfg.bajas)||{};
-  const _fuera=sellers.filter(s=>_bajas[String(s.uid)] && COMI.curM>=String(_bajas[String(s.uid)]));
-  COMI.sellers=sellers.filter(s=>!_fuera.includes(s));
-  COMI.bajas=_fuera;
+  /* La baja saca del reparto DESDE su mes, no antes: la lista completa se conserva y el filtro se
+     aplica mes por mes, tanto en la tabla como en el motor. */
+  COMI.sellers=sellers;
+  COMI.bajas=sellers.filter(s=>_bajas[String(s.uid)]);
   COMI.names={}; sellers.forEach(s=>COMI.names[s.uid]=s.name);
   const monthly={}; COMI.recu={}; COMI.ticket={};
   /* FACTURADO NETO por mes con la regla ÚNICA de atribución (EYG.domVendedor): sólo lo que cargó la
@@ -753,7 +754,11 @@ function comiReadKnobs(){
   const v=id=>{ const e=document.getElementById(id); return e?e.value:null; };
   const num=(id,d)=>{ const x=parseFloat(v(id)); return isFinite(x)?x:d; };
   const D=EYG.COMI_DEF;
-  return {
+  /* IMPORTANTE: se parte de la config COMPLETA y encima van los controles de la pantalla. Antes se
+     devolvía sólo lo que tiene perilla, así que al liquidar se perdían paqueteDesde, reglasPrevias,
+     rubros, mínimos, mora, pesos y bajas — y sin paqueteDesde el motor entiende que el paquete rige
+     SIEMPRE, con lo cual un mes anterior a octubre se recalculaba con las reglas nuevas. */
+  return Object.assign({}, EYG.COMI_DEF, COMI.cfg||{}, {
     metaMeses: Math.max(1,Math.round(num("k_meses",D.metaMeses))),
     metaMetodo: COMI._metodo||D.metaMetodo,
     metaCrecimiento: num("k_crec",D.metaCrecimiento*100)/100,
@@ -766,7 +771,7 @@ function comiReadKnobs(){
       farm:{ base:num("r_farm_b",D.rates.farm.base*100)/100, high:num("r_farm_h",D.rates.farm.high*100)/100 },
       externo:{ base:num("r_ext_b",D.rates.externo.base*100)/100, high:num("r_ext_h",D.rates.externo.high*100)/100 },
     }
-  };
+  });
 }
 function comiRender(){
   const box=document.getElementById("comi"); if(!box)return;
@@ -823,7 +828,9 @@ function comiSegRender(cfg){
   const curK=COMI.curM, DESDE=cfg.aplicaDesde||"2026-08";
   const rates=cfg.rates||EYG.COMI_DEF.rates, esExt=nm=>/Samanta/i.test(nm||"");
   const escal=(fact,meta,perfil)=>{ const rt=perfil==="externo"?rates.externo:(rates[perfil]||rates.farm); const corte=perfil==="externo"?(cfg.externoCorte||50e6):meta; return fact<=corte?fact*rt.base:corte*rt.base+(fact-corte)*rt.high; };
-  const cerrado=k=>!!(COMI.cierres||{})[k];
+  // manda el ÍNDICE de meses liquidados: si el cierre no se pudo leer, el mes sigue estando
+  // cerrado y no se ofrece Liquidar encima. Un error de red no puede pisar un número ya pagado.
+  const cerrado=k=>(COMI.cerrados||[]).includes(k)||!!(COMI.cierres||{})[k];
   // de un mes LIQUIDADO se lee lo congelado (incluye nivel y salud); de uno abierto, el cálculo en vivo (solo base)
   const congelado=(k,name)=>{ const c=(COMI.cierres||{})[k]; if(!c)return null; return (c.comerciales||[]).find(x=>x.nombre===name)||null; };
   /* El mes EN CURSO no está congelado, así que su comisión se calcula al vuelo. El cálculo completo
@@ -833,7 +840,10 @@ function comiSegRender(cfg){
   const enVivo=(k,name)=>{ const d=(COMI.vivo||{})[k]; if(!d)return null; return (d.comerciales||[]).find(x=>x.nombre===name)||null; };
   const rows=COMI.sellers.map(s=>{
     const perfil=esExt(s.name)?"externo":(((COMI.ticket||{})[s.uid]||0)>=(cfg.perfilTicket||300000)?"inst":"farm");
+    const _bajaDe=((cfg.bajas||{})[String(s.uid)])||null;
     const cells=cols.map(k=>{
+      // dada de baja: desde su mes no entra al reparto; los meses anteriores se siguen viendo
+      if(_bajaDe && k>=_bajaDe) return {fact:null,comi:null};
       const cg=congelado(k,s.name);
       if(cg) return {fact:cg.neto, comi:cg.comiFinal, frozen:true, nivel:cg.nivel?cg.nivel.emoji:null};
       if(cerrado(k)) return {fact:null,comi:null,frozen:true};   // el mes está liquidado y esta comercial quedó afuera

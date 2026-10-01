@@ -2024,13 +2024,35 @@ async function fichaData(uid, name, carteraIn, pfIn){
   const rentabilidad=(mg[0]&&mg[0].price_subtotal)?(mg[0].margin/mg[0].price_subtotal):null;
   const dd=new Date(), dim=new Date(dd.getFullYear(),dd.getMonth()+1,0).getDate(), diaMesFrac=dd.getDate()/dim;
   const perfil=EYGM.perfilDe(name, avgTicket, _cfg, uid);   // el rubro lo fija Dirección (cfg.rubros)
+  /* TRAMOS DE MORA: el líder medía el vencido como porcentaje y el motor lo pondera por antigüedad,
+     así que mostraba otra penalización que la que se cobra. Una consulta, el mismo cálculo. */
+  let _moraIdx=null;
+  try{
+    const _lin=await EYG.rpc("account.move.line","search_read",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual",">",0],["journal_id","not in",[32,33]],
+      ...EYG.domVendedor("move_id.invoice_line_ids.sale_line_ids.order_id.", uid)]],{fields:["amount_residual","date_maturity"],limit:0});
+    const _h=new Date((EYG.argToday?EYG.argToday():new Date().toISOString().slice(0,10))+"T00:00:00");
+    let _pc=0; const _m={d30:0,d60:0,d90:0,d180:0,mas:0};
+    for(const L of (_lin||[])){ const res=+L.amount_residual||0; if(!(res>0)) continue; _pc+=res;
+      if(!L.date_maturity) continue;
+      const d=Math.floor((_h-new Date(String(L.date_maturity).slice(0,10)+"T00:00:00"))/86400000);
+      if(d<=0) continue;
+      if(d<=30)_m.d30+=res; else if(d<=60)_m.d60+=res; else if(d<=90)_m.d90+=res; else if(d<=180)_m.d180+=res; else _m.mas+=res; }
+    _moraIdx=EYG.moraIndice(_m,_pc,_cfg);
+  }catch(e){ _moraIdx=null; }   // si falla queda null y metrics avisa que no pudo medirla
   _md = EYG.metaDesde(fact, mo, _cfg, perfil);   // desde octubre la meta es el objetivo semanal del perfil
   metaMes=_md.meta; factBaseline=_md.baseline;
   const desglose={ pedN, pedM, canN, canM, draN, draM, facN, facMonto, ncN, ncMonto };
   // vendidas del mes: sale de prepOfertasLider (vigentes + vencidas + dadas de baja),
   // con la misma regla que el panel de la comercial. Una consulta menos por comercial.
   const ofVendidas=ofVendidasDe(cartera), ofEnviadas=ofEnvC||0;
-  const d={nombre:name, perfil, factMes, factMesTotal, factBaseline, meta:metaMes, metaMetodo:_cfg.metaMetodo, rates:_cfg.rates, externoCorte:_cfg.externoCorte, cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, ofEnviadas, ofVendidas, avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg, pedMes:pedM, desglose};
+  /* cfg y mes van SIEMPRE: de ellos dependen el freno del 3%, los pesos del nivel y de la salud, y
+     que un mes anterior a octubre se calcule con las reglas de entonces. moraIndice y minimoMensual
+     son los dos datos nuevos que el líder no tenía y que hacían que mostrara otro número. */
+  const d={nombre:name, perfil, cfg:_cfg, mes:mo, factMes, factMesTotal, factBaseline, meta:metaMes,
+    metaMetodo:_cfg.metaMetodo, rates:(EYG.reglasDe(mo,_cfg).rates||_cfg.rates), externoCorte:_cfg.externoCorte,
+    moraIndice:_moraIdx, minimoMensual:(_md.minimo?_md.minimo.mensual:0),
+    cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, ofEnviadas, ofVendidas,
+    avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg, pedMes:pedM, desglose};
   d.nivel=EYGM.nivel(d); d.salud=EYGM.salud(d); d.com=EYGM.comision(d);
   return d;
 }

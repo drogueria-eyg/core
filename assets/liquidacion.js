@@ -25,7 +25,7 @@ const cl=(x,a,b)=>Math.max(a,Math.min(b,x));
 const rpc=(m,me,a,k)=>EYG.rpc(m,me,a,k||{});
 
 /* --- fechas del mes "YYYY-MM" --- */
-function rango(mes){
+function rango(mes, cfg){
   const [y,m]=mes.split("-").map(Number);
   const ult=new Date(y,m,0).getDate();
   const ini=mes+"-01", fin=mes+"-"+String(ult).padStart(2,"0");
@@ -51,8 +51,15 @@ function rango(mes){
     if(fmt(lun)>=topeVenc) enGracia.push(fmt(x));
   }
   // PISO DE FACTURACIÓN: qué parte del mes transcurrió en DÍAS HÁBILES (al cerrar el mes da 1).
+  // los FERIADOS que carga Dirección no son días hábiles: si no, la prorrata exige el mínimo de un
+  // día que nadie trabajó. El mínimo mensual ya los descuenta, así que las dos cuentas tienen que
+  // usar el mismo calendario (octubre 2026: el feriado del lunes 12).
+  const _fer=new Set((cfg&&cfg.feriados)||[]);
   let habTot=0, habPas=0; const corteDia=(hoy<fin)?Number(hoy.slice(8,10)):ult;
-  for(let i=1;i<=ult;i++){ const w=new Date(y,m-1,i).getDay(); if(w===0||w===6) continue; habTot++; if(i<=corteDia) habPas++; }
+  for(let i=1;i<=ult;i++){ const w=new Date(y,m-1,i).getDay(); if(w===0||w===6) continue;
+    const f=y+"-"+String(m).padStart(2,"0")+"-"+String(i).padStart(2,"0");
+    if(_fer.has(f)) continue;
+    habTot++; if(i<=corteDia) habPas++; }
   const propHabil=habTot?habPas/habTot:1;
   return { ini, fin, finH:fin+" 23:59:59", d100:menos(100), d190:menos(190), dias:ult, topeVenc, diaConstancia, enGracia, propHabil };
 }
@@ -146,6 +153,26 @@ async function gamificacion(uid,r,ofertasMes,cfgN){
     ids.length?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",ids],["date",">=",r.diaConstancia+" 00:00:00"],["date","<=",r.diaConstancia+" 23:59:59"],"|",["body","like","EyGWA"],["body","like","EyGCRM"]]],{fields:["res_id"],limit:0}).catch(()=>[]):[],
     uPartner?rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","=",uPartner],["date",">=",r.ini+" 00:00:00"],["date","<=",r.finH],["body","like","EyGOFENV"]]],{fields:["date"],limit:0}).catch(()=>[]):[],
   ]);
+  /* CLIENTES NUEVOS — un alta no es un cliente. Se cruza cada ficha creada este mes contra sus
+     pedidos: el que compró suma, el que no queda listado aparte para que Dirección lo revise (en
+     septiembre fueron 62 altas y 14 compras). El interruptor cfg.nuevosCuentan decide cuál puntúa.
+     SIN ESTE BLOQUE el return de abajo referencia variables inexistentes y, con "use strict", la
+     liquidación de cualquier comercial no externa aborta. */
+  const nuevosDetalle=[];
+  let nuevosCompraron=0;
+  if((nuevosAltas||[]).length){
+    const _nid=nuevosAltas.map(p=>p.id);
+    let _g=[]; try{ _g=await rpc("sale.order","read_group",[[["partner_id","in",_nid],["state","in",["sale","done"]]],["amount_untaxed:sum"],["partner_id"]],{lazy:false}); }catch(e){}
+    const _porP={}; (_g||[]).forEach(x=>{ if(x.partner_id) _porP[x.partner_id[0]]={ped:x.__count||0, monto:x.amount_untaxed||0}; });
+    for(const p of nuevosAltas){
+      const v=_porP[p.id];
+      if(v) nuevosCompraron++;
+      nuevosDetalle.push({ id:p.id, nombre:p.name, alta:String(p.create_date||"").slice(0,10),
+        pedidos:v?v.ped:0, monto:v?v.monto:0, compro:!!v });
+    }
+    nuevosDetalle.sort((a,b)=>(b.compro-a.compro)||(b.monto-a.monto));
+  }
+  const nuevosCuentan=(((cfgN&&cfgN.nuevosCuentan)||"compraron")==="compraron")?nuevosCompraron:(nuevosAltas||[]).length;
   // cobro
   const cobradoMes=((cobMes[0]||{}).amount)||0;
   const objetivoCobro=(((cob100[0]||{}).amount)||0)/3*1.1;
@@ -296,7 +323,7 @@ function saludDe(g,neto,baseline,prop,cfg,mes,minimo){
    sellers  = [{uid,name,team}]  · monthly = {uid:{"YYYY-MM":neto}} (para la meta) · ticket = {uid:promedio}
    Devuelve el mismo objeto que se congela. onPaso(txt) para el cartelito de progreso. */
 async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
-  const r=rango(mes);
+  const r=rango(mes,cfg);
   const ex=new Set(excluir||[]);
   const esExterno=nm=>/Samanta/i.test(nm||"");
   const rates=EYG.reglasDe(mes,cfg).rates||cfg.rates||EYG.COMI_DEF.rates;   // las tasas que regían ESE mes
@@ -392,6 +419,14 @@ const mesLargo=k=>{ const [y,m]=String(k).split("-"); return (MESES_L[(+m)-1]||k
 
 /* Los clientes nuevos con nombre y apellido: cuáles compraron y cuáles quedaron en una ficha.
    Es el control que pidió Dirección — que no sean altas inventadas y se pueda seguir si se les vendió. */
+/* Las tasas que se usaron en ESE mes, para que la hoja no afirme las de otro régimen. */
+function _tasasTxt(data){
+  const R2=(data&&data.config&&data.config.rates)||{};
+  const p=o=>{ if(!o) return "—";
+    const f=x=>{ const v=x*100; return (Math.round(v*10)/10).toString().replace(".",","); };
+    return f(o.base)+"% / "+f(o.high)+"%"; };
+  return "Instituciones "+p(R2.inst)+" · Farmacias "+p(R2.farm)+" · Externo "+p(R2.externo)+" fijo";
+}
 function nuevosHTML(r){
   const d=(r.nivel&&r.nivel.crudo&&r.nivel.crudo.nuevosDetalle)||[];
   if(!d.length) return "";
@@ -437,8 +472,11 @@ function hojaHTML(r){
     `Hasta la meta cobra la tasa base de su perfil (<b>${PC(r.tasaTeorica.base)}</b>); por todo lo que la supera, la tasa alta (<b>${PC(r.tasaTeorica.high)}</b>). Cruzar la meta es lo que sube la tasa.`,
     `<table class="lqt">${fila("Hasta la meta ("+M(r.corte)+")",M2(r.t1))}${fila("Por encima de la meta",r.t2>0?M2(r.t2):"—")}</table>`);
 
+  const _freno=!!(data.config && data.config.nivelSoloTramoBase!==false && EYG.paqueteRige(data.mes,data.config));
   h+=paso(4,`Su nivel: ${r.nivel.emoji} ${r.nivel.nombre} · multiplica ×${r.nivel.mult.toFixed(2)}`,
-    "El nivel es <b>premio</b>: suma puntos cumpliendo sus objetivos y multiplica toda la comisión. Sobre 100 puntos: 🥉 menos de 40 · 🥈 40 · 🥇 60 · 💎 80 · 👑 95.",
+    "El nivel es <b>premio</b>: suma puntos cumpliendo sus objetivos. Sobre 100 puntos: 🥉 menos de 40 · 🥈 40 · 🥇 60 · 💎 80 · 👑 95."+
+    (_freno?" Multiplica la comisión de su venta <b>hasta la meta</b>; lo que la supera ya se paga a la tasa alta, que es el máximo de la casa."
+           :" Multiplica toda la comisión."),
     `<table class="lqt pts">${r.nivel.items.map(i=>fila(`${i.ic||""} ${esc(i.lab)}<span class="det">${esc(i.det)}</span>${/Clientes nuevos/.test(i.lab)?nuevosHTML(r):""}`,`${P1(i.pts)} <span class="de">/ ${i.max}</span>`)).join("")}${fila("<b>Total</b>",`${P1(r.nivel.pts)} / 100 → ${r.nivel.emoji} ${r.nivel.nombre} ×${r.nivel.mult.toFixed(2)}`,"tot")}</table>`);
 
   h+=paso(5,`Salud de la cuenta: ${Math.round(r.salud.salud)}%${rec>0.00005?` · recorta ${(rec*100).toFixed(2).replace(".",",")} puntos de tasa`:" · sin recorte"}`,
@@ -478,10 +516,12 @@ function docHTML(data,cerrado){
         <td>${esc(x.cliente||"—")}</td><td>${esc(x.comercial||"—")}</td><td class="n">${M(x.neto)}</td></tr>`).join("")}</table>
       </div>`:""}
     ${cs.map(hojaHTML).join("")}
-    <div class="lqpie"><b>La cuenta, en una línea:</b> comisión = (facturado neto hasta la meta × tasa base + lo que la supera × tasa alta) × nivel, con la tasa recortada por la salud de la cuenta.
+    <div class="lqpie"><b>La cuenta, en una línea:</b> ${_freno
+      ? "comisión = facturado neto hasta la meta × tasa base × nivel + lo que supera la meta × tasa alta, con la tasa recortada por la salud de la cuenta."
+      : "comisión = (facturado neto hasta la meta × tasa base + lo que la supera × tasa alta) × nivel, con la tasa recortada por la salud de la cuenta."}
       <ul><li><b>Facturado neto</b>: facturas menos notas de crédito, sin IVA, de las ventas que salieron de sus pedidos. Si un cliente cambió de cartera, la venta queda de quien la hizo.</li>
       <li><b>Meta</b>: ${(data.config&&data.config.metaMetodo==="promedio")?"promedio":"mediana"} de sus ${(data.config&&data.config.metaMeses)||3} meses cerrados + ${crec}%.</li>
-      <li><b>Tasas</b>: Instituciones 2% / 3% · Farmacias 2,5% / 3,5% · Externo 3% / 4% fijo.</li>
+      <li><b>Tasas</b>: ${_tasasTxt(data)}.</li>
       <li><b>Nivel</b>: 🥉 ×1,00 · 🥈 ×1,05 · 🥇 ×1,10 · 💎 ×1,15 · 👑 ×1,20.</li>
       <li><b>Salud</b>: cada punto que baja de 100 recorta 0,01 puntos de tasa (máximo 1 punto).</li></ul>
       ${cerrado?"":'<p style="margin:8px 0 0"><b>Ojo:</b> el vencido y las fichas se miden en el momento en que se abre esta pantalla (Odoo no guarda foto histórica). Por eso conviene liquidar apenas cierra el mes.</p>'}

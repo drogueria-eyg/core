@@ -2179,7 +2179,7 @@ window.EYG = (function(){
     /* LO QUE REGÍA ANTES. Las tasas y el % de la meta también tienen que quedar atados al mes: si
        no, guardar la config nueva recalcula los meses viejos y a una comercial le cambia un número
        que ya vio. Un mes LIQUIDADO está congelado y es inmune, pero uno abierto no. */
-    reglasPrevias:{ metaMetodo:"mediana", metaCrecimiento:0.20,
+    reglasPrevias:{ metaMetodo:"mediana", metaCrecimiento:0.20, metaMeses:3, metaCuentaVacios:true,
       rates:{ inst:{base:.020,high:.030}, farm:{base:.025,high:.035}, externo:{base:.030,high:.040} } },
     /* EL FRENO DEL 3%. Regla de Dirección: la casa apunta a no pagar más del 3% de lo facturado.
        No es un recorte al final —eso sería castigar a quien vendió mucho—, es la forma de pagar: el
@@ -2320,24 +2320,29 @@ window.EYG = (function(){
      para que las tasas y la meta no se calculen distinto en cada pantalla. */
   function reglasDe(curM, cfg){
     cfg=cfg||_comiCfg||COMI_DEF;
-    if(paqueteRige(curM, cfg)) return { metaMetodo:cfg.metaMetodo, metaCrecimiento:cfg.metaCrecimiento, rates:cfg.rates };
+    if(paqueteRige(curM, cfg)) return { metaMetodo:cfg.metaMetodo, metaCrecimiento:cfg.metaCrecimiento,
+      metaMeses:cfg.metaMeses, metaCuentaVacios:cfg.metaCuentaVacios, rates:cfg.rates };
     const p=cfg.reglasPrevias||COMI_DEF.reglasPrevias||{};
-    return { metaMetodo:p.metaMetodo||cfg.metaMetodo, metaCrecimiento:(p.metaCrecimiento!=null?p.metaCrecimiento:cfg.metaCrecimiento), rates:p.rates||cfg.rates };
+    const _o=(k,d)=>(p[k]!=null?p[k]:cfg[k]);
+    return { metaMetodo:_o("metaMetodo"), metaCrecimiento:_o("metaCrecimiento"),
+      metaMeses:_o("metaMeses"), metaCuentaVacios:_o("metaCuentaVacios"), rates:p.rates||cfg.rates };
   }
   function metaDesde(fbk, curM, cfg, perfil){
     cfg=cfg||_comiCfg||COMI_DEF; fbk=fbk||{};
     const _rg=reglasDe(curM, cfg);
-    const n=Math.max(1, cfg.metaMeses||3);
+    const n=Math.max(1, _rg.metaMeses||cfg.metaMeses||3);
     const keys=_mesesPrevios(curM, n);
     const meses=keys.map(k=>({key:k, net:(k in fbk)?fbk[k]:null}));
-    const cuenta = cfg.metaCuentaVacios!==false;
+    const cuenta = (_rg.metaCuentaVacios!=null?_rg.metaCuentaVacios:cfg.metaCuentaVacios)!==false;
     const nums = cuenta ? meses.map(v=>v.net||0) : meses.filter(v=>v.net!=null).map(v=>v.net);
     let baseline=0;
     if(nums.length){
       if(_rg.metaMetodo==="mediana"){ const s=[...nums].sort((a,b)=>a-b), mid=Math.floor(s.length/2); baseline = s.length%2 ? s[mid] : (s[mid-1]+s[mid])/2; }
       else baseline = nums.reduce((a,b)=>a+b,0)/nums.length;
     }
-    const meta = baseline*(1+(_rg.metaCrecimiento||0));
+    // una meta negativa (historial con más NC que ventas) haría que TODO el facturado cayera en el
+    // tramo alto y la tasa efectiva se pasara del 3%. El piso es cero.
+    const meta = Math.max(0, baseline*(1+(_rg.metaCrecimiento||0)));
     /* La META es la mediana de los 3 meses previos + 25%: mide crecimiento contra el propio ritmo
        de cada una y es lo ÚNICO que mueve la tasa. El MÍNIMO DE VENTA que fija Dirección es otra
        cosa y viaja aparte, sin entrar en este cálculo. */
