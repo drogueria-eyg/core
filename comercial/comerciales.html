@@ -210,7 +210,7 @@
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js?v=105"></script>
-<script src="../assets/liquidacion.js?v=5"></script>
+<script src="../assets/liquidacion.js?v=6"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const MESES=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
@@ -746,7 +746,9 @@ async function comiLoadData(){
   }
   COMI.monthly=monthly;
   // meses ya LIQUIDADOS (congelados): su número no se recalcula nunca más, se lee del cierre guardado
-  COMI.cerrados=[]; COMI.cierres={};
+  COMI.cerrados=[]; COMI.cierres={}; COMI.pagados=[];
+  // si no se pueden leer los pagados, se marca el error: la tabla no ofrece Reabrir a ciegas
+  try{ COMI.pagados=await EYGLIQ.pagadosLeer(); COMI.pagadosErr=false; }catch(e){ COMI.pagadosErr=true; }
   try{
     COMI.cerrados=await EYGLIQ.cierresLeer();
     const cargados=await Promise.all(COMI.cerrados.map(m=>EYGLIQ.cierreLeer(m).catch(()=>null)));
@@ -832,8 +834,10 @@ function comiSegRender(cfg){
   const [Y,Mo]=COMI.curM.split("-").map(Number); const cols=[];
   { let y=2026,m=5; while(y<Y || (y===Y && m<=Mo)){ cols.push(y+"-"+String(m).padStart(2,"0")); m++; if(m>12){m=1;y++;} } }   // desde mayo-2026 hasta el mes actual
   const curK=COMI.curM, DESDE=cfg.aplicaDesde||"2026-08";
-  const rates=cfg.rates||EYG.COMI_DEF.rates, esExt=nm=>/Samanta/i.test(nm||"");
-  const escal=(fact,meta,perfil)=>{ const rt=perfil==="externo"?rates.externo:(rates[perfil]||rates.farm); const corte=perfil==="externo"?(cfg.externoCorte||50e6):meta; return fact<=corte?fact*rt.base:corte*rt.base+(fact-corte)*rt.high; };
+  /* LAS TASAS DE CADA MES: las del mes que se calcula (EYG.reglasDe), no las de hoy. Con cfg.rates
+     un mes abierto anterior a octubre se mostraba a 2/3% en farmacias en vez de 2,5/3,5%. */
+  const ratesDe=k=>(EYG.reglasDe?EYG.reglasDe(k,cfg).rates:null)||cfg.rates||EYG.COMI_DEF.rates;
+  const escal=(fact,meta,perfil,k)=>{ const rates=ratesDe(k); const rt=perfil==="externo"?rates.externo:(rates[perfil]||rates.farm); const corte=perfil==="externo"?(cfg.externoCorte||50e6):meta; return fact<=corte?fact*rt.base:corte*rt.base+(fact-corte)*rt.high; };
   // manda el ÍNDICE de meses liquidados: si el cierre no se pudo leer, el mes sigue estando
   // cerrado y no se ofrece Liquidar encima. Un error de red no puede pisar un número ya pagado.
   const cerrado=k=>(COMI.cerrados||[]).includes(k)||!!(COMI.cierres||{})[k];
@@ -845,7 +849,8 @@ function comiSegRender(cfg){
      completa a pedido —con el botón, o al abrir Ver detalle, que hace exactamente el mismo cálculo. */
   const enVivo=(k,name)=>{ const d=(COMI.vivo||{})[k]; if(!d)return null; return (d.comerciales||[]).find(x=>x.nombre===name)||null; };
   const rows=COMI.sellers.map(s=>{
-    const perfil=esExt(s.name)?"externo":(((COMI.ticket||{})[s.uid]||0)>=(cfg.perfilTicket||300000)?"inst":"farm");
+    // el rubro, por la misma puerta que la liquidación: el fijo de Dirección y, si no hay, el ticket
+    const perfil=EYG.perfilDe(s.uid,(COMI.ticket||{})[s.uid],cfg,s.name);
     const _bajaDe=((cfg.bajas||{})[String(s.uid)])||null;
     const cells=cols.map(k=>{
       // dada de baja: desde su mes no entra al reparto; los meses anteriores se siguen viendo
@@ -857,8 +862,8 @@ function comiSegRender(cfg){
       if(vv) return {fact:vv.neto, comi:vv.comiFinal, nivel:vv.nivel?vv.nivel.emoji:null};
       const fact=(COMI.monthly[s.uid]||{})[k];
       if(fact==null) return {fact:null,comi:null};
-      const meta=EYG.metaDesde(COMI.monthly[s.uid]||{}, k, cfg).meta;
-      return {fact, comi:escal(fact,meta,perfil), base:true}; });
+      const meta=EYG.metaDesde(COMI.monthly[s.uid]||{}, k, cfg, perfil).meta;
+      return {fact, comi:escal(fact,meta,perfil,k), base:true}; });
     return {name:s.name, cells, tot:cells.reduce((a,c)=>a+(c.comi||0),0)};
   }).sort((a,b)=>b.tot-a.tot);
   let html=`<div style="font-size:13px;font-weight:800;margin-bottom:8px">📅 Comisiones por mes <span style="font-weight:600;color:var(--gris2);font-size:11.5px">· desde mayo · sobre facturado neto</span></div>
@@ -868,12 +873,14 @@ function comiSegRender(cfg){
   }
   // fila de acciones: ver la liquidación completa de cada mes y darle el corte
   html+=`<tr><td class="nm" style="font-size:11px;color:var(--gris2);font-weight:600">Liquidación</td>`+
-    cols.map(k=>{ const cd=cerrado(k), viejo=k<DESDE;
+    cols.map(k=>{ const cd=cerrado(k), viejo=k<DESDE, pg=(COMI.pagados||[]).includes(k);
       return `<td><div class="lqacc">
         <button class="lqbt" onclick="lqAbrir('${k}')">${cd?"📄 Ver":"👁 Ver detalle"}</button>
         ${(!cd && !(COMI.vivo||{})[k] && !viejo)?`<button class="lqbt" onclick="lqCompletar('${k}')">⚡ Completar</button>`:""}
         ${viejo?'<span style="font-size:9.5px;color:var(--gris2)">liquidado antes</span>'
-          :(cd?`<button class="lqbt" onclick="lqReabrir('${k}')">🔓 Reabrir</button>`
+          :pg?'<span class="lqlock" title="Pagado: queda congelado para siempre, no se puede reabrir">💵 Pagado</span>'
+          :(cd?(COMI.pagadosErr?'<span style="font-size:9.5px;color:var(--gris2)">recargá para ver si está pagado</span>'
+                :`<button class="lqbt pay" onclick="lqPagado('${k}')">💵 Marcar pagado</button><button class="lqbt" onclick="lqReabrir('${k}')">🔓 Reabrir</button>`)
               :`<button class="lqbt pay" onclick="lqLiquidar('${k}')">🔒 Liquidar</button>`)}
       </div></td>`; }).join("")+`<td></td></tr>`;
   html+=`</table></div><div style="font-size:11px;color:var(--gris2);margin-top:6px">Un mes <b>abierto</b> se recalcula solo a medida que se factura y se cobra; arranca mostrando la comisión <b>base</b> y con ⚡ Completar (o Ver detalle) se le suman el nivel y la salud. Al apretar <b>Liquidar</b> se congela: quedan fijos el facturado, el nivel y la salud de cada comercial, y ese es el número que se paga. Los meses anteriores a ${MESLBL(DESDE)} se liquidaron con el criterio viejo y no se tocan.</div>`;
@@ -935,7 +942,7 @@ async function lqLiquidar(mes){
   const _d=new Date(_h+"T12:00:00").getDay();
   if(enCurso && (_d===0||_d===6) && !confirm("Hoy es "+(_d===6?"sábado":"domingo")+".\n\nLiquidar un fin de semana congela la foto con la cobranza del viernes: los pagos del lunes no van a estar. Conviene hacerlo un día hábil.\n\n¿Liquidar igual?")) return;
   if(!confirm("¿Liquidar "+MESLBL(mes)+"?\n\nSe congelan el facturado, el nivel y la salud de cada comercial: ese pasa a ser el número que se paga y deja de actualizarse."+
-    (enCurso?"\n\n⚠️ "+MESLBL(mes)+" es el MES EN CURSO: todavía puede facturarse y cobrarse más.":"")+"\n\nSe puede reabrir si hace falta.")) return;
+    (enCurso?"\n\n⚠️ "+MESLBL(mes)+" es el MES EN CURSO: todavía puede facturarse y cobrarse más.":"")+"\n\nSe puede reabrir hasta que lo marques como pagado.")) return;
   lqWin("Liquidando · "+MESLBL(mes),'<div class="comi-note"><span class="spin-sm"></span> Calculando el cierre…</div>',"");
   try{
     const cfg=comiReadKnobs();
@@ -951,8 +958,17 @@ async function lqLiquidar(mes){
     lqWin("Liquidación · "+MESLBL(mes), EYGLIQ.docHTML(data,true), `<button onclick="window.print()">🖨 Imprimir / PDF</button>`);
   }catch(e){ const b=document.getElementById("lqBody"); if(b)b.innerHTML='<div class="errbox">No se pudo liquidar: '+esc(e.message)+'</div>'; }
 }
+async function lqPagado(mes){
+  if(!confirm("¿Marcar "+MESLBL(mes)+" como PAGADO?\n\nDesde ese momento la liquidación queda congelada para siempre: ya no se puede reabrir ni volver a liquidar desde ninguna pantalla.")) return;
+  try{
+    COMI.pagados=await EYGLIQ.pagadoMarcar(mes);
+    otoast(MESLBL(mes)+" marcado como pagado ✓", true);
+    comiRecalc();
+  }catch(e){ otoast("No se pudo marcar: "+e.message); }
+}
 async function lqReabrir(mes){
-  if(!confirm("¿Reabrir "+MESLBL(mes)+"?\n\nVuelve a recalcularse solo. El cierre guardado queda de respaldo, pero los números pueden cambiar respecto de lo que ya se pagó.")) return;
+  if((COMI.pagados||[]).includes(mes)){ otoast(MESLBL(mes)+" ya está pagado: no se puede reabrir."); return; }
+  if(!confirm("¿Reabrir "+MESLBL(mes)+"?\n\nVuelve a recalcularse solo. El cierre guardado queda de respaldo.\n\nUsalo sólo si todavía NO se pagó: si ya se pagó, marcalo como pagado.")) return;
   try{
     await EYGLIQ.cierreReabrir(mes);
     delete COMI.cierres[mes]; COMI.cerrados=COMI.cerrados.filter(m=>m!==mes);

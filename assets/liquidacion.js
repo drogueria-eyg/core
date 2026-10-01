@@ -84,12 +84,34 @@ const exclIds=lista=>(lista||[]).map(x=>x&&x.move).filter(Boolean);
 /* ===== persistencia del cierre ===== */
 async function cierresLeer(){ try{ return JSON.parse(await rpc("ir.config_parameter","get_param",[CIERRES_KEY])||"[]")||[]; }catch(e){ return []; } }
 async function cierreLeer(mes){ try{ const s=await rpc("ir.config_parameter","get_param",[cierreKey(mes)]); return s?JSON.parse(s):null; }catch(e){ return null; } }
+/* MESES PAGADOS: un mes liquidado todavía se puede reabrir (por si hubo un error antes de pagar);
+   uno PAGADO no, nunca, desde ninguna pantalla. Sin esto, Reabrir + Liquidar recalculaba un mes
+   ya pagado con los datos de hoy (traspasos, cobros nuevos) y pisaba el importe que se pagó. */
+const PAGADOS_KEY="eyg.comisiones_pagados";
+async function pagadosLeer(){
+  // si no se puede leer, se trata como error y no como "ninguno pagado": ante la duda, no se pisa
+  const s=await rpc("ir.config_parameter","get_param",[PAGADOS_KEY]);
+  return s?(JSON.parse(s)||[]):[];
+}
+async function pagadoMarcar(mes){
+  if(!(await cierresLeer()).includes(mes)) throw new Error("Primero hay que liquidarlo: sólo un mes liquidado se puede marcar como pagado.");
+  const p=await pagadosLeer(); if(!p.includes(mes)){ p.push(mes); p.sort(); await rpc("ir.config_parameter","set_param",[PAGADOS_KEY,JSON.stringify(p)]); }
+  return p;
+}
 async function cierreGuardar(mes,data){
+  // se relee TODO de Odoo justo antes de escribir: otra pestaña (u otra persona) pudo haberlo
+  // liquidado o pagado mientras esta pantalla calculaba.
+  if((await pagadosLeer()).includes(mes)) throw new Error("Este mes ya está PAGADO: no se puede volver a liquidar.");
+  if((await cierresLeer()).includes(mes)) throw new Error("Este mes ya fue liquidado (quizás desde otra pestaña o por otra persona). Recargá la pantalla para ver lo guardado.");
+  // si quedó un cierre anterior (de antes de un Reabrir), se guarda aparte antes de reemplazarlo
+  const previo=await rpc("ir.config_parameter","get_param",[cierreKey(mes)]);
+  if(previo) await rpc("ir.config_parameter","set_param",[cierreKey(mes)+"_respaldo_"+new Date().toISOString().replace(/[-:]/g,"").slice(0,15),previo]);
   await rpc("ir.config_parameter","set_param",[cierreKey(mes),JSON.stringify(data)]);
   const idx=await cierresLeer(); if(!idx.includes(mes)){ idx.push(mes); idx.sort(); await rpc("ir.config_parameter","set_param",[CIERRES_KEY,JSON.stringify(idx)]); }
   return data;
 }
 async function cierreReabrir(mes){
+  if((await pagadosLeer()).includes(mes)) throw new Error("Este mes ya está PAGADO: no se puede reabrir.");
   const idx=(await cierresLeer()).filter(m=>m!==mes);
   await rpc("ir.config_parameter","set_param",[CIERRES_KEY,JSON.stringify(idx)]);
   return idx;   // el JSON del mes NO se borra: queda como respaldo de lo que se había liquidado
@@ -386,7 +408,11 @@ async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
           let v=0; for(const k in (f.porDia||{})) if(k>=w.desde&&k<=w.hasta) v+=f.porDia[k];
           return Object.assign({}, w, { facturado:v, cumple:w.minimo>0?v>=w.minimo:true });
         });
-        const cerradas=ws.filter(w=>w.hasta<=r.topeVenc);   // una semana en curso no se juzga todavía
+        // una semana en curso no se juzga todavía. Cerrada = su último día YA PASÓ (hasta < hoy), la
+        // misma regla que el panel: con "<=" el motor la daba por cerrada el mismo viernes y liquidar
+        // ese día congelaba puntos que el panel todavía no daba, con las ventas del viernes a medias.
+        const _hoySem=(EYG&&EYG.argToday)?EYG.argToday():new Date().toISOString().slice(0,10);
+        const cerradas=ws.filter(w=>w.hasta<_hoySem);
         g.semanasMin={ lista:ws, total:cerradas.length, ok:cerradas.filter(w=>w.cumple).length,
           habilesTot:cerradas.reduce((s,w)=>s+w.habiles,0),
           habilesOk:cerradas.filter(w=>w.cumple).reduce((s,w)=>s+w.habiles,0) };
@@ -538,7 +564,7 @@ function docHTML(data,cerrado){
   </div>`;
 }
 
-window.EYGLIQ={ rango, cierresLeer, cierreLeer, cierreGuardar, cierreReabrir, cierreKey,
+window.EYGLIQ={ rango, cierresLeer, cierreLeer, cierreGuardar, cierreReabrir, cierreKey, pagadosLeer, pagadoMarcar,
   facturado, gamificacion, nivelDe, saludDe, calcularMes, hojaHTML, docHTML, PERFIL, NIV,
   EXCL_KEY, excluidos, exclIds };
 })();

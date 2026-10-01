@@ -396,7 +396,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js?v=105"></script>
 <script src="../assets/metrics.js?v=5"></script>
-<script src="../assets/liquidacion.js?v=5"></script>
+<script src="../assets/liquidacion.js?v=6"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const COLORS=["#048782","#EC8B5E","#0AA89F","#E5A93B","#5FC8BF","#B0413E","#6E8B86","#04635F"];
@@ -1406,6 +1406,7 @@ async function mapLimit(items, limit, fn){
   await Promise.all(Array.from({length:Math.min(limit,items.length||1)}, work));
 }
 const FICHAS_INFLIGHT=new Set();
+let MOTOR_COLA=Promise.resolve();   // cálculos del motor de liquidación, de a uno (ver motorRefinar)
 /* Carga la ficha de UN comercial (si no está ya cargada ni en curso). Repinta las
    tarjetas y, si es el comercial abierto, su detalle. La usan tanto la carga de fondo
    como el clic (que la prioriza para no esperar a la cola). */
@@ -1414,7 +1415,9 @@ async function loadFicha(c, carteraIn, pfIn){
   FICHAS_INFLIGHT.add(c.uid);
   try{
     const d=await fichaData(c.uid,c.name,carteraIn,pfIn);
-    if(d){ FICHAS[c.uid]=d; computeAGG(); renderEquipo(); if(SEL===c.uid) renderDetalle(); }
+    if(d){ FICHAS[c.uid]=d; computeAGG(); renderEquipo(); if(SEL===c.uid) renderDetalle();
+      // el cálculo del motor va a la cola propia (de a uno): no frena la carga de las demás fichas
+      if(d._motor){ const fn=d._motor; delete d._motor; MOTOR_COLA=MOTOR_COLA.then(fn).catch(()=>{}); } }
     return d;
   }catch(e){ return null; }
   finally{ FICHAS_INFLIGHT.delete(c.uid); }
@@ -1739,7 +1742,9 @@ async function cargarComisiones(){
 function comisionDe(uid){
   const m=mesComision(), moHoy=argToday().slice(0,7);
   if(m && CIERRE_MES[m] && CIERRE_MES[m][uid]) return {val:CIERRE_MES[m][uid].comiFinal||0, fuente:"liquidado"};
-  if(m===moHoy){ const f=FICHAS[uid]; return f&&f.com ? {val:f.com.total||0, fuente:"estimada"} : {val:null, fuente:"cargando"}; }
+  if(m===moHoy){ const f=FICHAS[uid]; if(f&&f.baja) return {val:null, fuente:"baja"};
+    if(f&&f.motorPend) return {val:null, fuente:"cargando"};
+    return f&&f.com ? {val:f.com.total||0, fuente:"estimada"} : {val:null, fuente:"cargando"}; }
   return {val:null, fuente:"sin-liquidar"};
 }
 
@@ -1814,6 +1819,7 @@ function renderEquipo(){
         const tt = cd.fuente==="liquidado" ? "Comisión ya liquidada y congelada de "+m
                  : cd.fuente==="estimada"  ? "Estimación en vivo del mes en curso: cambia hasta que se cierre el mes"
                  : cd.fuente==="cargando"  ? "Calculando la ficha de este comercial…"
+                 : cd.fuente==="baja"      ? "Dada de baja: desde este mes no entra al esquema de comisiones"
                  : "El mes "+m+" no está liquidado y las fichas sólo calculan el mes en curso";
         return '<div class="td r" title="'+esc(tt)+'">'+(cd.val==null?(cd.fuente==="cargando"?'<span class="shim">…</span>':'<span class="na">—</span>'):Mabbr(cd.val))+'</div>';
       }
@@ -1888,7 +1894,8 @@ function oportunidades(d){
   if(cumpl<100 && meta>0){ const falta=Math.max(0,meta-d.factMes);
     ops.push({ic:"🎯",tx:`Va al <b>${Math.round(cumpl)}%</b> de su meta. Faltan <b>${M(falta)}</b> para el objetivo del mes.`, gain:""}); }
   // 3) nuevos
-  if((d.nuevos||0)<3){ ops.push({ic:"🆕",tx:`Le faltan <b>${3-(d.nuevos||0)}</b> cliente(s) nuevo(s) para el objetivo (${d.nuevos||0}/3).`, gain:"+nivel"}); }
+  { const _nn=(d.nuevosCompraron!=null?d.nuevosCompraron:(d.nuevos||0)), _nm=d.nuevosMeta||3;
+    if(_nn<_nm){ ops.push({ic:"🆕",tx:`Le faltan <b>${_nm-_nn}</b> cliente(s) nuevo(s) que compren para el objetivo (${_nn}/${_nm}).`, gain:"+nivel"}); } }
   // 4) fichas
   if(fichas<60){ ops.push({ic:"🗂️",tx:`Fichas al <b>${Math.round(fichas)}%</b> — completar datos sube la salud y destraba comisión.`, gain:""}); }
   // 5) combos (siempre palanca de nivel)
@@ -2054,7 +2061,46 @@ async function fichaData(uid, name, carteraIn, pfIn){
     cobradoMes, objetivoCobro, vencido, porCobrar, fichasPct, nuevos, actividadRatio, ofEnviadas, ofVendidas,
     avgTicket, diaMesFrac, cartera:pf.length, rentabilidad, waHoyMsg, waHoyCont, waHoyNuevo, waSemMsg, pedMes:pedM, desglose};
   d.nivel=EYGM.nivel(d); d.salud=EYGM.salud(d); d.com=EYGM.comision(d);
+  d.nuevosMeta=3;
+  /* DESDE OCTUBRE EL LÍDER USA EL MISMO MOTOR QUE LIQUIDA. La estimación de arriba (metrics.js) es
+     una segunda copia de las fórmulas y se había quedado atrás: actividad contra el promedio de
+     todo el historial, altas que no compraron, vara por días corridos en vez de hábiles, mora sin
+     la gracia del fin de semana, sin constancia ni mínimo semanal. Mostraba otro nivel y otra
+     comisión que los que se pagan. Ahora se calcula con EYGLIQ.calcularMes —lo mismo que "Ver
+     detalle" y "Liquidar"— y metrics.js queda sólo como respaldo si el motor falla. */
+  if(EYG.paqueteRige(mo,_cfg)){
+    const _baja=(_cfg.bajas||{})[String(uid)];
+    if(_baja && String(mo)>=String(_baja)){
+      // dada de baja: no entra al reparto desde ese mes, igual que en la liquidación
+      d.baja=_baja; d.com=Object.assign({},d.com,{total:0});
+    }else{
+      /* El motor lee comercial por comercial (~12 s cada una), así que corre DESPUÉS de pintar la
+         ficha: lo demás se ve enseguida y nivel, salud y comisión se completan cuando llega. Mientras
+         tanto la comisión figura "calculando…", nunca el número viejo de metrics.js. */
+      d.motorPend=true;
+      d._motor=()=>motorRefinar(d,uid,name,fact,avgTicket,_cfg,mo);
+    }
+    d.nuevosMeta=((_cfg.nuevosMeta||{})[perfil])||10;
+  }
   return d;
+}
+async function motorRefinar(d,uid,name,fact,avgTicket,_cfg,mo){
+  try{
+    const lq=await EYGLIQ.calcularMes(mo,{sellers:[{uid,name}],monthly:{[uid]:fact},ticket:{[uid]:avgTicket},cfg:_cfg});
+    const f=(lq&&lq.comerciales||[])[0];
+    if(f){
+      if(f.nivel){
+        d.nivel={nombre:f.nivel.nombre, emoji:f.nivel.emoji, mult:f.nivel.mult, pts:f.nivel.pts, perfil:f.perfilNom, params:f.nivel.items, motor:true};
+        d.salud=Object.assign({}, f.salud, {items:(f.salud.items||[]).map(i=>Object.assign({},i,{pts:i.resta}))});
+        const cr=f.nivel.crudo||{};
+        if(cr.nuevosCompraron!=null) d.nuevosCompraron=cr.nuevosCompraron;
+      }
+      d.com={base:f.comiBase, mult:f.nivel?f.nivel.mult:1, total:f.comiFinal, corte:f.corte, rt:f.tasaTeorica, freno:true, penaltyPt:f.salud?f.salud.penaltyPt:0, motor:true};
+      d.meta=f.meta; d.factBaseline=f.baseline; d.factMes=f.neto;
+    }
+  }catch(e){ d.motorErr=e&&e.message; }   // queda la estimación de metrics.js, avisada en la ficha
+  d.motorPend=false;
+  computeAGG(); renderEquipo(); if(SEL===uid) renderDetalle();
 }
 /* Bloque de ventas: PEDIDOS (neto) grande vs FACTURADO (neto) abajo, con el detalle
    contable desplegable. Se usa para un comercial (detalle) y para el equipo (arriba).
@@ -2201,8 +2247,11 @@ function fichaHTML(d){
   const vencPct=d.porCobrar>0?Math.round(d.vencido/d.porCobrar*100):0;
   const meta=(d.meta!=null?d.meta:d.factBaseline*1.2), cumpl=meta>0?Math.round(d.factMes/meta*100):0, cobroPct=d.objetivoCobro>0?Math.round(d.cobradoMes/d.objetivoCobro*100):0;
   const scol=d.salud.salud>=80?'var(--teal)':d.salud.salud>=60?'var(--gold)':'var(--coral)';
+  // nuevos: desde octubre cuentan los que compraron, con la meta del rubro (5 / 10)
+  const _nN=(d.nuevosCompraron!=null?d.nuevosCompraron:(d.nuevos||0)), _nM=d.nuevosMeta||3;
   const niv=d.perfil==="externo"?`<div class="fsub">Sistema</div><div class="muted">Externo · comisión fija 3/4%, sin nivel ni salud.</div>`:
     `<div class="fsub">Nivel ${d.nivel.emoji} ${d.nivel.nombre} · ×${d.nivel.mult.toFixed(2)} · ${Math.round(d.nivel.pts)}/100</div>`+
+    (d.motorPend?'<div class="muted" style="font-size:11.5px;margin-bottom:6px"><span class="shim">Calculando con el motor de liquidación…</span> nivel y salud pueden ajustarse en unos segundos.</div>':'')+
     d.nivel.params.map(p=>{const pct=Math.round(p.pts/p.max*100);const c=pct>=80?'var(--teal)':pct>=40?'var(--coral)':'#C0554A';return `<div class="prm"><span>${p.ic} ${p.lab} <span class="muted">${p.det}</span></span><b>${p.pts.toFixed(1)}/${p.max}</b></div><div class="pb"><i style="width:${pct}%;background:${c}"></i></div>`;}).join("");
   const sal=d.perfil==="externo"?"":`<div class="fsub">🩺 Salud ${Math.round(d.salud.salud)}/100 ${d.salud.penaltyPt>0.01?`· recorte −${d.salud.penaltyPt.toFixed(2)}pt`:""}</div><div class="pb" style="margin-bottom:8px"><i style="width:${Math.round(d.salud.salud)}%;background:${scol}"></i></div>`+
     d.salud.items.map(it=>{const pct=Math.round(it.pts/it.max*100);const c=pct<=20?'var(--teal)':pct<=55?'var(--coral)':'#C0554A';return `<div class="prm"><span>${it.ic} ${it.lab} <span class="muted">${it.det}</span></span><b style="color:${c}">−${it.pts.toFixed(0)}</b></div>`;}).join("");
@@ -2215,17 +2264,17 @@ function fichaHTML(d){
     </div>
     <div class="pb"><i style="width:${Math.min(100,cumpl)}%;background:${cumpl>=100?'var(--teal)':'var(--coral)'}"></i></div>
     <div class="prm" style="margin-top:12px"><span>Cobro vs objetivo (${M(d.objetivoCobro)})</span><b>${cobroPct}%</b></div><div class="pb"><i style="width:${Math.min(100,cobroPct)}%;background:var(--gold)"></i></div>
-    <div class="prm"><span>Clientes nuevos (meta 3)</span><b>${d.nuevos}/3</b></div><div class="pb"><i style="width:${Math.min(100,d.nuevos/3*100)}%;background:var(--coral)"></i></div>`;
-  const logros=[{em:"💰",l:"Meta de venta",on:cumpl>=100},{em:"🤝",l:"Cobró bien",on:cobroPct>=100},{em:"🆕",l:"Trae nuevos",on:d.nuevos>=3},{em:"🟢",l:"Cartera sana",on:vencPct<15},{em:"✨",l:"Fichas ok",on:d.fichasPct>=0.6}];
+    <div class="prm"><span>Clientes nuevos${d.nuevosCompraron!=null?' que compraron':''} (meta ${_nM})</span><b>${_nN}/${_nM}</b></div><div class="pb"><i style="width:${Math.min(100,_nN/_nM*100)}%;background:var(--coral)"></i></div>`;
+  const logros=[{em:"💰",l:"Meta de venta",on:cumpl>=100},{em:"🤝",l:"Cobró bien",on:cobroPct>=100},{em:"🆕",l:"Trae nuevos",on:_nN>=_nM},{em:"🟢",l:"Cartera sana",on:vencPct<15},{em:"✨",l:"Fichas ok",on:d.fichasPct>=0.6}];
   const nom1=esc((d.nombre||"").split(" ")[0]);
   return `<div class="fichin">
     <div class="fgrid">
-      <div class="fstat"><div class="l">Comisión estimada</div><div class="v" style="color:var(--teal-deep)">${Mabbr(d.com.total)}</div><div class="s">${d.perfil==="externo"?"3/4% fijo sobre facturado neto":"motor: facturado neto (por cruce) × tramos × nivel"}</div></div>
+      <div class="fstat"><div class="l">Comisión estimada</div><div class="v" style="color:var(--teal-deep)">${d.baja?'—':(d.motorPend?'<span class="shim">calculando…</span>':Mabbr(d.com.total))}</div><div class="s">${d.baja?('dada de baja desde '+esc(d.baja)):d.motorErr?'⚠️ el motor de liquidación no respondió: es una estimación aproximada':d.perfil==="externo"?"3/4% fijo sobre facturado neto":(d.com&&d.com.motor?"mismo cálculo que la liquidación":"motor: facturado neto (por cruce) × tramos × nivel")}</div></div>
       <div class="fstat"><div class="l">Rentabilidad</div><div class="v">${rent}</div><div class="s">margen ÷ ventas (line.margin, año)</div></div>
       <div class="fstat"><div class="l">Ticket promedio</div><div class="v">${Mabbr(d.avgTicket)}</div><div class="s">facturado ÷ pedidos (~6 meses)</div></div>
       <div class="fstat"><div class="l">Cobrado del mes</div><div class="v">${Mabbr(d.cobradoMes)}</div><div class="s">pagos entrantes (account.payment)</div></div>
       <div class="fstat"><div class="l">Vencido</div><div class="v" style="color:${vencPct>=40?'var(--coral)':vencPct>=25?'var(--gold)':'var(--ink)'}">${Mabbr(d.vencido)}</div><div class="s">${vencPct}% de ${Mabbr(d.porCobrar)} · saldos a cobrar vencidos</div></div>
-      <div class="fstat"><div class="l">Clientes nuevos</div><div class="v">${d.nuevos}</div><div class="s">contactos creados este mes</div></div>
+      <div class="fstat"><div class="l">Clientes nuevos</div><div class="v">${_nN}</div><div class="s">${d.nuevosCompraron!=null?('que ya compraron · '+(d.nuevos||0)+' dados de alta'):'contactos creados este mes'}</div></div>
       <div class="fstat"><div class="l">📤 WhatsApp hoy</div><div class="v">${d.waHoyMsg||0}<span style="font-size:12px;color:var(--gris2)"> msg</span></div><div class="s">${d.waHoyCont||0} contactos · ${d.waHoyNuevo||0} nuevos · ${d.waSemMsg||0} sem</div></div>
       <div class="fstat"><div class="l">🎁 Ofertas del mes</div><div class="v">${d.ofVendidas||0}<span style="font-size:12px;color:var(--gris2)"> vendidas</span></div><div class="s">${d.ofEnviadas||0}/30 enviadas · ${d.ofVendidas||0}/10 vendidas</div></div>
       <div class="fstat"><div class="l">Cartera</div><div class="v">${d.cartera}</div><div class="s">clientes asignados (user_id)</div></div>
