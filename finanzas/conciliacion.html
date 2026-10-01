@@ -47,6 +47,12 @@
   .selbanco label{font-size:12px;font-weight:800;color:var(--teal-deep);display:flex;align-items:center;gap:8px;cursor:help;text-transform:uppercase;letter-spacing:.5px}
   .selbanco select{font-family:inherit;font-size:13px;font-weight:700;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);cursor:pointer}
   .selbanco .cta-num{font-size:11.5px;color:var(--gris);font-weight:600;cursor:help}
+  /* el banco conectado: no necesita archivo, se trae con un botón */
+  .conexion{margin-top:12px;padding:13px 15px;background:var(--infobg);border:1px solid #C6D8F8;border-radius:10px}
+  .conexion .cx-t{font-size:12.5px;color:#2E5AA8;line-height:1.55;margin-bottom:11px}
+  .conexion .cx-e{font-size:11.5px;color:var(--gris);margin-top:10px;line-height:1.6}
+  .conexion .cx-e b{color:var(--ink);font-weight:800}
+  .conexion .cx-ojo{display:block;margin-top:5px;color:#8A6D1A}
   .archivos{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}
   .arch{font-size:11.5px;font-weight:700;background:var(--agua);color:var(--teal-deep);padding:4px 10px;border-radius:20px;cursor:help}
   .arch b{background:rgba(4,135,130,.16);padding:0 5px;border-radius:9px;margin-left:3px}
@@ -199,7 +205,64 @@ const BANCOS={
      funcionar si el formato del archivo es igual, pero la clasificación queda
      en "sin clasificar" y la pantalla lo avisa. Para habilitar uno, hay que ver
      un resumen suyo y agregarle su objeto `codigos`. */
-  macro:     {nombre:"Macro",             cuentaBanco:"333209421315913",  diario:26, cuenta:361, partner:2092, codigos:null},
+  /* El Macro NO necesita archivo: tiene conexión con el banco (Syncfy, link 8) y las
+     líneas las trae Odoo solo. Pero la sincronización no trae el CÓDIGO que sí trae el
+     archivo del home banking, así que acá la clasificación va por el TEXTO del concepto.
+     Cada patrón se verificó contra el historial del diario 26 el 01/10/2026 (4.361 líneas):
+     entre paréntesis, cuántas veces aparece y contra qué cuenta lo resolvió la casa. */
+  macro:{
+    nombre:"Macro", cuentaBanco:"333209421315913", diario:26, cuenta:361, partner:2092,
+    metodoSalida:27, codigos:null,
+    online:{link:8, cuenta:2, nombre:"Banco Macro Empresas"},
+    textos:[
+      /* ---- impuestos: la casa los imputa DIRECTO a su cuenta, sin factura de por medio ---- */
+      {re:"S/DB TASA GRAL",              tipo:"impuesto", sub:"Ley 25.413 débitos",     cta:259, partner:2092},  // 354
+      {re:"S/CR TASA GRAL",              tipo:"impuesto", sub:"Ley 25.413 créditos",    cta:259, partner:2092},  // 313
+      {re:"RET. ING. BRUTOS SIRCREB",    tipo:"impuesto", sub:"SIRCREB",                cta:128, partner:2092},  // 322
+      {re:"DGR SELLOS",                  tipo:"impuesto", sub:"Sellos Santa Fe",        cta:233, partner:2092},
+      {re:"Imp de Sellos",               tipo:"impuesto", sub:"Sellos",                 cta:233, partner:2092},
+      /* ---- cargos del banco sin IVA: también van directo a Gastos Bancarios ---- */
+      {re:"Comision Trf. MacrOL E-set",  tipo:"cargo",    sub:"Comisión transferencia", cta:264, partner:2092},  // 241
+      {re:"COMISION TRANSFERE",          tipo:"cargo",    sub:"Comisión transferencia", cta:264, partner:2092},  // 31
+      {re:"MANTENIMIENTO MENSUAL",       tipo:"cargo",    sub:"Mantenimiento",          cta:264, partner:2092},  // 18
+      {re:"INTER.ADEL.CC",               tipo:"cargo",    sub:"Intereses de descubierto", cta:261, partner:2092},
+      /* ---- cargos FACTURADOS con IVA: estos NO se imputan directo, van contra la
+             factura del banco, porque ahí está el crédito fiscal ---- */
+      {re:"DEBITO FISCAL IVA BASICO",     tipo:"cargo",   sub:"IVA · va contra la factura",           partner:2092},  // 215
+      {re:"DEBITO FISCAL IVA PERCEPCION", tipo:"cargo",   sub:"Percepción IVA · va contra la factura", partner:2092},  // 197
+      {re:"COMISION CHEQUE CONSULTA",     tipo:"cargo",   sub:"Comisión cheques · va contra la factura", partner:2092},// 144
+      {re:"COM. SERV DESC NO AUTORIZ",    tipo:"cargo",   sub:"Comisión",               partner:2092},
+      /* ---- cheques pagados: se concilian contra el pago emitido ---- */
+      {re:"CHEQUE P/CAMARA",             tipo:"echeq",    sub:"Cheque por cámara"},         // 369
+      {re:"CHEQUE CANJE INTERNO",        tipo:"echeq",    sub:"Cheque canje interno"},      // 35
+      /* ---- préstamos: el contacto es el del banco PRESTAMOS, no el comercial ---- */
+      {re:"DEBITO PRESTAMOS REC",        tipo:"prestamo", sub:"Cuota de préstamo",  partner:2422},  // 239
+      {re:"OPERAC PRESTAMOS",            tipo:"prestamo", sub:"Alta de préstamo",   partner:2422},  // 16
+      /* ---- sueldos e impuestos nacionales ---- */
+      {re:"DB PAGO REMUNERACIONES",      tipo:"sueldos",  sub:"Pago de sueldos"},           // 70
+      {re:"AFIP",                        tipo:"afip",     sub:"Pago a AFIP"},               // 20
+      /* ---- entre cuentas propias: el texto dice el titular, y es EyG ---- */
+      {re:"TRANSF DROGUERIA",            tipo:"interna",  sub:"Entre cuentas propias"},     // 154
+      {re:"MacrOnline E-set M/T",        tipo:"interna",  sub:"Entre cuentas propias"},     // 196
+      {re:"TEF DATANET MT DROGUERIA",    tipo:"interna",  sub:"Entre cuentas propias"},     // 82
+      {re:"AUT.SDO.MISMO TIT",           tipo:"interna",  sub:"Entre cuentas propias"},     // 10
+      /* ---- la liquidación de descuento de cheques: el banco la manda SIN texto,
+             la referencia es sólo números y termina en el nº de liquidación ---- */
+      {soloNumeros:true,                 tipo:"liquidacion", sub:"Liquidación de descuento", partner:2092},  // 340
+      /* ---- cobros. El "TRANSF" pelado va ÚLTIMO: es el más genérico y si estuviera
+             arriba se comería las transferencias propias y las de préstamos ---- */
+      {re:"TEF DATANET PR",              tipo:"cobro",    sub:"Transferencia recibida"},
+      {re:"Numero de Operacion",         tipo:"cobro",    sub:"Depósito"},                  // 138
+      {re:"ACREDITACION CHEQUE REMESAS", tipo:"cobro",    sub:"Cheques depositados"},
+      {re:"DEPOSITO EFVO",               tipo:"cobro",    sub:"Depósito en efectivo"},
+      {re:"ING TRANSF",                  tipo:"cobro",    sub:"Transferencia recibida"},
+      {re:"MacrOnline E-set D/T",        tipo:"pago",     sub:"Transferencia emitida"},     // 63
+      {re:"TRF MO CCDO DIST T",          tipo:"pago",     sub:"Transferencia emitida"},     // 33
+      {re:"DEBITO TRANSFERENCIAS MEP",   tipo:"pago",     sub:"Transferencia emitida"},
+      {re:"PAGO SERV DBCTA",             tipo:"pago",     sub:"Pago de servicios"},
+      {re:"TRANSF",                      tipo:"cobro",    sub:"Transferencia recibida"}
+    ]
+  },
   bbva:      {nombre:"BBVA",              cuentaBanco:"282-036215/1",     diario:25, cuenta:360, partner:2667, codigos:null},
   santafe:   {nombre:"Santa Fe",          cuentaBanco:"00004034106204",   diario:77, cuenta:397, partner:3919, codigos:null},
   municipal: {nombre:"Municipal Rosario", cuentaBanco:"",                 diario:87, cuenta:400, partner:4038, codigos:null},
@@ -235,8 +298,18 @@ const TIPOS={
   cobro:   {lbl:"Cobros",           color:"#1F8A5F", ayuda:"Plata que entra de clientes. Se concilia contra el recibo que carga Cobranzas."},
   echeq:   {lbl:"E-cheq pagados",   color:"#C0392B", ayuda:"Cheques electrónicos debitados. Se concilian contra el pago emitido."},
   interna: {lbl:"Entre cuentas",    color:"#5B8DEF", ayuda:"Transferencias entre cuentas propias. Se concilian con el extracto del otro banco."},
+  /* Tipos que aparecen en el Macro y no estaban en el mapa del Credicoop. */
+  liquidacion:{lbl:"Liquid. de cheques", color:"#2E8B8B", ayuda:"Acreditación de una liquidación de descuento de cheques. Se concilia contra la factura del banco, que trae el neto, los intereses y el IVA. Sin esa factura cargada no hay contra qué imputarla."},
+  prestamo:{lbl:"Préstamos",        color:"#C97B2E", ayuda:"Cuotas y altas de préstamo. El contacto es Banco Macro — Préstamos, no el comercial."},
+  pago:    {lbl:"Pagos emitidos",   color:"#A0522D", ayuda:"Transferencias que salieron. Se concilian contra el pago cargado en Odoo."},
+  sueldos: {lbl:"Sueldos",          color:"#6B7FD7", ayuda:"Pago de remuneraciones por débito en cuenta."},
+  afip:    {lbl:"AFIP",             color:"#7A5195", ayuda:"Pagos a AFIP debitados de la cuenta."},
   otro:    {lbl:"Sin clasificar",   color:"#8A9A97", ayuda:"El código del banco no está en el mapa. Hay que decidirlo a mano."}
 };
+/* Los tipos que se resuelven EMPAREJANDO contra una partida abierta. Los que no están
+   acá (impuesto, cargo) no tienen contraparte: se imputan directo a su cuenta o van
+   contra la factura del banco. */
+const EMPAREJA=["cobro","echeq","interna","liquidacion","pago","prestamo","sueldos","afip"];
 
 /* ══════════════════════════════════════════════════════════════════════════
    LECTOR DEL ARCHIVO
@@ -298,12 +371,55 @@ function pintarLog(){
 /* ══════════════════════════════════════════════════════════════════════════
    ANÁLISIS: duplicados, clasificación y candidatos
    ══════════════════════════════════════════════════════════════════════════ */
+/* El contacto que el mapa del banco da por sabido. Se lee el nombre de Odoo en una
+   sola consulta, para no mostrar un id pelado en la pantalla. */
+async function aplicarContactoFijo(movs){
+  const ids=[...new Set(movs.filter(m=>m.partnerFijo&&!m.cliente).map(m=>m.partnerFijo))];
+  if(!ids.length) return;
+  const ps=await rpc("res.partner","read",[ids,["name"]]);
+  const mp={}; ps.forEach(p=>mp[p.id]={id:p.id,nombre:p.name});
+  let n=0;
+  movs.forEach(m=>{ if(m.partnerFijo && !m.cliente && mp[m.partnerFijo]){ m.cliente=mp[m.partnerFijo]; m.porMapa=true; n++; } });
+  if(n) log("Contacto puesto por el mapa del banco: "+n,"o");
+}
+
+/* QUÉ ES CADA MOVIMIENTO. Hay dos caminos porque los bancos no mandan lo mismo:
+   el archivo del home banking trae un CÓDIGO (Credicoop), y la sincronización NO lo
+   trae, así que ahí hay que leer el TEXTO del concepto (Macro).
+   El orden de B.textos importa: los patrones genéricos van últimos, si no se comen
+   a los específicos — "TRANSF" pelado se tragaría las transferencias propias. */
+function clasificar(m,B){
+  m.cta=null; m.partnerFijo=null;
+  if(B.codigos){
+    const c=B.codigos[m.cod];
+    m.tipo=c?c.tipo:"otro"; m.sub=c?c.sub:("código "+(m.cod||"—")); m.cta=c?c.cta:null;
+    return;
+  }
+  if(B.textos){
+    const t=String(m.concepto||""), limpio=t.trim();
+    /* la liquidación de descuento llega SIN texto: la referencia es sólo números.
+       Se comprueba carácter por carácter en vez de con una expresión, para que no
+       dependa de escapes que se pierden al editar el archivo. */
+    const soloNumeros = limpio.length>6 && limpio.split("").every(ch=>"0123456789 .-".indexOf(ch)>=0);
+    for(const r of B.textos){
+      const pega = r.soloNumeros ? soloNumeros
+                 : (!!r.re && t.toLowerCase().indexOf(r.re.toLowerCase())>=0);
+      if(pega){ m.tipo=r.tipo; m.sub=r.sub; m.cta=r.cta||null; m.partnerFijo=r.partner||null; return; }
+    }
+  }
+  m.tipo="otro"; m.sub=B.textos?"el concepto no está en el mapa":("código "+(m.cod||"—"));
+}
+
 async function analizar(movs){
   const B=BANCOS[ST.banco];
   const fechas=[...new Set(movs.map(m=>m.fecha))].sort();
-  log("Archivo leído: "+movs.length+" movimientos, del "+fechas[0]+" al "+fechas[fechas.length-1]);
+  /* Cuando los movimientos vienen de la conexión con el banco, YA SON líneas de Odoo:
+     no hay nada que comparar ni que crear, y el paso de duplicados se saltea. */
+  const deOdoo = movs.length>0 && movs[0].deOdoo;
+  log((deOdoo?"Traído del banco: ":"Archivo leído: ")+movs.length+" movimientos, del "+fechas[0]+" al "+fechas[fechas.length-1]);
 
   /* ---- 1) lo que YA está cargado en Odoo, por día ---- */
+  if(!deOdoo){
   const yaEn=await rpc("account.bank.statement.line","search_read",
     [[["journal_id","=",B.diario],["date","in",fechas]],["date","payment_ref","amount","ref","is_reconciled","to_check","move_id","partner_id"]],
     {limit:0});
@@ -321,11 +437,11 @@ async function analizar(movs){
   });
   const dup=movs.filter(m=>m.yaEsta).length;
   log(dup?("Detectados "+dup+" movimientos que YA estaban cargados: no se vuelven a crear"):"Ninguno estaba cargado: son todos nuevos",dup?"o":"");
+  }
 
   /* ---- 2) clasificar por el código del banco ---- */
   movs.forEach(m=>{
-    const c=B.codigos[m.cod];
-    m.tipo=c?c.tipo:"otro"; m.sub=c?c.sub:("código "+(m.cod||"—")); m.cta=c?c.cta:null;
+    clasificar(m,B);
     const cu=String(m.concepto).match(/\b(\d{11})\b/); m.cuit=cu?cu[1]:null;
   });
 
@@ -342,13 +458,21 @@ async function analizar(movs){
     m.cliente=c; m.porNombre=true; porNom++; });
   if(porNom) log("Identificados por el nombre del titular: "+porNom,"o");
   identificarBancoPropio(movs);
+  /* Cuarta fuente: el mapa del banco fija el contacto de lo que siempre es del banco
+     (comisiones, impuestos) y de las cuotas de préstamo, que van a su cuenta aparte.
+     Va al final y sólo donde no hay contacto, para no pisar un cliente ya identificado. */
+  await aplicarContactoFijo(movs);
 
   /* ---- 4) candidatos para conciliar ---- */
   /* Un movimiento da trabajo mientras no esté cargado Y conciliado. Que ya esté en
      Odoo no quiere decir que esté resuelto: lo normal, cuando se vuelve a subir un día
      que ya se importó, es que la línea exista pero le falte el recibo. Antes acá se
      miraba sólo !m.yaEsta y por eso la pantalla se quedaba sin una sola acción. */
-  const necesitaRec=movs.some(m=>m.tipo==="cobro"&&abierto(m)), necesitaPag=movs.some(m=>(m.tipo==="echeq"||m.tipo==="interna")&&abierto(m));
+  /* Contra qué se empareja cada tipo. Lo que ENTRA se busca en Recibos pendientes y lo
+     que SALE en Pagos pendientes. La liquidación de descuento entra, y su contrapartida
+     es el neto de la factura del banco, que está justamente en Recibos pendientes. */
+  const ENTRA=["cobro","liquidacion"], SALE=["echeq","interna","pago","prestamo","sueldos","afip"];
+  const necesitaRec=movs.some(m=>ENTRA.indexOf(m.tipo)>=0&&abierto(m)), necesitaPag=movs.some(m=>SALE.indexOf(m.tipo)>=0&&abierto(m));
   const abiertas=async cta=>await rpc("account.move.line","search_read",
     [[["account_id","=",cta],["parent_state","=","posted"],["full_reconcile_id","=",false]],
      ["date","debit","credit","move_id","partner_id","amount_residual","name"]],{limit:0});
@@ -359,7 +483,7 @@ async function analizar(movs){
   movs.forEach(m=>{
     m.cands=[];
     if(!abierto(m)) return;
-    const pool2 = m.tipo==="cobro" ? recibos : (m.tipo==="echeq"||m.tipo==="interna") ? pagos : [];
+    const pool2 = ENTRA.indexOf(m.tipo)>=0 ? recibos : SALE.indexOf(m.tipo)>=0 ? pagos : [];
     const mismos=pool2.filter(r=>Math.abs(Math.abs(r.amount_residual)-Math.abs(m.importe))<0.005);
     /* E-CHEQ: el banco no dice el proveedor, pero el "Cpbte" del resumen son los
        ULTIMOS 6 DIGITOS del numero de cheque. Verificado el 30/09/2026: Cpbte 448651
@@ -510,7 +634,7 @@ function render(){
   const porTipo={}; M.forEach(m=>{(porTipo[m.tipo]=porTipo[m.tipo]||[]).push(m);});
   const auto = m => m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1||(m.tipo==="interna"&&m.otroBanco);
   const listos=abiertos.filter(auto);
-  const dudas =abiertos.filter(m=>!auto(m)&&(m.cands.length>1||m.cands.length===0&&["cobro","echeq","interna"].includes(m.tipo)||m.tipo==="otro"));
+  const dudas =abiertos.filter(m=>!auto(m)&&(m.cands.length>1||m.cands.length===0&&EMPAREJA.indexOf(m.tipo)>=0||m.tipo==="otro"));
 
   app.innerHTML=
     zonaCarga()+
@@ -526,10 +650,34 @@ function render(){
   engancharDrop(); pintarLog();
 }
 
+/* El banco conectado no necesita archivo. Se muestra el botón y, después de usarlo,
+   qué dijo el banco: cuándo mandó datos por última vez y qué saldo informó. Eso es lo
+   que permite darse cuenta de que la conexión está "conectada" pero muda. */
+function bloqueConexion(B){
+  const c=ST.conexion;
+  const pl=n=>"$ "+Number(n||0).toLocaleString("es-AR",{minimumFractionDigits:2});
+  return '<div class="conexion">'+
+    '<div class="cx-t"><b>🔗 '+esc(B.online.nombre)+' está conectado.</b> Los movimientos los pide Odoo al banco: '+
+      'no hace falta bajar ni subir ningún archivo. Con la conexión encendida, <b>este banco no se carga a mano</b> — '+
+      'lo que se sube a mano no se reconoce como repetido y queda duplicado.</div>'+
+    '<button class="btn wide" onclick="traerDelBanco()"'+(ST.trabajando?" disabled":"")+'>'+
+      (ST.trabajando?"Conectando con el banco…":"⬇  Traer los movimientos del banco")+'</button>'+
+    (c?'<div class="cx-e">'+
+        'Última vez que el banco mandó datos: <b>'+esc(String(c.sync||"nunca"))+'</b> · '+
+        'saldo que informó: <b>'+pl(c.saldo)+'</b> · '+
+        'esta vez trajo <b>'+c.nuevas+'</b> movimiento'+(c.nuevas===1?"":"s")+'.'+
+        (c.nuevas===0?'<span class="cx-ojo">⚠️ Que diga <b>conectado</b> sólo quiere decir que Odoo tiene las credenciales guardadas, '+
+          'no que la sesión con el banco esté viva. Si hace días que no trae nada, hay que volver a validarse en el home banking: '+
+          'eso lo tiene que hacer una persona, desde Odoo en <b>Contabilidad → Configuración → Conexiones bancarias</b>, '+
+          'con el botón de actualizar credenciales.</span>':'')+
+       '</div>':"")+
+    '</div>';
+}
+
 function zonaCarga(){
   const B=BANCOS[ST.banco];
   const ops=Object.keys(BANCOS).map(k=>'<option value="'+k+'"'+(k===ST.banco?" selected":"")+'>'+
-    esc(BANCOS[k].nombre)+(BANCOS[k].codigos?"":" · sin mapa")+'</option>').join("");
+    esc(BANCOS[k].nombre)+(BANCOS[k].online?" · conectado":((BANCOS[k].codigos||BANCOS[k].textos)?"":" · sin mapa"))+'</option>').join("");
   return '<div class="panel"><h3>📂 Resumen del banco</h3>'+
     '<div class="sub">Elegí el banco y subí uno o varios archivos. El resumen no dice de qué cuenta es, '+
     'así que el banco hay que declararlo. Podés subir el mismo archivo más de una vez: lo que ya esté cargado se detecta y no se duplica.</div>'+
@@ -539,9 +687,10 @@ function zonaCarga(){
       '<span class="cta-num" title="La cuenta del diario en Odoo. Verificá que sea la del archivo que vas a subir.">'+
         (B.cuentaBanco?"cuenta "+esc(B.cuentaBanco):"sin número de cuenta en el diario")+'</span>'+
     '</div>'+
-    (B.codigos?"":'<div class="aviso warn" style="margin:12px 0 0">⚠️ <div><b>'+esc(B.nombre)+' todavía no tiene su mapa de códigos.</b> '+
+    ((B.codigos||B.textos)?"":'<div class="aviso warn" style="margin:12px 0 0">⚠️ <div><b>'+esc(B.nombre)+' todavía no tiene su mapa.</b> '+
       'El archivo se va a poder leer si el formato es igual al de Credicoop, pero los movimientos van a quedar <b>sin clasificar</b>: '+
       'no voy a saber cuál es un impuesto, cuál una comisión y cuál un cobro. Pasame un resumen de este banco y lo agrego.</div></div>')+
+    (B.online?bloqueConexion(B):"")+
     '<label class="drop" id="drop" style="margin-top:12px"><div class="ic">📄</div>'+
     '<div class="t">'+(ST.listo?"Cargar más archivos":"Elegí uno o varios resúmenes")+'</div>'+
     '<div class="s">'+esc(B.nombre)+' · formato .xls · se pueden soltar varios juntos</div>'+
@@ -613,8 +762,16 @@ function composicion(porTipo){
    quedaran cobros sin recibo. Ahora el panel vive mientras quede algo ABIERTO, venga
    de un archivo nuevo o de una importación anterior. */
 function panelAcciones(nuevos,pendConc,cerrados,listos,dudas){
-  if(!ST.validacion||!ST.validacion.ok) return "";
+  /* Cuando los movimientos los trajo el banco no hay cadena de saldos que validar
+     —ni archivo—, así que esa condición sólo se le exige al camino del archivo. */
+  const deOdoo = ST.movs.length>0 && ST.movs[0].deOdoo;
+  if(!deOdoo && (!ST.validacion||!ST.validacion.ok)) return "";
   const t=ST.trabajando, abiertos=nuevos.length+pendConc.length;
+  /* Las que ya están cargadas, sabemos de quién son, y les falta el contacto. */
+  const sinCto = ST.movs.filter(m=>m.yaEsta && !m.yaEsta.partner_id && m.cliente && abierto(m));
+  const bContactos = sinCto.length
+    ? '<button class="btn'+((nuevos.length||listos.length)?" gh":"")+'" onclick="accionContactos()" '+(t?"disabled":"")+'>'+
+      'Poner el contacto a '+sinCto.length+' línea'+(sinCto.length===1?"":"s")+'</button>' : "";
 
   if(!abiertos) return '<div class="aviso ok">✔️ <div><b>Este día ya está cerrado.</b> '+
     'Los '+ST.movs.length+' movimientos están cargados y conciliados: no queda nada por hacer. Podés subir otro día.</div></div>';
@@ -641,11 +798,12 @@ function panelAcciones(nuevos,pendConc,cerrados,listos,dudas){
     '<div class="sub">Se carga <b>todo</b> el extracto (si no, el saldo del banco no cuadra) y se resuelve solo lo que no deja dudas: '+
     'impuestos y cargos a su cuenta, cobros con un único recibo posible, y <b>transferencias entre cuentas propias</b> '+
     '(crea la transferencia en Odoo y su contrapartida). Lo ambiguo queda abajo para que lo decidas vos.</div>'+
-    (bCargar||bResolver ? '<div class="acciones">'+bCargar+bResolver+'</div>' : "")+
+    (bCargar||bResolver||bContactos ? '<div class="acciones">'+bCargar+bResolver+bContactos+'</div>' : "")+
     (mudos.length?'<div class="aviso warn" style="margin:0 0 9px">⚠️ <div><b>'+mudos.length+' cobro'+(mudos.length===1?"":"s")+' va'+(mudos.length===1?"":"n")+' a entrar sin contacto.</b> '+
-      'El contacto <b>no se puede poner después</b>: Odoo lo rechaza en un asiento conciliado. '+
-      'Buscalos con el botón <b>¿De quién es?</b> en la tabla de abajo y asignalos antes de cargar. '+
-      'Si no sabés de quién son, se pueden cargar igual y resolver el cobro más adelante — pero la línea queda sin cliente.</div></div>':"")+
+      'Conviene resolverlo antes con el botón <b>¿De quién es?</b> de la tabla de abajo. '+
+      'Si no sabés de quién son, se pueden cargar igual: el contacto se puede escribir después, '+
+      'pero es un trámite (el asiento tiene que pasar a borrador y volver a publicarse), '+
+      'y si para entonces la línea ya está conciliada hay que rearmar la conciliación.</div></div>':"")+
     '<div class="aviso info" style="margin:0">💡 <div>'+origen+' De los <b>'+abiertos+'</b> que dan trabajo, '+
     '<b>'+listos.length+'</b> tienen un destino único y <b>'+dudas.length+'</b> necesitan una decisión tuya'+
     (dudas.length?', abajo uno por uno':"")+'. Nada se concilia si hay más de un candidato posible.'+
@@ -659,7 +817,7 @@ function filtrar(M){
   if(ST.filtro==="cerrado") return M.filter(m=>m.yaEsta&&m.yaEsta.is_reconciled);
   const auto = m => m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1||(m.tipo==="interna"&&m.otroBanco);
   if(ST.filtro==="listo")   return M.filter(m=>abierto(m)&&auto(m));
-  if(ST.filtro==="duda")    return M.filter(m=>abierto(m)&&!auto(m)&&(m.cands.length>1||m.cands.length===0&&["cobro","echeq","interna"].includes(m.tipo)||m.tipo==="otro"));
+  if(ST.filtro==="duda")    return M.filter(m=>abierto(m)&&!auto(m)&&(m.cands.length>1||m.cands.length===0&&EMPAREJA.indexOf(m.tipo)>=0||m.tipo==="otro"));
   if(ST.filtro.startsWith("t:")) return M.filter(m=>m.tipo===ST.filtro.slice(2));
   return M;
 }
@@ -697,6 +855,70 @@ window.ponerCliente=(id,nombre)=>{
 };
 window.filtrarTipo_=t=>{ const k="t:"+t; ST.filtro=(ST.filtro===k?null:k); render(); };
 
+/* ESCRIBIR EL CONTACTO EN UNA LÍNEA YA CARGADA.
+   Odoo rechaza el write de frente. El camino que funciona es: borrador → escribir →
+   publicar. Y tiene una trampa que cuesta caro: al escribir el contacto, Odoo REGENERA
+   la contrapartida y la manda a la cuenta por defecto del diario (Cuenta transitoria),
+   aunque estuviera imputada a Gastos Bancarios o a Impuestos. Hay que devolverla. */
+async function ponerContactoEnOdoo(lineaId, moveId, partnerId, ctaBanco){
+  const mv0=await rpc("account.move","read",[[moveId],["line_ids","state"]]);
+  const ls0=await rpc("account.move.line","read",[mv0[0].line_ids,["id","account_id","debit","credit"]]);
+  const orig=ls0.find(x=>x.account_id[0]!==ctaBanco);
+  const ctaOrig=orig?orig.account_id[0]:null;
+  const antes=ls0.map(x=>x.account_id[0]+"|"+x.debit.toFixed(2)+"|"+x.credit.toFixed(2)).sort().join(" ");
+  if(mv0[0].state==="posted") await rpc("account.move","button_draft",[[moveId]]);
+  await rpc("account.bank.statement.line","write",[[lineaId],{partner_id:partnerId}]);
+  await rpc("account.move","action_post",[[moveId]]);
+  const mv1=await rpc("account.move","read",[[moveId],["line_ids"]]);
+  const ls1=await rpc("account.move.line","read",[mv1[0].line_ids,["id","account_id","debit","credit"]]);
+  const otra=ls1.find(x=>x.account_id[0]!==ctaBanco);
+  if(otra && ctaOrig && otra.account_id[0]!==ctaOrig)
+    await rpc("account.move.line","write",[[otra.id],{account_id:ctaOrig}]);
+  /* control: el asiento tiene que haber quedado IGUAL, sólo con el contacto puesto */
+  const ls2=await rpc("account.move.line","read",[mv1[0].line_ids,["account_id","debit","credit"]]);
+  const ahora=ls2.map(x=>x.account_id[0]+"|"+x.debit.toFixed(2)+"|"+x.credit.toFixed(2)).sort().join(" ");
+  const v=await rpc("account.bank.statement.line","read",[[lineaId],["partner_id","is_reconciled"]]);
+  if(!v[0].partner_id || v[0].partner_id[0]!==partnerId) throw new Error("el contacto no quedó escrito");
+  if(antes!==ahora) throw new Error("el asiento cambió al escribir el contacto");
+  return v[0];
+}
+
+window.aplicarContacto=async i=>{
+  const m=ST.movs[i]; if(!m||!m.yaEsta||!m.cliente||ST.trabajando) return;
+  const B=BANCOS[ST.banco];
+  ST.trabajando=true; render();
+  try{
+    const v=await ponerContactoEnOdoo(m.yaEsta.id, m.yaEsta.move_id[0], m.cliente.id, B.cuenta);
+    m.yaEsta.partner_id=[m.cliente.id,m.cliente.nombre];
+    m.yaEsta.is_reconciled=v.is_reconciled;
+    log("Contacto escrito: "+money(m.importe)+" → "+m.cliente.nombre,"ok");
+  }catch(e){
+    log("No se pudo poner el contacto en la línea "+m.yaEsta.id+": "+((e&&e.message)||e),"e");
+  }
+  ST.trabajando=false; render();
+};
+
+/* El contacto de todas las que faltan, de una. Van EN SERIE a propósito: cada una pasa
+   su asiento a borrador y lo vuelve a publicar, y hacer eso en paralelo sobre el mismo
+   diario es pedir problemas. Si una falla se sigue con las demás y se dice cuál fue. */
+window.accionContactos=async ()=>{
+  if(ST.trabajando) return;
+  const B=BANCOS[ST.banco];
+  const lista=ST.movs.filter(m=>m.yaEsta && !m.yaEsta.partner_id && m.cliente && abierto(m));
+  if(!lista.length) return;
+  ST.trabajando=true; render();
+  let ok=0, mal=0;
+  for(const m of lista){
+    try{
+      const v=await ponerContactoEnOdoo(m.yaEsta.id, m.yaEsta.move_id[0], m.cliente.id, B.cuenta);
+      m.yaEsta.partner_id=[m.cliente.id,m.cliente.nombre];
+      m.yaEsta.is_reconciled=v.is_reconciled; ok++;
+    }catch(e){ mal++; log("Línea "+m.yaEsta.id+" ("+money(m.importe)+"): "+((e&&e.message)||e),"e"); }
+  }
+  log("Contactos escritos: "+ok+(mal?"  ·  fallaron "+mal:""), mal?"o":"ok");
+  ST.trabajando=false; render();
+};
+
 function estadoDe(m){
   if(m.yaEsta && m.yaEsta.is_reconciled)
     return '<span class="badge b-dup">ya cargado · conciliado</span>';
@@ -704,13 +926,16 @@ function estadoDe(m){
     /* Cargado pero sin conciliar: sigue dando trabajo, y el badge tiene que decirlo.
        Debajo se agrega el estado normal, porque a este también se le buscan candidatos. */
     const pre='<span class="badge b-warn">cargado · falta conciliar</span>'+
-      (m.yaEsta.to_check?' <span class="badge b-warn">a revisar</span>':"")+' ';
+      (m.yaEsta.to_check?' <span class="badge b-warn">a revisar</span>':"")+
+      /* el contacto a la vista: es lo que Federico echaba de menos cuando la línea
+         la cargaba el módulo en vez de él a mano */
+      (!m.yaEsta.partner_id?' <span class="badge b-bad">sin contacto</span>':"")+' ';
     if(m.tipo==="impuesto") return pre+'<span class="badge b-ok">va a su cuenta</span>';
     if(m.tipo==="cargo")    return pre+'<span class="badge b-warn">va a la liquidación</span>';
     if(m.cands.length===1)  return pre+'<span class="badge b-ok">'+(m.porCheque?"por N° de cheque":m.porCliente?"cliente + importe":"un candidato")+'</span>';
     if(m.cands.length>1)    return pre+'<span class="badge b-warn">'+m.cands.length+' candidatos</span>';
     if(m.tipo==="interna"&&m.otroBanco) return pre+'<span class="badge b-ok">'+esc(m.otroBanco.nombre)+'</span>';
-    if(["cobro","echeq","interna"].includes(m.tipo)) return pre+'<span class="badge b-bad">falta la contraparte</span>';
+    if(EMPAREJA.indexOf(m.tipo)>=0) return pre+'<span class="badge b-bad">falta la contraparte</span>';
     return pre;
   }
   if(m.tipo==="impuesto") return '<span class="badge b-ok">va a su cuenta</span>';
@@ -719,7 +944,7 @@ function estadoDe(m){
   if(m.cands.length>1)    return '<span class="badge b-warn">'+m.cands.length+' candidatos</span>';
   if(m.tipo==="interna"&&m.otroBanco) return '<span class="badge b-ok">'+esc(m.otroBanco.nombre)+'</span>';
   if(m.tipo==="echeq"&&m.cpbte) return '<span class="badge b-bad">cheque '+esc(m.cpbte)+' sin pago cargado</span>';
-  if(["cobro","echeq","interna"].includes(m.tipo)) return '<span class="badge b-bad">falta la contraparte</span>';
+  if(EMPAREJA.indexOf(m.tipo)>=0) return '<span class="badge b-bad">falta la contraparte</span>';
   return '<span class="badge b-nu">sin clasificar</span>';
 }
 function accionDe(m,i){
@@ -732,6 +957,14 @@ function accionDe(m,i){
   /* Sólo lo conciliado queda sin acción. Lo que está cargado pero sin conciliar
      sigue siendo accionable: es justamente el trabajo pendiente de Tesorería. */
   if(!abierto(m)) return '<span class="muted">—</span>';
+  /* Ya está cargada, no tiene contacto, y sabemos de quién es: se puede escribir AHORA.
+     Odoo no deja escribirlo de frente, pero sí pasando el asiento a borrador, escribiendo
+     y volviéndolo a publicar. Se ofrece sólo en las líneas sin conciliar: si estuviera
+     conciliada habría que romper y rearmar la conciliación, y eso no va en un botón. */
+  if(m.yaEsta && !m.yaEsta.partner_id && m.cliente)
+    return '<button class="btn sm" onclick="aplicarContacto('+i+')" title="Escribe «'+esc(m.cliente.nombre)+
+      '» como contacto de esta línea. El asiento pasa a borrador, se escribe y se vuelve a publicar; '+
+      'si la contrapartida estaba imputada a una cuenta, se la devuelve a esa cuenta.">Poner contacto</button>';
   if(m.cands.length>1) return '<select class="cand" id="sel'+i+'"><option value="">Elegí cuál…</option>'+
     m.cands.map(c=>'<option value="'+c.id+'">'+esc(String(c.move_id[1]).slice(0,26))+" · "+(c.partner_id?esc(String(c.partner_id[1]).slice(0,22)):"sin cliente")+'</option>').join("")+
     '</select> <button class="btn sm" onclick="elegirCand('+i+')">Aplicar</button>';
@@ -1263,6 +1496,70 @@ window.elegirCand=(i)=>conTrabajo(async()=>{
 /* ══════════════════════════════════════════════════════════════════════════
    ARRANQUE
    ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════
+   TRAER DEL BANCO — el camino sin archivo
+
+   El Macro tiene conexión con el banco en Odoo (Syncfy). El botón hace tres cosas:
+   le pide al banco los movimientos nuevos, los lee del diario, y los pasa por el
+   MISMO análisis que el archivo. Acá no hay nada que crear: las líneas las crea la
+   sincronización, así que el trabajo que queda es clasificar, poner el contacto e
+   imputar — lo mismo que se hace a mano, pero sin bajar ni subir un archivo.
+
+   OJO con una cosa que ya pasó: si alguien carga el mismo tramo a mano, se duplica.
+   Odoo deduplica por el identificador de la transacción, que las líneas cargadas a
+   mano no tienen. Con la conexión encendida, el banco se carga por acá y nada más.
+   ══════════════════════════════════════════════════════════════════════════ */
+const soloDigitos=s=>{const t=String(s||"").trim(); return t.length>0 && t.split("").every(ch=>"0123456789".indexOf(ch)>=0);};
+
+async function traerDelBanco(){
+  const B=BANCOS[ST.banco];
+  if(!B.online){ alert(B.nombre+" no tiene conexión con el banco todavía: ese se sigue cargando por archivo."); return; }
+  if(ST.trabajando) return;
+  ST.trabajando=true; ST.listo=false; ST.logs=[]; ST.archivos=[]; ST.validacion=null; ST.filtro=null; render();
+  document.getElementById("app").insertAdjacentHTML("beforeend",
+    '<div class="cargando">Conectando con '+esc(B.online.nombre)+' y pidiendo los movimientos…</div>');
+  try{
+    const antes=await rpc("account.bank.statement.line","search_count",[[["journal_id","=",B.diario]]]);
+    log("Pidiendo los movimientos nuevos a "+B.online.nombre+"…");
+    let falla="";
+    try{ await rpc("account.online.link","action_fetch_transactions",[[B.online.link]]); }
+    catch(e){ falla=String((e&&e.message)||e); }
+    const despues=await rpc("account.bank.statement.line","search_count",[[["journal_id","=",B.diario]]]);
+    const nuevas=despues-antes;
+    if(falla) log("El banco respondió con un problema: "+falla.slice(0,220),"e");
+    log(nuevas>0?("El banco mandó "+nuevas+" movimientos nuevos"):"El banco no mandó movimientos nuevos", nuevas>0?"ok":"o");
+
+    /* El estado de la conexión: 'conectado' quiere decir que Odoo tiene las credenciales
+       guardadas, NO que la sesión con el banco esté viva. Si hace días que no trae nada,
+       lo que falta es que una persona vuelva a validarse en el home banking. */
+    const lk=await rpc("account.online.link","read",[[B.online.link],["state","last_refresh"]]);
+    const ac=await rpc("account.online.account","read",[[B.online.cuenta],["last_sync","balance"]]);
+    ST.conexion={estado:lk[0].state, refresh:lk[0].last_refresh, sync:ac[0].last_sync, saldo:ac[0].balance, nuevas};
+
+    /* ---- las líneas sin resolver del diario: eso es lo que hay para trabajar ---- */
+    const lin=await rpc("account.bank.statement.line","search_read",
+      [[["journal_id","=",B.diario],["is_reconciled","=",false]],
+       ["id","date","payment_ref","amount","ref","partner_id","is_reconciled","to_check","move_id","online_transaction_identifier"]],
+      {limit:0, order:"date, id"});
+    log("Movimientos sin resolver en el diario: "+lin.length);
+    if(!lin.length){ log("No hay nada pendiente en este banco.","ok"); ST.movs=[]; ST.listo=true; ST.trabajando=false; render(); return; }
+
+    const movs=lin.map(l=>({
+      deOdoo:true, lineaId:l.id, yaEsta:l, online:!!l.online_transaction_identifier,
+      fecha:l.date, concepto:String(l.payment_ref||"").trim().replace(/\s+/g," "),
+      cpbte:soloDigitos(l.ref)?String(l.ref).trim():"",
+      importe:Math.round(l.amount*100)/100, saldo:null, cod:""
+    }));
+    ST.movs=await analizar(movs);
+    ST.listo=true; ST.trabajando=false; render();
+  }catch(e){
+    ST.trabajando=false; ST.listo=false;
+    log("No se pudo traer del banco: "+((e&&e.message)||e),"e");
+    render();
+  }
+}
+window.traerDelBanco=traerDelBanco;
+
 async function procesar(files){
   try{
     ST.listo=false; ST.logs=[]; ST.filtro=null; ST.archivos=[]; render();
