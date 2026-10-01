@@ -162,7 +162,9 @@ async function gamificacion(uid,r,ofertasMes,cfgN){
   let nuevosCompraron=0;
   if((nuevosAltas||[]).length){
     const _nid=nuevosAltas.map(p=>p.id);
-    let _g=[]; try{ _g=await rpc("sale.order","read_group",[[["partner_id","in",_nid],["state","in",["sale","done"]]],["amount_untaxed:sum"],["partner_id"]],{lazy:false}); }catch(e){}
+    // la compra tiene que caer DENTRO del mes que se liquida: si no, al liquidar septiembre en
+    // octubre una ficha de septiembre que recién compró en octubre sumaba puntos de septiembre.
+    let _g=[]; try{ _g=await rpc("sale.order","read_group",[[["partner_id","in",_nid],["state","in",["sale","done"]],["date_order",">=",r.ini],["date_order","<=",r.finH]],["amount_untaxed:sum"],["partner_id"]],{lazy:false}); }catch(e){}
     const _porP={}; (_g||[]).forEach(x=>{ if(x.partner_id) _porP[x.partner_id[0]]={ped:x.__count||0, monto:x.amount_untaxed||0}; });
     for(const p of nuevosAltas){
       const v=_porP[p.id];
@@ -178,7 +180,14 @@ async function gamificacion(uid,r,ofertasMes,cfgN){
   const objetivoCobro=(((cob100[0]||{}).amount)||0)/3*1.1;
   // actividad
   const bk={};
-  for(const o of ordHist){ const m=(o.date_order||"").slice(0,7); if(!m)continue; (bk[m]=bk[m]||{ped:0,cli:new Set()}); bk[m].ped++; if(o.partner_id)bk[m].cli.add(o.partner_id[0]); }
+  /* Odoo guarda el pedido en hora UTC. Un pedido cargado un 30 a las 21:30 de Argentina queda
+     grabado el día 1 del mes siguiente, así que cortar el texto crudo lo manda al mes equivocado.
+     El panel ya convertía a hora argentina; el motor tiene que hacer lo mismo o los dos no cuentan
+     los mismos pedidos. */
+  const _fechaAR=s=>{ if(!s) return ""; const d=new Date(String(s).replace(" ","T")+"Z");
+    if(isNaN(d)) return String(s).slice(0,10);
+    return new Date(d.getTime()-3*3600000).toISOString().slice(0,10); };
+  for(const o of ordHist){ const m=_fechaAR(o.date_order).slice(0,7); if(!m)continue; (bk[m]=bk[m]||{ped:0,cli:new Set()}); bk[m].ped++; if(o.partner_id)bk[m].cli.add(o.partner_id[0]); }
   const mes=r.ini.slice(0,7);
   /* LA VARA DE LA ACTIVIDAD. El promedio de 6 meses regalaba el ítem: en septiembre las cinco
      sacaron el 100% porque el negocio creció y el promedio quedó muy atrás (Ruth hizo 117 pedidos

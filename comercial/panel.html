@@ -828,6 +828,8 @@ function waN(tel){let d=digits(tel);if(d.length<8)return"";if(d.startsWith("54")
 const now=new Date(); const pad=n=>String(n).padStart(2,"0");
 const hoyStr=`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
 const inicioMes=`${now.getFullYear()}-${pad(now.getMonth()+1)}-01`;
+// ultimo instante del mes, para acotar consultas al mes en curso
+const finMesStr=`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(new Date(now.getFullYear(),now.getMonth()+1,0).getDate())} 23:59:59`;
 // Semana CALENDARIO: lunes de la semana actual, pero nunca antes del 1º del mes (así "esta
 // semana" no arrastra ventas del mes pasado; ej. el lun 3/8 la semana arranca el 3, no el 27/7).
 const inicioSem=(()=>{ const d=new Date(now); const dow=(d.getDay()+6)%7; d.setDate(d.getDate()-dow); const lun=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; return lun<inicioMes?inicioMes:lun; })();
@@ -934,7 +936,8 @@ async function cargar(){
     try{
       if(ST.nuevosLista.length){
         const _nid=ST.nuevosLista.map(p=>p.id);
-        const _g=await rpc("sale.order","read_group",[[["partner_id","in",_nid],["state","in",["sale","done"]]],["amount_untaxed:sum"],["partner_id"]],{lazy:false});
+        // la compra cuenta sólo si cae dentro del mes, igual que en el motor de liquidación
+        const _g=await rpc("sale.order","read_group",[[["partner_id","in",_nid],["state","in",["sale","done"]],["date_order",">=",inicioMes],["date_order","<=",finMesStr]],["amount_untaxed:sum"],["partner_id"]],{lazy:false});
         const _porP={}; (_g||[]).forEach(x=>{ if(x.partner_id) _porP[x.partner_id[0]]={ped:x.__count||0, monto:x.amount_untaxed||0}; });
         ST.nuevosLista=ST.nuevosLista.map(p=>{ const v=_porP[p.id];
           return { id:p.id, nombre:p.name, alta:String(p.create_date||"").slice(0,10), pedidos:v?v.ped:0, monto:v?v.monto:0, compro:!!v }; })
@@ -3013,8 +3016,14 @@ function fechasEnGracia(corte){
 function propHabil(fecha){
   const d=new Date(fecha+"T12:00:00"), y=d.getFullYear(), m=d.getMonth(), hasta=d.getDate();
   const ult=new Date(y,m+1,0).getDate();
+  // los FERIADOS no son días hábiles: el mínimo del mes ya los descuenta y el motor también, así
+  // que acá tiene que ser el mismo calendario o la vara prorrateada no coincide (12/10/2026).
+  const fer=new Set(((CFGC()||{}).feriados)||[]);
+  const f2=n=>String(n).padStart(2,"0");
   let tot=0, pas=0;
-  for(let i=1;i<=ult;i++){ const w=new Date(y,m,i).getDay(); if(w===0||w===6) continue; tot++; if(i<=hasta) pas++; }
+  for(let i=1;i<=ult;i++){ const w=new Date(y,m,i).getDay(); if(w===0||w===6) continue;
+    if(fer.has(y+"-"+f2(m+1)+"-"+f2(i))) continue;
+    tot++; if(i<=hasta) pas++; }
   return tot? pas/tot : 1;
 }
 function constanciaHoy(){

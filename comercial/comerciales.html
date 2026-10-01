@@ -697,7 +697,10 @@ async function comiLoadData(){
   const EXCLUIR=["banquero","velazquez"];   // apellidos de dirección → fuera
   const sellers=[]; const seen=new Set();
   (STATE.coms||[]).forEach(c=>{ if(!seen.has(c.uid) && !EXCLUIR.some(x=>nrm(c.name).includes(x))){ seen.add(c.uid); sellers.push({uid:c.uid,name:c.name}); } });
-  for(const sur of ["Soto","Luna"]){   // Marianela Soto, Samanta Luna (por apellido, sin tilde). Lucía Oviedo salió el 30/9/2026
+  // se las busca por apellido aunque no estén en el depto de Ventas de Odoo. Lucía Oviedo salió el
+  // 30/9/2026 y sigue acá a propósito: la baja se aplica por mes, así que sus meses anteriores se
+  // tienen que poder ver y liquidar igual.
+  for(const sur of ["Oviedo","Soto","Luna"]){
     if(!sellers.some(s=>nrm(s.name).includes(nrm(sur)))){
       try{ const u=await EYG.rpc("res.users","search_read",[[["name","ilike",sur],["share","=",false]]],{fields:["id","name"]}); const f=(u||[]).find(x=>nrm(x.name).includes(nrm(sur))&&!seen.has(x.id)); if(f){ seen.add(f.id); sellers.push({uid:f.id,name:f.name}); } }catch(e){} }
   }
@@ -762,7 +765,10 @@ function comiReadKnobs(){
     metaMeses: Math.max(1,Math.round(num("k_meses",D.metaMeses))),
     metaMetodo: COMI._metodo||D.metaMetodo,
     metaCrecimiento: num("k_crec",D.metaCrecimiento*100)/100,
-    metaCuentaVacios: !!(document.getElementById("k_vacios")||{}).checked,
+    // si la perilla no está en pantalla, se conserva lo que ya estaba: un elemento ausente no puede
+    // apagar una opción guardada
+    metaCuentaVacios: document.getElementById("k_vacios") ? !!document.getElementById("k_vacios").checked
+                      : ((COMI.cfg&&COMI.cfg.metaCuentaVacios)!==false),
     perfilTicket: num("k_ticket",D.perfilTicket),
     externoCorte: num("k_extcorte",D.externoCorte/1e6)*1e6,
     aplicaDesde: v("k_desde")||"2026-08",
@@ -887,6 +893,10 @@ function lqWin(titulo,cuerpo,acciones){
 async function lqDatos(mes){
   const guardado=(COMI.cierres||{})[mes];
   if(guardado) return {data:guardado, cerrado:true};
+  /* El mes figura como liquidado pero su cierre no se pudo leer (una caída de red, por ejemplo).
+     Recalcularlo acá lo mostraría como abierto y el botón Liquidar lo pisaría con otros números.
+     Antes que arriesgar un importe ya pagado, se corta. */
+  if((COMI.cerrados||[]).includes(mes)) throw new Error(MESLBL(mes)+" está liquidado, pero no pude leer el cierre guardado. Recargá la pantalla antes de tocarlo: si se recalcula ahora, se pisa el número que ya se pagó.");
   const cfg=comiReadKnobs();
   const excl=COMI.sellers.filter(s=>{ const m=COMI.monthly[s.uid]||{}; return !(mes in m); }).map(s=>s.uid);   // sin facturación en el mes → no entra
   const data=await EYGLIQ.calcularMes(mes,{sellers:COMI.sellers,monthly:COMI.monthly,ticket:COMI.ticket,cfg,excluir:excl},

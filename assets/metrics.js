@@ -25,11 +25,14 @@ window.EYGM = (function(){
     const factRatio=esperado>0?d.factMes/esperado:1;
     /* Los mismos tres ítems que ve la comercial. Desde el paquete de octubre: mora ponderada por
        antigüedad en lugar del % de vencido, y el mínimo de venta en lugar de su propia mediana. */
-    const P=(d.saludPesos)||{mora:60,minimo:30,fichas:10};
+    // los pesos y los umbrales los fija Dirección en la config; si no llegan, los del paquete
+    const P=(d.cfg&&d.cfg.saludPesos)||d.saludPesos||{mora:60,minimo:30,fichas:10};
+    const U=(d.cfg&&d.cfg.saludUmbrales)||{minimoRango:0.50,fichasMin:0.40};
     // si la mora no se pudo medir queda a la vista: no se la reemplaza en silencio por el % viejo
     const _sinMora=(d.moraIndice==null);
     const pV=(!_sinMora&&EYG.moraResta)?EYG.moraResta(d.moraIndice,d.cfg,P.mora):cl((venc-0.10)/0.40,0,1)*(P.mora||P.vencido||60);
-    const pF=cl((1-factRatio)/((d.minimoRango)||0.50),0,1)*(P.minimo||P.facturado||30), pO=cl((0.40-(d.fichasPct||0))/0.40,0,1)*P.fichas;
+    const pF=cl((1-factRatio)/(U.minimoRango||0.50),0,1)*(P.minimo||P.facturado||30);
+    const pO=cl(((U.fichasMin||0.40)-(d.fichasPct||0))/(U.fichasMin||0.40),0,1)*P.fichas;
     const s=Math.max(0,100-pV-pF-pO);
     return {salud:s, penaltyPt:(100-s)/100,
       items:[{ic:"🩸",lab:"Mora de sus ventas",pts:pV,max:P.mora||P.vencido,det:_sinMora?"no se pudo medir la antigüedad · se usó el % de vencido ("+Math.round(venc*100)+"%)":("índice "+(d.moraIndice||0).toFixed(2).replace(".",",")+" · "+Math.round(venc*100)+"% vencido")},
