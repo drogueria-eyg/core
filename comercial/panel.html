@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=103"></script>
+<script src="../assets/core.js?v=105"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -755,6 +755,12 @@ function OBJnow(){
            mensualNuevos:((c.nuevosMeta||{})[p])||OBJ_DEF.mensualNuevos,
            semanalFact:sem };
 }
+/* OBJ se sigue usando en media docena de lugares (las tarjetas del día, la ayuda, el festejo al
+   llegar a la meta). En vez de tocarlos uno por uno —y arriesgar olvidarse de alguno, que es
+   justamente lo que pasó— OBJ queda como la foto VIVA: cada lectura consulta la config del
+   momento. Así no puede quedar ningún lugar leyendo el número viejo. */
+const OBJ=new Proxy({},{ get:(_,k)=>OBJnow()[k], has:(_,k)=>k in OBJnow(), ownKeys:()=>Object.keys(OBJnow()),
+  getOwnPropertyDescriptor:()=>({enumerable:true,configurable:true}) });
 const BOV_TAG="[BOVEDA-CONTACTO]"; // marcador reversible en el chatter del contacto (misma bóveda que usa la líder en Contactos). La gerencia revisa lo archivado.
 const PPAL_TAG="[ENTREGA-PPAL]"; // marca reversible (chatter) de la dirección de entrega principal → Cargar Venta la usa por defecto
 const NUEVO_TAG="[CONTACTO-NUEVO]"; // constancia del alta: la MISMA marca que leen Contactos·CRM y Legajos
@@ -913,10 +919,26 @@ async function cargar(){
       rpc("l10n_ar.afip.responsibility.type","search_read",[[]],{fields:["id","name"]}),
       rpc("l10n_latam.identification.type","search_read",[[["active","=",true]]],{fields:["id","name"]}),
       rpc("res.country.state","search_read",[[["country_id.code","=","AR"]]],{fields:["id","name"],limit:0}),
-      rpc("res.partner","search_count",[[["user_id","=",ST.userId],["type","=","contact"],["parent_id","=",false],["create_date",">=",inicioMes]]]),
+      rpc("res.partner","search_read",[[["user_id","=",ST.userId],["type","=","contact"],["parent_id","=",false],["create_date",">=",inicioMes]]],{fields:["id","name","create_date"],limit:0}),
       rpc("account.payment.term","search_read",[[["id","in",PLAZOS_COMERCIALES],["active","=",true]]],{fields:["id","name"],context:{lang:"es_AR"}}).catch(()=>[])
     ]);
-    ST.contactos=contactos; ST.catFiscal=fiscal; ST.catId=idt; ST.catProv=prov; ST.nuevos=nuevos; ST.catPlazo=plazos||[];
+    ST.contactos=contactos; ST.catFiscal=fiscal; ST.catId=idt; ST.catProv=prov; ST.catPlazo=plazos||[];
+    /* CLIENTES NUEVOS. Un alta no es un cliente: en septiembre se cargaron 62 fichas en toda la
+       fuerza y compraron 14. Desde el paquete de octubre puntúa el que COMPRÓ, y acá se cruza cada
+       ficha nueva contra sus pedidos para poder mostrar quién es quién —las que compraron y las que
+       quedaron en una ficha— que es el control que pidió Dirección. Mismo cálculo que el motor. */
+    ST.nuevosLista=nuevos||[]; ST.nuevos=ST.nuevosLista.length; ST.nuevosCompraron=0;
+    try{
+      if(ST.nuevosLista.length){
+        const _nid=ST.nuevosLista.map(p=>p.id);
+        const _g=await rpc("sale.order","read_group",[[["partner_id","in",_nid],["state","in",["sale","done"]]],["amount_untaxed:sum"],["partner_id"]],{lazy:false});
+        const _porP={}; (_g||[]).forEach(x=>{ if(x.partner_id) _porP[x.partner_id[0]]={ped:x.__count||0, monto:x.amount_untaxed||0}; });
+        ST.nuevosLista=ST.nuevosLista.map(p=>{ const v=_porP[p.id];
+          return { id:p.id, nombre:p.name, alta:String(p.create_date||"").slice(0,10), pedidos:v?v.ped:0, monto:v?v.monto:0, compro:!!v }; })
+          .sort((a,b)=>(b.compro-a.compro)||(b.monto-a.monto));
+        ST.nuevosCompraron=ST.nuevosLista.filter(p=>p.compro).length;
+      }
+    }catch(e){ ST.nuevosCompraron=ST.nuevos; }   // si el cruce falla, no se castiga con un cero falso
     const ids=contactos.map(c=>c.id);
     // recencia/frecuencia + notas de hoy + cuentas corrientes (deuda) + cobrado del mes
     const [og,notas,ccLines,cobrado,aFact,facMes,facSem,ncMes,ncSem,bovMsgs, ordHist,cobro3,facHist,drafts]=await Promise.all([
@@ -1099,7 +1121,11 @@ async function cargar(){
          un campo fecha sin granularidad devuelve el MES. Mismo cálculo que el motor. */
       try{
         if(md.minimo){
-          const domD=(mt)=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",curM+"-01"],["date","<=",inicioMes.slice(0,7)+"-31"],...exF,
+          // exF vive dentro del try de arriba: acá se rearma desde ST, que sí sobrevive. Sin esto
+          // el bloque tiraba ReferenceError, el catch se lo tragaba y el ítem del mínimo semanal
+          // desaparecía del nivel sin ningún aviso.
+          const _exD=(ST.exclMoves&&ST.exclMoves.length)?[["move_id","not in",ST.exclMoves]]:[];
+          const domD=(mt)=>[["parent_state","=","posted"],["move_id.move_type","=",mt],["date",">=",curM+"-01"],["date","<=",curM+"-31"],..._exD,
             ...EYG.domVendedor("sale_line_ids.order_id.", ST.userId)];
           const [di,dr]=await Promise.all([
             rpc("account.move.line","read_group",[domD("out_invoice"),["price_subtotal:sum"],["date:day"]],{lazy:false}),
@@ -1116,7 +1142,7 @@ async function cargar(){
             habilesTot:cerr.reduce((s,w)=>s+w.habiles,0), habilesOk:cerr.filter(w=>w.cumple).reduce((s,w)=>s+w.habiles,0) };
           ST.semanaActual=ws.find(w=>!w.cerrada)||null;
         }
-      }catch(e){}
+      }catch(e){ console.warn("no pude armar las semanas del mínimo de venta:", e&&e.message); }
       ST.ventaMes = fact[curM]||0;         // BASE de la comisión = facturado NETO (por cruce) del mes
       ST.factTotalMes = factT[curM]||0;    // MÉTRICA = facturado TOTAL con IVA del mes (lo real)
       ST.pedMesMonto = ped[curM]||0;       // MÉTRICA = pedidos del mes (con IVA)

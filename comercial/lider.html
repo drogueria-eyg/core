@@ -394,9 +394,9 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=103"></script>
+<script src="../assets/core.js?v=105"></script>
 <script src="../assets/metrics.js?v=5"></script>
-<script src="../assets/liquidacion.js?v=4"></script>
+<script src="../assets/liquidacion.js?v=5"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const COLORS=["#048782","#EC8B5E","#0AA89F","#E5A93B","#5FC8BF","#B0413E","#6E8B86","#04635F"];
@@ -1954,7 +1954,7 @@ async function fichaData(uid, name, carteraIn, pfIn){
     // órdenes del mes por estado → cancelados / presupuestos (desglose)
     EYG.rpc("sale.order","read_group",[[["user_id","=",uid],["date_order",">=",inicioMes]],["amount_total:sum"],["state"]],{lazy:false}),
     // cartera: datos de ficha + fecha de alta (para "nuevos" sin consulta aparte)
-    pfIn?Promise.resolve(pfIn):EYG.rpc("res.partner","search_read",[[["user_id","=",uid]]],{fields:["vat","phone","mobile","email","street","create_date"],limit:0}),
+    pfIn?Promise.resolve(pfIn):EYG.rpc("res.partner","search_read",[[["user_id","=",uid]]],{fields:["name","vat","phone","mobile","email","street","zip","city","state_id","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","create_date"],limit:0}),
     // margen del año → rentabilidad
     EYG.rpc("sale.order.line","read_group",[[["order_id.user_id","=",uid],["order_id.state","in",["sale","done"]],["order_id.date_order",">=",inicioAno]],["margin:sum","price_subtotal:sum"],[]],{lazy:false}),
     // mensajes WA confirmados de la semana sobre su cartera
@@ -2013,11 +2013,17 @@ async function fichaData(uid, name, carteraIn, pfIn){
   for(const r of estG){ const st=r.state, n=r.__count||0, amt=r.amount_total||0;
     if(st==="cancel"){canN+=n;canM+=amt;} else if(st==="draft"||st==="sent"){draN+=n;draM+=amt;} }
   // Fichas + nuevos (de la cartera ya traída)
-  const compl=pf.filter(p=>p.vat&&(p.phone||p.mobile)&&p.email&&p.street).length, fichasPct=pf.length?compl/pf.length:0;
+  /* FICHA COMPLETA: los MISMOS 10 campos que exige el motor de liquidación y el panel de la
+     comercial. Acá se pedían sólo 4 (vat, teléfono, email y calle), así que el líder veía un
+     porcentaje más alto que el que descuenta la comisión. */
+  const _ficha=p=>!!(p.name&&(p.phone||p.mobile)&&p.email&&p.street&&p.zip&&p.city&&
+    (p.state_id&&p.state_id[0])&&(p.l10n_latam_identification_type_id&&p.l10n_latam_identification_type_id[0])&&
+    p.vat&&(p.l10n_ar_afip_responsibility_type_id&&p.l10n_ar_afip_responsibility_type_id[0]));
+  const compl=pf.filter(_ficha).length, fichasPct=pf.length?compl/pf.length:0;
   const nuevos=pf.filter(p=>(p.create_date||"")>=inicioMes).length;
   const rentabilidad=(mg[0]&&mg[0].price_subtotal)?(mg[0].margin/mg[0].price_subtotal):null;
   const dd=new Date(), dim=new Date(dd.getFullYear(),dd.getMonth()+1,0).getDate(), diaMesFrac=dd.getDate()/dim;
-  const perfil=EYGM.perfilDe(name, avgTicket);
+  const perfil=EYGM.perfilDe(name, avgTicket, _cfg, uid);   // el rubro lo fija Dirección (cfg.rubros)
   _md = EYG.metaDesde(fact, mo, _cfg, perfil);   // desde octubre la meta es el objetivo semanal del perfil
   metaMes=_md.meta; factBaseline=_md.baseline;
   const desglose={ pedN, pedM, canN, canM, draN, draM, facN, facMonto, ncN, ncMonto };
