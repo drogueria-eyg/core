@@ -2186,7 +2186,11 @@ window.EYG = (function(){
     /* RUBRO FIJO (uid → "inst" | "farm" | "externo"). Antes se adivinaba por el ticket promedio y
        dejó de servir cuando Dirección empezó a asignar sectores. Maricruz quedó definida en
        FARMACIAS el 30/9/2026. Sin cargar, se cae al criterio viejo del ticket. */
-    rubros:{ "18":"inst", "8":"farm", "215":"farm", "28":"farm" },
+    rubros:{ "18":"inst", "498":"inst", "8":"farm", "215":"farm", "28":"farm" },
+    /* BAJAS del esquema de comisiones: uid → mes desde el que deja de entrar al reparto. Los meses
+       anteriores se siguen pudiendo mirar y liquidar tal como fueron; de ahí en adelante no aparece.
+       Lucía Oviedo (524) dejó de trabajar el 30/9/2026. */
+    bajas:{ "524":"2026-10" },
     /* MÍNIMO DE VENTA — la OBLIGACIÓN. La fija Dirección por rubro y por SEMANA. El mínimo del mes
        es la suma de los mínimos de sus semanas, así la vara semanal y la mensual son el mismo
        número visto de cerca y de lejos. NO es un tramo de comisión: no toca la tasa ni la meta.

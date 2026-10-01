@@ -325,8 +325,11 @@ async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
   const exList=await excluidos(true);            // comprobantes que Dirección sacó del cálculo
   const exIds=exclIds(exList);
   const filas=[];
+  const _bajas=cfg.bajas||{};
   for(const s of sellers){
     if(ex.has(s.uid)) continue;
+    // quien ya no trabaja no entra al reparto desde el mes de su baja (los meses previos, sí)
+    if(_bajas[String(s.uid)] && String(mes)>=String(_bajas[String(s.uid)])) continue;
     if(onPaso) onPaso(s.name);
     const f=await facturado(s.uid,r,exIds);
     const neto=f.facturas-f.nc;

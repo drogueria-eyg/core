@@ -697,11 +697,18 @@ async function comiLoadData(){
   const EXCLUIR=["banquero","velazquez"];   // apellidos de dirección → fuera
   const sellers=[]; const seen=new Set();
   (STATE.coms||[]).forEach(c=>{ if(!seen.has(c.uid) && !EXCLUIR.some(x=>nrm(c.name).includes(x))){ seen.add(c.uid); sellers.push({uid:c.uid,name:c.name}); } });
-  for(const sur of ["Oviedo","Soto","Luna"]){   // Lucía Oviedo, Marianela Soto, Samanta Luna (por apellido, sin tilde)
+  for(const sur of ["Soto","Luna"]){   // Marianela Soto, Samanta Luna (por apellido, sin tilde). Lucía Oviedo salió el 30/9/2026
     if(!sellers.some(s=>nrm(s.name).includes(nrm(sur)))){
       try{ const u=await EYG.rpc("res.users","search_read",[[["name","ilike",sur],["share","=",false]]],{fields:["id","name"]}); const f=(u||[]).find(x=>nrm(x.name).includes(nrm(sur))&&!seen.has(x.id)); if(f){ seen.add(f.id); sellers.push({uid:f.id,name:f.name}); } }catch(e){} }
   }
-  COMI.sellers=sellers; COMI.names={}; sellers.forEach(s=>COMI.names[s.uid]=s.name);
+  /* BAJAS: quien dejó de trabajar no entra al reparto del mes en curso. Se filtra acá, que es la
+     lista de la que salen la tabla, la meta y la liquidación, para que no quede en una pantalla sí
+     y en otra no. Los meses ya liquidados se leen del cierre guardado y no se tocan. */
+  const _bajas=(COMI.cfg&&COMI.cfg.bajas)||{};
+  const _fuera=sellers.filter(s=>_bajas[String(s.uid)] && COMI.curM>=String(_bajas[String(s.uid)]));
+  COMI.sellers=sellers.filter(s=>!_fuera.includes(s));
+  COMI.bajas=_fuera;
+  COMI.names={}; sellers.forEach(s=>COMI.names[s.uid]=s.name);
   const monthly={}; COMI.recu={}; COMI.ticket={};
   /* FACTURADO NETO por mes con la regla ÚNICA de atribución (EYG.domVendedor): sólo lo que cargó la
      comercial. Los pedidos de la cuenta genérica NO se le reparten al dueño del cliente.
