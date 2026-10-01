@@ -285,7 +285,7 @@ function validarCadena(movs){
 /* ══════════════════════════════════════════════════════════════════════════
    ESTADO
    ══════════════════════════════════════════════════════════════════════════ */
-const ST={banco:"credicoop", movs:[], archivos:[], verConc:false, filtro:null, mapaCuit:{}, listo:false, trabajando:false, logs:[]};
+const ST={mapaNom:{}, banco:"credicoop", movs:[], archivos:[], verConc:false, filtro:null, mapaCuit:{}, listo:false, trabajando:false, logs:[]};
 
 function log(msg,clase){ ST.logs.push({msg,clase,t:new Date()}); pintarLog(); }
 function pintarLog(){
@@ -333,6 +333,14 @@ async function analizar(movs){
   await construirMapaCuit();
   movs.forEach(m=>{ m.cliente=(m.cuit&&ST.mapaCuit[m.cuit])?ST.mapaCuit[m.cuit]:null; m.porPadron=false; });
   await resolverPorPadron(movs);
+  /* Tercera fuente: el nombre del titular. Va al final porque el CUIT es más
+     preciso, pero rescata los cobros donde el CUIT no está o no se conoce. */
+  let porNom=0;
+  movs.forEach(m=>{ if(m.cliente) return;
+    const t=tituloDe(m.concepto); if(!t) return;
+    const c=ST.mapaNom[t]; if(!c) return;
+    m.cliente=c; m.porNombre=true; porNom++; });
+  if(porNom) log("Identificados por el nombre del titular: "+porNom,"o");
   identificarBancoPropio(movs);
 
   /* ---- 4) candidatos para conciliar ---- */
@@ -429,26 +437,50 @@ async function resolverPorPadron(movs){
 }
 
 /* El mapa se construye leyendo los cobros que Cobranzas ya imputó: cada uno
-   enseña qué CUIT paga por qué cliente. Mejora solo con el uso. */
+   enseña qué CUIT paga por qué cliente. Mejora solo con el uso.
+
+   Y además por el NOMBRE del titular, que viene en el mismo concepto: medido el
+   01/10/2026 sobre 2.021 cobros de seis meses, el nombre da 360 claves
+   inequívocas de 365 — tan bueno como el CUIT y a veces mejor, porque el CUIT
+   del que paga no siempre es el del cliente.
+
+   El CBU NO se usa: se probó y el mismo CBU aparece con 13 clientes distintos
+   (es de una cuenta recaudadora, no del pagador). */
 async function construirMapaCuit(){
-  if(Object.keys(ST.mapaCuit).length) return;
+  if(Object.keys(ST.mapaCuit).length || Object.keys(ST.mapaNom).length) return;
   const B=BANCOS[ST.banco];
   const desde=new Date(); desde.setMonth(desde.getMonth()-6);
   const hist=await rpc("account.bank.statement.line","search_read",
     [[["journal_id","=",B.diario],["amount",">",0],["partner_id","!=",false],["date",">=",desde.toISOString().slice(0,10)]],
      ["payment_ref","partner_id"]],{limit:0});
-  const m={};
+  const m={}, mn={};
   hist.forEach(l=>{
-    const c=String(l.payment_ref||"").match(/\b(\d{11})\b/); if(!c) return;
-    const k=c[1]; m[k]=m[k]||{};
-    const id=l.partner_id[0]; m[k][id]=m[k][id]||{id,nombre:l.partner_id[1],veces:0}; m[k][id].veces++;
+    const id=l.partner_id[0], nombre=l.partner_id[1];
+    const c=String(l.payment_ref||"").match(/\b(\d{11})\b/);
+    if(c){ const k=c[1]; m[k]=m[k]||{}; m[k][id]=m[k][id]||{id,nombre,veces:0}; m[k][id].veces++; }
+    const t=tituloDe(l.payment_ref);
+    if(t){ mn[t]=mn[t]||{}; mn[t][id]=mn[t][id]||{id,nombre,veces:0}; mn[t][id].veces++; }
   });
-  let unicos=0;
+  let unicos=0, unicosN=0;
   Object.keys(m).forEach(cuit=>{
     const opts=Object.values(m[cuit]);
     if(opts.length===1){ ST.mapaCuit[cuit]=opts[0]; unicos++; }   // sólo los inequívocos
   });
-  log("Mapa CUIT→cliente aprendido de "+hist.length+" cobros: "+unicos+" clientes identificables");
+  Object.keys(mn).forEach(nom=>{
+    const opts=Object.values(mn[nom]);
+    if(opts.length===1){ ST.mapaNom[nom]=opts[0]; unicosN++; }
+  });
+  log("Mapa aprendido de "+hist.length+" cobros: "+unicos+" por CUIT y "+unicosN+" por nombre del titular");
+}
+/* El titular viene entre el CUIT y la palabra CBU:
+   "...Dist. Titular 20125219935-VAR-RICARDO ALBERTO CASTRO CBU Origen: 143..." */
+function tituloDe(ref){
+  const t=String(ref||"");
+  const c=t.match(/\b(\d{11})\b/); if(!c) return null;
+  let resto=t.slice(t.indexOf(c[1])+11);
+  const j=resto.indexOf("CBU"); if(j>0) resto=resto.slice(0,j);
+  resto=resto.replace(/^[-\s]*(VAR|FAC|HAB)?[-\s]*/,"").trim().toUpperCase();
+  return resto.length>4 ? resto : null;
 }
 
 /* Da trabajo mientras no esté cargado Y conciliado. Es el criterio que manda en
@@ -486,7 +518,7 @@ function render(){
     kpis(M,nuevos,pendConc,cerrados,listos,dudas)+
     composicion(porTipo)+
     panelAcciones(nuevos,pendConc,cerrados,listos,dudas)+
-    panelResolver()+
+    panelResolver()+ panelAsignar()+
     tablas(filtrar(M))+
     '<div class="panel"><h3>📋 Registro de lo que se hizo</h3>'+
     '<div class="sub">Todo lo que la herramienta ejecutó en Odoo, en orden.</div>'+
@@ -587,6 +619,10 @@ function panelAcciones(nuevos,pendConc,cerrados,listos,dudas){
   if(!abiertos) return '<div class="aviso ok">✔️ <div><b>Este día ya está cerrado.</b> '+
     'Los '+ST.movs.length+' movimientos están cargados y conciliados: no queda nada por hacer. Podés subir otro día.</div></div>';
 
+  /* Los cobros nuevos que van a entrar SIN contacto. Se avisa antes de cargar
+     porque después no hay vuelta: Odoo no deja escribir el contacto en una línea
+     ya conciliada. En esta base el 99,5% de los cobros lo tiene. */
+  const mudos = nuevos.filter(m=>!m.cliente && m.importe>0 && m.tipo!=="impuesto" && m.tipo!=="cargo");
   const bCargar = nuevos.length
     ? '<button class="btn" onclick="accionCargar()" '+(t?"disabled":"")+'>'+(t?'<span class="spin"></span> ':"")+
       'Cargar los '+nuevos.length+' movimientos nuevos</button>' : "";
@@ -606,6 +642,10 @@ function panelAcciones(nuevos,pendConc,cerrados,listos,dudas){
     'impuestos y cargos a su cuenta, cobros con un único recibo posible, y <b>transferencias entre cuentas propias</b> '+
     '(crea la transferencia en Odoo y su contrapartida). Lo ambiguo queda abajo para que lo decidas vos.</div>'+
     (bCargar||bResolver ? '<div class="acciones">'+bCargar+bResolver+'</div>' : "")+
+    (mudos.length?'<div class="aviso warn" style="margin:0 0 9px">⚠️ <div><b>'+mudos.length+' cobro'+(mudos.length===1?"":"s")+' va'+(mudos.length===1?"":"n")+' a entrar sin contacto.</b> '+
+      'El contacto <b>no se puede poner después</b>: Odoo lo rechaza en un asiento conciliado. '+
+      'Buscalos con el botón <b>¿De quién es?</b> en la tabla de abajo y asignalos antes de cargar. '+
+      'Si no sabés de quién son, se pueden cargar igual y resolver el cobro más adelante — pero la línea queda sin cliente.</div></div>':"")+
     '<div class="aviso info" style="margin:0">💡 <div>'+origen+' De los <b>'+abiertos+'</b> que dan trabajo, '+
     '<b>'+listos.length+'</b> tienen un destino único y <b>'+dudas.length+'</b> necesitan una decisión tuya'+
     (dudas.length?', abajo uno por uno':"")+'. Nada se concilia si hay más de un candidato posible.'+
@@ -624,6 +664,37 @@ function filtrar(M){
   return M;
 }
 window.filtrar_=id=>{ ST.filtro=(ST.filtro===id?null:id); render(); };
+
+/* ---------- PONERLE EL CLIENTE A UN MOVIMIENTO ANTES DE CARGARLO ----------
+   Odoo NO deja escribir el contacto en una línea de extracto ya posteada y
+   conciliada: "No puede hacer esta modificación en un asiento contable
+   conciliado". O se acierta en el create, o hay que romper la conciliación.
+   Por eso la asignación tiene que poder hacerse ACÁ, antes de cargar.
+   En esta base el 99,5% de los cobros tiene contacto: es el estándar de la casa
+   y lo que hace que la cuenta corriente del cliente sirva para algo. */
+window.asignar=(i)=>{ ST.asig=(ST.asig===i?null:i); ST.asigOpts=null; render();
+  const el=document.getElementById("qasig"); if(el) el.focus(); };
+window.buscarAsig=async(txt)=>{
+  if(!txt||txt.length<3){ ST.asigOpts=null; pintarAsig(); return; }
+  const d=txt.replace(/[^0-9]/g,"");
+  const dom = d.length>=3 ? ["|",["name","ilike",txt],["vat","like",d]] : [["name","ilike",txt]];
+  try{ ST.asigOpts=await rpc("res.partner","search_read",[[["customer_rank",">",0]].concat(dom),["id","name","vat"]],{limit:10}); }
+  catch(e){ ST.asigOpts=[]; }
+  pintarAsig();
+};
+function pintarAsig(){
+  const el=document.getElementById("optsAsig"); if(!el) return;
+  el.innerHTML=!ST.asigOpts?"":(ST.asigOpts.length?ST.asigOpts.map(o=>
+    '<button class="opt" onclick="ponerCliente('+o.id+','+JSON.stringify(o.name).split('"').join("&quot;")+')">'+
+    esc(o.name)+(o.vat?' <span class="muted">· '+esc(o.vat)+'</span>':"")+'</button>').join("")
+    :'<div class="muted" style="padding:8px">Ningún cliente con ese nombre o CUIT.</div>');
+}
+window.ponerCliente=(id,nombre)=>{
+  const m=ST.movs[ST.asig]; if(!m) return;
+  m.cliente={id,nombre}; m.porMano=true; ST.asig=null; ST.asigOpts=null;
+  log("Asignado a mano: "+money(m.importe)+" → "+nombre,"o");
+  render();
+};
 window.filtrarTipo_=t=>{ const k="t:"+t; ST.filtro=(ST.filtro===k?null:k); render(); };
 
 function estadoDe(m){
@@ -652,6 +723,12 @@ function estadoDe(m){
   return '<span class="badge b-nu">sin clasificar</span>';
 }
 function accionDe(m,i){
+  /* Si todavía no está en Odoo y no se sabe de quién es, se puede asignar ahora
+     —y sólo ahora: después de cargarlo, Odoo ya no deja. */
+  if(!m.yaEsta && !m.cliente && m.importe>0 && m.tipo!=="impuesto" && m.tipo!=="cargo")
+    return '<button class="btn sm '+(ST.asig===i?"":"gh")+'" onclick="asignar('+i+')" '+
+      'title="El contacto no se puede poner después de cargar la línea: Odoo lo rechaza en un asiento conciliado.">'+
+      (ST.asig===i?"Cerrar":"¿De quién es?")+'</button>';
   /* Sólo lo conciliado queda sin acción. Lo que está cargado pero sin conciliar
      sigue siendo accionable: es justamente el trabajo pendiente de Tesorería. */
   if(!abierto(m)) return '<span class="muted">—</span>';
@@ -723,10 +800,16 @@ function filasDe(M){
       '<td class="muted">'+m.fecha.slice(8)+"/"+m.fecha.slice(5,7)+'</td>'+
       '<td class="cpto">'+esc(m.concepto.slice(0,92))+(m.concepto.length>92?"…":"")+
         (m.cliente
-          ? '<span class="cli" title="'+(m.porPadron
+          ? '<span class="cli" title="'+(m.porMano
+              ? "Lo elegiste vos antes de cargar."
+              : m.porPadron
               ? "El CUIT del concepto es el de este cliente en su ficha. Es la primera vez que paga desde este CUIT, así que no estaba en el historial."
+              : m.porNombre
+              ? "Identificado por el nombre del titular que viene en el concepto: ese nombre ya pagó antes por este cliente."
               : "Aprendido del historial: este CUIT ya pagó antes por este cliente.")+'">→ '+esc(m.cliente.nombre)+
-            (m.porPadron?' <span class="badge b-ok" style="font-size:9.5px">por CUIT</span>':"")+'</span>'
+            (m.porMano?' <span class="badge b-ok" style="font-size:9.5px">a mano</span>'
+             :m.porPadron?' <span class="badge b-ok" style="font-size:9.5px">por CUIT</span>'
+             :m.porNombre?' <span class="badge b-ok" style="font-size:9.5px">por nombre</span>':"")+'</span>'
           : (m.cuit?'<span class="cli muted" title="El CUIT no figura en ninguna ficha ni pagó antes. Si sabés quién es, elegilo al resolver: después de cargar la línea Odoo ya no deja escribir el cliente.">CUIT '+m.cuit+' · sin identificar</span>':""))+'</td>'+
       '<td><span class="badge b-nu" title="'+esc(TIPOS[m.tipo].ayuda)+'">'+esc(m.sub)+'</span></td>'+
       '<td class="r '+(m.importe<0?"neg":"pos")+'"><b>'+money(m.importe)+'</b></td>'+
@@ -961,6 +1044,18 @@ function buscarPorImporte(m){
       '<button class="opt" onclick="elegirCliente('+o.id+','+JSON.stringify(o.nombre).replace(/"/g,"&quot;")+')">'+
       esc(o.nombre)+' <span class="muted">· '+o.n+' factura'+(o.n===1?"":"s")+' por '+money(o.total)+
       ' · retención implícita '+money(o.ret)+' ('+o.pct.toFixed(2)+'%)</span></button>').join("")+'</div>';
+}
+
+function panelAsignar(){
+  if(ST.asig===null||ST.asig===undefined) return "";
+  const m=ST.movs[ST.asig]; if(!m) return "";
+  return '<div class="panel resolver"><h3>👤 ¿De quién es este cobro?</h3>'+
+    '<div class="sub">'+money(m.importe)+' del '+esc(m.fecha)+' — <span class="muted">'+esc(String(m.concepto).slice(0,90))+'</span></div>'+
+    '<div class="aviso warn" style="margin:10px 0">⚠️ <div>El contacto <b>sólo se puede poner ahora</b>. '+
+    'Una vez cargada la línea, Odoo no deja cambiarlo en un asiento conciliado.</div></div>'+
+    '<input class="busca" id="qasig" placeholder="Nombre del cliente o CUIT…" oninput="buscarAsig(this.value)" autocomplete="off">'+
+    '<div class="opts" id="optsAsig"></div>'+
+    '<div class="acciones" style="margin-top:10px"><button class="btn gh" onclick="ST.asig=null;render()">Cancelar</button></div></div>';
 }
 
 function panelResolver(){
@@ -1210,7 +1305,7 @@ async function procesar(files){
       inicial:todos.length?Math.round((todos[0].saldo-todos[0].importe)*100)/100:0,
       final:todos.length?todos[todos.length-1].saldo:0
     };
-    ST.movs=todos; ST.mapaCuit={};
+    ST.movs=todos; ST.mapaCuit={}; ST.mapaNom={};
     log("Leídos "+porArchivo.length+" archivo(s): "+todos.length+" movimientos en "+vistos.size+" día(s)");
     if(conFalla.length){ ST.listo=true; render(); return; }
     await analizar(todos);
