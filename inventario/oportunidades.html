@@ -606,6 +606,10 @@ function render(){
     ${ver("costo")?sec("costo","💡 Oportunidades por costo", cnt(opos.length,opoVis.length), costoBody):""}
     ${ver("stock")?sec("stock","📦 Oportunidades por stock", stockLoading?"…":cnt(oStock.length,stkAll.length), osBody, `<button class="btn ghost sm" onclick="refrescarStockOpo()" ${stockLoading?"disabled":""}>🔄 Actualizar</button>`):""}
     ${verOf?sec("ofertas","🏷️ Ofertas, combos y descuentos", cnt(nOf,nOfT), ofBody, `<button class="btn sm" onclick="rgNueva('desc','ofertas')">+ Nueva</button>`):""}`;
+
+  /* El cuadro de rentabilidad se pinta aparte (rgActualizarRent escribe en #rg-rent), así que
+     hay que volver a pintarlo después de cada render o queda el "Calculando el costo…". */
+  if(rgDraft && rgDraft.tipo==='p' && rgRentPara && rgRentPara===rgDraft.target) rgActualizarRent();
 }
 
 /* ============ FILAS ============
@@ -804,6 +808,14 @@ function toast(m,win){ let t=document.getElementById("toast"); if(!t){ t=documen
    Las entradas de _origen "oportunidades" (id "opo_…") las gestiona el propio
    módulo (pisado por oferta manual de 1 producto) y NO se muestran/editan acá. */
 let rgDraft=null, rgBusq=[], rgBusqQ="", rgCosto=null, rgTramos=null, rgTramosBase=null, rgApplied=null, rgPvp=0;
+/* Plantilla cuyo costo y escalera YA están cargados. El cuadro de rentabilidad no se dibuja
+   con el resto del formulario: lo pinta rgActualizarRent() escribiendo en #rg-rent. Y como
+   cada render() devuelve ese div a su texto inicial ("Calculando el costo del producto…"),
+   cualquier cosa que redibuje —cambiar «Cómo aplica» a Escalera, cambiar el tipo de
+   descuento, tocar el buscador— dejaba el cartel pegado para siempre, como si estuviera
+   calculando algo. No calculaba nada: el costo ya estaba. Con esto, render() vuelve a pintar
+   el cuadro solo si el costo cargado es el del producto que está en pantalla. */
+let rgRentPara=null;
 let rgCostoFuente="";   // de dónde salió el costo, para poder auditar el margen que se muestra
 let rgPiso=0, rgCatId=0, rgIvaCompra=0, rgTildeIva=0;   // piso de margen y tilde de IVA al costo del producto elegido
 let rgCatSim={estado:"", filas:[], catId:0};            // simulación cuando la oferta es de CATEGORÍA
@@ -878,7 +890,7 @@ function rgFormHTML(){
   const bannerEtico = etico ? `<div class="eticobox">💊 <b>Producto ético.</b> El descuento se calcula sobre el <b>PVP de Alfabeta (${money(d._pvp)})</b> y así lo ve el cliente.${descAct!=null?` <b>Hoy se vende a −${descAct}% del PVP</b> (${money(d._pvp)} → ${money(escAct)}) — usalo de referencia para definir la oferta.`:''}</div>` : "";
   return `<div class="rgform">${seg}
     <div class="fld2" style="margin-bottom:12px"><label>Aplicar a (categoría, subcategoría o producto)</label>
-      ${d.target?`<div class="oftgtsel">${tgtTxt} <button class="btn-mini" onclick="rgDraft.target=null;rgDraft.targetName='';rgDraft._pvp=0;rgBusq=[];rgBusqQ='';rgCosto=null;rgTramos=null;rgTramosBase=null;rgApplied=null;render()">cambiar</button></div>`
+      ${d.target?`<div class="oftgtsel">${tgtTxt} <button class="btn-mini" onclick="rgDraft.target=null;rgDraft.targetName='';rgDraft._pvp=0;rgBusq=[];rgBusqQ='';rgCosto=null;rgRentPara=null;rgTramos=null;rgTramosBase=null;rgApplied=null;render()">cambiar</button></div>`
                 :`<input type="text" id="rg-busq" placeholder="Escribí nombre o SKU…" value="${esc(rgBusqQ)}" oninput="rgBuscar(this.value)" autocomplete="off">${results}`}
     </div>
     ${bannerEtico}
@@ -1102,9 +1114,9 @@ function rgAsomar(){
 window.rgNueva=(clase,donde)=>{ if((donde||'ofertas')==='ofertas') COLAPSA['ofertas']=false;
   rgDraft={id:"of"+Date.now(),clase:clase||'desc',tipo:(clase==='combo'?'combo':null),target:null,targetName:"",modo:"pct",valor:"",reemplaza:true,hasta:"",stock:"",pausada:false,items:[],lineas:[],desc:0,codigo:"",titulo:"",precio:0,precioAntes:0,nota:"",_donde:(donde||'ofertas')};
   if(clase==='combo') rgProximoCodigo().then(c=>{ if(rgDraft&&!rgDraft.codigo){ rgDraft.codigo=c; render(); } });
-  rgBusq=[];rgBusqQ="";rgCosto=null;rgTramos=null;rgTramosBase=null;rgApplied=null;
+  rgBusq=[];rgBusqQ="";rgCosto=null;rgRentPara=null;rgTramos=null;rgTramosBase=null;rgApplied=null;
   render(); rgAsomar(); };
-window.rgEditar=async id=>{ const o=SYNC_OF.find(x=>x.id===id); if(!o)return; COLAPSA['ofertas']=false; rgDraft=JSON.parse(JSON.stringify(o)); rgDraft.clase='desc'; rgDraft._edit=true; rgDraft._donde='rg:'+id; rgBusq=[];rgBusqQ="";rgCosto=null;rgTramos=null;rgTramosBase=null;
+window.rgEditar=async id=>{ const o=SYNC_OF.find(x=>x.id===id); if(!o)return; COLAPSA['ofertas']=false; rgDraft=JSON.parse(JSON.stringify(o)); rgDraft.clase='desc'; rgDraft._edit=true; rgDraft._donde='rg:'+id; rgBusq=[];rgBusqQ="";rgCosto=null;rgRentPara=null;rgTramos=null;rgTramosBase=null;
   // la oferta guardada YA está aplicada al pricelist → guardo sus datos para deshacerla y recuperar la base
   rgApplied = o.tipo==='p'?{modo:o.modo,valor:o.valor,reemplaza:o.reemplaza,pausada:o.pausada,hasta:o.hasta}:null;
   render(); rgAsomar(); if(o.tipo==='p'&&o.target){ await rgCargarRent(o.target); render(); rgActualizarRent(); } };
@@ -1114,7 +1126,7 @@ window.rgDesde=(o, sug, desdeKey, desdeId)=>{ COLAPSA['ofertas']=false;
   if(desdeKey==='opo'){ rgDraft._desdeOpo=desdeId; rgDraft._donde='opo:'+desdeId; }
   if(desdeKey==='stock'){ rgDraft._desdeStock=desdeId; rgDraft._donde='stk:'+desdeId; }
   if(!rgDraft._donde) rgDraft._donde='ofertas';
-  rgBusq=[];rgBusqQ="";rgCosto=null;rgTramos=null;rgTramosBase=null;rgApplied=null;
+  rgBusq=[];rgBusqQ="";rgCosto=null;rgRentPara=null;rgTramos=null;rgTramosBase=null;rgApplied=null;
   render(); rgAsomar();
   if(o.tmpl){ rgCargarRent(o.tmpl).then(()=>{ render(); rgActualizarRent(); }); } };
 /* editar un combo existente (vive en eyg.ofertas / OFERTAS) */
@@ -1134,7 +1146,7 @@ window.rgBuscar=EYG.debounce(async q=>{
   if(rgBusqQ!==q) return;   // llegó tarde: ya hay una búsqueda más nueva
   rgBusq=cats.concat(prods); EYG.repintar(render);
 },350);
-window.rgElegir=async(k,id,name)=>{ if(!rgDraft)return; rgDraft.tipo=k; rgDraft.target=id; rgDraft.targetName=name; rgDraft._pvp=0; rgBusq=[];rgBusqQ=""; rgCosto=null;rgPiso=0;rgTramos=null;rgTramosBase=null;rgApplied=null; render(); if(k==='p'){ await rgCargarRent(id); render(); rgActualizarRent(); } else { rgCargarCatSim(id); } };
+window.rgElegir=async(k,id,name)=>{ if(!rgDraft)return; rgDraft.tipo=k; rgDraft.target=id; rgDraft.targetName=name; rgDraft._pvp=0; rgBusq=[];rgBusqQ=""; rgCosto=null;rgRentPara=null;rgPiso=0;rgTramos=null;rgTramosBase=null;rgApplied=null; render(); if(k==='p'){ await rgCargarRent(id); render(); rgActualizarRent(); } else { rgCargarCatSim(id); } };
 /* Una oferta de CATEGORÍA toca muchos productos a la vez: se traen una vez, con su costo
    efectivo, su piso y lo que hoy publican, para poder decir ANTES de aplicar cuántos perforan. */
 window.rgCargarCatSim=async(catId)=>{
@@ -1163,7 +1175,7 @@ window.rgCargarCatSim=async(catId)=>{
 };
 // costo (misma recencia que el motor: manual > última compra > estándar) + escalera del producto
 async function rgCargarRent(tmplId){
-  rgPvp=0;
+  rgPvp=0; rgRentPara=null;
   try{
     /* VELOCIDAD: cada viaje al conector cuesta ~1,3 s, así que pesa la CANTIDAD de viajes,
        no el tamaño de la consulta. Antes eran tres encadenados (plantilla → variante →
@@ -1216,7 +1228,8 @@ async function rgCargarRent(tmplId){
     its.sort((a,b)=>a.min_quantity-b.min_quantity);
     rgTramos=its.map(i=>({q:i.min_quantity,p:i.fixed_price}));
     rgTramosBase=rgTramosBaseFrom(rgTramos, rgApplied);   // deshace la oferta ya aplicada para no descontar dos veces
-  }catch(e){ rgCosto=null; rgTramos=null; rgTramosBase=null; }
+    rgRentPara=tmplId;
+  }catch(e){ rgCosto=null; rgTramos=null; rgTramosBase=null; rgRentPara=tmplId; }
 }
 // Recupera la escalera BASE (sin oferta) deshaciendo la oferta que YA está aplicada al pricelist (al editar).
 function rgTramosBaseFrom(tramos,applied){
