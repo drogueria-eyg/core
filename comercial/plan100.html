@@ -24,13 +24,16 @@
   .p100 .status{font-size:12.5px;color:var(--gris);min-height:18px;margin-bottom:14px}
 
   /* ---- tarjetas de arriba ---- */
-  .p100 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(156px,1fr));gap:11px;margin-bottom:18px}
+  .p100 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:18px}
+  /* El titular ocupa DOS columnas, así que para que entren las seis tarjetas en
+     una fila hacen falta siete columnas, no seis. */
+  @media(min-width:1180px){ .p100 .kpis{grid-template-columns:repeat(7,1fr)} }
   .p100 .kpi{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:13px 15px 11px;
     box-shadow:var(--shadow);min-width:0;position:relative;overflow:hidden}
-  .p100 .kpi .l{font-size:10.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--gris2);font-weight:800}
-  .p100 .kpi .v{font-size:25px;font-weight:900;letter-spacing:-.7px;color:var(--teal-deep);
+  .p100 .kpi .l{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--gris2);font-weight:800;line-height:1.3}
+  .p100 .kpi .v{font-size:23px;font-weight:900;letter-spacing:-.7px;color:var(--teal-deep);
     font-variant-numeric:tabular-nums;margin-top:3px;line-height:1.05}
-  .p100 .kpi .s{font-size:11.5px;color:var(--gris);margin-top:3px;line-height:1.4}
+  .p100 .kpi .s{font-size:11px;color:var(--gris);margin-top:3px;line-height:1.4}
   .p100 .kpi.hero{grid-column:span 2;display:flex;gap:16px;align-items:center}
   @media(max-width:620px){ .p100 .kpi.hero{grid-column:span 1;flex-direction:column;align-items:flex-start} }
   .p100 .kpi.hero .anillo{flex:0 0 auto}
@@ -109,6 +112,7 @@
   .p100 .est{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;padding:2px 9px;
     border-radius:20px;white-space:nowrap}
   .p100 .est.ok{background:var(--ok-bg);color:var(--ok)}
+  .p100 .est.camino{background:#E7F0FB;color:#1E5FA8}
   .p100 .est.cerca{background:var(--cerca-bg);color:var(--cerca)}
   .p100 .est.lejos{background:var(--lejos-bg);color:var(--lejos)}
   .p100 .ritmo{display:flex;gap:2px;align-items:flex-end;height:20px}
@@ -161,7 +165,7 @@
 <body>
 <div id="app"><div class="loading"><div class="spinner"></div>Cargando el plan…</div></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=108"></script>
+<script src="../assets/core.js?v=109"></script>
 <script>
 /* ============================================================================
    PLAN 100×100  —  SOLO FARMACIAS
@@ -190,7 +194,7 @@ let PERFIL=null, CFG={...CFG_DEF};
 const ST = {
   meses:[], serie:{}, farm:{}, padre:{},     // datos crudos
   filas:[], porMes:[], comerciales:[],       // derivados
-  mesSel:null, orden:"prom", filtroCom:"", filtroEst:"",
+  mesSel:null, orden:"mes", filtroCom:"", filtroEst:"",
   margen:{}, tickets:{}, deuda:{}, cobertura:0,
   roster:[], abierta:null, detalle:{}
 };
@@ -210,6 +214,14 @@ function listaMeses(n){
 }
 const finMes = k => { const [y,m]=k.split("-").map(Number); return k+"-"+String(new Date(y,m,0).getDate()).padStart(2,"0"); };
 const MESNOM = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+/* El mes en curso se mira distinto: no se pregunta "cuántas llegaron" sino
+   "cuántas van y cuántas van a llegar si siguen a este ritmo". */
+const diasDelMes = k => { const [y,m]=k.split("-").map(Number); return new Date(y,m,0).getDate(); };
+const diaDeHoy   = () => +EYG.argToday().slice(8,10);
+const esMesActual = k => k===EYG.argToday().slice(0,7);
+const haceCuanto = ms => { const s=Math.round((Date.now()-ms)/1000);
+  if(s<60) return "recién"; if(s<3600) return "hace "+Math.round(s/60)+" min";
+  return "hace "+Math.round(s/3600)+" h"; };
 const mesCorto = k => MESNOM[+k.slice(5,7)-1] + (k.slice(5,7)==="01" ? " "+k.slice(2,4) : "");
 const mesLargo = k => ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"][+k.slice(5,7)-1]+" de "+k.slice(0,4);
 
@@ -305,19 +317,43 @@ async function cargar(){
   try{ ST.ger=await EYG.gerencia(); }catch(e){ ST.ger=[]; }
   try{ ST.roster=await EYG.rosterCore(); }catch(e){ ST.roster=[]; }
   paso("");
+  ST.ultima=Date.now();
   derivar();
 }
 
 /* ======================= DERIVAR ======================= */
 function derivar(){
   const U=CFG.umbral, V=CFG.ventana;
-  const cerr=ST.meses.slice(0,-1);                 // meses cerrados (el corriente va aparte)
+  /* Quiénes integran el plan. Se resuelve ANTES de contar nada, porque define
+     el universo entero: las comerciales a las que las farmacias les son el
+     negocio (al menos CFG.minCartera fichas que compran), sin gerencia. Las de
+     instituciones quedan afuera solas, por el mismo criterio. */
+  const gerNom=new Set((ST.ger||[]).map(g=>(g.nombre||"").toLowerCase()));
+  const comDe = id => { const f=ST.farm[id]; return (f&&f.user_id)?f.user_id[1]:"Sin asignar"; };
+  const carteras={};
+  ST.meses.forEach(k=>Object.keys(ST.serie[k]).forEach(id=>{
+    const c=comDe(+id); (carteras[c]=carteras[c]||new Set()).add(+id);
+  }));
+  const DEL_PLAN=new Set(
+    (CFG.comerciales && CFG.comerciales.length)
+      ? CFG.comerciales
+      : Object.entries(carteras)
+          .filter(([c,set])=> c!=="Sin asignar" && !gerNom.has(c.toLowerCase()) && set.size>=CFG.minCartera)
+          .map(([c])=>c)
+  );
+  ST.delPlan=[...DEL_PLAN];
+  const fueraDelPlan = id => !DEL_PLAN.has(comDe(id));
+  const cerr=ST.meses.slice(0,-1);                 // los cerrados, para la ventana de regularidad
   const vent=cerr.slice(-V);                        // la ventana de regularidad
-  ST.mesSel=ST.mesSel||cerr[cerr.length-1];
+  // Se arranca en el MES EN CURSO: es el que sirve para empujar, no el que ya pasó.
+  ST.mesSel=ST.mesSel||ST.meses[ST.meses.length-1];
 
   // una fila por farmacia que compró algo en la ventana o en el mes corriente
   const vistas=new Set();
-  ST.meses.forEach(k=>Object.keys(ST.serie[k]).forEach(id=>vistas.add(+id)));
+  ST.meses.forEach(k=>Object.keys(ST.serie[k]).forEach(id=>{
+    if(fueraDelPlan(+id)) return;
+    vistas.add(+id);
+  }));
   ST.filas=[...vistas].map(id=>{
     const f=ST.farm[id]||{};
     const serie=ST.meses.map(k=>ST.serie[k][id]||0);
@@ -326,10 +362,17 @@ function derivar(){
     const prom=ventSerie.reduce((a,b)=>a+b,0)/V;
     const mesN=ST.serie[ST.mesSel][id]||0;
     const mg=ST.margen[id]||{}, tk=ST.tickets[id]||{}, dd=ST.deuda[id]||{};
-    const est = mesN>=U ? "ok" : (mesN>=U*CFG.cercaPct || prom>=U ? "cerca" : "lejos");
+    /* Proyección del mes en curso: lo comprado hasta hoy llevado a fin de mes.
+       No adivina nada — es regla de tres sobre los días transcurridos. */
+    const enCurso=esMesActual(ST.mesSel), dH=diaDeHoy(), dM=diasDelMes(ST.mesSel);
+    const proy = enCurso && dH>0 ? mesN/dH*dM : mesN;
+    const falta = Math.max(0, U-mesN);
+    const est = mesN>=U ? "ok"
+              : (enCurso && proy>=U ? "camino"
+              : (mesN>=U*CFG.cercaPct || prom>=U ? "cerca" : "lejos"));
     return { id, nombre:f[FANT]||f.name||("#"+id), titular:f.name||"", ciudad:f.city||"",
       com:f.user_id?f.user_id[1]:"Sin asignar", uid:f.user_id?f.user_id[0]:0,
-      serie, ventSerie, veces, prom, mesN, est,
+      serie, ventSerie, veces, prom, mesN, est, proy, faltaMes:falta,
       margen:mg.margin||0, margenBase:mg.base||0, pedidos:tk.n||0, pedTot:tk.amount_untaxed||0,
       ticket:(tk.n?(tk.amount_untaxed||0)/tk.n:0),
       deuda:dd.total||0, venc:dd.venc||0,
@@ -338,25 +381,20 @@ function derivar(){
 
   // cuántas califican cada mes
   ST.porMes=ST.meses.map(k=>{
-    const vals=Object.values(ST.serie[k]);
+    const vals=Object.entries(ST.serie[k]).filter(([id])=>!fueraDelPlan(+id)).map(([,v])=>v);
     return { mes:k, n:vals.filter(v=>v>=U).length,
              fac:vals.filter(v=>v>=U).reduce((a,b)=>a+b,0),
              compraron:vals.filter(v=>v>0).length };
   });
 
-  // reparto por comercial: solo las que llevan farmacias y no son gerencia
-  const gerNom=new Set((ST.ger||[]).map(g=>(g.nombre||"").toLowerCase()));
+  // reparto por comercial (ST.filas ya viene solo con las del plan)
   const porCom={};
   ST.filas.forEach(r=>{
     const c=porCom[r.com]=porCom[r.com]||{com:r.com, uid:r.uid, califican:0, firmes:0, cerca:0, cartera:0, fac:0};
     c.cartera++; c.fac+=r.mesN;
     if(r.est==="ok") c.califican++; if(r.firme) c.firmes++; if(r.est==="cerca") c.cerca++;
   });
-  const elegida=c=>{
-    if(gerNom.has((c.com||"").toLowerCase()) || c.com==="Sin asignar") return false;
-    if(CFG.comerciales && CFG.comerciales.length) return CFG.comerciales.includes(c.com);
-    return c.cartera>=CFG.minCartera;      // las farmacias tienen que ser su negocio, no una excepción
-  };
+  const elegida=c=>DEL_PLAN.has(c.com);
   const evaluables=Object.values(porCom).filter(elegida);
   const objetivo = evaluables.length ? CFG.meta/evaluables.length : 0;
   ST.comerciales = Object.values(porCom).map(c=>{
@@ -428,12 +466,17 @@ function render(){
   const sel=ST.porMes.find(x=>x.mes===ST.mesSel)||ST.porMes[ST.porMes.length-2];
   const U=CFG.umbral;
   const califican=ST.filas.filter(r=>r.est==="ok");
-  const facG=califican.reduce((a,r)=>a+r.mesN,0);
-  const mgG=califican.reduce((a,r)=>a+r.margen,0), mgB=califican.reduce((a,r)=>a+r.margenBase,0);
-  const vencG=califican.reduce((a,r)=>a+r.venc,0), deuG=califican.reduce((a,r)=>a+r.deuda,0);
-  const tkG=califican.reduce((a,r)=>a+r.pedTot,0), nPed=califican.reduce((a,r)=>a+r.pedidos,0);
+  const UNIV=ST.filas;                      // las farmacias del plan: un solo universo
+  const facG=UNIV.reduce((a,r)=>a+r.mesN,0);
+  const mgG=UNIV.reduce((a,r)=>a+r.margen,0), mgB=UNIV.reduce((a,r)=>a+r.margenBase,0);
+  const vencG=UNIV.reduce((a,r)=>a+r.venc,0), deuG=UNIV.reduce((a,r)=>a+r.deuda,0);
+  const tkG=UNIV.reduce((a,r)=>a+r.pedTot,0), nPed=UNIV.reduce((a,r)=>a+r.pedidos,0);
+  const facOk=califican.reduce((a,r)=>a+r.mesN,0);   // lo que aportan las que ya llegaron
   const firmes=ST.filas.filter(r=>r.firme).length;
+  const enCurso=esMesActual(ST.mesSel), dH=diaDeHoy(), dM=diasDelMes(ST.mesSel);
+  const enCamino=ST.filas.filter(r=>r.est==="camino").length;
   const llegan=califican.length;            // misma cuenta que la tabla: una sola verdad
+  const faltaMeta=(llegan+enCamino)<CFG.meta;
   const falta=Math.max(0, CFG.meta-llegan);
   const R=54, C=2*Math.PI*R, off=C*(1-Math.min(1,llegan/CFG.meta));
 
@@ -454,21 +497,28 @@ function render(){
 
     <div class="barra-top">
       <select class="sel" id="p100mes" onchange="setMes(this.value)">
-        ${cerr.slice().reverse().map(k=>`<option value="${k}" ${k===ST.mesSel?"selected":""}>${mesLargo(k)}</option>`).join("")}
+        ${ST.meses.slice().reverse().map(k=>`<option value="${k}" ${k===ST.mesSel?"selected":""}>${mesLargo(k)}${esMesActual(k)?" · en curso":""}</option>`).join("")}
       </select>
       <select class="sel" onchange="setCom(this.value)">
         <option value="">Todas las comerciales</option>
         ${ST.comerciales.map(c=>`<option value="${esc(c.com)}" ${c.com===ST.filtroCom?"selected":""}>${esc(c.com)}</option>`).join("")}
       </select>
+      <select class="sel" onchange="setOrden(this.value)">
+        <option value="mes"  ${ST.orden==="mes"?"selected":""}>Mayor compra del mes primero</option>
+        <option value="prom" ${ST.orden==="prom"?"selected":""}>Mayor promedio primero</option>
+        <option value="falta"${ST.orden==="falta"?"selected":""}>Las que menos les falta</option>
+      </select>
       <select class="sel" onchange="setEst(this.value)">
         <option value="">Todos los estados</option>
         <option value="ok"    ${ST.filtroEst==="ok"?"selected":""}>Llegan al mínimo</option>
+        <option value="camino" ${ST.filtroEst==="camino"?"selected":""}>Vienen en camino</option>
         <option value="cerca" ${ST.filtroEst==="cerca"?"selected":""}>Están cerca</option>
         <option value="lejos" ${ST.filtroEst==="lejos"?"selected":""}>Lejos</option>
         <option value="firme" ${ST.filtroEst==="firme"?"selected":""}>Socias firmes</option>
       </select>
       ${puedeConfig?`<button class="btn-act" onclick="editarCfg()">⚙️ Umbral y meta</button>`:""}
-      <span style="font-size:12px;color:var(--gris2)">${mesLargo(mesAct)} va por ${hoyMes.n} (mes en curso)</span>
+      <button class="btn-act" id="p100refrescar" onclick="refrescar()">↻ Actualizar</button>
+      <span style="font-size:12px;color:var(--gris2)" id="p100sello">datos ${haceCuanto(ST.ultima||Date.now())}${enCurso?" · se actualiza solo":""}</span>
     </div>
 
     <div class="kpis">
@@ -482,22 +532,27 @@ function render(){
           </svg>
         </div>
         <div style="min-width:0">
-          <div class="l">Llegaron al mínimo en ${mesLargo(ST.mesSel)}</div>
+          <div class="l">${enCurso?"Van en":"Llegaron al mínimo en"} ${mesLargo(ST.mesSel)}${enCurso?" · día "+dH+" de "+dM:""}</div>
           <div class="v">${llegan} <span style="font-size:17px;color:var(--gris2)">de ${CFG.meta}</span></div>
-          <div class="s">${falta? `Faltan <b>${falta}</b> farmacias para cerrar el plan.` : "Plan cumplido este mes."}
-            De las ${sel.compraron} que compraron algo.</div>
+          <div class="s">${enCurso
+            ? (dH>=5
+               ? `<b>${enCamino}</b> más vienen en camino: a este ritmo el mes cierra en
+                  <b>${llegan+enCamino}</b>${faltaMeta?", y faltarían "+(CFG.meta-llegan-enCamino)+" para los "+CFG.meta:""}.`
+               : `Recién empieza el mes: es temprano para proyectar el cierre.
+                  <b>${enCamino}</b> vienen comprando a un ritmo que daría el mínimo.`)
+            : (falta? `Faltan <b>${falta}</b> farmacias para cerrar el plan.` : "Plan cumplido este mes.")}
+            ${sel.compraron} compraron algo en el mes.</div>
         </div>
       </div>
       <div class="kpi">
-        <div class="l">Facturación del grupo</div>
+        <div class="l">Facturación ${enCurso?"del mes":"de "+mesCorto(ST.mesSel)}</div>
         <div class="v">${Mk(facG)}</div>
-        <div class="s">neto, NC restadas · de las ${califican.length} que llegan</div>
+        <div class="s">neto, NC restadas, de las ${UNIV.length} del plan${facOk?" · "+Mk(facOk)+" de las que ya llegan":""}</div>
       </div>
       <div class="kpi">
         <div class="l">Margen del grupo</div>
         <div class="v">${mgB?pct(mgG,mgB):0}%</div>
-        <div class="s">${Mk(mgG)} de margen en ${CFG.ventana} meses · no es comparable con
-          la facturación de un mes</div>
+        <div class="s">${Mk(mgG)} en ${CFG.ventana} meses, mismas ${UNIV.length} farmacias</div>
       </div>
       <div class="kpi">
         <div class="l">Ticket promedio</div>
@@ -512,7 +567,7 @@ function render(){
       <div class="kpi">
         <div class="l">Cobranza del grupo</div>
         <div class="v" style="${vencG>0?"color:var(--mal)":""}">${Mk(vencG)}</div>
-        <div class="s">vencido · ${Mk(deuG)} de deuda total</div>
+        <div class="s">vencido · ${Mk(deuG)} de deuda</div>
       </div>
     </div>
 
@@ -532,7 +587,8 @@ function render(){
 
     <div class="card">
       <div class="chead"><h3>Reparto entre las comerciales</h3>
-        <p>El plan se reparte parejo entre las comerciales que llevan farmacias:
+        <p>El plan es de las comerciales de farmacias. Gerencia, las comerciales de instituciones
+           y las fichas sin comercial quedan afuera de toda la cuenta. Se reparte parejo:
            <b>${ST.objetivoCom?ST.objetivoCom.toFixed(0):"—"} cada una</b>.
            Si alguna está más de ${Math.round(CFG.tolerancia*100)}% por debajo de su objetivo, aparece el aviso para que acelere.</p></div>
       <div class="cbody"><div class="comgrid">${ST.comerciales.map(cardCom).join("")}</div></div>
@@ -540,7 +596,7 @@ function render(){
 
     <div class="card">
       <div class="chead"><h3>Las farmacias del plan</h3>
-        <p>Ordenadas por su compra promedio. Tocá una para ver qué compra, su ticket y su cuenta.</p></div>
+        <p>De mayor a menor compra. Tocá una para ver qué compra, su ticket y su cuenta.</p></div>
       <div class="thead">
         <div>Farmacia</div><div>Comercial</div>
         <div style="text-align:center" title="Una barra por mes. Llena y en verde = ese mes llegó al mínimo.">Ritmo ${CFG.ventana}m</div>
@@ -584,13 +640,15 @@ function filasVisibles(){
   let l=ST.filas.slice();
   if(ST.filtroCom) l=l.filter(r=>r.com===ST.filtroCom);
   if(ST.filtroEst==="firme") l=l.filter(r=>r.firme); else if(ST.filtroEst) l=l.filter(r=>r.est===ST.filtroEst);
-  l.sort((a,b)=> ST.orden==="mes" ? b.mesN-a.mesN : b.prom-a.prom);
+  if(ST.orden==="falta")     l.sort((a,b)=>(a.faltaMes||0)-(b.faltaMes||0)||b.mesN-a.mesN||b.prom-a.prom);
+  else if(ST.orden==="prom") l.sort((a,b)=>b.prom-a.prom||b.mesN-a.mesN);
+  else                       l.sort((a,b)=>b.mesN-a.mesN||b.prom-a.prom);   // mayor compra del mes primero
   return l;
 }
 function filasHTML(){
   const l=filasVisibles(), U=CFG.umbral;
   if(!l.length) return `<div class="empty">No hay farmacias con esos filtros.</div>`;
-  const ETQ={ok:"llega",cerca:"cerca",lejos:"lejos"};
+  const ETQ={ok:"llega",camino:"en camino",cerca:"cerca",lejos:"lejos"};
   return l.slice(0,300).map(r=>`
     <div class="trow" onclick="abrir(${r.id})">
       <div style="min-width:0">
@@ -604,13 +662,61 @@ function filasHTML(){
         <div class="ritmo-l">${r.veces}/${CFG.ventana}</div>
       </div>
       <div class="num cel-prom" data-l="Promedio">${Mk(r.prom)}</div>
-      <div class="num cel-ult" data-l="${mesCorto(ST.mesSel)}">${Mk(r.mesN)}</div>
+      <div class="num cel-ult" data-l="${mesCorto(ST.mesSel)}">${Mk(r.mesN)}${
+        esMesActual(ST.mesSel)&&r.faltaMes>0 ? `<div style="font-size:10.5px;font-weight:700;color:var(--cerca)">faltan ${Mk(r.faltaMes)}</div>` : ""}</div>
       <div class="num cel-venc" data-l="Vencido" style="${r.venc>0?"color:var(--mal)":"color:var(--gris2)"}">${r.venc>0?Mk(r.venc):"—"}</div>
     </div>`).join("");
 }
 
 /* ======================= INTERACCIÓN ======================= */
 window.setMes=v=>{ ST.mesSel=v; derivar(); };
+window.setOrden=v=>{ ST.orden=v; derivar(); };
+
+/* Trae de nuevo SOLO la facturación del mes en curso (dos consultas), que es lo
+   único que se mueve durante el día. Volver a cargar todo tarda media un minuto
+   y no haría falta. */
+let _refrescando=false;
+async function refrescarMes(){
+  // Sin la carga inicial terminada no hay a quién preguntarle: pedir con la lista
+  // de farmacias vacía devolvería cero y borraría el mes.
+  if(_refrescando || !ST.ultima || !ST.filas.length) return; _refrescando=true;
+  const btn=document.getElementById("p100refrescar"); if(btn){ btn.disabled=true; btn.textContent="↻ Actualizando…"; }
+  try{
+    const k=ST.meses[ST.meses.length-1];
+    const ids=Object.keys(ST.padre).map(Number);
+    const dom=t=>[["journal_id.type","=","sale"],["move_id.move_type","=",t],["move_id.state","=","posted"],
+                  ["date",">=",k+"-01"],["date","<=",finMes(k)],["partner_id","in",ids]];
+    const [fi,fr]=await Promise.all([
+      EYG.rpc("account.move.line","read_group",[dom("out_invoice"),["price_subtotal:sum"],["partner_id"]],{lazy:false}),
+      EYG.rpc("account.move.line","read_group",[dom("out_refund"), ["price_subtotal:sum"],["partner_id"]],{lazy:false}),
+    ]);
+    const nuevo={};
+    const meter=(rows,sg)=>rows.forEach(x=>{
+      const pid=x.partner_id&&x.partner_id[0]; if(!pid) return;
+      const f=ST.padre[pid]; if(!f) return;
+      nuevo[f]=(nuevo[f]||0)+sg*(x.price_subtotal||0);
+    });
+    meter(fi,1); meter(fr,-1);
+    ST.serie[k]=nuevo; ST.ultima=Date.now();
+    derivar();
+  }catch(e){
+    const s=document.getElementById("p100sello"); if(s) s.textContent="no pude actualizar: "+(e.message||e);
+  }finally{
+    _refrescando=false;
+    const b=document.getElementById("p100refrescar"); if(b){ b.disabled=false; b.textContent="↻ Actualizar"; }
+  }
+}
+window.refrescar=refrescarMes;
+
+/* Cada 4 minutos, y solo si la página se está viendo: si está en segundo plano
+   no tiene sentido pedirle datos a Odoo. Al volver a la pestaña, se actualiza. */
+setInterval(()=>{ if(ST.ultima && document.visibilityState==="visible" && Date.now()-ST.ultima>4*60*1000) refrescarMes(); }, 60*1000);
+document.addEventListener("visibilitychange",()=>{
+  if(ST.ultima && document.visibilityState==="visible" && Date.now()-ST.ultima>4*60*1000) refrescarMes();
+});
+/* el sello de "hace cuánto" se refresca solo, sin volver a dibujar todo */
+setInterval(()=>{ const s=document.getElementById("p100sello");
+  if(s && ST.ultima && !/no pude/.test(s.textContent)) s.textContent="datos "+haceCuanto(ST.ultima)+(esMesActual(ST.mesSel)?" · se actualiza solo":""); }, 30*1000);
 window.setCom=v=>{ ST.filtroCom=v; derivar(); };
 window.setEst=v=>{ ST.filtroEst=v; derivar(); };
 
