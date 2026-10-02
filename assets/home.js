@@ -571,12 +571,14 @@ window.EYGHome = (function(){
       if(mAntFin>=MES_INI) mAntFin=addD(MES_INI,-1);         // meses cortos (31 de marzo → 28 de febrero)
       const semAntIni=addD(SEM_INI,-7), semAntFin=addD(SEM_INI,-7+dow(HOY));
 
-      const [ord, sem, semAnt, d7, d14, mes, mesAnt, ano, FAC, FACMG] = await Promise.all([
+      const [ord, sem, semAnt, d7, d14, d30, d60, mes, mesAnt, ano, FAC, FACMG] = await Promise.all([
         rpc("sale.order","search_read",[domVentas([["date_order",">=",uDesde(addD(HOY,-7))]]),
             ["name","partner_id","date_order","amount_untaxed","user_id","website_id","origin","create_uid"]],Object.assign({limit:0,order:"date_order desc"},CTX)),
         sumaVentas(SEM_INI), sumaVentas(semAntIni,semAntFin),
         sumaVentas(addD(HOY,-7), addD(HOY,-1)),    // 7 días completos, hasta ayer
         sumaVentas(addD(HOY,-14), addD(HOY,-8)),   // los 7 anteriores
+        sumaVentas(addD(HOY,-30), addD(HOY,-1)),   // 30 días completos, hasta ayer
+        sumaVentas(addD(HOY,-60), addD(HOY,-31)),  // los 30 anteriores
         sumaVentas(MES_INI),  sumaVentas(mAntIni,mAntFin),
         sumaVentas(ANO_INI),
         /* Facturado, para contrastar contra los pedidos en cada tarjeta.
@@ -588,11 +590,11 @@ window.EYGHome = (function(){
         V.margen ? (MG || margenResumen()) : Promise.resolve({ok:false}),
       ]);
       if(V.margen) MG=FACMG;
-      /* Lo que el corazón necesita de esta ola. La comparación del mes y la de
-         la semana ya vienen recortadas al mismo tramo, así que son justas. */
-      SALUD.ventas={mes:mes.m, mesAnt:mesAnt.m};
+      /* Lo que el corazón necesita de esta ola. VENTANAS COMPLETAS, no "lo que
+         va del mes": el 2 de octubre el mes lleva dos días y compararlos contra
+         dos días de septiembre daba −47% cuando el negocio venía +11%. */
+      SALUD.ventas={v30:d30.m, v30Ant:d60.m};
       SALUD.sem={sem:d7.m, semAnt:d14.m};
-      SALUD.margen=MG||{ok:false};
       pintarSalud();
       ORD8 = ord.map(o=>Object.assign({
         id:o.id, name:o.name, cli:o.partner_id?o.partner_id[1]:"—",
@@ -712,15 +714,15 @@ window.EYGHome = (function(){
   const escala=(v,malo,bueno)=>clamp((v-malo)/(bueno-malo)*100,0,100);
 
   const VITALES=[
-    {k:"ventas", peso:18, ico:"📈", lab:"Ventas del mes", ir:"#dz-evo",
-     ayuda:"Lo vendido en lo que va del mes contra el mismo tramo del mes pasado. 50 puntos es empatar; +25% o más da 100, −25% o menos da 0.",
-     calc(){ const d=SALUD.ventas; if(!d||!d.mesAnt) return null;
-       const v=(d.mes-d.mesAnt)/d.mesAnt*100;
-       return {p:clamp(50+v*2,0,100), det:delta(d.mes,d.mesAnt,"vs mes pasado")}; }},
+    {k:"ventas", peso:18, ico:"📈", lab:"Ventas · 30 días", ir:"#dz-evo",
+     ayuda:"Los últimos 30 días completos (hasta ayer) contra los 30 anteriores. 50 puntos es empatar; +25% o más da 100, −25% o menos da 0. A propósito NO es \"lo que va del mes\": el día 2 el mes lleva dos días, y medirlos contra dos días del mes pasado hace que el signo más pesado de todos diga cualquier cosa cada primero de mes. Para ver el mes calendario está la tarjeta de arriba.",
+     calc(){ const d=SALUD.ventas; if(!d||!d.v30Ant) return null;
+       const v=(d.v30-d.v30Ant)/d.v30Ant*100;
+       return {p:clamp(50+v*2,0,100), det:delta(d.v30,d.v30Ant,"vs los 30 previos")}; }},
 
-    {k:"margen", peso:18, ico:"📐", lab:"Margen", ir:"margen",
-     ayuda:"El margen del mes contra el promedio de los últimos 12 meses cerrados. 50 puntos es estar en el promedio; 5 puntos por encima da 100, 5 por debajo da 0.",
-     calc(){ const d=SALUD.margen; if(!d||!d.ok||d.ref==null||d.pct==null) return null;
+    {k:"margen", peso:18, ico:"📐", lab:"Margen · 30 días", ir:"margen",
+     ayuda:"El margen de los últimos 30 días completos contra el promedio de los últimos 12 meses cerrados. 50 puntos es estar en el promedio; 5 puntos por encima da 100, 5 por debajo da 0. Tampoco es el mes en curso: con dos días cargados el margen se mueve por un puñado de pedidos. El margen del mes calendario está en la tarjeta de arriba.",
+     calc(){ const d=SALUD.margen; if(!d||d.pct==null||d.ref==null) return null;
        return {p:clamp(50+(d.pct-d.ref)*10,0,100), det:deltaPts(d.pct,d.ref,"vs 12 meses")}; }},
 
     {k:"cobranza", peso:15, ico:"💳", lab:"Nos deben", ir:"#dz-cob",
@@ -730,11 +732,11 @@ window.EYGHome = (function(){
        const pc=d.venc/d.saldo;
        return {p:escala(pc,0.20,0), det:mc(d.venc)+" vencido · "+p1(pc*100)}; }},
 
-    {k:"deuda", peso:12, ico:"🏦", lab:"Debemos", ir:"#dz-salud",
-     ayuda:"Qué parte de lo que la droguería debe a proveedores y bancos ya venció. Sin nada vencido da 100; con el 15% o más vencido da 0. Es el espejo de la cobranza: se puede estar cobrando bien y pagando mal.",
-     calc(){ const d=SALUD.deuda; if(!d||!d.total) return null;
-       const pc=d.venc/d.total;
-       return {p:escala(pc,0.15,0), det:mc(d.total)+" · "+p1(pc*100)+" vencido"}; }},
+    {k:"banco", peso:12, ico:"🏦", lab:"Deuda bancaria", ir:"#dz-salud",
+     ayuda:"Lo que falta pagar de los préstamos de los seis bancos, medido en MESES DE VENTA: cuánto tendría que facturar la droguería para cancelarlos. Escala puesta a mano: 1 mes o menos da 100, 4 meses o más da 0. Recalibrable. NO mide si pagamos en fecha: eso se intentó y hoy no se puede sostener, porque en la cuenta Proveedores hay pagos sin imputar por una cifra parecida a la deuda misma y cualquier porcentaje de vencido que saliera de ahí sería un número inventado. Mientras tanto se mide lo que sí es firme: cuánto debemos y cuánta venta representa.",
+     calc(){ const d=SALUD.banco; if(!d||!d.total||!d.ventaMes) return null;
+       const meses=d.total/d.ventaMes;
+       return {p:escala(meses,4,1), det:mc(d.total)+" · "+meses.toFixed(1).replace(".",",")+" meses de venta"}; }},
 
     {k:"clientes", peso:10, ico:"👥", lab:"Clientes activos", ir:"#dz-cli",
      ayuda:"Qué parte de la cartera compró en los últimos 60 días. Escala puesta a mano: 20% da 0 y 65% da 100. Recalibrable.",
@@ -877,11 +879,18 @@ window.EYGHome = (function(){
      cuánto dependemos de pocos clientes. Va en la última ola para no demorar
      nada de lo que se ve primero. */
   async function cargarSaludExtra(){
-    const pagDom=[["account_id.account_type","=","liability_payable"],["parent_state","=","posted"],
-                  ["full_reconcile_id","=",false],["amount_residual","!=",0]];
-    const [pag, pagV, cst, cli] = await Promise.all([
-      rpc("account.move.line","read_group",[pagDom,["amount_residual:sum"],[]],Object.assign({lazy:false},CTX)),
-      rpc("account.move.line","read_group",[pagDom.concat([["date_maturity","<",HOY]]),["amount_residual:sum"],[]],Object.assign({lazy:false},CTX)),
+    /* Sólo las cuentas de préstamos bancarios (2.1.2.01.0*). Deliberadamente NO
+       se toma todo el pasivo "a pagar": ahí adentro conviven los préstamos con
+       la cuenta Proveedores, y mezclarlos hacía que una cuota de un préstamo
+       con la fecha pasada apareciera como si le pagáramos tarde a un laboratorio. */
+    const prestamos=[["account_id.code","=like","2.1.2.01.0%"],["parent_state","=","posted"],
+                     ["full_reconcile_id","=",false],["amount_residual","!=",0]];
+    const pedidos = Promise.all([
+      rpc("account.move.line","read_group",[prestamos,["amount_residual:sum"],[]],Object.assign({lazy:false},CTX)),
+      /* Margen de los últimos 30 días completos, por lo mismo que las ventas:
+         el mes en curso arranca cada primero con un puñado de pedidos. */
+      rpc("sale.order.line","read_group",[domLineas([["order_id.date_order",">=",uDesde(addD(HOY,-30))],["order_id.date_order","<=",uHasta(addD(HOY,-1))],["purchase_price",">",0]]),
+          ["margin:sum","price_subtotal:sum"],[]],Object.assign({lazy:false},CTX)),
       /* Costo de la mercadería vendida = venta − margen. Se toman los TRES MESES
          CERRADOS anteriores, no los tres desde hoy: incluir el mes en curso son
          tres meses y monedas divididos por tres, y la rotación saldría más
@@ -891,8 +900,14 @@ window.EYGHome = (function(){
       rpc("sale.order","read_group",[domVentas([["date_order",">=",uDesde(addM(MES_INI,-12))]]),["amount_untaxed:sum"],["partner_id"]],
           Object.assign({lazy:false,limit:6000},CTX)),
     ]);
-    const total=-(((pag[0]||{}).amount_residual)||0), venc=-(((pagV[0]||{}).amount_residual)||0);
-    SALUD.deuda={total:Math.max(0,total), venc:Math.max(0,venc)};
+    /* Las consultas ya salieron; recién acá se espera a la ola 1, que es la que
+       trae la venta de 30 días y el margen de referencia con que se comparan. */
+    await LISTO1;
+    const [pag, mg30, cst, cli] = await pedidos;
+    SALUD.banco={total:Math.max(0,-(((pag[0]||{}).amount_residual)||0)),
+                 ventaMes:(SALUD.ventas&&SALUD.ventas.v30)||0};
+    const mv=((mg30[0]||{}).price_subtotal)||0, mm=((mg30[0]||{}).margin)||0;
+    SALUD.margen={pct: mv?mm/mv*100:null, ref:(MG&&MG.ok)?MG.ref:null};
     const v=((cst[0]||{}).price_subtotal)||0, m=((cst[0]||{}).margin)||0;
     SALUD.rot={costoMes:(v-m)/3};
     const arr=cli.map(x=>x.amount_untaxed||0).sort((a,b)=>b-a);
