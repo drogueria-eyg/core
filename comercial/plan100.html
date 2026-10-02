@@ -98,7 +98,7 @@
   .p100 .comcard .avisar:hover{background:var(--agua)}
 
   /* ---- tabla ---- */
-  .p100 .thead,.p100 .trow{display:grid;grid-template-columns:minmax(0,2.4fr) 1fr 108px 112px 112px 104px;
+  .p100 .thead,.p100 .trow{display:grid;grid-template-columns:minmax(0,2.2fr) 1fr 104px 104px 146px 100px;
     gap:10px;align-items:center;padding:10px 17px}
   .p100 .thead{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--gris2);font-weight:800;
     border-bottom:1px solid var(--line);background:#FAFCFC}
@@ -115,6 +115,17 @@
   .p100 .est.camino{background:#E7F0FB;color:#1E5FA8}
   .p100 .est.cerca{background:var(--cerca-bg);color:var(--cerca)}
   .p100 .est.lejos{background:var(--lejos-bg);color:var(--lejos)}
+  /* Cuánto le falta a la farmacia para el mínimo del mes, de un vistazo.
+     El color es el mismo del estado, así la fila se lee sin leer el número. */
+  .p100 .pbar{height:7px;border-radius:5px;background:#EDF3F2;overflow:hidden;margin:5px 0 3px}
+  .p100 .pbar i{display:block;height:100%;border-radius:5px;background:var(--lejos);transform-origin:left}
+  .p100.anim .pbar i{animation:p100-right .9s cubic-bezier(.22,1,.36,1)}
+  .p100 .pbar.ok i{background:var(--ok)}
+  .p100 .pbar.camino i{background:#1E5FA8}
+  .p100 .pbar.cerca i{background:var(--cerca)}
+  .p100 .pbar.lejos i{background:#C6D6D3}
+  .p100 .pct{font-size:10px;font-weight:800;letter-spacing:.2px;color:var(--gris2);white-space:nowrap}
+  .p100 .pct b{color:var(--ink)}
   .p100 .ritmo{display:flex;gap:2px;align-items:flex-end;height:20px}
   .p100 .ritmo i{width:6px;border-radius:2px;background:#D9E6E4;transform-origin:bottom}
   .p100.anim .ritmo i{animation:p100-up .6s cubic-bezier(.22,1,.36,1)}
@@ -367,12 +378,16 @@ function derivar(){
     const enCurso=esMesActual(ST.mesSel), dH=diaDeHoy(), dM=diasDelMes(ST.mesSel);
     const proy = enCurso && dH>0 ? mesN/dH*dM : mesN;
     const falta = Math.max(0, U-mesN);
+    /* "En camino" solo cuando la proyección significa algo. El día 2, cualquier
+       compra por chica que sea se multiplica por 15 y daría el mínimo: marcarlas
+       todas "en camino" no informa nada. */
+    const ritmoDaria = enCurso && dH>0 && mesN<U && proy>=U;
     const est = mesN>=U ? "ok"
-              : (enCurso && proy>=U ? "camino"
+              : (enCurso && dH>=5 && proy>=U ? "camino"
               : (mesN>=U*CFG.cercaPct || prom>=U ? "cerca" : "lejos"));
     return { id, nombre:f[FANT]||f.name||("#"+id), titular:f.name||"", ciudad:f.city||"",
       com:f.user_id?f.user_id[1]:"Sin asignar", uid:f.user_id?f.user_id[0]:0,
-      serie, ventSerie, veces, prom, mesN, est, proy, faltaMes:falta,
+      serie, ventSerie, veces, prom, mesN, est, proy, ritmoDaria, faltaMes:falta,
       margen:mg.margin||0, margenBase:mg.base||0, pedidos:tk.n||0, pedTot:tk.amount_untaxed||0,
       ticket:(tk.n?(tk.amount_untaxed||0)/tk.n:0),
       deuda:dd.total||0, venc:dd.venc||0,
@@ -475,6 +490,7 @@ function render(){
   const firmes=ST.filas.filter(r=>r.firme).length;
   const enCurso=esMesActual(ST.mesSel), dH=diaDeHoy(), dM=diasDelMes(ST.mesSel);
   const enCamino=ST.filas.filter(r=>r.est==="camino").length;
+  const aRitmo=ST.filas.filter(r=>r.ritmoDaria).length;   // sirve desde el día 1
   const llegan=califican.length;            // misma cuenta que la tabla: una sola verdad
   const faltaMeta=(llegan+enCamino)<CFG.meta;
   const falta=Math.max(0, CFG.meta-llegan);
@@ -539,7 +555,7 @@ function render(){
                ? `<b>${enCamino}</b> más vienen en camino: a este ritmo el mes cierra en
                   <b>${llegan+enCamino}</b>${faltaMeta?", y faltarían "+(CFG.meta-llegan-enCamino)+" para los "+CFG.meta:""}.`
                : `Recién empieza el mes: es temprano para proyectar el cierre.
-                  <b>${enCamino}</b> vienen comprando a un ritmo que daría el mínimo.`)
+                  <b>${aRitmo}</b> vienen comprando a un ritmo que daría el mínimo.`)
             : (falta? `Faltan <b>${falta}</b> farmacias para cerrar el plan.` : "Plan cumplido este mes.")}
             ${sel.compraron} compraron algo en el mes.</div>
         </div>
@@ -662,8 +678,10 @@ function filasHTML(){
         <div class="ritmo-l">${r.veces}/${CFG.ventana}</div>
       </div>
       <div class="num cel-prom" data-l="Promedio">${Mk(r.prom)}</div>
-      <div class="num cel-ult" data-l="${mesCorto(ST.mesSel)}">${Mk(r.mesN)}${
-        esMesActual(ST.mesSel)&&r.faltaMes>0 ? `<div style="font-size:10.5px;font-weight:700;color:var(--cerca)">faltan ${Mk(r.faltaMes)}</div>` : ""}</div>
+      <div class="num cel-ult" data-l="${mesCorto(ST.mesSel)}">${Mk(r.mesN)}
+        <div class="pbar ${r.est}" title="${Mk(r.mesN)} de los ${M0(U)} del mínimo"><i style="width:${Math.min(100,Math.round(r.mesN/U*100))}%"></i></div>
+        <div class="pct">${r.faltaMes>0 ? `<b>${Math.min(100,Math.round(r.mesN/U*100))}%</b> · faltan ${Mk(r.faltaMes)}` : "mínimo cumplido"}</div>
+      </div>
       <div class="num cel-venc" data-l="Vencido" style="${r.venc>0?"color:var(--mal)":"color:var(--gris2)"}">${r.venc>0?Mk(r.venc):"—"}</div>
     </div>`).join("");
 }
@@ -791,10 +809,17 @@ window.abrir=async (id)=>{
         <div><div class="l">Deuda</div><div class="v">${Mk(r.deuda)}</div></div>
         <div><div class="l">Vencido</div><div class="v" style="${r.venc>0?"color:var(--mal)":""}">${r.venc>0?Mk(r.venc):"—"}</div></div>
       </div>
-      ${r.mesN<U?`<div style="background:var(--cerca-bg);color:var(--cerca);border-radius:11px;padding:11px 13px;font-size:12.5px;font-weight:700;margin-bottom:4px">
-        Para llegar al mínimo de ${M0(U)} este mes le faltan <b>${M0(U-r.mesN)}</b>.</div>`:
-        `<div style="background:var(--ok-bg);color:var(--ok);border-radius:11px;padding:11px 13px;font-size:12.5px;font-weight:700;margin-bottom:4px">
-        Ya llegó al mínimo este mes: compró ${M0(r.mesN)}.</div>`}
+      <div style="background:${r.mesN<U?"var(--cerca-bg)":"var(--ok-bg)"};color:${r.mesN<U?"var(--cerca)":"var(--ok)"};
+        border-radius:11px;padding:12px 14px;font-size:12.5px;font-weight:700;margin-bottom:6px">
+        ${r.mesN<U ? `Para llegar al mínimo de ${M0(U)} le faltan <b>${M0(U-r.mesN)}</b>.`
+                   : `Ya llegó al mínimo: compró <b>${M0(r.mesN)}</b>.`}
+        <div style="height:10px;border-radius:6px;background:rgba(255,255,255,.65);overflow:hidden;margin-top:9px">
+          <div style="height:100%;border-radius:6px;width:${Math.min(100,Math.round(r.mesN/U*100))}%;
+            background:currentColor"></div>
+        </div>
+        <div style="font-size:11px;font-weight:800;margin-top:5px;opacity:.85">
+          ${Math.min(100,Math.round(r.mesN/U*100))}% del mínimo ${esMesActual(ST.mesSel)?"· día "+diaDeHoy()+" de "+diasDelMes(ST.mesSel):""}</div>
+      </div>
 
       <h3>Mes a mes</h3>
       <div style="display:flex;gap:5px;align-items:flex-end;height:92px;padding:4px 0">
