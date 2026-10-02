@@ -518,6 +518,13 @@ window.EYG = (function(){
     /* Precios y Rentabilidad: función de ADMINISTRACIÓN (define/analiza precios, escalas y
        costos). NO la ve el comercial: cuando carga una venta, Odoo ya calcula el precio. */
     {key:"precios",   dept:"precios", cat:"Precios y Rentabilidad", ico:"🏷️", titulo:"Costos y Rentabilidad", desc:"Costo, escalera de precios por cantidad y margen por tramo, con salud por color. Para definir y analizar los precios.", roles:["finanzas"], ready:true, path:()=>"comercial/precios.html"},
+    /* Plan 100x100: 100 farmacias que compren como mínimo $1M en el mes, medido mes a
+       mes. El umbral y la meta viven en el parámetro eyg.plan100, porque el millón de
+       hoy no es el de mañana. Lo ven las comerciales (para saber cómo van) y la
+       conducción (para ver el reparto y avisar quién tiene que acelerar). */
+    {key:"plan100", dept:"comercial", cat:"Comercial", ico:"💯", titulo:"Plan 100×100",
+      desc:"100 farmacias que compren como mínimo $1M por mes. Cómo viene el plan, qué farmacias llegan, cuáles están cerca y cómo está repartido entre las comerciales.",
+      roles:["comercial","lider","direccion"], ready:true, path:()=>"comercial/plan100.html"},
     {key:"rentabilidad", dept:"precios", cat:"Precios y Rentabilidad", ico:"📊", titulo:"Rentabilidad por rubro", desc:"Cuánto vende y cuánto deja cada tipo de cliente — farmacias, sanatorios, SAMCO, veterinarias, distribuidoras — y cuánto de ese margen se lo come el plazo de pago.", roles:["finanzas","direccion"], ready:true, path:()=>"comercial/rentabilidad.html"},
     {key:"config-precios", dept:"precios", cat:"Precios y Rentabilidad", ico:"⚙️", titulo:"Motor de precios", desc:"Reglas del motor por categoría: recargo, cortes, descuentos, IVA al costo y piso de margen. Las ofertas se crean en Oportunidades y Ofertas.", roles:["finanzas"], ready:true, path:()=>"comercial/config-precios.html"},
     /* EN PRUEBAS: Facturación (el puesto de Vanesa). La cola de pedidos por facturar
