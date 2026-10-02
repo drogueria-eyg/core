@@ -252,7 +252,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=105"></script>
+<script src="../assets/core.js?v=106"></script>
 <script>
 /* ===== EyG Core · Contactos: la base única de contactos de EyG =====
    Una sola casa para TODOS los contactos: los que ya son nuestros (con la ficha completa,
@@ -288,7 +288,7 @@ const norm2 = s => (s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"")
    ofrecen sólo los vigentes (EYG.RUBROS). */
 const RUBRO_FIELD=EYG.RUBRO_FIELD;
 const RUBROS_TODOS=EYG.RUBROS.concat(EYG.RUBROS_VIEJOS).map(r=>r.v);
-const PFIELDS=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","create_date","create_uid","customer_rank","supplier_rank","parent_id","function","comment","website","x_studio_selection_field_6ui_1j42g6fu9","property_payment_term_id","property_product_pricelist"];
+const PFIELDS=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","create_date","create_uid","customer_rank","supplier_rank","parent_id","function","comment","website","x_studio_selection_field_6ui_1j42g6fu9","property_payment_term_id","property_product_pricelist",EYG.FANT];
 /* ---- Condición de pago (plazo) ----------------------------------------
    Es el campo que DETERMINA EL VENCIMIENTO de cada factura, así que si el
    cliente no lo tiene cargado, Odoo factura a vencimiento inmediato y
@@ -483,7 +483,7 @@ async function cargar(silent){
         comprado:v.tot||0, mesv:v.mes||0, semv:v.sem||0, faltantes,
         wa:waNumber(p.mobile,p.phone), tellink:telLink(p.mobile,p.phone),
         creado:p.create_date||"", creadoPor:p.create_uid?p.create_uid[1]:"",
-        dupVat:DUPVAT[p.id]||"", dupName:DUPNAME[p.id]||"", enPadron:false, nombreOficial:"", part:p, boveda:BOVEDA[p.id]||null,
+        dupVat:DUPVAT[p.id]||"", dupName:DUPNAME[p.id]||"", enPadron:false, nombreOficial:"", part:p, fant:EYG.fantasia(p), boveda:BOVEDA[p.id]||null,
         // Nivel 3 del modelo de contactos: las personas cargadas DENTRO de una empresa (celular de
         // pagos, el dueño, compras…) no son un contacto aparte — viven en la ficha del padre.
         padreId:p.parent_id?p.parent_id[0]:false, padre:p.parent_id?p.parent_id[1]:"", cargo:p.function||"",
@@ -794,13 +794,15 @@ const esProvPuro = c => c.proveedor && !c.esCliente;   // proveedor y NO cliente
    se ven y se editan en la ficha del cliente. Por defecto no ensucian la lista; el tilde
    "Mostrar también las personas…" los trae de vuelta. */
 function esHijo(c){ return !!c.padreId; }
+/* Un solo buscador para toda la lista: nombre del titular, nombre de fantasía, CUIT y localidad. */
+function coincideQ(c){ return EYG.buscaOk(c.part||{name:c.nombre,vat:c.cuit,city:c.ciudad}, filtro.q, c.fant); }
 function hijosCount(){ return DATA.filter(c=> esHijo(c) && !c.boveda && !esProvPuro(c) && !(filtro.ocultarRuido && (c.combo||c.noUsar))).length; }
 function base(){ return DATA.filter(c=> !c.boveda && !esProvPuro(c) && (filtro.verHijos || !esHijo(c)) && !(filtro.ocultarRuido && (c.combo||c.noUsar))); }
 function enBoveda(){ return DATA.filter(c=> c.boveda && !(filtro.ocultarRuido && (c.combo||c.noUsar))); }
 function enProveedores(){ return DATA.filter(c=> esProvPuro(c) && !c.boveda && !(filtro.ocultarRuido && (c.combo||c.noUsar))); }
 function visibles(){
-  if(filtro.boveda){ const q=(filtro.q||"").toLowerCase(); return enBoveda().filter(c=> !q || c.nombre.toLowerCase().includes(q) || (c.ciudad||"").toLowerCase().includes(q)); }
-  if(filtro.proveedores){ const q=(filtro.q||"").toLowerCase(); return enProveedores().filter(c=> !q || c.nombre.toLowerCase().includes(q) || (c.ciudad||"").toLowerCase().includes(q)); }
+  if(filtro.boveda){ return enBoveda().filter(coincideQ); }
+  if(filtro.proveedores){ return enProveedores().filter(coincideQ); }
   return base().filter(c=>{
     if(filtro.com && c.comercial!==filtro.com) return false;
     if(filtro.seg && c.seg!==filtro.seg) return false;
@@ -815,7 +817,7 @@ function visibles(){
     if(filtro.issue==="riesgo" && !(c.riesgo && c.riesgo.nivel && c.riesgo.nivel!=="ok")) return false;
     if(filtro.issue==="portal" && !c.portal) return false;
     if(filtro.issue==="portal-no" && !(c.portal && !c.portal.loggedIn)) return false;
-    if(filtro.q){const q=filtro.q.toLowerCase(); if(!(c.nombre.toLowerCase().includes(q)||(c.cuit||"").includes(q)||(c.ciudad||"").toLowerCase().includes(q))) return false;}
+    if(!coincideQ(c)) return false;
     return true;
   });
 }
@@ -939,7 +941,7 @@ function renderLista(){
     const chk = working?`<input type="checkbox" class="rowchk" ${SEL.has(c.id)?'checked':''} onclick="event.stopPropagation();toggleSel(${c.id})">`:'';
     return `<div class="row ${SEL.has(c.id)?'selrow':''}" onclick="abrir(${c.id})">
       <div style="display:flex;gap:9px;align-items:flex-start">${chk}<div style="min-width:0;flex:1">
-        <div class="nmrow"><span class="cname">${esc(c.nombre)}</span>${portalIcon(c)}${(c.dupVat||c.dupName)?'<span class="badge warn" style="font-size:10px">⚠ dup</span>':''}</div>
+        <div class="nmrow"><span class="cname">${esc(c.nombre)}</span>${EYG.chipFant(c.fant)}${portalIcon(c)}${(c.dupVat||c.dupName)?'<span class="badge warn" style="font-size:10px">⚠ dup</span>':''}</div>
         <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">${EYG.badgeRiesgo(c.riesgo&&c.riesgo.nivel)}${rubroBadge(c.rubro)}${!c.empresa?'<span class="rub" style="background:#EEE9F6;color:#6B4FA0">👤 persona</span>':''}${c.enPadron?'<span class="pad">✓ padrón</span>':''}${c.proveedor?'<span class="rub" style="background:#EFE3D0;color:#8A6D1A">🏭 prov.</span>':''}</div>
         <div class="cmeta">${esc(c.ciudad||"—")}${c.padre?` · ↳ dentro de ${esc(c.padre)}`:""}</div>
         ${c.faltantes.length?`<div class="flags">${c.faltantes.map(f=>`<span class="flag">falta ${f}</span>`).join("")}</div>`:''}</div></div>
@@ -1718,7 +1720,7 @@ function abrir(id){
   if(c.dupName) DATA.forEach(x=>{if(x.id!==id&&x.dupName===c.dupName&&!dupIds.includes(x))dupIds.push(x);});
   const d=document.getElementById("drawer");
   const tmpl=(t,txt)=>`<span class="tmpl" onclick="setWa(this,'${txt.replace(/'/g,"\\'")}')">${t}</span>`;
-  const nombre=esc(c.nombre);
+  const nombre=esc(c.nombre)+EYG.chipFant(c.fant);
   d.innerHTML=`
     <div class="dhead"><span class="x" onclick="cerrar()">✕</span><h2>${nombre}</h2>
       <div class="dsub">${esc(c.comercial)} · <span class="seg ${c.seg}" style="color:#fff">${SEG_LBL[c.seg]}</span>${c.enPadron?' · ✓ padrón oficial':''}${c.proveedor?' · 🏭 proveedor':''}${c.boveda?' · 🔒 en bóveda':''}</div>
@@ -2244,6 +2246,9 @@ function editarContacto(id){
         <option value="person" ${tipo!=='company'?'selected':''}>Persona</option><option value="company" ${tipo==='company'?'selected':''}>Empresa</option></select></div>
       <div class="fld"><label id="lbl_name">${tipo==='company'?'Razón social':'Apellido y nombre'}</label>
         <input id="f_name" value="${esc(p.name||c.nombre||'')}" placeholder="Ej: Farmacia del Sol S.R.L."></div>
+      <div class="fld"><label>Nombre de fantasía</label>
+        <input id="f_fant" value="${esc(EYG.fantasia(p))}" placeholder="Ej: Fcia. Grandoli">
+        <div class="hint">El cartel del local. Arriba va el titular del CUIT; por acá lo encuentran igual los comerciales al buscar.</div></div>
       <div class="fld"><label>Rubro</label><select id="f_rubro">${rubroOpts}</select></div>
       <div class="fld"><label>Teléfono</label><input id="f_phone" value="${esc(p.phone||p.mobile||'')}" oninput="prevTel()" placeholder="0341 155033943">
         <div class="hint">Área sin 0, celular sin 15. Se guarda formateado.</div><div class="prev" id="prev_phone"></div></div>
@@ -2284,13 +2289,14 @@ async function guardarContacto(id){
     website: val("f_web")||false, comment: val("f_nota")||false
   };
   vals[RUBRO_FIELD]=val("f_rubro")||false;
+  vals[EYG.FANT]=val("f_fant")||false;
   if(!vals.name){ btn.disabled=false; btn.textContent="Guardar y sincronizar con Odoo"; toast("⚠ Falta el nombre"); return; }
   try{
     await rpc("res.partner","write",[[id],vals],{context:{lang:"es_AR"}});
     const fresh=(await rpc("res.partner","read",[[id]],{fields:PFIELDS,context:{lang:"es_AR"}}))[0];
     const c=DATA.find(x=>x.id===id);
     if(c&&fresh){
-      c.part=fresh; c.nombre=fresh.name||c.nombre;
+      c.part=fresh; c.nombre=fresh.name||c.nombre; c.fant=EYG.fantasia(fresh);
       c.telv=fresh.mobile||fresh.phone||""; c.email=fresh.email||""; c.emailOk=mailOk(fresh.email);
       c.ciudad=fresh.city||""; c.prov=fresh.state_id?fresh.state_id[1].replace(/\s*\((AR|IT)\)$/,""):"";
       c.cuit=fresh.vat||""; c.fiscal=fresh.l10n_ar_afip_responsibility_type_id?fresh.l10n_ar_afip_responsibility_type_id[1]:"";

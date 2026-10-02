@@ -1729,6 +1729,30 @@ window.EYG = (function(){
 
      ALIAS: los valores de la etapa de nueve rubros se traducen solos al que
      corresponde. Si quedó alguna ficha sin migrar, se sigue viendo bien. */
+  /* ============================================================
+     NOMBRE DE FANTASÍA  (campo de Odoo, lo escribe el gestor de contactos)
+     El contacto se llama por el TITULAR del CUIT ("Belmonte, Gabriela Maria")
+     y el cartel del local vive acá ("Fcia. Grandoli"). Si el buscador no lo
+     mira, el comercial escribe "Grandoli" y no encuentra a su propia clienta.
+     Por eso todo buscador de clientes del Core pasa por acá.
+     ============================================================ */
+  const FANT = "x_studio_nombre_de_fantasia";
+  const fantasia = c => { const v = c && c[FANT]; return (typeof v === "string" && v.trim()) ? v.trim() : ""; };
+  /* Texto donde se busca: nombre + cartel + CUIT + localidad, todo sin acentos. */
+  const buscaTxt = c => _normNom([(c&&c.name)||"", fantasia(c), (c&&c.vat)||"", (c&&c.city)||""].join(" "));
+  /* Cada palabra tipeada tiene que aparecer en alguna parte, en cualquier orden:
+     "grandoli", "fcia grandoli" y "belmonte grandoli" encuentran la misma ficha. */
+  function buscaOk(c, q, extra){
+    const t=_normNom(q); if(!t) return true;
+    const h=buscaTxt(c)+(extra?" "+_normNom(extra):"");
+    return t.split(" ").every(w => h.includes(w));
+  }
+  /* Para buscar del lado de Odoo, cuando la lista no está cargada en memoria. */
+  const domBusca = q => ["|","|",["name","ilike",q],[FANT,"ilike",q],["vat","ilike",q]];
+  /* Chip para mostrar el cartel al lado del nombre del titular. */
+  function fantStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-fant-css")) return; const s=document.createElement("style"); s.id="eyg-fant-css"; s.textContent=".eyg-fant{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:20px;background:#E2F1EF;color:#048782;font-size:11px;font-weight:700;vertical-align:middle;white-space:nowrap;max-width:230px;overflow:hidden;text-overflow:ellipsis}"; document.head.appendChild(s); }
+  function chipFant(c){ const v=typeof c==="string"?c:fantasia(c); if(!v) return ""; fantStyles(); return '<span class="eyg-fant" title="Nombre de fantasía">'+esc(v)+'</span>'; }
+
   const RUBRO_FIELD = "x_studio_selection_field_6ui_1j42g6fu9";
   const RUBROS = [
     {v:"FARMACIAS",      l:"Farmacias",      ab:"Farmacia",      ico:"💊", c:"#048782", bg:"#E2F1EF",
@@ -2394,6 +2418,7 @@ window.EYG = (function(){
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
     creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
+    FANT, fantasia, buscaTxt, buscaOk, domBusca, chipFant, fantStyles,
     RUBRO_FIELD, RUBROS, RUBROS_VIEJOS, RUBRO_META, RUBRO_ALIAS, TAG_RUBRO, rubroNorm, rubroDe, rubroOpts, rubroBadge,
     conquistarLeer, conquistarGuardar, conquistarAsignar, conquistarDeComercial, conquistarSetPartner, conquistarQuitar, conquistarPatch, notificarRoles,
     padNorm, padTitulo, padLocKey, padClave, padCoincide, padClaveDir, padCoincideDir, padCargar, padCruzar, padPunto, padTk, PAD_GENERICO,
