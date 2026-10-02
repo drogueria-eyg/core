@@ -96,6 +96,7 @@
            padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap;cursor:help}
   tbody td{padding:9px 10px;border-bottom:1px solid #EEF4F3;vertical-align:top}
   tbody td.fe{white-space:nowrap;font-variant-numeric:tabular-nums}   /* la fecha no se parte y las columnas alinean */
+  tbody td.fe .sal{font-size:10.5px;color:var(--gris);opacity:.8;margin-top:2px;font-weight:600}  /* el saldo del banco, en chico, abajo */
   tbody tr:hover{background:#FAFDFC}
   tbody tr:last-child td{border-bottom:0}
   td.r,th.r{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -243,6 +244,8 @@ const BANCOS={
       {re:"DEBITO FISCAL IVA PERCEPCION", tipo:"cargo",   sub:"Percepción IVA · va contra la factura", partner:2092},  // 197
       {re:"COMISION CHEQUE CONSULTA",     tipo:"cargo",   sub:"Comisión cheques · va contra la factura", partner:2092},// 144
       {re:"COM. SERV DESC NO AUTORIZ",    tipo:"cargo",   sub:"Comisión",               partner:2092},
+      /* cae el 27 de cada mes; las 8 veces anteriores se resolvieron contra Gastos Bancarios */
+      {re:"COMISION CHQ PAG CLEARING",   tipo:"cargo",    sub:"Comisión cheques pagados", cta:264, partner:2092},
       /* ---- cheques pagados: se concilian contra el pago emitido ---- */
       {re:"CHEQUE P/CAMARA",             tipo:"echeq",    sub:"Cheque por cámara"},         // 369
       {re:"CHEQUE CANJE INTERNO",        tipo:"echeq",    sub:"Cheque canje interno"},      // 35
@@ -901,7 +904,8 @@ window.aplicarContacto=async i=>{
     const v=await ponerContactoEnOdoo(m.yaEsta.id, m.yaEsta.move_id[0], m.cliente.id, B.cuenta);
     m.yaEsta.partner_id=[m.cliente.id,m.cliente.nombre];
     m.yaEsta.is_reconciled=v.is_reconciled;
-    log("Contacto escrito: "+money(m.importe)+" → "+m.cliente.nombre,"ok");
+    m.ctoRecien=true;   /* para que la fila diga que ACABA de pasar, y no haya que adivinarlo */
+    log("Contacto escrito en Odoo: "+money(m.importe)+" del "+m.fecha+" → "+m.cliente.nombre,"ok");
   }catch(e){
     log("No se pudo poner el contacto en la línea "+m.yaEsta.id+": "+((e&&e.message)||e),"e");
   }
@@ -922,7 +926,7 @@ window.accionContactos=async ()=>{
     try{
       const v=await ponerContactoEnOdoo(m.yaEsta.id, m.yaEsta.move_id[0], m.cliente.id, B.cuenta);
       m.yaEsta.partner_id=[m.cliente.id,m.cliente.nombre];
-      m.yaEsta.is_reconciled=v.is_reconciled; ok++;
+      m.yaEsta.is_reconciled=v.is_reconciled; m.ctoRecien=true; ok++;
     }catch(e){ mal++; log("Línea "+m.yaEsta.id+" ("+money(m.importe)+"): "+((e&&e.message)||e),"e"); }
   }
   log("Contactos escritos: "+ok+(mal?"  ·  fallaron "+mal:""), mal?"o":"ok");
@@ -939,7 +943,8 @@ function estadoDe(m){
       (m.yaEsta.to_check?' <span class="badge b-warn">a revisar</span>':"")+
       /* el contacto a la vista: es lo que Federico echaba de menos cuando la línea
          la cargaba el módulo en vez de él a mano */
-      (!m.yaEsta.partner_id?' <span class="badge b-bad">sin contacto</span>':"")+' ';
+      (!m.yaEsta.partner_id?' <span class="badge b-bad">sin contacto</span>':"")+
+      (m.ctoRecien?' <span class="badge b-ok" title="Se escribió el contacto en la línea del extracto en Odoo. No se toca nada más: ni el importe, ni las cuentas, ni la conciliación.">✓ contacto escrito recién</span>':"")+' ';
     if(m.tipo==="impuesto") return pre+'<span class="badge b-ok">va a su cuenta</span>';
     if(m.tipo==="cargo")    return pre+'<span class="badge b-warn">va a la liquidación</span>';
     if(m.cands.length===1)  return pre+'<span class="badge b-ok">'+(m.porCheque?"por N° de cheque":m.porCliente?"cliente + importe":"un candidato")+'</span>';
@@ -989,9 +994,17 @@ function accionDe(m,i){
     return '<button class="btn sm gh" onclick="conciliarUno('+i+')" title="'+
       (m.porCheque?"El N° de cheque "+esc(m.cpbte)+" lo identifica sin ambigüedad. ":"")+
       'Concilia este movimiento contra su único candidato. También lo hace el botón de arriba, junto con los demás.">Conciliar</button>';
-  /* Impuestos y cargos: su destino es único y no tienen candidato que mostrar. */
-  if(m.tipo==="impuesto"||m.tipo==="cargo")
-    return '<span class="muted" style="font-size:11.5px">lo resuelve el botón de arriba</span>';
+  /* Impuestos y cargos: su destino es único y no tienen candidato que mostrar.
+     El texto dice QUÉ va a pasar y con qué botón: "lo resuelve el botón de arriba"
+     no decía ni una cosa ni la otra, y dejaba la sensación de que algo había fallado. */
+  if(m.tipo==="impuesto")
+    return '<span class="muted" style="font-size:11.5px" title="No necesita contraparte: se imputa derecho a su cuenta contable.">'+
+      'listo para imputar'+(m.cta?' a la cuenta '+m.cta:"")+' · con «Resolver»</span>';
+  if(m.tipo==="cargo")
+    return '<span class="muted" style="font-size:11.5px" title="'+(m.cta
+      ? "Se imputa derecho a su cuenta de gasto."
+      : "Este cargo lo factura el banco con IVA, así que no se imputa derecho a gasto: se concilia contra la factura del banco, que es donde está el crédito fiscal.")+'">'+
+      (m.cta?'listo para imputar a gasto · con «Resolver»':'espera la factura del banco')+'</span>';
   /* Transferencia entre cuentas propias con el otro banco ya identificado: se puede
      resolver de una, sin esperar el extracto del otro banco. */
   if(m.tipo==="interna"&&m.otroBanco&&m.cands.length===0)
@@ -1049,7 +1062,13 @@ function filasDe(M){
     filas.map((m,i)=>'<tr>'+
       /* con el año: el extracto puede traer movimientos de más de un año y dd/mm solo
          no alcanza para saber de cuál es */
-      '<td class="muted fe">'+m.fecha.slice(8)+"/"+m.fecha.slice(5,7)+"/"+m.fecha.slice(0,4)+'</td>'+
+      '<td class="muted fe">'+m.fecha.slice(8)+"/"+m.fecha.slice(5,7)+"/"+m.fecha.slice(0,4)+
+        /* Debajo, el saldo que quedó en el banco después de este movimiento. El banco no
+           manda la hora (le pone la misma a todos los del día), y este dato dice lo mismo
+           y mejor: en qué orden pasaron y cómo iba quedando la cuenta. */
+        (m.saldo===null||m.saldo===undefined?"" :
+          '<div class="sal" title="Saldo que quedó en la cuenta del banco después de este movimiento, según el propio banco.">'+money(m.saldo)+'</div>')+
+        '</td>'+
       '<td class="cpto">'+esc(m.concepto.slice(0,92))+(m.concepto.length>92?"…":"")+
         (m.cliente
           ? '<span class="cli" title="'+(m.porMano
@@ -1530,6 +1549,18 @@ window.elegirCand=(i)=>conTrabajo(async()=>{
    ══════════════════════════════════════════════════════════════════════════ */
 const soloDigitos=s=>{const t=String(s||"").trim(); return t.length>0 && t.split("").every(ch=>"0123456789".indexOf(ch)>=0);};
 
+/* EL SALDO DESPUÉS DEL MOVIMIENTO. El banco NO manda la hora —le pone la misma a todos
+   los movimientos del día, así que no sirve para ordenarlos— pero sí manda el saldo que
+   quedó después de cada uno, adentro del detalle crudo de la transacción. Ese dato vale
+   más que la hora: dice en qué orden pasaron las cosas y deja controlar la cadena. */
+function saldoDe(l){
+  let d=l.transaction_details;
+  if(!d) return null;
+  if(typeof d==="string"){ try{ d=JSON.parse(d); }catch(e){ return null; } }
+  const b=d && d.extra && d.extra.balance;
+  return (typeof b==="number") ? b : null;
+}
+
 async function traerDelBanco(){
   const B=BANCOS[ST.banco];
   if(!B.online){ alert(B.nombre+" no tiene conexión con el banco todavía: ese se sigue cargando por archivo."); return; }
@@ -1558,8 +1589,13 @@ async function traerDelBanco(){
     /* ---- las líneas sin resolver del diario: eso es lo que hay para trabajar ---- */
     const lin=await rpc("account.bank.statement.line","search_read",
       [[["journal_id","=",B.diario],["is_reconciled","=",false]],
-       ["id","date","payment_ref","amount","ref","partner_id","is_reconciled","to_check","move_id","online_transaction_identifier"]],
-      {limit:0, order:"date, id"});
+       ["id","date","payment_ref","amount","ref","partner_id","is_reconciled","to_check","move_id","online_transaction_identifier","transaction_details"]],
+      /* "id desc" NO es capricho: el banco manda cada día del movimiento más nuevo al
+         más viejo, así que Odoo los crea en ese orden y el id más alto es el MÁS VIEJO.
+         Comprobado contra la cadena de saldos que manda el propio banco: así encadena
+         142 de 143; al revés, 0 de 143. Esto deja los movimientos en orden cronológico
+         igual que el archivo, y la tabla después los da vuelta para mostrarlos. */
+      {limit:0, order:"date, id desc"});
     log("Movimientos sin resolver en el diario: "+lin.length);
     if(!lin.length){ log("No hay nada pendiente en este banco.","ok"); ST.movs=[]; ST.listo=true; ST.trabajando=false; render(); return; }
 
@@ -1567,7 +1603,7 @@ async function traerDelBanco(){
       deOdoo:true, lineaId:l.id, yaEsta:l, online:!!l.online_transaction_identifier,
       fecha:l.date, concepto:String(l.payment_ref||"").trim().replace(/\s+/g," "),
       cpbte:soloDigitos(l.ref)?String(l.ref).trim():"",
-      importe:Math.round(l.amount*100)/100, saldo:null, cod:""
+      importe:Math.round(l.amount*100)/100, saldo:saldoDe(l), cod:""
     }));
     ST.movs=await analizar(movs);
     ST.listo=true; ST.trabajando=false; render();
