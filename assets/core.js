@@ -524,7 +524,11 @@ window.EYG = (function(){
        conducción (para ver el reparto y avisar quién tiene que acelerar). */
     {key:"plan100", dept:"comercial", cat:"Comercial", ico:"💯", titulo:"Plan 100×100",
       desc:"100 farmacias que compren como mínimo $1M por mes. Cómo viene el plan, qué farmacias llegan, cuáles están cerca y cómo está repartido entre las comerciales.",
-      roles:["comercial","lider","direccion"], ready:true, path:()=>"comercial/plan100.html"},
+      /* Sin "comercial" a propósito: el encierro del rol comercial (comercialLock)
+         lo devuelve a su panel igual, y puedeVer ya no le mostraba la tarjeta. Si se
+         le quiere dar a una comercial, se le concede desde "Usuarios y accesos"
+         (modulos_extra), que el encierro sí respeta. */
+      roles:["lider","direccion"], ready:true, path:()=>"comercial/plan100.html"},
     {key:"rentabilidad", dept:"precios", cat:"Precios y Rentabilidad", ico:"📊", titulo:"Rentabilidad por rubro", desc:"Cuánto vende y cuánto deja cada tipo de cliente — farmacias, sanatorios, SAMCO, veterinarias, distribuidoras — y cuánto de ese margen se lo come el plazo de pago.", roles:["finanzas","direccion"], ready:true, path:()=>"comercial/rentabilidad.html"},
     {key:"config-precios", dept:"precios", cat:"Precios y Rentabilidad", ico:"⚙️", titulo:"Motor de precios", desc:"Reglas del motor por categoría: recargo, cortes, descuentos, IVA al costo y piso de margen. Las ofertas se crean en Oportunidades y Ofertas.", roles:["finanzas"], ready:true, path:()=>"comercial/config-precios.html"},
     /* EN PRUEBAS: Facturación (el puesto de Vanesa). La cola de pedidos por facturar
