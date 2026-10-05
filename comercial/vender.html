@@ -81,6 +81,11 @@
   .clirow .av{width:40px;height:40px;border-radius:10px;background:var(--agua);color:var(--teal-deep);font-weight:800;display:flex;align-items:center;justify-content:center;font-size:16px;flex:none}
   .clirow .nm{font-weight:700;font-size:15.5px;line-height:1.2}
   .clirow .sub{font-size:12px;color:var(--gris);margin-top:2px}
+  /* Contacto que NO se puede facturar (sin CUIT y/o sin condición fiscal de AFIP): el chip
+     lo separa de su gemelo bueno en el listado, para no cargarle el pedido al duplicado. */
+  .nofact{display:inline-block;margin-left:6px;padding:2px 9px;border-radius:20px;background:var(--badbg);color:var(--bad);font-size:10.5px;font-weight:800;vertical-align:middle;white-space:nowrap;cursor:help}
+  .clirow.nf{background:#FFFAF9;box-shadow:inset 3px 0 0 var(--bad)}
+  .clirow.nf:hover{background:#FDF1F0}
 
   /* ===== VENTA (catálogo + carrito) ===== */
   .sale{display:grid;grid-template-columns:1fr 380px;gap:16px;align-items:start}
@@ -98,6 +103,18 @@
   .eopt{justify-content:flex-start;text-align:left;gap:10px;padding:14px 16px}
   .eopt small{color:var(--gris);font-weight:500;font-size:12.5px}
   .eopt.eadd{border-style:dashed;color:var(--teal-deep)}
+  /* cartel y sugerencia de "cliente no facturable" (ver chipNoFact / avisarNoFacturable) */
+  .fiscbox{background:#FBE4E3;border:1px solid #F3B5B2;color:#8A2E2B;border-radius:12px;padding:12px 14px;font-size:13.5px;line-height:1.45}
+  .fiscbox b{font-weight:800}
+  .fisc-line{grid-column:1/-1;margin-bottom:12px}
+  .fisc-line:empty{display:none}   /* cliente facturable: el cartel no ocupa lugar */
+  .fisc-line .fiscbox{cursor:pointer}
+  .fisc-line .fiscbox:hover{filter:brightness(.985)}
+  .gem{margin-top:14px;border-top:1px solid var(--line);padding-top:13px}
+  .gem .gt{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--gris);margin-bottom:8px}
+  .gem .gq{font-size:13px;color:var(--gris);margin-top:8px}
+  .gem .eopt{border-color:#BFE0DC;background:#F4FAF9}
+  .gem-wait{font-size:13px;color:var(--gris2);margin-top:12px}
   /* selector de lista de precios (paso previo, tablet-friendly) */
   .lista-wrap{display:flex;flex-direction:column;gap:14px;margin-top:6px}
   .lista-opt{justify-content:flex-start;text-align:left;gap:16px;padding:24px 22px;font-size:19px;border-radius:16px;border-width:2px;min-height:72px}
@@ -385,6 +402,7 @@ let ST = {
   perfil:null, userId:null,
   cartera:[],                 // res.partner de la cartera del comercial
   riesgos:{},                 // partnerId -> alerta de crédito (motor compartido EYG.riesgoCartera)
+  fiscal:null,                // cliente del pedido abierto SIN CUIT/condición fiscal (no se le puede facturar)
   view:"inicio",              // inicio | picker | venta | success
   qCliente:"",
   // venta activa
@@ -493,7 +511,7 @@ async function cargar(){
       // CONTACTOS-persona de la empresa (a los que no se factura): la sucursal aparece en el paso
       // "¿a dónde entregás?" y las personas irán a la libreta de contactos de la ficha.
       rpc("res.partner","search_read",[[["user_id","=",ST.userId],["parent_id","=",false]]],
-        {fields:["id","name","property_product_pricelist","property_payment_term_id","city","vat",EYG.FANT], limit:0, context:ES}),
+        {fields:["id","name","property_product_pricelist","property_payment_term_id","city","vat",AFIP_FIELD,EYG.FANT], limit:0, context:ES}),
       rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["draft","sent"]]]],
         {fields:["id","name","partner_id","amount_total","order_line","write_date"], order:"write_date desc", limit:50}),
     ]);
@@ -661,6 +679,168 @@ async function doEliminarDraft(id){
   render();
 }
 
+/* ============================================================
+   ¿SE LE PUEDE FACTURAR A ESTE CLIENTE?
+   ============================================================
+   Para emitir la factura, Odoo necesita dos datos del cliente: el CUIT (vat) y la
+   CONDICIÓN FISCAL de AFIP (l10n_ar_afip_responsibility_type_id). De la condición sale
+   la LETRA del comprobante, así que sin ella no hay factura posible — ni A, ni B.
+
+   El caso que lo trajo (29/9/2026): el pedido 00011780 se cargó sobre el contacto 4122
+   "FARMACIA ALI", que no tenía ninguno de los dos, mientras el cliente de verdad era
+   otro contacto con el mismo nombre (CUIT 27-17258124-8, 27 facturas, cuenta corriente
+   abierta). El pedido quedó confirmado y con remito sobre el duplicado, y Facturación no
+   lo habría podido emitir: hubo que corregirlo a mano.
+
+   Los duplicados NO los crea el Core (al 4122 lo cargó una comercial en Odoo; al 4348,
+   el portal web). Lo que faltaba era que este selector los distinguiera: de eso se
+   ocupan el chip del listado y el cartel de abajo. No bloquea — Dirección decide —,
+   pero no pasa desapercibido.
+   ============================================================ */
+const AFIP_FIELD = "l10n_ar_afip_responsibility_type_id";
+/* Qué le falta a un contacto para poder facturarle. [] = se puede facturar. */
+function faltaFiscal(c){
+  const f=[];
+  if(!String((c&&c.vat)||"").trim()) f.push("CUIT");
+  if(!(c && c[AFIP_FIELD] && c[AFIP_FIELD][0])) f.push("condición fiscal");
+  return f;
+}
+const esFacturable = c => faltaFiscal(c).length===0;
+const faltaTxt = f => f.length>1 ? ("faltan "+f.slice(0,-1).join(", ")+" y "+f[f.length-1]) : ("falta "+f[0]);
+const AYUDA_FISCAL = "Sin CUIT y condición fiscal de AFIP no se puede emitir la factura: de la condición sale la letra del comprobante. El pedido se puede cargar, pero Facturación queda trabada.";
+/* Chip rojo al lado del nombre, en el listado de la cartera. */
+function chipNoFact(c){
+  const f=faltaFiscal(c); if(!f.length) return "";
+  return `<span class="nofact" title="${esc(AYUDA_FISCAL)}">⚠ no facturable · ${esc(faltaTxt(f))}</span>`;
+}
+
+/* ---------- el gemelo: otro contacto con el mismo nombre que SÍ se puede facturar ----------
+   Los duplicados son el mismo cartel escrito dos veces ("FARMACIA ALI" / "Farmacia Ali"),
+   así que se comparan normalizados (sin tildes, sin mayúsculas, sin ruido societario:
+   EYG.padNorm / EYG.padClave, los mismos del padrón). Se exige coincidencia EXACTA del
+   nombre normalizado o de la clave; una clave de una sola palabra genérica ("CENTRO",
+   "SAN") no alcanza, para no sugerir cualquier cosa. */
+const GEM_FIELDS = ["id","name","property_product_pricelist","property_payment_term_id","city","vat",AFIP_FIELD,"user_id",EYG.FANT];
+function mismoNombre(a, b){
+  const na=EYG.padNorm(a||""), nb=EYG.padNorm(b||"");
+  if(!na || !nb) return false;
+  if(na===nb) return true;
+  const ka=EYG.padClave(a||""), kb=EYG.padClave(b||"");
+  if(!ka || ka!==kb) return false;
+  return !(ka.split(" ").length===1 && EYG.PAD_GENERICO.has(ka));   // "CENTRO" solo no identifica a nadie
+}
+/* Nombres con los que se conoce a un contacto: el del CUIT y el cartel (nombre de fantasía). */
+const nombresDe = c => [ (c&&c.name)||"", EYG.fantasia(c) ].filter(Boolean);
+async function buscarGemelos(c){
+  const propios = nombresDe(c);
+  if(!propios.length) return [];
+  // Semillas para el ilike de Odoo: el nombre entero y su clave sin ruido ("FARMACIA ALI" → "ALI").
+  // (la clave de menos de 3 letras se descarta: "%AL%" traería medio padrón y no identifica a nadie)
+  const seeds=[]; propios.forEach(n=>{ const k=EYG.padClave(n); [n.trim(), k.length>=3?k:""].forEach(s=>{ if(s && !seeds.includes(s)) seeds.push(s); }); });
+  // Candidatos: activos, de nivel superior (clientes fiscales), con CUIT Y condición fiscal.
+  // El filtro fino (nombre igual, normalizado) se hace acá; el ilike solo acota la traída.
+  const base=[["active","=",true],["parent_id","=",false],["id","!=",c.id],["vat","!=",false],[AFIP_FIELD,"!=",false]];
+  const tandas = await Promise.all(seeds.slice(0,4).map((q,i)=>
+    rpc("res.partner","search_read",[base.concat(["|",["name","ilike",q],[EYG.FANT,"ilike",q]])],
+      {fields:GEM_FIELDS, limit:i?150:40, context:ES}).catch(()=>[])));
+  const visto=new Set(), out=[];
+  tandas.flat().forEach(x=>{
+    if(visto.has(x.id)) return; visto.add(x.id);
+    if(nombresDe(x).some(nx=>propios.some(np=>mismoNombre(np,nx)))) out.push(x);
+  });
+  return out.slice(0,3);
+}
+/* Peso del gemelo: cuántas facturas tiene y cuánto debe. Es lo que convence de que el
+   cliente de verdad es ese y no el duplicado recién nacido. */
+async function pesoDe(ids){
+  if(!ids.length) return {};
+  const P={}; ids.forEach(id=>P[id]={n:0, deuda:0});
+  const [cuentas, saldos] = await Promise.all([
+    // facturas emitidas de verdad (diario de ventas, asentadas): un contacto con historia no es un duplicado
+    Promise.all(ids.map(id=>rpc("account.move","search_count",
+      [[["partner_id","=",id],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],EYG.VENTA_REAL]]).catch(()=>0))),
+    rpc("res.partner","read",[ids,["total_due"]],{context:ES}).catch(()=>[]),
+  ]);
+  ids.forEach((id,i)=>{ P[id].n=cuentas[i]||0; });
+  (saldos||[]).forEach(p=>{ if(P[p.id]) P[p.id].deuda=p.total_due||0; });
+  return P;
+}
+/* ---------- el cartel ----------
+   modo "antes"   → todavía no hay pedido: se puede elegir otro cliente o cargar igual.
+   modo "abierto" → el pedido ya está abierto: informa cómo queda y qué conviene hacer. */
+function avisarNoFacturable(c, modo){
+  if(!c) return;
+  const f=faltaFiscal(c);
+  const detalle = f.length>1 ? "no tiene cargados <b>el CUIT</b> ni <b>la condición fiscal (AFIP)</b>"
+    : (f[0]==="CUIT" ? "no tiene cargado <b>el CUIT</b>" : "no tiene cargada <b>la condición fiscal (AFIP)</b>");
+  const pie = modo==="abierto"
+    ? "El pedido se puede seguir cargando, pero la factura queda pendiente de esos datos."
+    : "La venta se puede cargar igual —eso lo decide Dirección—, pero conviene resolverlo antes de confirmarla.";
+  modal(`<h3>⚠ A este cliente no se le puede facturar</h3>
+    <div class="fiscbox"><b>${esc(c.name||"Este contacto")}</b>${EYG.chipFant(c)} ${detalle}. Sin la condición fiscal, Odoo no puede resolver la letra del comprobante: Facturación no va a poder emitir ${modo==="abierto"?"este pedido":"la factura de esta venta"}.</div>
+    <div id="gemBox" class="gem-wait">Buscando si hay otro contacto con el mismo nombre…</div>
+    <p style="font-size:13px;color:#666;margin-top:13px">Los dos datos se completan en la ficha del cliente, desde Clientes en el panel. ${pie}</p>
+    <div class="mb">${modo==="abierto"
+      ? `<button class="btn ghost" onclick="cerrarModal()" style="flex:1">Entendido</button>`
+      : `<button class="btn ghost" onclick="cerrarModal()" style="flex:1" title="Vuelve al listado, con la búsqueda como estaba.">← Elegir otro cliente</button>
+         <button class="btn gold" onclick="cerrarModal();elegirCliente(${c.id},true)" style="flex:1" title="Carga la venta sobre este contacto igual. Queda sin poder facturarse hasta que la ficha tenga CUIT y condición fiscal.">Cargar igual</button>`}</div>`);
+  pintarGemelos(c, modo);
+}
+/* La búsqueda del gemelo no frena el cartel: el aviso sale al toque y esto lo completa cuando llega. */
+async function pintarGemelos(c, modo){
+  let gem=[], peso={};
+  try{ gem=await buscarGemelos(c); if(gem.length) peso=await pesoDe(gem.map(g=>g.id)); }catch(e){ gem=[]; }
+  const box=document.getElementById("gemBox"); if(!box) return;   // cerraron el cartel mientras buscaba
+  if(!gem.length){ box.innerHTML="No encontré otro contacto con este nombre al que sí se le pueda facturar."; return; }
+  ST._gem={}; gem.forEach(g=>{ ST._gem[g.id]=g; });
+  box.className="gem";
+  const filas=gem.map(g=>{
+    const p=peso[g.id]||{n:0,deuda:0};
+    const det=[ g.vat?("CUIT "+g.vat):"", p.n?(p.n+" factura"+(p.n===1?"":"s")):"",
+                p.deuda>0?(money(p.deuda)+" de cuenta corriente"):"", g.city||"",
+                (g.user_id&&g.user_id[1])?("cartera de "+g.user_id[1]):"" ].filter(Boolean).join(" · ");
+    const cuerpo=`✅ <span><b>${esc(g.name||"")}</b>${EYG.chipFant(g)}${det?`<br><small>${esc(det)}</small>`:""}</span>`;
+    return modo==="abierto"
+      ? `<div class="btn ghost eopt" style="cursor:default" title="Este contacto tiene CUIT y condición fiscal, así que se le puede facturar.">${cuerpo}</div>`
+      : `<button class="btn ghost eopt" onclick="usarGemelo(${g.id})" title="Este contacto tiene CUIT y condición fiscal. Tocá para cargar la venta sobre él.">${cuerpo}</button>`;
+  }).join("");
+  box.innerHTML=`<div class="gt">${gem.length===1?"Hay otro contacto con el mismo nombre, y a ese sí se le puede facturar"
+                                                :"Hay otros contactos con el mismo nombre a los que sí se les puede facturar"}</div>
+    <div class="eopts" style="margin-top:0">${filas}</div>
+    <div class="gq">${gem.length===1?"¿No es ese el cliente?":"¿No es alguno de ellos el cliente?"}${modo==="abierto"?" Si lo es, conviene cargar el pedido de nuevo sobre él.":""}</div>`;
+}
+/* El gemelo puede no estar en la cartera del comercial (lo atiende otro, o quedó sin asignar):
+   lo sumamos a ST.cartera para que el resto del flujo —lista, plazo, entrega— lo encuentre.
+   El pedido se crea igual con el user_id del comercial logueado (ver crearOrden). */
+function usarGemelo(id){
+  const g=(ST._gem||{})[id]; if(!g) return;
+  cerrarModal();
+  if(!ST.cartera.some(x=>x.id===g.id)){
+    ST.cartera.push(g);
+    ST.cartera.sort((a,b)=>(a.name||"").localeCompare(b.name||""));
+  }
+  elegirCliente(g.id);
+}
+
+/* ---------- el mismo aviso, con el pedido ya abierto ----------
+   Se lee del cliente del pedido (y no se hereda del picker) para que valga igual al RETOMAR un
+   presupuesto: el pedido 00011780 ya estaba cargado cuando se descubrió que el contacto no servía. */
+async function cargarFiscal(){
+  ST.fiscal=null; pintarFiscal();
+  const pid=ST.order&&ST.order.partnerId; if(!pid) return;
+  try{
+    const [p]=await rpc("res.partner","read",[[pid],["id","name","vat",AFIP_FIELD,EYG.FANT]],{context:ES});
+    if(p && !esFacturable(p)) ST.fiscal=p;
+  }catch(e){}
+  pintarFiscal();
+}
+function fiscalHTML(){
+  const p=ST.fiscal; if(!p) return "";
+  return `<div class="fiscbox" onclick="avisarNoFacturable(ST.fiscal,'abierto')"
+    title="${esc(AYUDA_FISCAL)} Tocá para ver el detalle y los contactos con el mismo nombre.">⚠ <b>A este cliente todavía no se le puede facturar:</b> ${esc(faltaTxt(faltaFiscal(p)))}. El pedido se carga igual, pero Facturación no va a poder emitirlo. <u>Ver detalle</u></div>`;
+}
+function pintarFiscal(){ const el=document.getElementById("fiscWarn"); if(el) el.innerHTML=fiscalHTML(); }
+
 /* ---------- PICKER de cliente ---------- */
 function abrirPicker(){ ST.view="picker"; ST.qCliente=""; render(); }
 window.buscarCliente = EYG.buscador(v=>{ ST.qCliente=v; renderCliList(); });
@@ -683,9 +863,11 @@ function renderCliList(){
     const lst = c.property_product_pricelist ? c.property_product_pricelist[1] : "";
     const sub=[c.city, lst].filter(Boolean).join(" · ");
     const rb = EYG.badgeRiesgo(ST.riesgos[c.id]&&ST.riesgos[c.id].nivel);
-    return `<div class="clirow" onclick="elegirCliente(${c.id})">
+    const nf = faltaFiscal(c);     // sin CUIT y/o sin condición fiscal: a este contacto no se le puede facturar
+    const ttl = nf.length ? AYUDA_FISCAL : ("Cargar una venta a "+(c.name||"este cliente"));
+    return `<div class="clirow ${nf.length?"nf":""}" onclick="elegirCliente(${c.id})" title="${esc(ttl)}">
       <div class="av">${esc(ini(c.name))}</div>
-      <div><div class="nm">${esc(c.name||"")}${EYG.chipFant(c)} ${rb}</div>${sub?`<div class="sub">${esc(sub)}</div>`:""}</div>
+      <div><div class="nm">${esc(c.name||"")}${EYG.chipFant(c)} ${rb} ${chipNoFact(c)}</div>${sub?`<div class="sub">${esc(sub)}</div>`:""}</div>
     </div>`;
   }).join("");
 }
@@ -693,8 +875,10 @@ function renderCliList(){
 /* ============================================================
    ABRIR / CREAR la venta (presupuesto borrador en Odoo)
    ============================================================ */
-async function elegirCliente(pid){
+async function elegirCliente(pid, yaAvisado){
   const c = ST.cartera.find(x=>x.id===pid); if(!c) return;
+  // Freno (no bloqueo) si al contacto no se le puede facturar: cartel, y el gemelo bueno si existe.
+  if(!yaAvisado && !esFacturable(c)){ avisarNoFacturable(c, "antes"); return; }
   // ¿el cliente tiene direcciones de entrega propias (sucursales)? Odoo NO las asigna solo al crear
   // el pedido sobre la central, así que las resolvemos acá.
   document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Abriendo cliente…</div>';
@@ -959,6 +1143,7 @@ async function entrarVenta(){
   ST.ocFiles=[];
   render();
   if(esTier2()) cargarMaxDescT2();   // tope de descuento comercial según el piso de margen
+  cargarFiscal();           // ¿se le puede facturar a este cliente? (cartel en el encabezado, no frena nada)
   cargarOfertas();          // en paralelo: marca los productos en oferta (no bloquea el catálogo)
   ocCargar().then(()=>{ if(ST.view==="venta") renderCart(); });   // OC ya adjuntas (al reanudar)
   await cargarCatalogo();
@@ -1648,6 +1833,7 @@ function vVenta(){
         <button class="btn ghost" onclick="irAlPanel()">🏠 Panel</button>
       </div>
     </div>
+    <div class="fisc-line" id="fiscWarn">${fiscalHTML()}</div>
     ${(function(){const r=ST.riesgos[o.partnerId]; if(!r||!r.nivel||r.nivel==="ok")return""; const alto=r.nivel==="alto";
       return `<div style="grid-column:1/-1;background:${alto?'#FBE4E3':'#FBF0DA'};border:1px solid ${alto?'#F3B5B2':'#EAD6A6'};color:${alto?'#8A2E2B':'#7A5B12'};border-radius:12px;padding:11px 14px;margin-bottom:12px;font-size:13.5px">⚠ ${alto?'<b>Riesgo de pago — no ofrecer plazos.</b>':'<b>Atención:</b> este cliente tiene deuda vencida.'}${r.motivo?` · <span>${esc(r.motivo)}</span>`:''}</div>`;})()}
 
