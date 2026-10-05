@@ -95,6 +95,11 @@
   .chip{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:800;border-radius:20px;padding:2.5px 8px;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap}
   .c-ok{background:var(--okbg);color:var(--ok)} .c-warn{background:var(--warnbg);color:var(--warn)}
   .c-bad{background:var(--badbg);color:var(--bad)} .c-gris{background:#EEF2F2;color:var(--gris)}
+  .fbar{display:flex;flex-wrap:wrap;gap:7px;margin:2px 2px 12px}
+  .fchip{font-family:inherit;font-size:12px;font-weight:700;color:var(--gris);background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:5px 12px;cursor:pointer;white-space:nowrap;transition:.12s;user-select:none}
+  .fchip:hover{border-color:var(--teal);color:var(--teal-deep)}
+  .fchip.on{background:var(--teal);color:#fff;border-color:var(--teal)}
+  .fchip b{font-weight:800;opacity:.85;margin-left:1px}
   .c-teal{background:var(--agua);color:var(--teal-deep)} .c-oro{background:#FBF0DA;color:#8a5a00}
   /* aviso de lo que el módulo está ocultando a propósito (sin stock / ya no aplica) */
   .ocultas{font-size:12px;color:var(--gris);background:#F7FAFA;border:1px dashed var(--line);border-radius:9px;padding:8px 12px;margin-bottom:8px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
@@ -266,6 +271,7 @@ async function cargarReglasMotor(){
   });
 }
 let FOCO="";      // KPI seleccionado: "" | "perdida" | "ofertas" | "costo" | "stock" | "agotadas"
+let STOCK_FILT="";   // filtro por motivo en "por stock": "" | "liq" | "vence" | "muerto" | "clavado" | "discontinuada" | "sobre"
 let VER_OCULTAS=false;   // mostrar las oportunidades que el módulo filtra (sin stock / ya no aplican)
 let STOCK_MAX=5, STOCK_DESC={vence:0.25,sobre:0.15,muerto:0.20};   // config del módulo (Configuración)
 
@@ -524,6 +530,23 @@ function vigente(o){ return (!o.hasta || o.hasta>=hoy()); }
    el que importa: ofertas que se están vendiendo POR DEBAJO DEL COSTO. Cada uno filtra la
    vista al tocarlo (se toca de nuevo y se saca el filtro). */
 window.setFoco=k=>{ FOCO=(FOCO===k?"":k); render(); };
+window.setStockFilt=k=>{ STOCK_FILT=(STOCK_FILT===k?"":k); render(); };
+const stockFiltOK=o=> STOCK_FILT===""?true : STOCK_FILT==="liq"?!!o.liquidar : o.motivo===STOCK_FILT;
+/* barra de chips para filtrar "por stock" por motivo (base = ya filtrada por el buscador) */
+function chipsStock(base){
+  const c={liq:0,vence:0,muerto:0,clavado:0,discontinuada:0,sobre:0};
+  for(const o of base){ if(o.liquidar)c.liq++; if(c[o.motivo]!=null)c[o.motivo]++; }
+  const chip=(k,txt)=>`<span class="fchip ${STOCK_FILT===k?"on":""}" onclick="setStockFilt('${k}')">${txt}${k?` <b>${k==="liq"?c.liq:(c[k]||0)}</b>`:""}</span>`;
+  return `<div class="fbar">
+    ${chip("","Todos")}
+    ${chip("liq","🔴 Liquidar (casi al costo)")}
+    ${chip("vence","Por vencer")}
+    ${chip("muerto","Muerto")}
+    ${chip("clavado","Clavado")}
+    ${chip("discontinuada","Marca discontinuada")}
+    ${chip("sobre","🟡 Sobrestock")}
+  </div>`;
+}
 function kpi(k,label,n,sub,cls){
   return `<button class="kpi ${cls||""} ${FOCO===k?"on":""}" onclick="setFoco('${k}')" title="Tocá para ver sólo esto.">
     <span class="l">${label}</span><div class="n">${n}</div><div class="s">${sub}</div></button>`;
@@ -730,8 +753,8 @@ function render(){
   const rules=rulesT.filter(qRegla).filter(fRg);
   const nOf=combos.length+singles.length+rules.length, nOfT=combosT.length+singlesT.length+rulesT.length;
   const opos=opoOK.filter(qOpo), arch=archOK.filter(qOpo);
-  const oStock=stkAll.filter(qOpo), oStockArch=stkArch.filter(qOpo);
-  const nHit=opos.length+arch.length+oStock.length+oStockArch.length+nOf;
+  const oStockBase=stkAll.filter(qOpo), oStock=oStockBase.filter(stockFiltOK), oStockArch=stkArch.filter(qOpo);
+  const nHit=opos.length+arch.length+oStockBase.length+oStockArch.length+nOf;
   // ---- sección: oportunidades por costo ----
   const nSinStock=ocultasCosto.filter(o=>!(o.stock>0)).length, nSubio=ocultasCosto.length-nSinStock;
   const porQue=[nSinStock?(nSinStock+" sin stock"):"", nSubio?(nSubio+" en las que el costo volvió a subir"):""].filter(Boolean).join(" y ");
@@ -752,8 +775,8 @@ function render(){
   // ---- sección: oportunidades por stock ----
   const osBody = (stockLoading
       ? `<div class="empty"><div class="spin" style="margin:6px auto 12px"></div>Buscando oportunidades en el stock…</div>`
-      : (oStock.length ? `<div class="lista">${oStock.map(o=>filaOpoStock(o,false)+edIn("stk:"+o.id)).join("")}</div>`
-        : vacio("No hay oportunidades de stock ahora. Se recalculan solas con stock, precios y vencimientos.")))
+      : chipsStock(oStockBase) + (oStock.length ? `<div class="lista">${oStock.map(o=>filaOpoStock(o,false)+edIn("stk:"+o.id)).join("")}</div>`
+        : vacio(oStockBase.length?"Nada con este filtro. Probá otro o tocá <b>Todos</b>.":"No hay oportunidades de stock ahora. Se recalculan solas con stock, precios y vencimientos.")))
     + (oStockArch.length?`<div class="subsec">📥 Archivadas (${cnt(oStockArch.length,stkArch.length)})</div><div class="lista">${oStockArch.map(o=>filaOpoStock(o,true)+edIn("stk:"+o.id)).join("")}</div>`:"");
   // ---- sección: ofertas y descuentos ----
   const editor = edIn("ofertas");
