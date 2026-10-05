@@ -495,6 +495,7 @@ window.EYGHome = (function(){
     ${fila("cols",[
       tarjeta("dz-nov","📣 Novedades"),
       V.ventas?tarjeta("dz-act","⚡ Últimos pedidos"):"" ])}
+    ${V.ventas?fila("cols",[tarjeta("dz-ofe","🎯 Ofertas"),""]):""}
     ${fila("cols",[
       V.ventas?tarjeta("dz-prod","🏆 Productos del mes"):"",
       V.ventas?tarjeta("dz-top",V.equipo?"🎯 Equipo comercial":"🏬 Clientes del mes"):"" ])}
@@ -542,7 +543,7 @@ window.EYGHome = (function(){
   /* Ámbito personal irresoluble: dejamos las novedades y los accesos (no dependen
      del usuario) y explicamos por qué no hay números, en vez de mostrar los de todos. */
   function sinAmbito(){
-    ["dz-kpi","dz-evo","dz-cob","dz-stk","dz-cli","dz-prod","dz-top"].forEach(id=>{
+    ["dz-kpi","dz-evo","dz-cob","dz-stk","dz-cli","dz-prod","dz-top","dz-ofe"].forEach(id=>{
       const el=document.getElementById(id); if(!el) return;
       el.innerHTML=`<div class="nodata" style="padding:26px 14px;line-height:1.6">Tus métricas van a aparecer acá en cuanto tu usuario quede vinculado a tu vendedor de Odoo.<br><span style="font-size:11.5px">Mientras tanto no mostramos números para no confundir los tuyos con los de toda la droguería.</span></div>`;
       el.classList.add("cx");
@@ -1536,6 +1537,7 @@ window.EYGHome = (function(){
       cargarProductos().catch(e=>fail("dz-prod",e,"los productos"));
       (V.equipo?cargarEquipo():cargarTopClientes()).catch(e=>fail("dz-top",e,"el ranking"));
     }
+    if(V.ventas) cargarOfertas().catch(e=>fail("dz-ofe",e,"las ofertas"));
     cargarNovedades().catch(e=>fail("dz-nov",e,"las novedades"));
   }
 
@@ -1627,6 +1629,87 @@ window.EYGHome = (function(){
     {f:"2026-07-28", ic:"⚙️", t:"Configuración de precios", d:"Las reglas del sincronizador ahora se editan por categoría: recargo, cortes por cantidad, IVA al costo y piso de margen."},
     {f:"2026-07-25", ic:"💡", t:"Oportunidades y Ofertas", d:"Cuando baja un costo, el sistema detecta la oportunidad y podés publicar la oferta o armar un combo para los comerciales."},
   ];
+
+  /* ===== OFERTAS: qué mandamos y qué se compró =====
+     Resumen de los últimos 30 días. El detalle por oferta y por farmacia está
+     en Oportunidades y Ofertas; acá sólo el embudo, que es lo que se mira de
+     reojo: enviadas → llegaron → la abrieron → compraron.
+     Los envíos salen de la tabla eyg_ofertas_envios (Supabase) y la compra se
+     busca en Odoo: pedido CONFIRMADO de ese producto, de esa farmacia,
+     posterior al envío. Un presupuesto no cuenta. */
+  async function cargarOfertas(){
+    const desde = addD(HOY,-30);
+    const {data,error} = await EYG.supa().from("eyg_ofertas_envios")
+      .select("dia,partner_id,farmacia,producto_id,producto,estado")
+      .gte("dia",desde).order("dia",{ascending:false}).limit(3000);
+    if(error) throw new Error(error.message);
+    const env = data||[];
+    if(!env.length){
+      put("dz-ofe",`
+        <div class="cx-h"><h2>🎯 Ofertas</h2>${linkOfertas()}</div>
+        <div class="big-l">Últimos 30 días</div>
+        <div style="margin-top:10px;font-size:13px;color:var(--gris2)">No se mandó ninguna oferta en este período.</div>`);
+      return;
+    }
+    const partners=[...new Set(env.map(e=>e.partner_id).filter(Boolean))];
+    const prods=[...new Set(env.map(e=>e.producto_id).filter(Boolean))];
+    /* Las hijas: la venta puede salir a una dirección de entrega y se le imputa
+       igual a la farmacia que recibió la oferta. */
+    const hijas = partners.length ? await rpc("res.partner","search_read",
+      [[["parent_id","in",partners]]],Object.assign({fields:["id","parent_id"],limit:0},CTX)).catch(()=>[]) : [];
+    const padre=new Map(partners.map(p=>[p,p]));
+    (hijas||[]).forEach(h=>padre.set(h.id,h.parent_id[0]));
+    const lineas = prods.length ? await rpc("sale.order.line","search_read",
+      [[["order_partner_id","in",[...padre.keys()]],["product_id","in",prods],
+        ["state","in",["sale","done"]],["order_id.date_order",">=",uDesde(desde)]]],
+      Object.assign({fields:["order_id","order_partner_id","product_id","product_uom_qty","price_subtotal"],limit:0},CTX)).catch(()=>[]) : [];
+    const ords=[...new Set((lineas||[]).map(l=>l.order_id[0]))];
+    const cab=ords.length?(await rpc("sale.order","read",[ords,["date_order"]],CTX).catch(()=>[])):[];
+    const fecha=new Map((cab||[]).map(o=>[o.id,String(o.date_order).slice(0,10)]));
+    const compras=new Map();
+    (lineas||[]).forEach(l=>{
+      const f=padre.get(l.order_partner_id[0])||l.order_partner_id[0];
+      const k=f+"|"+l.product_id[0];
+      if(!compras.has(k)) compras.set(k,[]);
+      compras.get(k).push({cuando:fecha.get(l.order_id[0])||"",cant:l.product_uom_qty||0,plata:l.price_subtotal||0});
+    });
+
+    const llego=e=>["delivered","read","sent","outgoing"].indexOf(String(e.estado||"").toLowerCase())>=0;
+    let lleg=0, leid=0, vend=0, plata=0;
+    const porOferta=new Map();
+    env.forEach(e=>{
+      if(e.estado&&llego(e)){ lleg++; if(String(e.estado).toLowerCase()==="read") leid++; }
+      const post=(compras.get(e.partner_id+"|"+e.producto_id)||[]).filter(c=>c.cuando>=e.dia);
+      const k=String(e.producto||"").split("—")[0].trim();
+      if(!porOferta.has(k)) porOferta.set(k,{env:0,ven:0,plata:0});
+      const g=porOferta.get(k); g.env++;
+      if(post.length){ vend++; const pl=post.reduce((a,b)=>a+b.plata,0); plata+=pl; g.ven++; g.plata+=pl; }
+    });
+    const top=[...porOferta.entries()].filter(x=>x[1].ven).sort((a,b)=>b[1].plata-a[1].plata).slice(0,3);
+    const pct = env.length?Math.round(100*vend/env.length):0;
+
+    put("dz-ofe",`
+      <div class="cx-h"><h2>🎯 Ofertas</h2>${linkOfertas()}</div>
+      <div class="big-l">Enviadas en los últimos 30 días</div>
+      <div class="big-n" data-to="${env.length}" data-fmt="ent">0</div>
+      <div style="margin-top:12px">
+        <div class="lv"><span class="n">📬 Llegaron</span><span class="v">${lleg?ent(lleg):"sin dato"}</span></div>
+        <div class="lv"><span class="n">👀 La abrieron</span><span class="v">${lleg?(ent(leid)+" · "+Math.round(100*leid/lleg)+"%"):"sin dato"}</span></div>
+        <div class="lv"><span class="n">🛒 Compraron</span><span class="v ${vend?"ok":""}">${ent(vend)} · ${pct}%</span></div>
+        <div class="lv"><span class="n">💵 Facturado</span><span class="v ${plata?"ok":""}">${M(plata)}</span></div>
+      </div>
+      <div style="margin-top:11px"><div class="big-l">Compraron ${pct}% de las que recibieron la oferta</div>
+        <div class="pbar"><i style="width:${Math.min(pct,100)}%"></i></div></div>
+      ${top.length?`<div style="margin-top:13px"><div class="big-l">Las que se vendieron</div>${top.map(([n,g])=>
+        `<div class="lv"><span class="n" style="font-weight:700;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:62%">${esc(n)}</span><span class="v ok">${mc(g.plata)}<span style="font-weight:600;color:var(--gris2);font-size:11px"> · ${g.ven}/${g.env}</span></span></div>`).join("")}</div>`
+        :`<div style="margin-top:13px;font-size:12.5px;color:var(--gris2)">Todavía no compró ninguna${lleg&&leid?". Las abren, así que el problema no es que no lleguen":""}.</div>`}`);
+  }
+  /* El enlace sólo si la persona puede entrar al módulo. */
+  function linkOfertas(){
+    return EYG.MODULOS.some(m=>m.key==="oportunidades"&&EYG.puedeVer(m,P))
+      ? `<a class="more" href="${abs("inventario/oportunidades.html")}">Ver todo →</a>` : "";
+  }
+
   async function cargarNovedades(){
     let ofertas=[], opos=0;
     try{ ofertas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas"])||"[]"); }catch(e){}

@@ -28,8 +28,27 @@
   h2.sec{font-size:16px;font-weight:800;margin:22px 2px 12px;display:flex;align-items:center;gap:9px}
   h2.sec .n{background:var(--teal);color:#fff;font-size:12px;font-weight:800;border-radius:20px;padding:2px 9px}
   /* ===== PANEL DE MÉTRICAS (mismo patrón que Facturación/Pendientes) ===== */
-  .kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:9px;margin-bottom:14px}
+  .kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:9px;margin-bottom:14px}
+  @media(max-width:1300px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
   @media(max-width:1000px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  /* ---- rendimiento de las ofertas (se despliega, no vive en la pantalla) ---- */
+  .kpi.rend{border-color:#bcd9d4;background:linear-gradient(180deg,#f3fbf9,#fff)}
+  .rend-res{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:16px}
+  @media(max-width:1100px){.rend-res{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media(max-width:700px){.rend-res{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .rend-t{background:var(--agua);border:1px solid var(--line);border-radius:12px;padding:12px 13px}
+  .rend-t .l{font-size:10.5px;font-weight:800;letter-spacing:.3px;color:var(--gris2);text-transform:uppercase}
+  .rend-t .n{font-size:25px;font-weight:800;color:var(--teal);line-height:1.15;margin-top:3px}
+  .rend-t .s{font-size:11.5px;color:var(--gris2);margin-top:2px}
+  .rend-tabla{width:100%;border-collapse:collapse;font-size:13px}
+  .rend-tabla th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;color:var(--gris2);padding:7px 8px;border-bottom:1px solid var(--line)}
+  .rend-tabla td{padding:9px 8px;border-bottom:1px solid #eef2f1;vertical-align:top}
+  .rend-tabla tr.cero td{color:var(--gris2)}
+  .rend-tabla td.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+  /* La barra dice de un vistazo qué proporción compró: el número solo no se lee. */
+  .rend-bar{height:6px;border-radius:4px;background:#e8eeec;overflow:hidden;margin-top:5px;min-width:70px}
+  .rend-bar>i{display:block;height:100%;background:var(--teal);border-radius:4px}
+  .rend-quien{font-size:11.5px;color:var(--gris2);margin-top:4px;line-height:1.45}
   .kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:11px 13px;box-shadow:var(--shadow);text-align:left;font-family:inherit;cursor:pointer;transition:transform .12s,box-shadow .12s;position:relative;min-width:0}
   .kpi:hover{transform:translateY(-2px);box-shadow:0 4px 8px rgba(6,65,62,.09),0 12px 30px rgba(6,65,62,.10)}
   .kpi.on{border-color:var(--teal);box-shadow:0 0 0 2px var(--agua)}
@@ -510,6 +529,165 @@ function kpi(k,label,n,sub,cls){
     <span class="l">${label}</span><div class="n">${n}</div><div class="s">${sub}</div></button>`;
 }
 
+
+/* ===== RENDIMIENTO DE LAS OFERTAS =====
+   Qué mandamos, a quién llegó, y qué se terminó vendiendo. Vive detrás de una
+   tarjeta y no suelto en la pantalla: el detalle es mucho dato y esta pantalla
+   ya tiene tres secciones.
+   De dónde sale cada número:
+     · ENVIADAS  → tabla eyg_ofertas_envios de Supabase, una fila por farmacia
+       + producto + día. La escribe el envío de placas por WhatsApp.
+     · LLEGARON  → el estado que devolvió Meta, guardado en ese mismo registro.
+       "Enviada" no es "llegó": un número sin WhatsApp rebota y hay que verlo.
+     · COMPRARON → hay un PEDIDO CONFIRMADO de ese producto, de esa farmacia,
+       posterior al envío. Un presupuesto no cuenta. Se mira también en las
+       direcciones de entrega, porque la factura puede salir a cualquiera.
+   Se carga en segunda ola, cuando la pantalla ya se dibujó, para no demorarla. */
+let REND=null, RENDCargando=false, RENDError="", RENDDias=30, RENDAbierto=false;
+
+function kpiRendimiento(){
+  const n = REND ? (REND.vendidas+"/"+REND.enviadas) : (RENDError?"—":"…");
+  const sub= REND ? (REND.enviadas? (Math.round(100*REND.vendidas/REND.enviadas)+"% compró · "+money(REND.facturado))
+                                  : "todavía no se mandó ninguna")
+                  : (RENDError || "midiendo…");
+  return '<button class="kpi rend" onclick="abrirRendimiento()" title="Tocá para ver el detalle: qué se mandó, a quién llegó y quién compró.">'+
+    '<span class="l">🎯 Ofertas que se compran</span><div class="n">'+n+'</div><div class="s">'+esc(sub)+'</div></button>';
+}
+
+async function cargarRendimiento(dias){
+  if(RENDCargando) return;
+  RENDCargando=true; RENDError="";
+  try{
+    const desde=new Date(Date.now()-(dias||RENDDias)*86400000).toISOString().slice(0,10);
+    const {data,error}=await EYG.supa().from("eyg_ofertas_envios")
+      .select("enviado_el,dia,partner_id,farmacia,producto_id,producto,precio,origen,comercial,estado")
+      .gte("dia",desde).order("enviado_el",{ascending:false}).limit(5000);
+    if(error) throw new Error(error.message);
+    REND=await cruzarConVentas(data||[],desde);
+    REND.desde=desde;
+  }catch(e){
+    RENDError="no se pudo leer el registro";
+    console.error("rendimiento de ofertas:",e);
+  }
+  RENDCargando=false;
+  render();
+  if(RENDAbierto) pintarRendimiento();
+}
+
+/* Cruce contra las ventas: UNA consulta de líneas para todos los envíos del
+   período. Pedir producto por producto sería una vuelta a Odoo por oferta. */
+async function cruzarConVentas(envios,desde){
+  const vacioR={enviados:[],porOferta:[],enviadas:0,entregadas:0,rebotadas:0,vendidas:0,facturado:0,unidades:0,farmacias:0};
+  if(!envios.length) return vacioR;
+  const partners=[...new Set(envios.map(e=>e.partner_id).filter(Boolean))];
+  const prods=[...new Set(envios.map(e=>e.producto_id).filter(Boolean))];
+  if(!partners.length||!prods.length) return Object.assign({},vacioR,{enviados:envios,enviadas:envios.length});
+  /* Las hijas: la venta puede salir a una dirección de entrega y se imputa a
+     la misma farmacia, igual que en el plan 100x100. */
+  const hijas=await EYG.rpc("res.partner","search_read",[[["parent_id","in",partners]]],
+    {fields:["id","parent_id"],limit:0,context:{active_test:false}}).catch(()=>[]);
+  const padre=new Map(partners.map(p=>[p,p]));
+  (hijas||[]).forEach(h=>padre.set(h.id,h.parent_id[0]));
+  const lineas=await EYG.rpc("sale.order.line","search_read",
+    [[["order_partner_id","in",[...padre.keys()]],["product_id","in",prods],
+      ["state","in",["sale","done"]],["order_id.date_order",">=",desde+" 00:00:00"]]],
+    {fields:["order_id","order_partner_id","product_id","product_uom_qty","price_subtotal"],limit:0}).catch(()=>[]);
+  const ords=[...new Set((lineas||[]).map(l=>l.order_id[0]))];
+  const cab=ords.length?(await EYG.rpc("sale.order","read",[ords,["date_order","name"]]).catch(()=>[])):[];
+  const fecha=new Map((cab||[]).map(o=>[o.id,o.date_order]));
+  const compras=new Map();
+  (lineas||[]).forEach(l=>{
+    const f=padre.get(l.order_partner_id[0])||l.order_partner_id[0];
+    const k=f+"|"+l.product_id[0];
+    if(!compras.has(k)) compras.set(k,[]);
+    compras.get(k).push({cuando:String(fecha.get(l.order_id[0])||"").slice(0,10),pedido:l.order_id[1],
+      cant:l.product_uom_qty||0,plata:l.price_subtotal||0});
+  });
+
+  const porOferta=new Map();
+  let vendidas=0,facturado=0,unidades=0,entregadas=0,rebotadas=0,leidas=0;
+  const llego=e=>["delivered","read","sent","outgoing"].indexOf(String(e.estado||"").toLowerCase())>=0;
+  envios.forEach(e=>{
+    const post=(compras.get(e.partner_id+"|"+e.producto_id)||[]).filter(c=>c.cuando>=e.dia);
+    e._compro=post.length>0;
+    e._plata=post.reduce((a,b)=>a+b.plata,0);
+    e._un=post.reduce((a,b)=>a+b.cant,0);
+    if(e.estado){ llego(e)?entregadas++:rebotadas++; if(String(e.estado).toLowerCase()==="read") leidas++; }
+    const k=e.producto;
+    if(!porOferta.has(k)) porOferta.set(k,{producto:k,producto_id:e.producto_id,env:0,ven:0,plata:0,un:0,quien:[],desde:e.dia,hasta:e.dia});
+    const g=porOferta.get(k);
+    g.env++; if(e.dia<g.desde)g.desde=e.dia; if(e.dia>g.hasta)g.hasta=e.dia;
+    if(e._compro){ g.ven++; g.plata+=e._plata; g.un+=e._un; g.quien.push(e.farmacia); vendidas++; facturado+=e._plata; unidades+=e._un; }
+  });
+  return {
+    enviados:envios, porOferta:[...porOferta.values()].sort((a,b)=>b.ven-a.ven||b.env-a.env),
+    enviadas:envios.length, entregadas:entregadas, rebotadas:rebotadas, leidas:leidas, vendidas:vendidas,
+    facturado:facturado, unidades:unidades, farmacias:new Set(envios.map(e=>e.partner_id)).size,
+  };
+}
+
+window.abrirRendimiento=()=>{ RENDAbierto=true; pintarRendimiento(); if(!REND&&!RENDCargando) cargarRendimiento(); };
+window.cerrarRendimiento=()=>{ RENDAbierto=false; cerrarModal(); };
+window.rendPeriodo=d=>{ RENDDias=+d; REND=null; pintarRendimiento(); cargarRendimiento(+d); };
+
+function pintarRendimiento(){
+  const R=REND;
+  const cuerpo = !R
+    ? '<div class="empty">'+(RENDError?("No se pudo leer el registro de envíos ("+esc(RENDError)+"). Probá recargar la pantalla."):"Midiendo qué se vendió de lo que mandamos…")+'</div>'
+    : !R.enviadas
+      ? '<div class="empty">No se mandó ninguna oferta en este período.</div>'
+      : (
+    '<div class="rend-res">'+
+      '<div class="rend-t"><div class="l">Enviadas</div><div class="n">'+R.enviadas+'</div>'+
+        '<div class="s">a '+R.farmacias+' farmacia'+(R.farmacias===1?"":"s")+'</div></div>'+
+      /* Sin acuse no se inventa un número: "enviada" no es "llegó", y un cero
+         ahí se leería como que no llegó ninguna. */
+      '<div class="rend-t"><div class="l">Llegaron</div><div class="n">'+((R.entregadas+R.rebotadas)?R.entregadas:"sin dato")+'</div>'+
+        '<div class="s">'+((R.entregadas+R.rebotadas)
+          ? (function(){
+              /* No decir "todas" si de algunas no tenemos el acuse: el envío
+                 queda registrado igual, pero Meta no siempre devuelve estado. */
+              const sin=R.enviadas-(R.entregadas+R.rebotadas), p=[];
+              if(R.rebotadas) p.push(R.rebotadas+" rebotaron: ese número no recibe WhatsApp");
+              if(sin) p.push(sin+" sin acuse registrado");
+              return p.length?p.join(" · "):"todas con acuse de WhatsApp";
+            })()
+          : "estos envíos quedaron registrados sin el acuse de Meta")+'</div></div>'+
+      /* La abrieron: es el dato que separa 'no les llegó' de 'no les
+         interesó'. Meta lo marca como 'read'. */
+      '<div class="rend-t"><div class="l">La abrieron</div><div class="n">'+(R.leidas||(R.entregadas?"0":"sin dato"))+'</div>'+
+        '<div class="s">'+(R.entregadas?(Math.round(100*R.leidas/Math.max(R.entregadas,1))+'% de las que llegaron'):'Meta avisa cuando la abren')+'</div></div>'+
+      '<div class="rend-t"><div class="l">Compraron</div><div class="n">'+R.vendidas+'</div>'+
+        '<div class="s">'+(R.enviadas?Math.round(100*R.vendidas/R.enviadas):0)+'% de las enviadas · '+Math.round(R.unidades)+' unidades</div></div>'+
+      '<div class="rend-t"><div class="l">Facturado</div><div class="n">'+money(R.facturado)+'</div>'+
+        '<div class="s">neto, sin IVA</div></div>'+
+    '</div>'+
+    '<table class="rend-tabla"><thead><tr><th>Oferta</th><th class="num">Enviadas</th><th class="num">Compraron</th><th class="num">Unidades</th><th class="num">Facturado</th></tr></thead><tbody>'+
+    R.porOferta.map(g=>
+      '<tr class="'+(g.ven?"":"cero")+'">'+
+      '<td><b>'+esc(String(g.producto).split("—")[0].trim().slice(0,56))+'</b>'+
+        '<div class="rend-bar"><i style="width:'+(g.env?Math.round(100*g.ven/g.env):0)+'%"></i></div>'+
+        (g.quien.length?('<div class="rend-quien">Compraron: '+esc(g.quien.slice(0,6).join(" · "))+(g.quien.length>6?(" y "+(g.quien.length-6)+" más"):"")+'</div>'):"")+
+        '<div class="rend-quien">'+(g.desde===g.hasta?("enviada el "+fmtF(g.desde)):("del "+fmtF(g.desde)+" al "+fmtF(g.hasta)))+'</div></td>'+
+      '<td class="num">'+g.env+'</td>'+
+      '<td class="num"><b>'+g.ven+'</b> <span style="color:var(--gris2)">('+(g.env?Math.round(100*g.ven/g.env):0)+'%)</span></td>'+
+      '<td class="num">'+(g.un?Math.round(g.un):"—")+'</td>'+
+      '<td class="num">'+(g.plata?money(g.plata):"—")+'</td></tr>').join("")+
+    '</tbody></table>'+
+    '<div class="hint" style="margin-top:12px">Cuenta como comprada cuando la farmacia confirmó un pedido con ese producto después de recibir la oferta. Un presupuesto no cuenta. Si el pedido salió a una dirección de entrega, igual se le imputa a la farmacia.</div>');
+
+  document.getElementById("modal").innerHTML=
+    '<div class="scrim" onclick="if(event.target===this)cerrarRendimiento()"><div class="modal" style="max-width:1000px">'+
+    '<div class="mh"><h3>🎯 Ofertas que se compran</h3>'+
+      '<span style="margin-left:auto;display:flex;gap:8px;align-items:center">'+
+      '<select onchange="rendPeriodo(this.value)" style="font-size:12px;padding:5px 8px;border-radius:8px;border:1px solid var(--line);font-family:inherit">'+
+      [[7,"últimos 7 días"],[30,"últimos 30 días"],[90,"últimos 90 días"],[365,"último año"]]
+        .map(x=>'<option value="'+x[0]+'"'+(RENDDias===x[0]?" selected":"")+'>'+x[1]+'</option>').join("")+
+      '</select>'+
+      '<button class="btn ghost sm" onclick="cerrarRendimiento()">Cerrar</button></span></div>'+
+    '<div class="mb">'+cuerpo+'</div></div></div>';
+}
+
 function render(){
   const cont=document.getElementById("cont");
   OFERTAS.forEach(o=>o._venc=!vigente(o));
@@ -539,6 +717,7 @@ function render(){
     ${kpi("costo","💡 Oportunidades por costo",opoVis.length,ocultasCosto.length?(ocultasCosto.length+" ocultas"):"bajas de costo nuevas","oro")}
     ${kpi("stock","📦 Oportunidades por stock",stockLoading?"…":stkAll.length,"por vencer, sobrestock","")}
     ${kpi("agotadas","⛔ Ofertas sin stock",agot,agot?"apagadas solas":"todas con stock",agot?"apagado":"bien")}
+    ${kpiRendimiento()}
   </div>`;
   // ---- el foco de un KPI filtra las secciones ----
   const ver=s=>!FOCO||FOCO===s;
@@ -1527,6 +1706,10 @@ window.rgEliminar=async id=>{
 EYG.requireAuth(["inventario"], perfil=>{
   document.body.innerHTML = EYG.layout(perfil,"oportunidades",'<div id="cont"></div><div id="modal"></div>',"Oportunidades y Ofertas");
   cargar();
+  /* El rendimiento va en segunda ola: necesita Supabase y dos vueltas a Odoo,
+     y no tiene por qué demorar la pantalla. La tarjeta muestra "…" hasta que
+     llega, y si falla queda en "—" en vez de mentir un cero. */
+  setTimeout(()=>cargarRendimiento().catch(e=>console.warn("rendimiento:",e)),1200);
 });
 </script>
 </body>
