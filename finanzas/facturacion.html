@@ -143,6 +143,11 @@
   .ed[disabled]{background:#F4F6F6;color:var(--gris2);cursor:not-allowed}
   .ed.chico{width:62px}
   /* cuando salió menos de lo pedido, se dice en el mismo renglón */
+  /* aviso de que hay una version nueva del modulo publicada */
+  .vernueva{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);display:flex;align-items:center;gap:11px;background:var(--ink);color:#fff;font-size:13px;font-weight:600;padding:11px 16px;border-radius:11px;box-shadow:0 10px 34px rgba(0,0,0,.3);z-index:12500;max-width:92vw;flex-wrap:wrap}
+  .vernueva .btn{padding:5px 12px}
+  .vernueva .btn:not(.pri){background:transparent;border-color:rgba(255,255,255,.35);color:#fff}
+  .vernueva .btn:not(.pri):hover{background:rgba(255,255,255,.12)}
   .salio{font-size:10px;font-weight:800;color:#B0322F;background:#FBE4E3;border-radius:5px;padding:1px 5px;margin-top:3px;display:inline-block;cursor:help}
   .edbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:#FFF7EE;border-top:1px solid #F0DFB8;padding:9px 12px;font-size:12px;font-weight:600;color:#7A5A20}
   .edbar.oculta{display:none}
@@ -368,145 +373,240 @@ async function imprimirFactura(id, ev){
   }
 }
 
-/* ── EL REMITO SE ARMA ACÁ, NO SE TRAE DE ODOO ──────────────────────────────
-   El PDF de Odoo necesita una sesión web, y la clave de API no sirve para eso
-   (probado: "Access Denied"). Antes el botón terminaba mandándola a Odoo, que
-   es justo lo que no queremos. Así que el remito se dibuja en el navegador con
-   los datos de Odoo y se manda a imprimir.
-
-   Se puede hacer porque **el remito de EyG no es un documento fiscal**: el
-   picking no tiene tipo de documento AFIP ni CAE, es la nota de entrega interna
-   (WH/OUT/…). No se reemplaza ninguna factura.
-
-   Lleva lo mismo que el de Odoo más lo que la casa necesita: el LOTE y el
-   VENCIMIENTO de cada renglón, y la INDICACIÓN de la comercial, que vive en
-   `stock.picking.note` y es la que se borraba al facturar. */
 async function datosRemito(id){
   const p=(await EYG.rpc("stock.picking","read",[[id]],
     {fields:["name","partner_id","sale_id","state","date_done","scheduled_date","origin","note","user_id","weight"],context:{lang:"es_AR"}}))[0];
   if(!p) throw new Error("no encontré el remito");
-  const [lins,cli,ped]=await Promise.all([
+  const [lins,cli,ped,emi]=await Promise.all([
     EYG.rpc("stock.move.line","search_read",[[["picking_id","=",id]]],
       {fields:["product_id","quantity","lot_id","expiration_date","product_uom_id"],context:{lang:"es_AR"},limit:0}),
     EYG.rpc("res.partner","read",[[p.partner_id[0]]],
-      {fields:["name","vat","street","street2","city","state_id","zip","phone","l10n_ar_afip_responsibility_type_id"],context:{lang:"es_AR"}}).catch(()=>[]),
+      {fields:["name","vat","l10n_ar_formatted_vat","street","street2","city","state_id","zip","phone","l10n_ar_afip_responsibility_type_id"],context:{lang:"es_AR"}}).catch(()=>[]),
     p.sale_id?EYG.rpc("sale.order","read",[[p.sale_id[0]]],
-      {fields:["name","client_order_ref","user_id","payment_term_id"],context:{lang:"es_AR"}}).catch(()=>[]):Promise.resolve([])
+      {fields:["name","client_order_ref","user_id","payment_term_id"],context:{lang:"es_AR"}}).catch(()=>[]):Promise.resolve([]),
+    emisorRemito()
   ]);
-  return {p, lins, cli:cli[0]||{}, ped:ped[0]||{}};
+  return {p, lins, cli:cli[0]||{}, ped:ped[0]||{}, emi};
 }
 
-/* Se muestra al pie del remito. Si alguien dice que le sale un remito viejo,
-   esta marca dice al toque si el navegador cargo el modulo nuevo o uno cacheado. */
-const REMITO_FORMATO="r2";
+/* Los datos del emisor son los mismos que imprime la factura nueva, y el logo
+   pesa 31 KB: se traen una sola vez por sesión. */
+let _EMISOR=null;
+async function emisorRemito(){
+  if(_EMISOR) return _EMISOR;
+  try{
+    const c=(await EYG.rpc("res.company","read",[[1]],
+      {fields:["name","partner_id","street","street2","city","zip","state_id","phone","logo",
+               "l10n_ar_afip_responsibility_type_id","l10n_ar_gross_income_type","l10n_ar_gross_income_number","l10n_ar_afip_start_date"],
+       context:{lang:"es_AR"}}))[0]||{};
+    let cuit="";
+    try{ cuit=((await EYG.rpc("res.partner","read",[[c.partner_id[0]]],{fields:["l10n_ar_formatted_vat"]}))[0]||{}).l10n_ar_formatted_vat||""; }catch(_){ }
+    _EMISOR={c, cuit};
+  }catch(e){ _EMISOR={c:{}, cuit:""}; }
+  return _EMISOR;
+}
 
-function remitoHTML({p,lins,cli,ped}){
-  const dir=[cli.street,cli.street2].filter(Boolean).join(" ");
-  const loc=[cli.city,cli.state_id?String(cli.state_id[1]).replace(/\s*\(AR\)$/,""):"",cli.zip?"("+cli.zip+")":""].filter(Boolean).join(", ");
+/* ══════════════ SI SALIÓ UNA VERSIÓN NUEVA, AVISAR ══════════════
+   El Core se sirve con Cache-Control: max-age=600 y la entrada del módulo es el
+   propio .html, así que no se le puede poner ?v= desde adentro. Consecuencia:
+   una pestaña que quedó abierta sigue corriendo el JavaScript viejo para
+   siempre, aunque el sitio ya tenga lo nuevo.
+
+   Pasó de verdad el 5/10/2026: Dirección imprimía el remito viejo porque tenía
+   la pantalla cargada desde antes de publicar. No era caché del servidor ni del
+   CDN — se verificó que el html en vivo era idéntico al publicado y que no hay
+   service worker.
+
+   Por eso el módulo se mira a sí mismo cada tanto: pide su propio archivo sin
+   caché y compara la marca de abajo. Si cambió, ofrece recargar. NO recarga
+   solo: puede estar a mitad de una edición de renglones.
+
+   ⚠️ Al publicar un cambio de este módulo, subir MODULO_VER. */
+/*VER*/const MODULO_VER="2026-10-05-r3";
+let _verNueva=false;
+
+async function mirarVersion(){
+  if(_verNueva || document.hidden) return;
+  try{
+    const r=await fetch(location.pathname+"?v="+Date.now(),{cache:"no-store"});
+    if(!r.ok) return;
+    const m=/\/\*VER\*\/const MODULO_VER="([^"]+)"/.exec(await r.text());
+    if(m && m[1]!==MODULO_VER){ _verNueva=true; avisarVersionNueva(); }
+  }catch(e){ /* sin internet o sitio caído: no molesta */ }
+}
+
+function avisarVersionNueva(){
+  if(document.getElementById("eyg-vernueva")) return;
+  const d=document.createElement("div");
+  d.id="eyg-vernueva"; d.className="vernueva";
+  d.innerHTML='<span>✨ Hay una versión nueva de Facturación. Lo que estás viendo es la anterior.</span>'
+    +'<button class="btn pri sm" onclick="location.reload()">Actualizar</button>'
+    +'<button class="btn sm" onclick="cerrarAvisoVersion()">Después</button>';
+  document.body.appendChild(d);
+}
+function cerrarAvisoVersion(){ const d=document.getElementById("eyg-vernueva"); if(d) d.remove(); }
+
+/* Marca de formato, al pie del remito. Si alguien dice que le sale un remito
+   viejo, esta marca dice al toque si el navegador cargó el módulo nuevo o uno
+   cacheado. Al cambiar el diseño, subirla. */
+const REMITO_FORMATO="r3";
+
+/* ── EL REMITO SIGUE LA LÍNEA DE LA FACTURA NUEVA ──────────────────────────
+   No es un diseño propio: copia el modelo que ya está definido en Odoo para
+   facturas y presupuestos (vistas `eyg.factura_encabezado` 4923 y
+   `eyg.report_factura_document` 4924). De ahí salen, tal cual:
+     · tipografía Lato y color de texto #0E1F1D, cuerpo 13px / interlínea 21px
+     · la CANALETA de 14px: todo arranca y termina a 14px del borde
+     · encabezado en tres columnas (logo · centro · título) + franja teal de 2px
+     · el bloque del cliente con su barra teal de 4px a la izquierda
+     · los rótulos en teal 10px con letter-spacing .16em
+     · la tabla con cabecera en teal claro (#E9F3F1) y borde teal de 1,5px
+   Si cambia el modelo de la factura, este remito tiene que seguirlo. */
+function remitoHTML({p,lins,cli,ped,emi}){
+  const C=(emi&&emi.c)||{}, CUIT=(emi&&emi.cuit)||"";
   const fecha=f=>f?String(f).slice(0,10).split("-").reverse().join("/"):"—";
+  const prov=s=>s?String(s).replace(/\s*\(AR\)$/,""):"";
   const nota=String(p.note||"").replace(/<[^>]*>/g," ").replace(/&nbsp;/g," ").replace(/\s+/g," ").trim();
-  const filas=lins.map(l=>`<tr>
-      <td class="pr">${esc(l.product_id?l.product_id[1]:"—")}</td>
-      <td class="c">${esc(l.lot_id?l.lot_id[1]:"—")}</td>
-      <td class="c">${l.expiration_date?fecha(l.expiration_date):"—"}</td>
-      <td class="r"><b>${fnum(l.quantity)}</b></td>
-    </tr>`).join("");
+
+  const domEmi=[[C.street,C.street2].filter(Boolean).join(", "),C.city,prov(C.state_id&&C.state_id[1]),C.zip].filter(Boolean).join(" · ");
+  const iibb=C.l10n_ar_gross_income_type==="exempt"?"Exento":(C.l10n_ar_gross_income_number||"-");
+  const multi=C.l10n_ar_gross_income_type==="multilateral"?" (Convenio Multilateral)":"";
+
+  const nom=cli.name||(p.partner_id?p.partner_id[1]:"—");
+  const pxCli=nom.length<=45?17.5:(nom.length<=70?15:13);
+  const dirCli=[cli.street,cli.street2].filter(Boolean).join(", ");
+  const locCli=[cli.city,prov(cli.state_id&&cli.state_id[1])].filter(Boolean).join(", ")+(cli.zip?" ("+cli.zip+")":"");
+
+  const hayLote=lins.some(l=>l.lot_id||l.expiration_date);
+  const filas=lins.map(l=>{
+    const nomProd=String(l.product_id?l.product_id[1]:"—");
+    const cod=(/^\[([^\]]+)\]/.exec(nomProd)||[])[1]||"";
+    const txt=nomProd.replace(/^\[[^\]]+\]\s*/,"");
+    return `<tr>
+      <td class="b_row" style="padding:9px 0 9px 14px;vertical-align:top;font-size:11.5px;color:#8A9A97;">${esc(cod)}</td>
+      <td class="b_row" style="padding:9px 20px 9px 8px;vertical-align:top;">${esc(txt)}</td>
+      ${hayLote?`<td class="b_row" style="padding:9px 8px;vertical-align:top;font-size:11.5px;">${esc(l.lot_id?l.lot_id[1]:"—")}${l.expiration_date?`<div style="color:#8A9A97;font-size:10.5px;line-height:15px;">vto. ${fecha(l.expiration_date)}</div>`:""}</td>`:""}
+      <td class="b_row" style="padding:9px 14px 9px 8px;vertical-align:top;text-align:right;font-weight:bold;">${fnum(l.quantity)}</td>
+    </tr>`;
+  }).join("");
   const bultos=lins.reduce((a,l)=>a+(l.quantity||0),0);
+
+  const ROT="font-size:10px;letter-spacing:.16em;color:#048782;font-weight:bold;line-height:15px;";
+  const SEC="font-size:13.5px;color:#8A9A97;line-height:22px;margin:0;padding:0;";
+  const TH="font-size:10px;letter-spacing:.14em;color:#048782;font-weight:bold;line-height:15px;padding-top:7px;padding-bottom:7px;";
+
   return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
 <title>Remito ${esc(p.name)}</title>
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap" rel="stylesheet">
 <style>
-  @page{size:A4;margin:14mm 13mm}
+  @page{size:A4;margin:12mm 10mm}
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'Archivo',system-ui,sans-serif;color:#0E1F1D;font-size:11.5px;line-height:1.45;-webkit-font-smoothing:antialiased;padding-top:52px}
-  .hoja{max-width:190mm;margin:0 auto;padding:10px 0}
-  .top{display:flex;align-items:flex-start;gap:18px;border-bottom:2.5px solid #048782;padding-bottom:12px}
-  .marca .logo{font-family:Georgia,serif;font-weight:700;font-size:30px;letter-spacing:.5px;color:#04635F;line-height:1}
-  .marca .logo i{color:#5FC8BF;font-style:normal}
-  .marca .raz{font-size:11px;font-weight:700;margin-top:4px}
-  .marca .dom{font-size:10px;color:#5F716E;line-height:1.5}
-  .doc{margin-left:auto;text-align:right}
-  .doc .tit{font-size:21px;font-weight:900;letter-spacing:3px;color:#04635F}
-  .doc .sub{font-size:9.5px;font-weight:800;letter-spacing:1.4px;color:#8A9A97;text-transform:uppercase;margin-top:1px}
-  .doc .nro{font-size:15px;font-weight:800;margin-top:7px;font-variant-numeric:tabular-nums}
-  .doc .fec{font-size:10.5px;color:#5F716E;font-weight:600}
-  .cajas{display:flex;gap:11px;margin:13px 0}
-  .caja{flex:1;border:1px solid #DCE8E6;border-radius:7px;padding:9px 11px;background:#F8FBFB}
-  .caja h4{font-size:8.5px;font-weight:800;letter-spacing:1.1px;color:#8A9A97;text-transform:uppercase;margin-bottom:4px}
-  .caja .nm{font-size:12.5px;font-weight:800;line-height:1.3}
-  .caja .ln{font-size:10.5px;color:#5F716E;line-height:1.55}
-  .caja .ln b{color:#0E1F1D;font-weight:700}
-  table{width:100%;border-collapse:collapse;margin-top:4px}
-  thead th{background:#04635F;color:#fff;font-size:9px;font-weight:800;letter-spacing:.9px;text-transform:uppercase;padding:7px 8px;text-align:left}
-  thead th.c{text-align:center} thead th.r{text-align:right}
-  tbody td{padding:7px 8px;border-bottom:1px solid #EEF4F3;font-size:11px;vertical-align:top}
-  tbody tr:nth-child(even) td{background:#FAFCFC}
-  td.c{text-align:center;font-variant-numeric:tabular-nums}
-  td.r{text-align:right;font-variant-numeric:tabular-nums}
-  td.pr{font-weight:600}
-  tfoot td{padding:8px;border-top:2px solid #048782;font-weight:800;font-size:11.5px}
-  .ind{margin-top:13px;border:1px solid #F0DFB8;border-left:3px solid #EC8B5E;background:#FFFBF0;border-radius:7px;padding:9px 12px}
-  .ind h4{font-size:8.5px;font-weight:800;letter-spacing:1.1px;color:#9A6B12;text-transform:uppercase;margin-bottom:3px}
-  .ind p{font-size:11.5px;color:#5C4A22;white-space:pre-wrap}
-  .firmas{display:flex;gap:40px;margin-top:34px}
-  .firma{flex:1;border-top:1px solid #8A9A97;padding-top:5px;font-size:9.5px;color:#5F716E;text-align:center;font-weight:600}
-  .pie{margin-top:18px;padding-top:9px;border-top:1px solid #DCE8E6;font-size:9px;color:#8A9A97;display:flex;justify-content:space-between}
-  .barra{position:fixed;top:0;left:0;right:0;background:#04635F;color:#fff;padding:9px 16px;display:flex;align-items:center;gap:12px;font-size:12.5px;font-weight:700;z-index:9}
-  .barra button{font-family:inherit;font-size:12.5px;font-weight:700;border:0;border-radius:7px;padding:7px 15px;background:#fff;color:#04635F;cursor:pointer}
-  .barra button:hover{background:#E2F1EF}
-  .barra .sp{margin-left:auto;font-weight:600;opacity:.85;font-size:11.5px}
-  @media print{ .barra{display:none} .hoja{padding:0} body{padding-top:0} }
+  body{font-family:Lato,Helvetica,Arial,sans-serif;color:#0E1F1D;font-size:13px;line-height:21px;-webkit-font-smoothing:antialiased;padding-top:52px}
+  .hoja{max-width:190mm;margin:0 auto}
+  table{border-collapse:collapse}
+  .b_barra{background-color:#048782}
+  .b_head{border-bottom:1.5px solid #048782;background-color:#E9F3F1}
+  .b_row{border-bottom:1px solid #EDF2F1}
+  .b_total{border-top:1.6px solid #048782}
+  .b_pie{border-top:1px solid #DEECE9}
+  .barra{position:fixed;top:0;left:0;right:0;background:#048782;color:#fff;padding:9px 16px;display:flex;align-items:center;gap:12px;font-size:13px;font-weight:700;z-index:9}
+  .barra button{font-family:inherit;font-size:13px;font-weight:700;border:0;border-radius:6px;padding:7px 15px;background:#fff;color:#048782;cursor:pointer}
+  .barra button:hover{background:#E9F3F1}
+  .barra .sp{margin-left:auto;font-weight:400;opacity:.9;font-size:12px}
+  @media print{ .barra{display:none} body{padding-top:0} }
 </style></head>
 <body>
-<div class="barra">🖨️ Remito ${esc(p.name)}<button onclick="window.print()">Imprimir</button>
+<div class="barra">Remito ${esc(p.name)}<button onclick="window.print()">Imprimir</button>
   <span class="sp">Si no sale la ventana de impresión, usá Ctrl+P</span></div>
 <div class="hoja">
-  <div class="top">
-    <div class="marca">
-      <div class="logo">E<i>y</i>G</div>
-      <div class="raz">Droguería EyG S.R.L.</div>
-      <div class="dom">Av. San Martín 3035 · Rosario · Santa Fe · S2000<br>CUIT 30-71635698-8 · IIBB Convenio Multilateral</div>
-    </div>
-    <div class="doc">
-      <div class="tit">REMITO</div>
-      <div class="sub">Documento no válido como factura</div>
-      <div class="nro">${esc(p.name)}</div>
-      <div class="fec">${p.state==="done"?"Entregado el "+fecha(p.date_done):"Programado para el "+fecha(p.scheduled_date)}</div>
-    </div>
-  </div>
 
-  <div class="cajas">
-    <div class="caja">
-      <h4>Entregar a</h4>
-      <div class="nm">${esc(cli.name||(p.partner_id?p.partner_id[1]:"—"))}</div>
-      <div class="ln">${dir?esc(dir)+"<br>":""}${loc?esc(loc)+"<br>":""}${cli.vat?"CUIT "+esc(cli.vat)+"<br>":""}${cli.phone?"Tel. "+esc(cli.phone):""}</div>
-    </div>
-    <div class="caja">
-      <h4>Referencias</h4>
-      <div class="ln">
-        Pedido <b>${esc(ped.name||p.origin||"—")}</b><br>
-        ${ped.client_order_ref?"OC del cliente <b>"+esc(ped.client_order_ref)+"</b><br>":""}
-        ${ped.user_id?"Comercial <b>"+esc(ped.user_id[1])+"</b><br>":""}
-        ${ped.payment_term_id?"Pago <b>"+esc(ped.payment_term_id[1])+"</b>":""}
-      </div>
-    </div>
-  </div>
-
-  <table>
-    <thead><tr><th>Producto</th><th class="c">Lote</th><th class="c">Vencimiento</th><th class="r">Cantidad</th></tr></thead>
-    <tbody>${filas||'<tr><td colspan="4">Sin renglones.</td></tr>'}</tbody>
-    ${lins.length?`<tfoot><tr><td colspan="3">${fnum(lins.length)} ${lins.length===1?"renglón":"renglones"}</td><td class="r">${fnum(bultos)} u</td></tr></tfoot>`:""}
+  <table style="width:100%;table-layout:fixed;">
+    <tr>
+      <td style="width:38%;vertical-align:bottom;padding:0 0 18px 14px;">
+        ${C.logo?`<img src="data:image/png;base64,${C.logo}" style="max-height:66px;" alt="Droguería EyG">`
+                :`<div style="font-family:Georgia,serif;font-size:34px;font-weight:700;color:#048782;line-height:1;">EyG</div>`}
+      </td>
+      <td style="width:24%;"></td>
+      <td style="width:38%;text-align:right;vertical-align:bottom;padding:0 14px 18px 0;">
+        <div style="color:#048782;font-size:15px;font-weight:bold;letter-spacing:.16em;line-height:20px;">REMITO</div>
+        <div style="font-size:23px;font-weight:bold;line-height:28px;">${esc(p.name)}</div>
+        <div style="font-size:13.5px;color:#8A9A97;line-height:20px;padding-top:3px;">${p.state==="done"?"Entregado el":"Programado para el"} <span style="color:#0E1F1D;">${fecha(p.state==="done"?p.date_done:p.scheduled_date)}</span></div>
+      </td>
+    </tr>
+  </table>
+  <div style="border-top:2px solid #048782;font-size:0;line-height:0;">&nbsp;</div>
+  <table style="width:100%;table-layout:fixed;">
+    <tr>
+      <td style="width:50%;vertical-align:top;padding:13px 0 0 14px;">
+        <div style="font-size:11px;font-weight:bold;color:#8A9A97;line-height:18px;">${esc(C.name||"Droguería EyG S.R.L.")}</div>
+        <div style="font-size:9.5px;color:#8A9A97;line-height:16px;">${esc(domEmi)}</div>
+      </td>
+      <td style="width:50%;text-align:right;vertical-align:top;padding:13px 14px 0 0;">
+        <div style="font-size:11px;color:#8A9A97;line-height:18px;">CUIT <span style="font-weight:bold;">${esc(CUIT||"30-71635698-8")}</span>${C.l10n_ar_afip_responsibility_type_id?" · "+esc(C.l10n_ar_afip_responsibility_type_id[1]):""}</div>
+        <div style="font-size:9.5px;color:#8A9A97;line-height:16px;">IIBB ${esc(iibb)}${multi}${C.l10n_ar_afip_start_date?" · Inicio de actividades "+fecha(C.l10n_ar_afip_start_date):""}</div>
+      </td>
+    </tr>
   </table>
 
-  ${nota?`<div class="ind"><h4>Indicación de entrega</h4><p>${esc(nota)}</p></div>`:""}
+  <table style="width:100%;table-layout:fixed;margin-top:34px;">
+    <tr>
+      <td class="b_barra" style="width:4px;padding:0;"><span style="font-size:0;line-height:0;">&nbsp;</span></td>
+      <td style="width:61.6%;vertical-align:top;padding:2px 26px 4px 10px;">
+        <div style="${ROT}">ENTREGAR A</div>
+        <div style="font-size:${pxCli}px;font-weight:bold;line-height:26px;margin:7px 0 0 0;">${esc(nom)}</div>
+        ${dirCli?`<div style="${SEC}">${esc(dirCli)}</div>`:""}
+        ${locCli.trim()?`<div style="${SEC}">${esc(locCli)}</div>`:""}
+        ${(cli.l10n_ar_formatted_vat||cli.vat)?`<div style="${SEC}">CUIT <span style="color:#0E1F1D;font-weight:bold;">${esc(cli.l10n_ar_formatted_vat||cli.vat)}</span>${cli.l10n_ar_afip_responsibility_type_id?" · "+esc(cli.l10n_ar_afip_responsibility_type_id[1]):""}</div>`:""}
+      </td>
+      <td style="vertical-align:top;padding:2px 14px 4px 0;">
+        <div style="${ROT}">REFERENCIAS</div>
+        <div style="${SEC}margin-top:7px;">Pedido <span style="color:#0E1F1D;font-weight:bold;">${esc(ped.name||p.origin||"—")}</span></div>
+        ${ped.client_order_ref?`<div style="${SEC}">OC del cliente <span style="color:#0E1F1D;font-weight:bold;">${esc(ped.client_order_ref)}</span></div>`:""}
+        ${ped.user_id?`<div style="${SEC}">Comercial <span style="color:#0E1F1D;font-weight:bold;">${esc(ped.user_id[1])}</span></div>`:""}
+        ${ped.payment_term_id?`<div style="${SEC}">Pago <span style="color:#0E1F1D;font-weight:bold;">${esc(ped.payment_term_id[1])}</span></div>`:""}
+      </td>
+    </tr>
+  </table>
 
-  <div class="firmas">
-    <div class="firma">Entregó — Droguería EyG</div>
-    <div class="firma">Recibí conforme — aclaración y sello</div>
-  </div>
-  <div class="pie"><span>Droguería EyG S.R.L. · Av. San Martín 3035, Rosario</span><span>Impreso desde EyG Core &middot; formato ${REMITO_FORMATO}</span></div>
+  <table style="width:100%;table-layout:fixed;margin-top:44px;">
+    <thead><tr>
+      <th class="b_head" style="${TH}width:11%;text-align:left;padding-left:14px;">CÓD.</th>
+      <th class="b_head" style="${TH}text-align:left;padding-left:8px;padding-right:20px;">PRODUCTO</th>
+      ${hayLote?`<th class="b_head" style="${TH}width:17%;text-align:left;padding-left:8px;">LOTE / VTO.</th>`:""}
+      <th class="b_head" style="${TH}width:14%;text-align:right;padding-left:8px;padding-right:14px;">CANT.</th>
+    </tr></thead>
+    <tbody>${filas||`<tr><td class="b_row" colspan="4" style="padding:9px 14px;color:#8A9A97;">Sin renglones.</td></tr>`}</tbody>
+    ${lins.length?`<tfoot><tr>
+      <td class="b_total" colspan="${hayLote?3:2}" style="padding:11px 0 0 14px;font-weight:bold;">${fnum(lins.length)} ${lins.length===1?"renglón":"renglones"}</td>
+      <td class="b_total" style="padding:11px 14px 0 8px;text-align:right;font-weight:bold;">${fnum(bultos)} u</td>
+    </tr></tfoot>`:""}
+  </table>
+
+  ${nota?`<table style="width:100%;table-layout:fixed;margin-top:26px;">
+    <tr>
+      <td class="b_barra" style="width:4px;padding:0;"><span style="font-size:0;line-height:0;">&nbsp;</span></td>
+      <td style="vertical-align:top;padding:2px 14px 4px 10px;">
+        <div style="${ROT}">INDICACIÓN DE ENTREGA</div>
+        <div style="font-size:13px;line-height:21px;margin-top:5px;white-space:pre-wrap;">${esc(nota)}</div>
+      </td>
+    </tr>
+  </table>`:""}
+
+  <table style="width:100%;table-layout:fixed;margin-top:52px;">
+    <tr>
+      <td style="width:46%;padding:0 0 0 14px;"><div style="border-top:1px solid #B3BFBD;padding-top:6px;font-size:11px;color:#8A9A97;text-align:center;">Entregó · Droguería EyG</div></td>
+      <td style="width:8%;"></td>
+      <td style="width:46%;padding:0 14px 0 0;"><div style="border-top:1px solid #B3BFBD;padding-top:6px;font-size:11px;color:#8A9A97;text-align:center;">Recibí conforme · aclaración y sello</div></td>
+    </tr>
+  </table>
+
+  <table class="b_pie" style="width:100%;table-layout:fixed;margin-top:22px;">
+    <tr>
+      <td style="padding:9px 0 0 14px;font-size:9.5px;color:#8A9A97;">Documento no válido como factura</td>
+      <td style="padding:9px 14px 0 0;font-size:9.5px;color:#8A9A97;text-align:right;">Impreso desde EyG Core · formato ${REMITO_FORMATO}</td>
+    </tr>
+  </table>
 </div>
-${"<scr"+"ipt>"}window.addEventListener("load",()=>setTimeout(()=>{try{window.print();}catch(e){}},350));${"</scr"+"ipt>"}
 </body></html>`;
 }
 
@@ -516,6 +616,9 @@ async function imprimirRemito(id, ev){
   try{
     const d=await datosRemito(id);
     w.document.open(); w.document.write(remitoHTML(d)); w.document.close();
+    /* la dispara el padre: así el documento no lleva <script> adentro, que el
+       navegador cerraría en el primer cierre de script y tumbaría este módulo. */
+    setTimeout(()=>{ try{ w.focus(); w.print(); }catch(e){} }, 500);
   }catch(e){
     fallaPDF(w, "No pude armar el remito: "+(e.message||e), `${ODOO}/web#id=${id}&model=stock.picking&view_type=form`);
   }
@@ -1607,6 +1710,11 @@ window.imprimirFactura=imprimirFactura; window.imprimirRemito=imprimirRemito; wi
 window.recalcLinea=recalcLinea; window.guardarLineas=guardarLineas; window.descartarLineas=descartarLineas;
 window.pedirArchivar=pedirArchivar; window.archivar=archivar; window.desarchivar=desarchivar;
 window.ponerMotivo=ponerMotivo; window.notaListo=notaListo;
+
+setInterval(mirarVersion, 5*60*1000);
+document.addEventListener("visibilitychange",()=>{ if(!document.hidden) mirarVersion(); });
+setTimeout(mirarVersion, 20000);
+window.cerrarAvisoVersion=cerrarAvisoVersion;
 
 EYG.guard(["finanzas","admin","direccion"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]})
   .then(perfil=>{ PERFIL=perfil; cargar(); });
