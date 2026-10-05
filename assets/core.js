@@ -624,6 +624,13 @@ window.EYG = (function(){
        borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de datos/contactos.html. */
     /* EN PRUEBAS: sólo super-admins (Diego/German). Desde acá German/Diego envían prospectos
        del padrón a la carpeta de potenciales de cada comercial. */
+    /* Revisión de duplicados: la pantalla para sentarse con las comerciales y
+       resolver caso por caso si dos fichas son el mismo cliente. Lo que se marca
+       queda en el parámetro eyg.contactos.revision_dup y NO toca las fichas: se
+       aplica después, en una pasada controlada. */
+    {key:"revision-dup", dept:"comercial", cat:"Comercial", ico:"🔀", titulo:"Revisión de duplicados",
+      desc:"Las fichas que parecen estar cargadas dos veces, para resolverlas con cada comercial: si son el mismo cliente o no. Se guarda solo y se puede cortar y seguir.",
+      roles:["lider","direccion"], ready:true, path:()=>"datos/revision-duplicados.html"},
     {key:"contactos", dept:"comercial", cat:"Comercial", ico:"👥", titulo:"Contactos", desc:"La base única de contactos de EyG: la ficha completa de cada cliente (con sus direcciones de entrega y todos sus teléfonos), el control de duplicados y los Potenciales del padrón oficial, con mapa para armar recorridos.", roles:["comercial","lider","admin","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"datos/contactos.html"},
