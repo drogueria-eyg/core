@@ -81,7 +81,7 @@ window.EYGOpo = (function(){
     for(const k in GB){ const ms=GB[k];
       const venta=ms.reduce((a,r)=>a+(r.ventaU||0),0), venta3=ms.reduce((a,r)=>a+(r.venta3||0),0), qty=ms.reduce((a,r)=>a+(r.qty||0),0);
       let vig=ms[0], best=-1; for(const r of ms){ const sc=(r.qty>0?2:0)+(r.ventaU/1e9); if(sc>best){best=sc;vig=r;} }
-      const g={venta,venta3,qty,n:ms.length,vigId:vig.id};
+      const g={venta,venta3,qty,n:ms.length,vigId:vig.id, reciente:ms.some(r=>r.compraReciente), seasonal:ms.some(r=>r.seasonal)};
       for(const r of ms){ r.g=g; r.esVig=(r.id===vig.id); } }
   }
 
@@ -100,6 +100,9 @@ window.EYGOpo = (function(){
       else if((g.venta3===0 && gMeses>12) || gMeses>36) motivo="clavado";
       else if(gMeses>12) motivo="sobre";
       if(!motivo) return null;
+      // GUARDA anti-error: no liquidar STOCK FRESCO (comprado hace ≤N meses) ni ESTACIONAL (vendió en esta época años anteriores)
+      if(motivo==="muerto"||motivo==="clavado"||motivo==="sobre"){ if((r.g&&r.g.reciente) || r.seasonal) return null; }   // el producto se está reponiendo o entra en temporada
+      else if(motivo==="discontinuada"){ if(r.compraReciente || r.seasonal) return null; }                              // la marca se compró hace poco (no está discontinuada) o es estacional
       // plata a recuperar: en sobrestock el EXCEDENTE del grupo prorrateado a esta marca; en el resto, todo el stock de esta marca
       let recuperable;
       if(motivo==="sobre"){ const exc=Math.max(0,g.qty-Math.round(g.venta/12*3)); recuperable=Math.round(r.val*(g.qty>0?exc/g.qty:0)); }
@@ -150,13 +153,21 @@ window.EYGOpo = (function(){
     const iso=d=>d.toISOString().slice(0,10);
     const ini12=new Date(HOY.getFullYear(),HOY.getMonth()-12,1);
     const ini3 =new Date(HOY.getFullYear(),HOY.getMonth()-3,1);
-    const [stock,ventas,ventas3]=await Promise.all([
+    const COMPRA_RECIENTE_M = opts.compraRecienteM>0?opts.compraRecienteM:4;        // comprado hace ≤ N meses = stock fresco, no liquidar
+    const iniCompra=new Date(HOY.getFullYear(),HOY.getMonth()-COMPRA_RECIENTE_M,1);
+    // ventana de la PRÓXIMA temporada vista el año pasado: [hoy-12m, hoy-9m) (los próximos ~3 meses, pero del año anterior)
+    const tempDe=new Date(HOY.getFullYear()-1,HOY.getMonth(),1), tempA=new Date(HOY.getFullYear()-1,HOY.getMonth()+3,1);
+    const [stock,ventas,ventas3,comprasRec,ventasTemp]=await Promise.all([
       rpc("stock.quant","read_group",[[["location_id.usage","=","internal"],["quantity",">",0]],["value:sum","quantity:sum"],["product_id"]],{lazy:false,limit:6000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini12)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini3)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
+      rpc("purchase.order.line","read_group",[[["order_id.state","in",["purchase","done"]],["order_id.date_order",">=",iso(iniCompra)]],["product_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
+      rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(tempDe)],["order_id.date_order","<",iso(tempA)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}).catch(()=>[]),
     ]);
     const V={},V3={}; for(const v of ventas){ if(v.product_id) V[v.product_id[0]]=v.product_uom_qty||0; }
     for(const v of ventas3){ if(v.product_id) V3[v.product_id[0]]=v.product_uom_qty||0; }
+    const RECIENTE=new Set(comprasRec.filter(c=>c.product_id&&(c.product_qty||0)>0).map(c=>c.product_id[0]));   // comprados en los últimos N meses
+    const TEMPORADA=new Set((ventasTemp||[]).filter(v=>v.product_id&&(v.product_uom_qty||0)>0).map(v=>v.product_id[0])); // vendieron en esta época años anteriores
     // para agrupar bien necesitamos TODAS las marcas del producto, incluidas las que venden sin stock (quiebres)
     const stockIds=stock.filter(s=>s.product_id).map(s=>s.product_id[0]); const stockSet=new Set(stockIds);
     const extra=Object.keys(V).map(Number).filter(id=>V[id]>0 && !stockSet.has(id));
@@ -187,6 +198,7 @@ window.EYGOpo = (function(){
         marca:(Array.isArray(m.x_studio_many2one_field_6o_1if0l6ud2)?(m.x_studio_many2one_field_6o_1if0l6ud2[1]||""):""),
         monodrug:(Array.isArray(m.monodrug)?(m.monodrug[1]||""):(typeof m.monodrug==="string"?m.monodrug:"")),
         val, qty, ventaU, venta3, meses:meses>900?999:Math.round(meses*10)/10, pvp:m.list_price||0, sp:m.standard_price||0, costoU,
+        compraReciente:RECIENTE.has(id), seasonal:TEMPORADA.has(id),
         min:(vp.min!==undefined&&vp.min<9999)?Math.round(vp.min*10)/10:null, val6:Math.round(vp.v6||0)}; });
     agrupar(rows);                                   // cuelga r.g (grupo) y r.esVig
     const cands=rankGrupo(rows, opts);               // solo los que tienen stock y motivo group-aware
