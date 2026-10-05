@@ -1762,7 +1762,17 @@ window.EYG = (function(){
   const domBusca = q => ["|","|",["name","ilike",q],[FANT,"ilike",q],["vat","ilike",q]];
   /* Chip para mostrar el cartel al lado del nombre del titular. */
   function fantStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-fant-css")) return; const s=document.createElement("style"); s.id="eyg-fant-css"; s.textContent=".eyg-fant{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:20px;background:#E2F1EF;color:#048782;font-size:11px;font-weight:700;vertical-align:middle;white-space:nowrap;max-width:230px;overflow:hidden;text-overflow:ellipsis}"; document.head.appendChild(s); }
-  function chipFant(c){ const v=typeof c==="string"?c:fantasia(c); if(!v) return ""; fantStyles(); return '<span class="eyg-fant" title="Nombre de fantasía">'+esc(v)+'</span>'; }
+  function chipFant(c, nombreMostrado){
+    const v = typeof c==="string" ? c : fantasia(c);
+    if(!v) return "";
+    /* Si el nombre que ya está en pantalla contiene el cartel, el chip repetiría
+       la misma palabra en la misma línea. Pasa con todo contacto con el formato
+       nuevo "Titular (Fcia. X)". */
+    const n = (nombreMostrado!=null) ? nombreMostrado : ((c && typeof c==="object" && c.name) || "");
+    if(n && _normNom(n).includes(_normNom(v))) return "";
+    fantStyles();
+    return '<span class="eyg-fant" title="Nombre de fantasía">'+esc(v)+'</span>';
+  }
 
   const RUBRO_FIELD = "x_studio_selection_field_6ui_1j42g6fu9";
   const RUBROS = [
