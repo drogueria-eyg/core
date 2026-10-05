@@ -142,6 +142,8 @@
   .ed.tocado{border-color:var(--coral);background:#FFFAF5}
   .ed[disabled]{background:#F4F6F6;color:var(--gris2);cursor:not-allowed}
   .ed.chico{width:62px}
+  /* cuando salió menos de lo pedido, se dice en el mismo renglón */
+  .salio{font-size:10px;font-weight:800;color:#B0322F;background:#FBE4E3;border-radius:5px;padding:1px 5px;margin-top:3px;display:inline-block;cursor:help}
   .edbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:#FFF7EE;border-top:1px solid #F0DFB8;padding:9px 12px;font-size:12px;font-weight:600;color:#7A5A20}
   .edbar.oculta{display:none}
 
@@ -368,21 +370,152 @@ async function imprimirFactura(id, ev){
   }
 }
 
+/* ── EL REMITO SE ARMA ACÁ, NO SE TRAE DE ODOO ──────────────────────────────
+   El PDF de Odoo necesita una sesión web, y la clave de API no sirve para eso
+   (probado: "Access Denied"). Antes el botón terminaba mandándola a Odoo, que
+   es justo lo que no queremos. Así que el remito se dibuja en el navegador con
+   los datos de Odoo y se manda a imprimir.
+
+   Se puede hacer porque **el remito de EyG no es un documento fiscal**: el
+   picking no tiene tipo de documento AFIP ni CAE, es la nota de entrega interna
+   (WH/OUT/…). No se reemplaza ninguna factura.
+
+   Lleva lo mismo que el de Odoo más lo que la casa necesita: el LOTE y el
+   VENCIMIENTO de cada renglón, y la INDICACIÓN de la comercial, que vive en
+   `stock.picking.note` y es la que se borraba al facturar. */
+async function datosRemito(id){
+  const p=(await EYG.rpc("stock.picking","read",[[id]],
+    {fields:["name","partner_id","sale_id","state","date_done","scheduled_date","origin","note","user_id","weight"],context:{lang:"es_AR"}}))[0];
+  if(!p) throw new Error("no encontré el remito");
+  const [lins,cli,ped]=await Promise.all([
+    EYG.rpc("stock.move.line","search_read",[[["picking_id","=",id]]],
+      {fields:["product_id","quantity","lot_id","expiration_date","product_uom_id"],context:{lang:"es_AR"},limit:0}),
+    EYG.rpc("res.partner","read",[[p.partner_id[0]]],
+      {fields:["name","vat","street","street2","city","state_id","zip","phone","l10n_ar_afip_responsibility_type_id"],context:{lang:"es_AR"}}).catch(()=>[]),
+    p.sale_id?EYG.rpc("sale.order","read",[[p.sale_id[0]]],
+      {fields:["name","client_order_ref","user_id","payment_term_id"],context:{lang:"es_AR"}}).catch(()=>[]):Promise.resolve([])
+  ]);
+  return {p, lins, cli:cli[0]||{}, ped:ped[0]||{}};
+}
+
+function remitoHTML({p,lins,cli,ped}){
+  const dir=[cli.street,cli.street2].filter(Boolean).join(" ");
+  const loc=[cli.city,cli.state_id?String(cli.state_id[1]).replace(/\s*\(AR\)$/,""):"",cli.zip?"("+cli.zip+")":""].filter(Boolean).join(", ");
+  const fecha=f=>f?String(f).slice(0,10).split("-").reverse().join("/"):"—";
+  const nota=String(p.note||"").replace(/<[^>]*>/g," ").replace(/&nbsp;/g," ").replace(/\s+/g," ").trim();
+  const filas=lins.map(l=>`<tr>
+      <td class="pr">${esc(l.product_id?l.product_id[1]:"—")}</td>
+      <td class="c">${esc(l.lot_id?l.lot_id[1]:"—")}</td>
+      <td class="c">${l.expiration_date?fecha(l.expiration_date):"—"}</td>
+      <td class="r"><b>${fnum(l.quantity)}</b></td>
+    </tr>`).join("");
+  const bultos=lins.reduce((a,l)=>a+(l.quantity||0),0);
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+<title>Remito ${esc(p.name)}</title>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+  @page{size:A4;margin:14mm 13mm}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Archivo',system-ui,sans-serif;color:#0E1F1D;font-size:11.5px;line-height:1.45;-webkit-font-smoothing:antialiased;padding-top:52px}
+  .hoja{max-width:190mm;margin:0 auto;padding:10px 0}
+  .top{display:flex;align-items:flex-start;gap:18px;border-bottom:2.5px solid #048782;padding-bottom:12px}
+  .marca .logo{font-family:Georgia,serif;font-weight:700;font-size:30px;letter-spacing:.5px;color:#04635F;line-height:1}
+  .marca .logo i{color:#5FC8BF;font-style:normal}
+  .marca .raz{font-size:11px;font-weight:700;margin-top:4px}
+  .marca .dom{font-size:10px;color:#5F716E;line-height:1.5}
+  .doc{margin-left:auto;text-align:right}
+  .doc .tit{font-size:21px;font-weight:900;letter-spacing:3px;color:#04635F}
+  .doc .sub{font-size:9.5px;font-weight:800;letter-spacing:1.4px;color:#8A9A97;text-transform:uppercase;margin-top:1px}
+  .doc .nro{font-size:15px;font-weight:800;margin-top:7px;font-variant-numeric:tabular-nums}
+  .doc .fec{font-size:10.5px;color:#5F716E;font-weight:600}
+  .cajas{display:flex;gap:11px;margin:13px 0}
+  .caja{flex:1;border:1px solid #DCE8E6;border-radius:7px;padding:9px 11px;background:#F8FBFB}
+  .caja h4{font-size:8.5px;font-weight:800;letter-spacing:1.1px;color:#8A9A97;text-transform:uppercase;margin-bottom:4px}
+  .caja .nm{font-size:12.5px;font-weight:800;line-height:1.3}
+  .caja .ln{font-size:10.5px;color:#5F716E;line-height:1.55}
+  .caja .ln b{color:#0E1F1D;font-weight:700}
+  table{width:100%;border-collapse:collapse;margin-top:4px}
+  thead th{background:#04635F;color:#fff;font-size:9px;font-weight:800;letter-spacing:.9px;text-transform:uppercase;padding:7px 8px;text-align:left}
+  thead th.c{text-align:center} thead th.r{text-align:right}
+  tbody td{padding:7px 8px;border-bottom:1px solid #EEF4F3;font-size:11px;vertical-align:top}
+  tbody tr:nth-child(even) td{background:#FAFCFC}
+  td.c{text-align:center;font-variant-numeric:tabular-nums}
+  td.r{text-align:right;font-variant-numeric:tabular-nums}
+  td.pr{font-weight:600}
+  tfoot td{padding:8px;border-top:2px solid #048782;font-weight:800;font-size:11.5px}
+  .ind{margin-top:13px;border:1px solid #F0DFB8;border-left:3px solid #EC8B5E;background:#FFFBF0;border-radius:7px;padding:9px 12px}
+  .ind h4{font-size:8.5px;font-weight:800;letter-spacing:1.1px;color:#9A6B12;text-transform:uppercase;margin-bottom:3px}
+  .ind p{font-size:11.5px;color:#5C4A22;white-space:pre-wrap}
+  .firmas{display:flex;gap:40px;margin-top:34px}
+  .firma{flex:1;border-top:1px solid #8A9A97;padding-top:5px;font-size:9.5px;color:#5F716E;text-align:center;font-weight:600}
+  .pie{margin-top:18px;padding-top:9px;border-top:1px solid #DCE8E6;font-size:9px;color:#8A9A97;display:flex;justify-content:space-between}
+  .barra{position:fixed;top:0;left:0;right:0;background:#04635F;color:#fff;padding:9px 16px;display:flex;align-items:center;gap:12px;font-size:12.5px;font-weight:700;z-index:9}
+  .barra button{font-family:inherit;font-size:12.5px;font-weight:700;border:0;border-radius:7px;padding:7px 15px;background:#fff;color:#04635F;cursor:pointer}
+  .barra button:hover{background:#E2F1EF}
+  .barra .sp{margin-left:auto;font-weight:600;opacity:.85;font-size:11.5px}
+  @media print{ .barra{display:none} .hoja{padding:0} body{padding-top:0} }
+</style></head>
+<body>
+<div class="barra">🖨️ Remito ${esc(p.name)}<button onclick="window.print()">Imprimir</button>
+  <span class="sp">Si no sale la ventana de impresión, usá Ctrl+P</span></div>
+<div class="hoja">
+  <div class="top">
+    <div class="marca">
+      <div class="logo">E<i>y</i>G</div>
+      <div class="raz">Droguería EyG S.R.L.</div>
+      <div class="dom">Av. San Martín 3035 · Rosario · Santa Fe · S2000<br>CUIT 30-71635698-8 · IIBB Convenio Multilateral</div>
+    </div>
+    <div class="doc">
+      <div class="tit">REMITO</div>
+      <div class="sub">Documento no válido como factura</div>
+      <div class="nro">${esc(p.name)}</div>
+      <div class="fec">${p.state==="done"?"Entregado el "+fecha(p.date_done):"Programado para el "+fecha(p.scheduled_date)}</div>
+    </div>
+  </div>
+
+  <div class="cajas">
+    <div class="caja">
+      <h4>Entregar a</h4>
+      <div class="nm">${esc(cli.name||(p.partner_id?p.partner_id[1]:"—"))}</div>
+      <div class="ln">${dir?esc(dir)+"<br>":""}${loc?esc(loc)+"<br>":""}${cli.vat?"CUIT "+esc(cli.vat)+"<br>":""}${cli.phone?"Tel. "+esc(cli.phone):""}</div>
+    </div>
+    <div class="caja">
+      <h4>Referencias</h4>
+      <div class="ln">
+        Pedido <b>${esc(ped.name||p.origin||"—")}</b><br>
+        ${ped.client_order_ref?"OC del cliente <b>"+esc(ped.client_order_ref)+"</b><br>":""}
+        ${ped.user_id?"Comercial <b>"+esc(ped.user_id[1])+"</b><br>":""}
+        ${ped.payment_term_id?"Pago <b>"+esc(ped.payment_term_id[1])+"</b>":""}
+      </div>
+    </div>
+  </div>
+
+  <table>
+    <thead><tr><th>Producto</th><th class="c">Lote</th><th class="c">Vencimiento</th><th class="r">Cantidad</th></tr></thead>
+    <tbody>${filas||'<tr><td colspan="4">Sin renglones.</td></tr>'}</tbody>
+    ${lins.length?`<tfoot><tr><td colspan="3">${fnum(lins.length)} ${lins.length===1?"renglón":"renglones"}</td><td class="r">${fnum(bultos)} u</td></tr></tfoot>`:""}
+  </table>
+
+  ${nota?`<div class="ind"><h4>Indicación de entrega</h4><p>${esc(nota)}</p></div>`:""}
+
+  <div class="firmas">
+    <div class="firma">Entregó — Droguería EyG</div>
+    <div class="firma">Recibí conforme — aclaración y sello</div>
+  </div>
+  <div class="pie"><span>Droguería EyG S.R.L. · Av. San Martín 3035, Rosario</span><span>Impreso desde EyG Core</span></div>
+</div>
+${"<scr"+"ipt>"}window.addEventListener("load",()=>setTimeout(()=>{try{window.print();}catch(e){}},350));${"</scr"+"ipt>"}
+</body></html>`;
+}
+
 async function imprimirRemito(id, ev){
   if(ev) ev.stopPropagation();
   const w=ventanaPDF();
   try{
-    const head=await EYG.rpcHead();
-    const r=await fetch(PDF_FN,{method:"POST",headers:head,body:JSON.stringify({tipo:"remito",id})});
-    if(!r.ok){
-      let det=""; try{ det=(await r.json()).error||""; }catch(_){ }
-      throw new Error(det||("el servidor devolvió "+r.status));
-    }
-    const blob=await r.blob();
-    w.location=URL.createObjectURL(blob);
+    const d=await datosRemito(id);
+    w.document.open(); w.document.write(remitoHTML(d)); w.document.close();
   }catch(e){
-    fallaPDF(w, "No pude traer el remito ("+(e.message||e)+"). Lo abro en Odoo.",
-      `${ODOO}/web#id=${id}&model=stock.picking&view_type=form`);
+    fallaPDF(w, "No pude armar el remito: "+(e.message||e), `${ODOO}/web#id=${id}&model=stock.picking&view_type=form`);
   }
 }
 
@@ -416,12 +549,91 @@ async function cargar(){
     await cargarArchivados();
     reagrupar();
     await cargarAvisos();
+    await cargarCortos();
     recalcularDias();
     calcularKpis(hoy);
     render();
   }catch(e){
     app.innerHTML='<div class="errbox"><b>No pude cargar la facturación.</b><br>'+esc(e.message||e)+'</div>';
   }
+}
+
+/* ══════════════ ENTREGADO DE MENOS ══════════════
+   El caso Laprida (16/9/2026): el pedido pedía 490, se entregaron 486, se
+   facturó por el total y después hubo que emitir una nota de crédito. Peor: en
+   ese caso se hicieron las DOS cosas (bajar el borrador y emitir la NC) y el
+   crédito salió duplicado.
+
+   La raíz es que casi todos los productos tienen política de facturación
+   **"por pedido"**, así que Odoo factura lo PEDIDO, no lo entregado. Si salió
+   menos, la factura sale de más y hay que corregirla con papel fiscal.
+
+   Medido el 5/10/2026 sobre los pedidos por facturar: **13 de 24 (54%)** tenían
+   algún renglón entregado de menos, por **$13,8 M** que se facturarían de más.
+   Por eso se avisa ANTES, y se ofrece bajar el pedido a lo entregado — que es
+   corregir el borrador, no emitir una nota de crédito después. */
+let CORTOS={};   // id de pedido -> {lineas, unidades, monto}
+
+async function cargarCortos(){
+  CORTOS={};
+  const ids=PEND.filter(porFacturar).map(o=>o.id);
+  if(!ids.length) return;
+  try{
+    const lins=await EYG.rpc("sale.order.line","search_read",
+      [[["order_id","in",ids],["display_type","=",false]]],
+      {fields:["order_id","product_uom_qty","qty_delivered","price_unit","discount","product_id"],context:{lang:"es_AR"},limit:0});
+    lins.forEach(l=>{
+      const falta=(l.product_uom_qty||0)-(l.qty_delivered||0);
+      if(falta<=0.001) return;
+      const k=l.order_id[0];
+      const c=CORTOS[k]=CORTOS[k]||{lineas:0,unidades:0,monto:0,detalle:[]};
+      c.lineas++; c.unidades+=falta;
+      c.monto+=falta*(l.price_unit||0)*(1-(l.discount||0)/100);
+      c.detalle.push({prod:l.product_id?l.product_id[1]:"—", pedido:l.product_uom_qty, entregado:l.qty_delivered, falta});
+    });
+  }catch(e){ console.warn("No pude mirar lo entregado",e); }
+}
+const corto=o=>CORTOS[o.id]||null;
+
+/* Baja las cantidades del pedido a lo que realmente salió. Es corregir ANTES de
+   facturar, que es lo que evita la nota de crédito. */
+async function ajustarAEntregado(oid){
+  const o=PEND.find(x=>x.id===oid), c=corto(o||{});
+  if(!o||!c) return;
+  confirmarDialogo({
+    titulo:"Ajustar "+o.name+" a lo entregado",
+    cuerpo:`Se bajan <b>${fnum(c.lineas)}</b> ${c.lineas===1?"renglón":"renglones"} a la cantidad que realmente salió:<br><br>`+
+      c.detalle.slice(0,8).map(d=>`· ${esc(String(d.prod).slice(0,40))}: <b>${fnum(d.pedido)} → ${fnum(d.entregado)}</b>`).join("<br>")+
+      (c.detalle.length>8?`<br>· y ${c.detalle.length-8} más`:"")+
+      `<br><br>Así la factura sale por <b>${money(montoPend(o)-c.monto)}</b> en vez de ${money(montoPend(o))}, y no hace falta nota de crédito.`,
+    ok:"Ajustar a lo entregado",
+    run:async()=>{
+      cerrarDialogo();
+      TRABAJANDO[oid]=true; render();
+      try{
+        const lins=await EYG.rpc("sale.order.line","search_read",
+          [[["order_id","=",oid],["display_type","=",false]]],
+          {fields:["product_uom_qty","qty_delivered"],context:{lang:"es_AR"},limit:0});
+        const cambios=lins.filter(l=>(l.product_uom_qty||0)-(l.qty_delivered||0)>0.001);
+        for(const l of cambios){
+          await EYG.rpc("sale.order.line","write",[[l.id],{product_uom_qty:l.qty_delivered}],{context:{lang:"es_AR"}});
+        }
+        const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
+        try{ await EYG.rpc("sale.order","message_post",[[oid]],
+          {body:"✂️ Cantidades ajustadas a lo entregado desde EyG Core por "+esc(quien)+" ("+cambios.length+
+                (cambios.length===1?" renglón":" renglones")+"), antes de facturar, para no tener que emitir una nota de crédito.",
+           message_type:"comment"}); }catch(_){}
+        toast(cambios.length===1?"1 renglón ajustado ✓":cambios.length+" renglones ajustados ✓");
+        delete TRABAJANDO[oid]; delete DET[oid];
+        await refrescarPedido(oid);
+        await cargarCortos();
+        render();
+      }catch(e){
+        delete TRABAJANDO[oid]; render();
+        dialogoError(o.name,e.message||String(e));
+      }
+    }
+  });
 }
 
 /* ══════════════ ARCHIVAR ══════════════
@@ -841,6 +1053,7 @@ function filaPedido(o){
     tieneOC(o)?'<span class="chip c-gris" title="La comercial adjuntó la orden de compra del cliente. Está en el detalle.">📎 OC adjunta</span>':"",
     (o.type_id&&o.type_id[0]===3)?'<span class="chip c-gris" title="Tipo Proforma: al facturar va al talonario Proforma, sin validez fiscal.">proforma</span>':"",
     o.delivery_status==="pending"?'<span class="chip c-warn" title="El pedido todavía no salió del depósito.">sin entregar</span>':"",
+    (falta&&corto(o))?`<span class="chip c-bad" title="Salió MENOS de lo que pide el pedido: ${fnum(corto(o).lineas)} ${corto(o).lineas===1?"renglón":"renglones"}, ${fnum(corto(o).unidades)} unidades, ${money(corto(o).monto)}. Como la facturación es por lo PEDIDO, si lo facturás así se factura de más y después hay que hacer nota de crédito. Conviene ajustarlo primero.">⚠️ entregado de menos</span>`:"",
     o.amount_untaxed?chipMrg((o.margin_percent||0)*100, o.margin, "Margen de todo el pedido; el detalle lo abre renglón por renglón."):""
   ].filter(Boolean).join(" ");
   /* Se muestra UNA sola nota en la fila —la que pide frenar, si hay, si no la
@@ -860,6 +1073,7 @@ function filaPedido(o){
     ${notas?`<div class="avisos">${notas}</div>`:""}
     <div class="acc">
       ${falta?`<button class="btn pri" ${trab?"disabled":""} title="Genera la factura de este pedido. Vas a poder elegir si se emite con CAE o queda en borrador." onclick="accion(${o.id})">🧾 Facturar</button>`:""}
+      ${(falta&&corto(o))?`<button class="btn dan" ${trab?"disabled":""} title="Baja las cantidades del pedido a lo que realmente salió del depósito, ANTES de facturar. Es lo que evita tener que emitir una nota de crédito después." onclick="ajustarAEntregado(${o.id})">✂️ Ajustar a lo entregado</button>`:""}
       <button class="btn sm" onclick="abrir(${o.id})">👁️ Ver detalle</button>
       <button class="btn sm" onclick="pedirArchivar(${o.id})" title="Lo saca de la cola, de los avisos y de Mi día, sin tocar nada en Odoo. Queda en la pestaña Archivados y se puede devolver.">🗄️ Apartar</button>
       <a class="lnk" style="margin-left:4px" target="_blank" href="${ODOO}/web#id=${o.id}&model=sale.order&view_type=form">Abrir en Odoo ↗</a>
@@ -924,7 +1138,10 @@ function detalleHTML(o){
 
   const filas=d.lineas.map(l=>`<tr id="lin-${l.id}">
       <td class="prod">${esc(String(l.name||"").split("\n")[0])}${trabado(l)?' <span class="chip c-gris" title="Este renglón ya se facturó: no se puede editar desde acá.">facturado</span>':""}</td>
-      <td class="r">${inp(l,"product_uom_qty",l.product_uom_qty,"chico")}</td>
+      <td class="r">${inp(l,"product_uom_qty",l.product_uom_qty,"chico")}${
+        ((l.product_uom_qty||0)-(l.qty_delivered||0)>0.001)
+          ? `<div class="salio" title="Del depósito salieron ${fnum(l.qty_delivered)} de las ${fnum(l.product_uom_qty)} pedidas. Si se factura la cantidad pedida, se factura de más.">salió ${fnum(l.qty_delivered)}</div>`
+          : ""}</td>
       <td class="r">${inp(l,"price_unit",l.price_unit)}</td>
       <td class="r">${inp(l,"discount",l.discount,"chico")}</td>
       <td class="r muted" title="Costo unitario que tiene cargado Odoo. Es la base del margen.">${money(l.purchase_price)}</td>
@@ -936,7 +1153,7 @@ function detalleHTML(o){
 
   const tabla=`<div class="tscroll"><table>
       <thead><tr><th>Producto</th>
-        <th class="r" title="Cantidad pedida. Se puede editar.">Cant.</th>
+        <th class="r" title="Cantidad pedida. Se puede editar. Si abajo dice «salió N», del depósito salió menos que eso.">Cant.</th>
         <th class="r" title="Precio unitario sin IVA. Se puede editar: al cambiarlo se recalcula el margen al instante, antes de guardar.">Precio</th>
         <th class="r" title="Descuento del renglón, en porcentaje. Se puede editar.">Desc.</th>
         <th class="r" title="Costo unitario cargado en Odoo. Es la base con la que se calcula el margen.">Costo</th>
@@ -1245,10 +1462,37 @@ function vistaAtrasados(){
    la comercial pidió frenar el pedido lo avisa arriba de todo. */
 function accion(id){
   const o=PEND.find(x=>x.id===id); if(!o) return;
-  const fr=frenado(o);
+  const fr=frenado(o), c=corto(o);
+
+  /* Si salió menos de lo pedido, el camino por defecto NO es facturar: es
+     ajustar primero. Facturar de más obliga a una nota de crédito, y ahí es
+     donde se armó el lío de Laprida. */
+  if(c){
+    confirmarDialogo({
+      titulo:"Ojo: a "+o.name+" se le entregó menos de lo pedido",
+      alerta:"Si lo facturás así, la factura sale por "+money(c.monto)+" de MÁS y después hay que emitir una nota de crédito.",
+      cuerpo:`<b>${esc(o.partner_id?o.partner_id[1]:"")}</b><br><br>
+        ${c.detalle.slice(0,6).map(d=>`· ${esc(String(d.prod).slice(0,42))}<br>&nbsp;&nbsp;&nbsp;pedido <b>${fnum(d.pedido)}</b> · salió <b>${fnum(d.entregado)}</b> · faltan <b>${fnum(d.falta)}</b>`).join("<br>")}
+        ${c.detalle.length>6?`<br>· y ${c.detalle.length-6} renglones más`:""}
+        <br><br>Pasa porque los productos se facturan <b>por lo pedido</b>, no por lo entregado.
+        Lo sano es <b>bajar el pedido a lo que salió</b> y recién después facturar.`,
+      ok:"✂️ Ajustar a lo entregado",
+      ok2:"Facturar igual, por el total",
+      run:()=>{ cerrarDialogo(); ajustarAEntregado(id); },
+      run2:()=>{ cerrarDialogo(); accionFacturar(id, true); }
+    });
+    return;
+  }
+  accionFacturar(id, false);
+}
+
+function accionFacturar(id, avisado){
+  const o=PEND.find(x=>x.id===id); if(!o) return;
+  const fr=frenado(o), c=corto(o);
   confirmarDialogo({
     titulo:"Facturar "+o.name,
-    alerta:fr?"⚠️ La comercial pidió NO facturar este pedido todavía. Revisá su nota y, si hace falta, avisale antes de emitir.":"",
+    alerta:fr?"⚠️ La comercial pidió NO facturar este pedido todavía. Revisá su nota y, si hace falta, avisale antes de emitir."
+          :(avisado&&c?"Vas a facturar por el total, incluyendo "+money(c.monto)+" que no se entregó. Después va a hacer falta una nota de crédito.":""),
     cuerpo:`<b>${esc(o.partner_id?o.partner_id[1]:"")}</b><br>
       A facturar: <b>${money(montoPend(o))}</b><br>
       Tipo: ${esc(o.type_id?o.type_id[1]:"—")}${(o.type_id&&o.type_id[0]===3)?" — va al talonario <b>Proforma</b>, sin validez fiscal":""}<br>
@@ -1357,7 +1601,7 @@ function dialogoError(nombre,msg){
 
 window.irA=irA; window.filtrar=filtrar; window.verCola=verCola; window.filtrarQ=filtrarQ; window.abrir=abrir;
 window.accion=accion; window.irPedido=irPedido; window.cerrarDialogo=cerrarDialogo;
-window.imprimirFactura=imprimirFactura; window.imprimirRemito=imprimirRemito;
+window.imprimirFactura=imprimirFactura; window.imprimirRemito=imprimirRemito; window.ajustarAEntregado=ajustarAEntregado;
 window.recalcLinea=recalcLinea; window.guardarLineas=guardarLineas; window.descartarLineas=descartarLineas;
 window.pedirArchivar=pedirArchivar; window.archivar=archivar; window.desarchivar=desarchivar;
 window.ponerMotivo=ponerMotivo; window.notaListo=notaListo;
