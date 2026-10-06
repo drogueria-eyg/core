@@ -507,7 +507,7 @@ function hojaHTML(r){
     `Hasta la meta cobra la tasa base de su perfil (<b>${PC(r.tasaTeorica.base)}</b>); por todo lo que la supera, la tasa alta (<b>${PC(r.tasaTeorica.high)}</b>). Cruzar la meta es lo que sube la tasa.`,
     `<table class="lqt">${fila("Hasta la meta ("+M(r.corte)+")",M2(r.t1))}${fila("Por encima de la meta",r.t2>0?M2(r.t2):"—")}</table>`);
 
-  const _freno=!!(data.config && data.config.nivelSoloTramoBase!==false && EYG.paqueteRige(data.mes,data.config));
+  const _freno=!!(r.config && r.config.nivelSoloTramoBase===true && EYG.paqueteRige(r.mes,r.config));
   h+=paso(4,`Su nivel: ${r.nivel.emoji} ${r.nivel.nombre} · multiplica ×${r.nivel.mult.toFixed(2)}`,
     "El nivel es <b>premio</b>: suma puntos cumpliendo sus objetivos. Sobre 100 puntos: 🥉 menos de 40 · 🥈 40 · 🥇 60 · 💎 80 · 👑 95."+
     (_freno?" Multiplica la comisión de su venta <b>hasta la meta</b>; lo que la supera ya se paga a la tasa alta, que es el máximo de la casa."
@@ -529,7 +529,7 @@ function docHTML(data,cerrado){
   const cs=data.comerciales||[];
   const tot=cs.reduce((s,r)=>s+r.comiFinal,0), totNeto=cs.reduce((s,r)=>s+(r.neto||0),0);
   const crec=Math.round(((data.config&&data.config.metaCrecimiento)||0.20)*100);
-  cs.forEach(r=>{ r.config=data.config; r.metaCrec=(data.config&&data.config.metaCrecimiento); });
+  cs.forEach(r=>{ r.config=data.config; r.mes=data.mes; r.metaCrec=(data.config&&data.config.metaCrecimiento); });
   return `<div class="lqdoc">
     <div class="lqestado ${cerrado?"cerrado":"abierto"}">${cerrado
       ? `🔒 <b>Mes liquidado</b> — congelado el ${esc(data.liquidadoEl||data.generado)}. Estos números ya no cambian.`
