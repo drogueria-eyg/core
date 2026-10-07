@@ -225,7 +225,7 @@ const BANCOS={
        vuelve a crear, estos dos números cambian y hay que actualizarlos acá.
        OJO: el Macro devuelve TRES cuentas —dos en pesos y una en dólares—; la del
        diario es la cuenta corriente 333209421315913. */
-    online:{link:27, cuenta:16, nombre:"Banco Macro Empresas"},
+    /* la conexion ya NO se escribe a mano: buscarConexion() la encuentra por el numero de cuenta */
     textos:[
       /* ---- impuestos: la casa los imputa DIRECTO a su cuenta, sin factura de por medio ---- */
       {re:"S/DB TASA GRAL",              tipo:"impuesto", sub:"Ley 25.413 débitos",     cta:259, partner:2092},  // 354
@@ -746,20 +746,30 @@ function render(){
 function bloqueConexion(B){
   const c=ST.conexion;
   return '<div class="conexion">'+
-    '<div class="cx-t"><b>🔗 '+esc(B.online.nombre)+' está conectado.</b> Los movimientos los pide Odoo al banco: '+
-      'no hace falta bajar ni subir ningún archivo. Con la conexión encendida, <b>este banco no se carga a mano</b> — '+
-      'lo que se sube a mano no se reconoce como repetido y queda duplicado.</div>'+
+    '<div class="cx-t"><b>🔗 Traer del banco.</b> Si este banco tiene conexión en Odoo, los movimientos los pide '+
+      'Odoo directamente y no hace falta ningún archivo. El botón busca la cuenta '+esc(B.cuentaBanco||"")+' entre las '+
+      'que trajo el proveedor, la vincula al diario si hace falta, y pide lo nuevo. <b>Con la conexión andando, este '+
+      'banco no se carga a mano</b>: lo que se sube a mano no se reconoce como repetido y queda duplicado.</div>'+
     '<button class="btn wide" onclick="traerDelBanco()"'+(ST.trabajando?" disabled":"")+'>'+
       (ST.trabajando?"Conectando con el banco…":"⬇  Traer los movimientos del banco")+'</button>'+
-    (c?'<div class="cx-e">'+
-        'Última vez que el banco mandó datos: <b>'+esc(String(c.sync||"nunca"))+'</b> · '+
+    (c&&c.sinCuenta
+      ? '<div class="cx-e"><span class="cx-ojo">⚠️ <b>No encontré la cuenta '+esc(B.cuentaBanco||"")+' entre las del proveedor'+
+          (c.hay?' (hay '+c.hay+' de otras cuentas)':' — no hay ninguna')+'.</b> '+
+          'Falta que una persona se valide en el home banking, desde Odoo en <b>Contabilidad → Configuración → Conexiones bancarias</b>. '+
+          'Cuando llegue a elegir la cuenta puede saltar un error de moneda: <b>es un problema conocido de Odoo, hay que cerrarlo e ignorarlo</b>. '+
+          'Con que la cuenta quede creada alcanza — este botón hace el resto.</span></div>'
+      : c
+      ? '<div class="cx-e">'+
+        (c.nombre?esc(c.nombre)+' · cuenta <b>'+esc(String(c.cuenta||""))+'</b> · ':"")+
+        'última vez que el banco mandó datos: <b>'+esc(String(c.sync||"nunca"))+'</b> · '+
         'saldo que informó: <b>'+money(c.saldo)+'</b> · '+
         'esta vez trajo <b>'+c.nuevas+'</b> movimiento'+(c.nuevas===1?"":"s")+'.'+
         (c.nuevas===0?'<span class="cx-ojo">⚠️ Que diga <b>conectado</b> sólo quiere decir que Odoo tiene las credenciales guardadas, '+
-          'no que la sesión con el banco esté viva. Si hace días que no trae nada, hay que volver a validarse en el home banking: '+
-          'eso lo tiene que hacer una persona, desde Odoo en <b>Contabilidad → Configuración → Conexiones bancarias</b>, '+
-          'con el botón de actualizar credenciales.</span>':'')+
-       '</div>':"")+
+          'no que la sesión con el banco esté viva. <b>El saldo es la prueba</b>: cambia todos los días que hay movimiento, '+
+          'así que si no se mueve, el proveedor no está leyendo la cuenta. Hay que volver a validarse en el home banking, '+
+          'y eso lo tiene que hacer una persona.</span>':'')+
+       '</div>'
+      : "")+
     '</div>';
 }
 
@@ -779,7 +789,7 @@ function zonaCarga(){
     ((B.codigos||B.textos)?"":'<div class="aviso warn" style="margin:12px 0 0">⚠️ <div><b>'+esc(B.nombre)+' todavía no tiene su mapa.</b> '+
       'El archivo se va a poder leer si el formato es igual al de Credicoop, pero los movimientos van a quedar <b>sin clasificar</b>: '+
       'no voy a saber cuál es un impuesto, cuál una comisión y cuál un cobro. Pasame un resumen de este banco y lo agrego.</div></div>')+
-    (B.online?bloqueConexion(B):"")+
+    (B.cuentaBanco?bloqueConexion(B):"")+
     '<label class="drop" id="drop" style="margin-top:12px"><div class="ic">📄</div>'+
     '<div class="t">'+(ST.listo?"Cargar más archivos":"Elegí uno o varios resúmenes")+'</div>'+
     '<div class="s">'+esc(B.nombre)+' · formato .xls · se pueden soltar varios juntos</div>'+
@@ -1634,6 +1644,49 @@ window.elegirCand=(i)=>conTrabajo(async()=>{
    ══════════════════════════════════════════════════════════════════════════ */
 const soloDigitos=s=>{const t=String(s||"").trim(); return t.length>0 && t.split("").every(ch=>"0123456789".indexOf(ch)>=0);};
 
+/* ══════════════════════════════════════════════════════════════════════════
+   LA CONEXIÓN DEL BANCO, DESCUBIERTA SOLA
+
+   Antes los números del vínculo estaban escritos a mano en el mapa, y cada vez que
+   alguien recreaba la conexión cambiaban y había que actualizarlos. Acá se buscan
+   por el NÚMERO DE CUENTA, que es lo único que no cambia.
+
+   Y de paso resuelve un bug de Odoo. Al vincular una cuenta a un diario desde la
+   pantalla de Odoo, el módulo de sincronización le escribe al diario la moneda de la
+   cuenta; si la cuenta es en pesos y la compañía también, el propio control de Odoo
+   lo rechaza con "Solo puede utilizar una moneda secundaria distinta a la moneda de
+   la compañía (ARS)" y la vinculación no se completa. El control está bien —un diario
+   no debe tener como moneda secundaria la de la compañía—; lo que está mal es que el
+   módulo escriba la moneda. Escribiendo sólo `account_online_account_id`, que es lo
+   que hace `vincularCuenta`, el diario queda bien y el error no aparece.
+   ══════════════════════════════════════════════════════════════════════════ */
+const soloNros=s=>String(s||"").replace(/[^0-9]/g,"");
+
+async function buscarConexion(B){
+  /* las cuentas online que el proveedor haya traído, vinculadas o no */
+  const ctas=await rpc("account.online.account","search_read",
+    [[],["id","name","account_number","journal_ids","account_online_link_id","last_sync","balance","currency_id"]],{limit:0});
+  if(!ctas.length) return {cuentas:[], mia:null, yaVinculada:null};
+  /* la del diario: la que ya está vinculada, o la que coincide por número de cuenta */
+  const yaVinculada = ctas.find(c=>(c.journal_ids||[]).indexOf(B.diario)>=0) || null;
+  const nro = soloNros(B.cuentaBanco);
+  const mia = yaVinculada || (nro ? ctas.find(c=>!c.journal_ids.length && soloNros(c.account_number)===nro) : null) || null;
+  return {cuentas:ctas, mia, yaVinculada};
+}
+
+/* Vincula la cuenta al diario SIN tocar la moneda, que es lo que rompe en Odoo. */
+async function vincularCuenta(B, cuentaId){
+  await rpc("account.journal","write",[[B.diario],{account_online_account_id:cuentaId}]);
+  const j=(await rpc("account.journal","read",[[B.diario],["account_online_account_id","account_online_link_id","bank_statements_source","currency_id"]]))[0];
+  if(!j.account_online_account_id) throw new Error("la cuenta no quedó vinculada al diario");
+  if(j.currency_id) throw new Error("el diario quedó con una moneda puesta ("+j.currency_id[1]+"): eso no corresponde, avisá");
+  /* el corte de fechas: el día de la última línea cargada, para no traer lo que ya está */
+  const ult=await rpc("account.bank.statement.line","search_read",[[["journal_id","=",B.diario]],["date"]],{limit:1,order:"date desc"});
+  if(ult.length) await rpc("account.online.account","write",[[cuentaId],{last_sync:ult[0].date}]);
+  if(j.account_online_link_id) await rpc("account.online.link","write",[[j.account_online_link_id[0]],{auto_sync:true}]);
+  return {link:j.account_online_link_id, desde:ult.length?ult[0].date:null};
+}
+
 /* EL SALDO DESPUÉS DEL MOVIMIENTO. El banco NO manda la hora —le pone la misma a todos
    los movimientos del día, así que no sirve para ordenarlos— pero sí manda el saldo que
    quedó después de cada uno, adentro del detalle crudo de la transacción. Ese dato vale
@@ -1664,16 +1717,32 @@ function chequeDe(l){
 
 async function traerDelBanco(){
   const B=BANCOS[ST.banco];
-  if(!B.online){ alert(B.nombre+" no tiene conexión con el banco todavía: ese se sigue cargando por archivo."); return; }
   if(ST.trabajando) return;
   ST.trabajando=true; ST.listo=false; ST.logs=[]; ST.archivos=[]; ST.validacion=null; ST.filtro=null; render();
   document.getElementById("app").insertAdjacentHTML("beforeend",
-    '<div class="cargando">Conectando con '+esc(B.online.nombre)+' y pidiendo los movimientos…</div>');
+    '<div class="cargando">Conectando con el banco y pidiendo los movimientos…</div>');
   try{
+    /* ---- la conexión se busca por el número de cuenta, no por un id escrito a mano ---- */
+    const cx=await buscarConexion(B);
+    if(!cx.mia){
+      ST.conexion={sinCuenta:true, hay:cx.cuentas.length};
+      log(cx.cuentas.length
+        ? "Hay "+cx.cuentas.length+" cuenta(s) traídas del proveedor, pero ninguna es la "+B.cuentaBanco
+        : "No hay ninguna cuenta traída del proveedor: falta que una persona se valide en el home banking","e");
+      ST.movs=[]; ST.listo=false; ST.trabajando=false; render(); return;
+    }
+    if(!cx.yaVinculada){
+      log("La cuenta "+cx.mia.account_number+" estaba sin vincular al diario. La vinculo…","o");
+      const v=await vincularCuenta(B, cx.mia.id);
+      log("Vinculada"+(v.desde?", y le puse el corte en el "+v.desde+" para no traer lo que ya está":"")+".","ok");
+    }
+    const linkId = cx.mia.account_online_link_id ? cx.mia.account_online_link_id[0] : null;
+    if(!linkId) throw new Error("la cuenta no tiene conexión asociada");
+
     const antes=await rpc("account.bank.statement.line","search_count",[[["journal_id","=",B.diario]]]);
-    log("Pidiendo los movimientos nuevos a "+B.online.nombre+"…");
+    log("Pidiendo los movimientos nuevos…");
     let falla="";
-    try{ await rpc("account.online.link","action_fetch_transactions",[[B.online.link]]); }
+    try{ await rpc("account.online.link","action_fetch_transactions",[[linkId]]); }
     catch(e){ falla=String((e&&e.message)||e); }
     const despues=await rpc("account.bank.statement.line","search_count",[[["journal_id","=",B.diario]]]);
     const nuevas=despues-antes;
@@ -1683,9 +1752,10 @@ async function traerDelBanco(){
     /* El estado de la conexión: 'conectado' quiere decir que Odoo tiene las credenciales
        guardadas, NO que la sesión con el banco esté viva. Si hace días que no trae nada,
        lo que falta es que una persona vuelva a validarse en el home banking. */
-    const lk=await rpc("account.online.link","read",[[B.online.link],["state","last_refresh"]]);
-    const ac=await rpc("account.online.account","read",[[B.online.cuenta],["last_sync","balance"]]);
-    ST.conexion={estado:lk[0].state, refresh:lk[0].last_refresh, sync:ac[0].last_sync, saldo:ac[0].balance, nuevas};
+    const lk=await rpc("account.online.link","read",[[linkId],["state","last_refresh","name"]]);
+    const ac=await rpc("account.online.account","read",[[cx.mia.id],["last_sync","balance"]]);
+    ST.conexion={estado:lk[0].state, refresh:lk[0].last_refresh, nombre:lk[0].name,
+                 sync:ac[0].last_sync, saldo:ac[0].balance, nuevas, cuenta:cx.mia.account_number};
 
     /* ---- las líneas sin resolver del diario: eso es lo que hay para trabajar ---- */
     const lin=await rpc("account.bank.statement.line","search_read",
