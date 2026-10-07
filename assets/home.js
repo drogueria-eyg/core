@@ -93,6 +93,7 @@ window.EYGHome = (function(){
   let V={};              // qué ve este rol
   let SC={tipo:"global", uid:null, cartera:null};
   let HOY, MES_INI, SEM_INI, ANO_INI;
+  let RITMO=null;               // pedidos y facturado del mes, día por día
   let ORD8=[], ORD8_OK=false;   // pedidos de los últimos 8 días (hoy / hora x hora / sparkline)
   let MG=null;                  // resumen de margen (se cachea entre refrescos)
   let MODO="ventas";            // qué muestra el gráfico: ventas | margen | canales | rubros
@@ -328,8 +329,12 @@ window.EYGHome = (function(){
         (f.d>=desde && (!hasta||f.d<=hasta)) ? {m:a.m+f.m, n:a.n+f.n} : a, {m:0,n:0});
       const neto=(desde,hasta)=>acum(inv,desde,hasta).m - acum(ref,desde,hasta).m;
       const facMes=acum(inv,MES_INI);
-      return {ok:true,
+      /* El detalle por día ya está leído: se devuelve para que el ritmo del mes
+         no tenga que volver a pedírselo a Odoo. */
+      const dia={}; inv.forEach(f=>dia[f.d]=(dia[f.d]||0)+f.m); ref.forEach(f=>dia[f.d]=(dia[f.d]||0)-f.m);
+      return {ok:true, dia,
         hoy:neto(HOY,HOY), sem:neto(SEM_INI), mes:neto(MES_INI), ano:neto(ANO_INI),
+        mesAnt:neto(addM(MES_INI,-1), addD(MES_INI,-1)),
         ticketMes: facMes.n?facMes.m/facMes.n:0, nFacMes:facMes.n};
     }catch(e){ return {ok:false}; }
   }
@@ -487,6 +492,7 @@ window.EYGHome = (function(){
     <div id="dz-aviso"></div>
     ${V.ventas?`<div id="dz-kpi" class="rise" style="animation-delay:.04s">${kpiSkel()}</div>`:""}
     ${V.salud?`<div id="dz-salud" class="cx" hidden></div>`:""}
+    ${V.ventas?`<div id="dz-ritmo" class="cx rise" style="animation-delay:.06s">${cxSkel("📅 Ritmo del mes")}</div>`:""}
     ${V.ventas?`<div id="dz-evo" class="cx evo rise" style="animation-delay:.08s">${evoSkel()}</div>`:""}
     ${fila("cols3",[
       V.cobranza?tarjeta("dz-cob","💳 Cobranza"):"",
@@ -572,7 +578,7 @@ window.EYGHome = (function(){
       if(mAntFin>=MES_INI) mAntFin=addD(MES_INI,-1);         // meses cortos (31 de marzo → 28 de febrero)
       const semAntIni=addD(SEM_INI,-7), semAntFin=addD(SEM_INI,-7+dow(HOY));
 
-      const [ord, sem, semAnt, d7, d14, d30, d60, mes, mesAnt, ano, FAC, FACMG] = await Promise.all([
+      const [ord, sem, semAnt, d7, d14, d30, d60, mes, mesAnt, pedDia, mesAntTot, ano, FAC, FACMG] = await Promise.all([
         rpc("sale.order","search_read",[domVentas([["date_order",">=",uDesde(addD(HOY,-7))]]),
             ["name","partner_id","date_order","amount_untaxed","user_id","website_id","origin","create_uid"]],Object.assign({limit:0,order:"date_order desc"},CTX)),
         sumaVentas(SEM_INI), sumaVentas(semAntIni,semAntFin),
@@ -581,6 +587,11 @@ window.EYGHome = (function(){
         sumaVentas(addD(HOY,-30), addD(HOY,-1)),   // 30 días completos, hasta ayer
         sumaVentas(addD(HOY,-60), addD(HOY,-31)),  // los 30 anteriores
         sumaVentas(MES_INI),  sumaVentas(mAntIni,mAntFin),
+        /* Pedidos del mes DÍA POR DÍA: el ritmo necesita saber qué días hubo
+           actividad, no sólo el total. Una consulta agrupada, sale barata. */
+        rpc("sale.order","read_group",[domVentas([["date_order",">=",uDesde(MES_INI)]]),["amount_untaxed:sum"],["date_order:day"]],
+            Object.assign({lazy:false},CTX)),
+        sumaVentas(addM(MES_INI,-1), addD(MES_INI,-1)),   // el mes pasado completo, para comparar el cierre
         sumaVentas(ANO_INI),
         /* Facturado, para contrastar contra los pedidos en cada tarjeta.
            Pedidos y facturas NUNCA van a coincidir: el pedido se confirma un día
@@ -595,6 +606,12 @@ window.EYGHome = (function(){
          va del mes": el 2 de octubre el mes lleva dos días y compararlos contra
          dos días de septiembre daba −47% cuando el negocio venía +11%. */
       SALUD.ventas={v30:d30.m, v30Ant:d60.m};
+      const pedPorDia={};
+      for(const r of pedDia){ const rg=r.__range&&r.__range["date_order:day"];
+        const d=String(rg?rg.from:(r["date_order:day"]||"")).slice(0,10);
+        if(d) pedPorDia[d]=(pedPorDia[d]||0)+(r.amount_untaxed||0); }
+      RITMO={ped:pedPorDia, fac:(FAC&&FAC.dia)||{}, pedAnt:mesAntTot.m, facAnt:FAC.ok?FAC.mesAnt:0};
+      pintarRitmo();
       SALUD.sem={sem:d7.m, semAnt:d14.m};
       pintarSalud();
       ORD8 = ord.map(o=>Object.assign({
@@ -916,6 +933,92 @@ window.EYGHome = (function(){
     pintarSalud();
   }
 
+  /* ===== RITMO DEL MES ==========================================================
+     A qué velocidad viene el mes CALENDARIO y en cuánto cerraría si siguiera así.
+     Dos renglones: lo pedido y lo facturado, que nunca son lo mismo.
+
+     EL DIVISOR SON DÍAS HÁBILES, no días corridos. Está medido, no supuesto: en
+     los últimos tres meses la facturación de sábado y domingo es exactamente
+     cero, y los pedidos de fin de semana son el 3% de un día normal. Dividir por
+     días corridos diría que la droguería factura $14M por día cuando factura
+     $20M los días que trabaja, y la proyección saldría por el piso.
+
+     HOY NO ENTRA EN EL PROMEDIO. A las 9 de la mañana el día va por la décima
+     parte, y meterlo en el divisor tiraría el promedio abajo toda la mañana para
+     ir recuperándose a la tarde — el mismo error que ya sacamos dos veces de la
+     tarjeta de salud. El promedio sale de los días COMPLETOS y la proyección
+     suma lo que ya entró, hoy incluido.
+
+     LOS DÍAS SIN NINGUNA ACTIVIDAD NO CUENTAN como día hábil: un feriado de
+     lunes a viernes queda afuera del divisor en lugar de bajar el promedio.
+     Para los días que faltan no hay forma de saberlo, así que un feriado por
+     delante deja la proyección un poco alta. Está dicho en la ayuda. */
+  function habilesEntre(desde, hasta){
+    let n=0, x=desde;
+    while(x<=hasta){ if(dow(x)<=4) n++; x=addD(x,1); }   // dow: 0=lunes … 4=viernes
+    return n;
+  }
+
+  function pintarRitmo(){
+    const z=document.getElementById("dz-ritmo"); if(!z) return;
+    const R=RITMO; if(!R||!R.ped) return;
+
+    const finMes = addD(addM(MES_INI,1), -1);
+    const ayer   = addD(HOY,-1);
+    /* Días hábiles ya completos, descontando los que no tuvieron nada. */
+    let hechos=0, feriados=0;
+    for(let x=MES_INI; x<=ayer; x=addD(x,1)){
+      if(dow(x)>4) continue;                              // sábado y domingo no son día hábil
+      if((R.ped[x]||0)>0 || (R.fac[x]||0)>0) hechos++; else feriados++;
+    }
+    const totales = habilesEntre(MES_INI, finMes) - feriados;
+    const nomMes  = MES[+MES_INI.slice(5,7)-1];
+
+    if(!hechos){
+      z.innerHTML=`<div class="cx-h"><h2>📅 Ritmo de ${esc(nomMes)}</h2></div>
+        <div class="nodata">${esc(nomMes)} todavía no tiene un día hábil completo. El ritmo aparece mañana.</div>`;
+      return;
+    }
+
+    /* El total incluye TODO lo del mes —fines de semana también—, pero el divisor
+       son sólo los días hábiles: lo del sábado suma al mes sin agregar un día. */
+    const sum=(o,h)=>{ let t=0; for(const d in o) if(d>=MES_INI&&d<=h) t+=o[d]; return t; };
+    const filas=[
+      {k:"ped", ic:"🧾", lab:"Pedidos",   hoy:sum(R.ped,HOY), cerr:sum(R.ped,ayer), ant:R.pedAnt,
+       ayuda:"Pedidos confirmados, sin IVA, por fecha de pedido."},
+      {k:"fac", ic:"📄", lab:"Facturado", hoy:sum(R.fac,HOY), cerr:sum(R.fac,ayer), ant:R.facAnt,
+       ayuda:"Facturas emitidas menos notas de crédito, sin IVA, por fecha de factura. Arranca el mes más atrás que los pedidos —lo que se pide el 1 se factura después— y los empareja sobre el cierre: en septiembre terminaron en $432,8M y $432,2M."},
+    ];
+    const faltan=Math.max(0,totales-hechos);
+    const avance=totales?hechos/totales:0;
+
+    z.innerHTML=`
+      <div class="cx-h"><h2>📅 Ritmo de ${esc(nomMes)}</h2>
+        <span class="hint">van <b>${ent(hechos)}</b> de ${ent(totales)} días hábiles${feriados?` · ${ent(feriados)} sin actividad, afuera del promedio`:""}</span></div>
+      <div class="rbar" title="${esc(nomMes)} va por el ${esc(p1(avance*100))} de sus días hábiles."><i style="width:${(avance*100).toFixed(1)}%"></i></div>
+      <div class="rtab">
+        <div class="rhead"><div></div><div>Promedio por día hábil</div><div>Proyección al cierre</div><div>${esc(MES[+addM(MES_INI,-1).slice(5,7)-1])} cerró en</div></div>
+        ${filas.map(f=>{
+          const prom = f.cerr/hechos;
+          /* El promedio por los días hábiles del mes, y nada más. Sumarle
+             además lo que lleva hoy contaría hoy dos veces: ya está adentro del
+             promedio como día por venir. Así la proyección tampoco se mueve
+             según la hora: a las 9 y a las 18 dice lo mismo, que es lo que se
+             le pide a una proyección. */
+          const proy = prom*totales;
+          return `<div class="rrow" title="${esc(f.ayuda)}">
+            <div class="rl">${f.ic} ${esc(f.lab)}</div>
+            <div class="rv" data-r="Promedio/día" title="${M(prom)} por día hábil, sobre ${ent(hechos)} día${hechos===1?"":"s"} completo${hechos===1?"":"s"}"><b data-to="${prom}" data-fmt="mc">$0</b><span>${ent(hechos)} día${hechos===1?"":"s"} medido${hechos===1?"":"s"}</span></div>
+            <div class="rv fuerte" data-r="Proyección" title="${M(prom)} por día hábil × ${ent(totales)} días hábiles del mes = ${M(proy)}. Van ${M(f.hoy)} entrados."><b data-to="${proy}" data-fmt="mc">$0</b><span>${f.ant?delta(proy,f.ant,""):"sin mes anterior"}</span></div>
+            <div class="rv ap" data-r="${esc(MES[+addM(MES_INI,-1).slice(5,7)-1])}" title="${M(f.ant)}">${f.ant?mc(f.ant):"—"}</div>
+          </div>`;
+        }).join("")}
+      </div>
+      <div class="rpie">La proyección es <b>el ritmo de los ${ent(hechos)} día${hechos===1?"":"s"} completo${hechos===1?"":"s"}</b> llevado a los ${ent(totales)} días hábiles del mes. Faltan ${ent(faltan)}.
+        <span class="hint">Hoy no entra en el promedio: a media mañana el día va por la mitad y bajaría el número sin que haya pasado nada. Los feriados ya transcurridos salen del divisor; uno que venga por delante no se puede adivinar, así que en esos meses la proyección queda algo alta.</span></div>`;
+    paintNums(z);
+  }
+
   /* ======================= gráfico de evolución ======================= */
   /* Una serie por (métrica, granularidad). Se piden 2N períodos y se grafican
      los últimos N: la primera mitad es la ventana de comparación. */
@@ -927,9 +1030,29 @@ window.EYGHome = (function(){
     if(esCorte(modo))    return (CACHE[ck]=await serieCorte(k,modo));
 
     const g=GRAN[k], N=g.n, fin=bkt(k,HOY), ini=g.prev(fin, 2*N-1);
-    const raw=await rpc("sale.order","read_group",
-      [domVentas([["date_order",">=",uDesde(ini)]]),["amount_untaxed:sum"],["date_order:"+g.g]],
-      Object.assign({lazy:false},CTX));
+    /* Junto a los pedidos se trae lo FACTURADO del mismo tramo, para poder
+       dibujar las dos cosas. Son dos preguntas distintas y nunca coinciden: el
+       pedido se confirma un día y se factura otro. Van en la misma vuelta. */
+    const facPorBucket = async tipo => {
+      const r=await rpc("account.move","read_group",
+        [domCuenta([["move_type","=",tipo],["state","=","posted"],["invoice_date",">=",ini],EYG.VENTA_REAL]),
+         ["amount_untaxed:sum"],["invoice_date:"+g.g]],
+        Object.assign({lazy:false},CTX));
+      const m={};
+      for(const x of r){ const rg=x.__range&&x.__range["invoice_date:"+g.g];
+        const from=rg?rg.from:x["invoice_date:"+g.g]; if(!from) continue;
+        const key=bkt(k,String(from)); m[key]=(m[key]||0)+(x.amount_untaxed||0); }
+      return m;
+    };
+    const [raw, fInv, fNc] = await Promise.all([
+      rpc("sale.order","read_group",
+        [domVentas([["date_order",">=",uDesde(ini)]]),["amount_untaxed:sum"],["date_order:"+g.g]],
+        Object.assign({lazy:false},CTX)),
+      facPorBucket("out_invoice").catch(()=>null),
+      facPorBucket("out_refund").catch(()=>null),
+    ]);
+    /* Si contabilidad no se deja leer, el gráfico sigue andando sin la línea. */
+    const fac = (fInv&&fNc) ? k=>( (fInv[k]||0) - (fNc[k]||0) ) : null;
     /* Normalizo la clave que devuelve Odoo con mi propio inicio de bucket:
        así da igual si Odoo arranca la semana en domingo o en lunes. */
     const map={};
@@ -942,8 +1065,9 @@ window.EYGHome = (function(){
       o.v+=r.amount_untaxed||0; o.n+=r.__count||0;
     }
     const pts=[];
-    for(let i=2*N-1;i>=0;i--){ const key=g.prev(fin,i), o=map[key]||{v:0,n:0}; pts.push({key,v:o.v,n:o.n}); }
-    return (CACHE[ck]={pts, N});
+    for(let i=2*N-1;i>=0;i--){ const key=g.prev(fin,i), o=map[key]||{v:0,n:0};
+      pts.push(fac ? {key,v:o.v,n:o.n,f:fac(key)} : {key,v:o.v,n:o.n}); }
+    return (CACHE[ck]={pts, N, conFac:!!fac});
   }
 
   /* Margen: una consulta por período (ver el comentario largo en margenPeriodo).
@@ -1157,7 +1281,9 @@ window.EYGHome = (function(){
       ? `<h2>📐 Evolución del margen</h2><div class="hint">margen sobre venta de pedidos confirmados, sin IVA</div>`
       : C
       ? `<h2>${C.ico} ${esc(C.tit)}</h2><div class="hint">${focoC?`solo <b>${focoC.ic} ${esc(focoC.lab)}</b> · tocá la tarjeta de nuevo para ver todos`:esc(C.sub)}</div>`
-      : `<h2>📈 Evolución de ventas</h2><div class="hint">pedidos confirmados, sin IVA · por fecha de pedido</div>`;
+      : GRA==="hora"
+      ? `<h2>📈 Evolución de ventas</h2><div class="hint">pedidos confirmados, sin IVA · por fecha de pedido · la facturación se ve desde Día en adelante</div>`
+      : `<h2>📈 Evolución de ventas</h2><div class="hint">barras: pedidos confirmados, por fecha de pedido · <b style="color:#20456E">línea: facturado neto</b>, por fecha de factura · sin IVA</div>`;
     if(!z.dataset.armado){
       z.innerHTML=`<div class="cx-h"><div id="evo-tit"></div><div class="evo-ctrl" id="evo-ctrl"></div></div><div id="evo-body"></div>`;
       z.dataset.armado="1";
@@ -1199,6 +1325,9 @@ window.EYGHome = (function(){
     if(!tot && !compTot){ body.innerHTML=`<div class="evo-empty">Todavía no hay ${esMg?"margen registrado":(focoC?"ventas por "+esc(focoC.lab):"ventas registradas")} en este período.</div>`
         + `<div id="evo-can">${cortesVisibles().map(c=>leyendaCorte(ventanaCorte(vis,comp,false,c), GRA, c)).join("")}</div>`; return; }
 
+    const FAC_LIN = (MODO==="ventas" && !s.hora && vis.length && vis[0].f!==undefined)
+                    ? vis.map(p=>p.f||0) : null;
+    const facTot  = FAC_LIN ? FAC_LIN.reduce((a,b)=>a+b,0) : 0;
     const conDato=vis.filter(p=>p.v>0);
     const prom = esMg ? tot : (conDato.length?tot/conDato.length:0);   // en margen, promedio = el total ponderado
     const pico = vis.reduce((a,p)=>p.v>a.v?p:a, vis[0]);
@@ -1222,6 +1351,9 @@ window.EYGHome = (function(){
           ? `<div class="es sm"><div class="l">Margen en pesos</div><div class="v" data-to="${mgTot}" title="${M(mgTot)}">$0</div></div>
              <div class="es sm"><div class="l">Sobre una venta de</div><div class="v" data-to="${vtTot}" title="${M(vtTot)}">$0</div></div>`
           : `<div class="es sm"><div class="l">Promedio por ${esc(uni)}</div><div class="v" data-to="${prom}" title="${M(prom)}">$0</div></div>`}
+        ${facTot?`<div class="es sm" title="Facturas emitidas menos notas de crédito en el mismo tramo, sin IVA, por fecha de factura. No tiene por qué coincidir con los pedidos: uno se confirma un día y se factura otro, y hay facturas que no nacen de un pedido.">
+          <div class="l"><span style="color:#20456E">●</span> Facturado</div>
+          <div class="v" data-to="${facTot}" data-fmt="mc" title="${M(facTot)}">$0</div></div>`:""}
         <div class="es sm"><div class="l">Mejor ${esc(uni)}</div><div class="v" title="${fmtV(pico.v)}">${fmtV(pico.v)}<span style="font-size:11px;color:var(--gris2);font-weight:700"> · ${esc(s.hora?pico.key+" hs":etiqueta(GRA,pico.key))}</span></div></div>
         ${esMg
           ? (MG&&MG.ok&&MG.ref!=null?`<div class="es sm"><div class="l">vs promedio 12 meses</div><div class="v">${deltaPts(tot,MG.ref,"")}</div></div>`:"")
@@ -1230,11 +1362,11 @@ window.EYGHome = (function(){
         ${focoC?"":visibles.filter(c=>c!=="operacion").map(c=>`<div class="es sm" id="evo-lider-${c}" hidden title="${esc(CORTES[c].lider)}: el que se llevó la mayor parte de la plata en el período que estás mirando."></div>`).join("")}
         ${s.hora?`<div class="es sm"><div class="l">&nbsp;</div><div class="v" style="font-size:12px"><span class="chip-live" style="padding:5px 10px"><span class="dot"></span>en vivo</span></div></div>`:""}
       </div>
-      <div class="chartwrap" id="evo-chart">${svgBarras(vis, prom, s.hora, fmtV, {segs:(C&&!focoC)?C.items:null, color:focoC?focoC.col:null, tri:triEncimada(vis, VC)})}<div class="tt" id="evo-tt"></div></div>
+      <div class="chartwrap" id="evo-chart">${svgBarras(vis, prom, s.hora, fmtV, {segs:(C&&!focoC)?C.items:null, color:focoC?focoC.col:null, tri:triEncimada(vis, VC), fac:FAC_LIN})}<div class="tt" id="evo-tt"></div></div>
       <div id="evo-can">${visibles.map(c=>leyendaCorte(VC[c], GRA, c)).join("")}</div>`;
     paintNums(body);
     if(!focoC) visibles.filter(c=>c!=="operacion").forEach(c=>pintarLider(VC[c], c));
-    engancharTooltip(vis, s.hora, esMg, (C&&!focoC)?C.items:null);
+    engancharTooltip(vis, s.hora, esMg, (C&&!focoC)?C.items:null, FAC_LIN);
     if(!esMg) asegurarCortes();
   }
 
@@ -1336,7 +1468,8 @@ window.EYGHome = (function(){
     const W=chico?430:1000, H=chico?300:248, PL=chico?46:48, PR=8, PT=16, PB=chico?28:30;
     const fs=chico?13:11, fsc=chico?12:11;
     const x0=PL, x1=W-PR, y0=PT, y1=H-PB;
-    const max=Math.max(...pts.map(p=>Math.max(p.v,p.prev||0)),1);
+    const fac = opt.fac || null;   // facturado del mismo tramo, para la línea
+    const max=Math.max(...pts.map((p,i)=>Math.max(p.v,p.prev||0,fac?(fac[i]||0):0)),1);
     const esc10=Math.pow(10,Math.floor(Math.log10(max)));
     const top=Math.ceil(max/esc10*2)/2*esc10 || max;
     const Y=v=>y1-(v/top)*(y1-y0);
@@ -1393,8 +1526,24 @@ window.EYGHome = (function(){
     /* Línea de tendencia sobre las barras. En la vista por hora NO: los huecos
        del mediodía la hacen caer a cero y se lee como ruido, no como tendencia.
        Apilado tampoco: encima de los colores ensucia más de lo que explica. */
-    const linea = (!esHora && !segs && pts.length>2) ? `<path class="trend" d="${pts.map((p,i)=>(i?"L":"M")+(x0+slot*i+slot/2).toFixed(1)+" "+Y(p.v).toFixed(1)).join(" ")}"
-        fill="none" stroke="#04635F" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity=".55"/>` : "";
+    /* Con el facturado encima, la línea de tendencia sobra: serían dos líneas
+       sobre las mismas barras y ninguna se leería. Manda el facturado, que es
+       un dato distinto; la tendencia sólo aparece cuando no lo hay. */
+    let linea="";
+    if(fac){
+      const d=pts.map((p,i)=>(i?"L":"M")+(x0+slot*i+slot/2).toFixed(1)+" "+Y(fac[i]||0).toFixed(1)).join(" ");
+      const puntos=pts.map((p,i)=>`<circle cx="${(x0+slot*i+slot/2).toFixed(1)}" cy="${Y(fac[i]||0).toFixed(1)}" r="${chico?3.4:2.8}" fill="#20456E" stroke="#fff" stroke-width="1.3"/>`).join("");
+      /* Dos trazos, no uno: en un período normal se factura casi lo mismo que se
+         pide, así que la línea cae justo sobre el borde de las barras y el azul
+         sobre el teal no se ve. El contorno blanco la despega de la barra y
+         desaparece solo cuando la línea va por encima, sobre el fondo claro. */
+      const ancho=chico?2.6:2.2;
+      linea=`<path d="${d}" fill="none" stroke="#fff" stroke-width="${ancho+3}" stroke-linejoin="round" stroke-linecap="round" opacity=".9"/>`
+          + `<path class="trend" d="${d}" fill="none" stroke="#20456E" stroke-width="${ancho}" stroke-linejoin="round" stroke-linecap="round"/>${puntos}`;
+    }else if(!esHora && !segs && pts.length>2){
+      linea=`<path class="trend" d="${pts.map((p,i)=>(i?"L":"M")+(x0+slot*i+slot/2).toFixed(1)+" "+Y(p.v).toFixed(1)).join(" ")}"
+        fill="none" stroke="#04635F" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity=".55"/>`;
+    }
 
     return `<svg viewBox="0 0 ${W} ${H}" style="height:auto;max-height:360px" role="img" aria-label="Evolución de ventas">
       <defs><linearGradient id="bg1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0AA89F"/><stop offset="1" stop-color="#048782"/></linearGradient></defs>
@@ -1402,7 +1551,7 @@ window.EYGHome = (function(){
     </svg>`;
   }
 
-  function engancharTooltip(pts, esHora, esMg, items){
+  function engancharTooltip(pts, esHora, esMg, items, fac){
     const wrap=document.getElementById("evo-chart"), tt=document.getElementById("evo-tt");
     if(!wrap||!tt) return;
     const svg=wrap.querySelector("svg");
@@ -1434,7 +1583,9 @@ window.EYGHome = (function(){
           : esHora
           ? (p.prev?`ayer a esta hora: ${M(p.prev)}`:"ayer no hubo ventas en esta hora")
           : (p.n?`${ent(p.n)} pedido${p.n===1?"":"s"} · ticket ${M(p.v/p.n)}`:"sin pedidos");
-        pie=partida+`<div class="t3">${esc(extra)}</div>`;
+        const fv = fac ? (fac[i]||0) : 0;
+        const lFac = fac ? `<div class="t3"><b style="color:#20456E">●</b> Facturado · ${esc(M(fv))}${p.v?` <span style="opacity:.7">(${esc(p1(fv/p.v*100))} de lo pedido)</span>`:""}</div>` : "";
+        pie=partida+lFac+`<div class="t3">${esc(extra)}</div>`;
       }
       tt.innerHTML=`<div class="t1">${esc(t1)}</div><div>${esc(esMg?p1(p.v):M(p.v))}</div>${pie}`;
       tt.style.left=(r.left-wr.left+r.width/2)+"px";
