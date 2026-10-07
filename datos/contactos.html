@@ -252,7 +252,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=110"></script>
+<script src="../assets/core.js?v=111"></script>
 <script>
 /* ===== EyG Core · Contactos: la base única de contactos de EyG =====
    Una sola casa para TODOS los contactos: los que ya son nuestros (con la ficha completa,
@@ -2225,6 +2225,20 @@ function portalIcon(c){
 
 /* ================= Editar ficha ================= */
 function onTipo(){const t=document.getElementById("f_type").value;const l=document.getElementById("lbl_name");if(l)l.textContent=(t==='company'?'Razón social':'Apellido y nombre');}
+/* El cartel se guarda con la abreviatura del rubro, así que se muestra cómo
+   va a quedar antes de guardar: nada se corrige en silencio. */
+function prevFant(){
+  const el=document.getElementById("f_fant"), pv=document.getElementById("prev_fant");
+  if(!el||!pv) return;
+  const r=document.getElementById("f_rubro");
+  const q=EYG.cartelNorm(el.value, r?r.value:"");
+  pv.textContent = (q && q!==el.value.trim()) ? ("Se guardará: "+q) : "";
+}
+function onRubroFant(){
+  const el=document.getElementById("f_fant"), r=document.getElementById("f_rubro");
+  if(el&&r) el.placeholder=EYG.cartelEjemplo(r.value);
+  prevFant();
+}
 function prevTel(){const el=document.getElementById("prev_phone");const v=document.getElementById("f_phone");if(el&&v)el.textContent=v.value?('Se guardará: '+fmtTel(v.value)):'';}
 function prevDoc(){const t=parseInt(document.getElementById("f_idtype").value||0,10);const v=document.getElementById("f_vat");const el=document.getElementById("prev_doc");if(el&&v)el.textContent=v.value?('→ '+fmtDoc(v.value,t)):'';}
 const optSel=(cat,sel,ph)=>`<option value="">${ph||'— elegir —'}</option>`+(cat||[]).map(o=>`<option value="${o.id}" ${sel&&(Array.isArray(sel)?sel[0]===o.id:sel===o.id)?'selected':''}>${esc(o.name)}</option>`).join("");
@@ -2247,9 +2261,10 @@ function editarContacto(id){
       <div class="fld"><label id="lbl_name">${tipo==='company'?'Razón social':'Apellido y nombre'}</label>
         <input id="f_name" value="${esc(p.name||c.nombre||'')}" placeholder="Ej: Farmacia del Sol S.R.L."></div>
       <div class="fld"><label>Nombre de fantasía</label>
-        <input id="f_fant" value="${esc(EYG.fantasia(p))}" placeholder="Ej: Fcia. Grandoli">
+        <input id="f_fant" value="${esc(EYG.fantasia(p))}" oninput="prevFant()" placeholder="${esc(EYG.cartelEjemplo(c.rubro))}">
+        <div class="prev" id="prev_fant"></div>
         <div class="hint">El cartel del local. Arriba va el titular del CUIT; por acá lo encuentran igual los comerciales al buscar.</div></div>
-      <div class="fld"><label>Rubro</label><select id="f_rubro">${rubroOpts}</select></div>
+      <div class="fld"><label>Rubro</label><select id="f_rubro" onchange="onRubroFant()">${rubroOpts}</select></div>
       <div class="fld"><label>Teléfono</label><input id="f_phone" value="${esc(p.phone||p.mobile||'')}" oninput="prevTel()" placeholder="0341 155033943">
         <div class="hint">Área sin 0, celular sin 15. Se guarda formateado.</div><div class="prev" id="prev_phone"></div></div>
       <div class="fld"><label>Email</label><input id="f_email" value="${esc(p.email||'')}" placeholder="nombre@dominio.com"></div>
@@ -2270,7 +2285,7 @@ function editarContacto(id){
     </div>
     <div class="dfoot"><button class="btn-save" id="btnSave" onclick="guardarContacto(${id})">Guardar y sincronizar con Odoo</button></div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
-  prevTel(); prevDoc();
+  prevTel(); prevDoc(); prevFant();
 }
 async function guardarContacto(id){
   const btn=document.getElementById("btnSave"); if(!btn) return;
@@ -2289,7 +2304,9 @@ async function guardarContacto(id){
     website: val("f_web")||false, comment: val("f_nota")||false
   };
   vals[RUBRO_FIELD]=val("f_rubro")||false;
-  vals[EYG.FANT]=val("f_fant")||false;
+  /* El cartel se guarda con la abreviatura que le toca por rubro:
+     "Fcia. Grandoli", "Distr. del Litoral". Misma regla que en el panel. */
+  vals[EYG.FANT]=EYG.cartelNorm(val("f_fant"), val("f_rubro"))||false;
   if(!vals.name){ btn.disabled=false; btn.textContent="Guardar y sincronizar con Odoo"; toast("⚠ Falta el nombre"); return; }
   try{
     await rpc("res.partner","write",[[id],vals],{context:{lang:"es_AR"}});

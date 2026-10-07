@@ -1756,6 +1756,46 @@ window.EYG = (function(){
      ============================================================ */
   const FANT = "x_studio_nombre_de_fantasia";
   const fantasia = c => { const v = c && c[FANT]; return (typeof v === "string" && v.trim()) ? v.trim() : ""; };
+  /* ===== El cartel, por rubro =====
+     Una farmacia se anota "Fcia. Grandoli" y una distribuidora
+     "Distr. del Litoral". Los rubros que no tienen una abreviatura clara
+     (instituciones, SAMCO) van sin prefijo: el cartel solo. */
+  const CARTEL_PREF = {
+    FARMACIAS:      {ab:"Fcia.",  ej:"Ej: Fcia. Grandoli",       otras:["farmacia","farmacias","fcia","fcias","fcia:"]},
+    DISTRIBUIDORAS: {ab:"Distr.", ej:"Ej: Distr. del Litoral",   otras:["distribuidora","distribuidoras","distr","distrib","dist"]},
+  };
+  const cartelPref    = r => CARTEL_PREF[String(r||"").toUpperCase()] || null;
+  const cartelPrefijo = r => { const p=cartelPref(r); return p ? p.ab : ""; };
+  const cartelEjemplo = r => { const p=cartelPref(r); return p ? p.ej : "Ej: el nombre del cartel"; };
+  /* Deja el texto como lo escribieron y solo arregla el prefijo: saca la
+     palabra generica del principio ("FARMACIA", "Fcia", "Distribuidora") y
+     pone la abreviatura. No toca el resto, para no convertir
+     "Fcia. del Centro" en "Fcia. Del Centro". */
+  /* Título para el cartel: las partículas van en minúscula salvo al principio
+     ("Fcia. de los Ángeles"). */
+  const CARTEL_PART = ["de","del","la","las","los","y","e"];
+  const CARTEL_PART0 = ["de","del"];   // las únicas que van en minúscula al principio
+  const cartelTitulo = t => String(t||"").split(" ").filter(Boolean).map((w,i)=>{
+    const b=w.toLowerCase(), n=_normNom(b);
+    if(i===0 ? CARTEL_PART0.includes(n) : CARTEL_PART.includes(n)) return b;
+    return b.charAt(0).toUpperCase()+b.slice(1);
+  }).join(" ");
+  function cartelNorm(txt, rubro){
+    let t = String(txt==null?"":txt).replace(/\s+/g," ").trim();
+    if(!t) return "";
+    const p = cartelPref(rubro);
+    if(!p) return t;
+    /* Se saca cualquier palabra genérica conocida, no sólo la del rubro de
+       ahora: si la ficha pasa de farmacia a distribuidora, "Fcia. Grandoli"
+       tiene que quedar "Distr. Grandoli" y no "Distr. Fcia. Grandoli". */
+    const genericas = Object.values(CARTEL_PREF)
+      .reduce((a,x)=>a.concat(x.otras, _normNom(x.ab).replace(/[.:]+$/,"")), []);
+    const primera = _normNom(t.split(" ")[0].replace(/[.:]+$/,""));
+    if(genericas.includes(primera)) t = t.split(" ").slice(1).join(" ").replace(/^[\s.:-]+/,"").trim();
+    if(t && (t===t.toUpperCase() || t===t.toLowerCase())) t = cartelTitulo(t);
+    return t ? p.ab+" "+t : "";
+  }
+
   /* Texto donde se busca: nombre + cartel + CUIT + localidad, todo sin acentos. */
   const buscaTxt = c => _normNom([(c&&c.name)||"", fantasia(c), (c&&c.vat)||"", (c&&c.city)||""].join(" "));
   /* Cada palabra tipeada tiene que aparecer en alguna parte, en cualquier orden:
@@ -2447,6 +2487,7 @@ window.EYG = (function(){
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
     creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
     FANT, fantasia, buscaTxt, buscaOk, domBusca, chipFant, fantStyles,
+    CARTEL_PREF, cartelPrefijo, cartelEjemplo, cartelNorm,
     RUBRO_FIELD, RUBROS, RUBROS_VIEJOS, RUBRO_META, RUBRO_ALIAS, TAG_RUBRO, rubroNorm, rubroDe, rubroOpts, rubroBadge,
     conquistarLeer, conquistarGuardar, conquistarAsignar, conquistarDeComercial, conquistarSetPartner, conquistarQuitar, conquistarPatch, notificarRoles,
     padNorm, padTitulo, padLocKey, padClave, padCoincide, padClaveDir, padCoincideDir, padCargar, padCruzar, padPunto, padTk, PAD_GENERICO,

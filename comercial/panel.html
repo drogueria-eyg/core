@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=110"></script>
+<script src="../assets/core.js?v=111"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -855,7 +855,7 @@ let COMERCIAL="";  // se define en el arranque según la cuenta logueada (o ?c= 
    Cuando se defina el esquema: implementarlo y sacar este flag. */
 let SIN_COMISION=false;
 let MODO_LIDER=false;  // ?modo=lider (solo no-comercial): panel de cartera SIN gamificación + gráfico de evolución
-const REQ=[{k:"name",l:"Nombre"},{k:"tel",l:"Teléfono"},{k:"email",l:"Email"},{k:"street",l:"Dirección"},{k:"zip",l:"CP"},{k:"city",l:"Localidad"},{k:"state",l:"Provincia"},{k:"idtype",l:"Tipo doc"},{k:"vat",l:"Nº doc"},{k:"fiscal",l:"Cond. fiscal"}];
+const REQ=[{k:"name",l:"Nombre"},{k:"tel",l:"Teléfono"},{k:"email",l:"Email"},{k:"street",l:"Dirección"},{k:"zip",l:"CP"},{k:"city",l:"Localidad"},{k:"state",l:"Provincia"},{k:"idtype",l:"Tipo doc"},{k:"vat",l:"Nº doc"},{k:"fiscal",l:"Cond. fiscal"},{k:"fant",l:"Cartel"}];
 /* Rubro: la lista y la lectura viven en core.js (EYG.RUBROS / EYG.rubroDe), una
    sola para todo el Core. Hasta el 15/9/2026 este panel lo guardaba como
    ETIQUETA y cobranzas leía el CAMPO: eran dos sistemas y por eso no coincidían.
@@ -954,7 +954,10 @@ function plazoBadge(c){ const p=plazoTxt(c); return p?`<span class="plazo" title
 function completar(c){
   const has={name:!!c.name,tel:!!(c.phone||c.mobile),email:!!c.email,street:!!c.street,zip:!!c.zip,city:!!c.city,
     state:!!(c.state_id&&c.state_id[0]),idtype:!!(c.l10n_latam_identification_type_id&&c.l10n_latam_identification_type_id[0]),
-    vat:!!c.vat,fiscal:!!(c.l10n_ar_afip_responsibility_type_id&&c.l10n_ar_afip_responsibility_type_id[0])};
+    vat:!!c.vat,fiscal:!!(c.l10n_ar_afip_responsibility_type_id&&c.l10n_ar_afip_responsibility_type_id[0]),
+    /* El cartel cuenta sólo donde está definido cómo se escribe: farmacias y
+       distribuidoras. Un sanatorio no tiene cartel que cargar. */
+    fant:!EYG.cartelPrefijo(EYG.rubroDe(c)) || !!EYG.fantasia(c)};
   return {has, pct:Math.round(REQ.filter(r=>has[r.k]).length/REQ.length*100)};
 }
 const colorPct=p=>p>=100?'var(--ok)':p>=60?'var(--teal-med)':p>=30?'var(--warn)':'var(--bad)';
@@ -3767,7 +3770,11 @@ function abrirForm(c,isNew){
         <div class="fld"><label id="lbl_name">${tipo==='company'?'Razón social':'Apellido y nombre'} ${comp.has.name||isNew?'':'<span class="miss">falta</span>'}</label>
           <input id="f_name" value="${esc(c.name||'')}" oninput="prevName()" placeholder="${tipo==='company'?'Ej: Farmacia del Sol S.R.L.':'Ej: Pérez, Juan'}">
           <div class="hint" id="hint_name">${tipo==='company'?'Nombre tipo oración + sufijo (SRL, SAS…)':'Formato: Apellido, Nombre. Si tiene comercio: Pérez, Juan (Farmacia Pérez)'}</div></div>
-        <div class="fld"><label>Rubro</label><select id="f_rubro">${rubroOpts}</select><div class="hint">Farmacia, sanatorio, veterinaria, etc.</div></div>
+        <div class="fld"><label>Nombre de fantasía ${comp.has.fant||isNew?'':'<span class="miss">falta</span>'}</label>
+          <input id="f_fant" value="${esc(EYG.fantasia(c))}" oninput="prevFant()" placeholder="${esc(EYG.cartelEjemplo(EYG.rubroDe(c)))}">
+          <div class="hint">El cartel del local. Arriba va el titular del CUIT; por acá lo encontrás igual cuando buscás.</div>
+          <div class="prev" id="prev_fant"></div></div>
+        <div class="fld"><label>Rubro</label><select id="f_rubro" onchange="onRubro()">${rubroOpts}</select><div class="hint">Farmacia, sanatorio, veterinaria, etc.</div></div>
         <div class="fld"><label>Teléfono ${comp.has.tel||isNew?'':'<span class="miss">falta</span>'}</label>
           <input id="f_phone" value="${esc(c.phone||c.mobile||'')}" oninput="prevTel()" placeholder="0341 155033943">
           <div class="hint">Área sin 0, celular sin 15. Se guarda formateado.</div><div class="prev" id="prev_phone"></div></div>
@@ -3788,7 +3795,7 @@ function abrirForm(c,isNew){
     </div>
     <div class="dfoot">${isNew?'':`<button class="btn arch" onclick="pedirArchivar(${c.id})">🔒 Archivar</button>`}<button class="btn save" id="btnSave" onclick="guardar()">${isNew?'Crear contacto':'Guardar ficha'}</button></div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
-  prevTel(); prevDoc();
+  prevTel(); prevDoc(); prevFant();
   if(!isNew){ cargarIntel(c.id); cargarEntregasFicha(c.id); cargarContactos(c.id); credFichaFetch(c); cargarPortal(c.id); }
 }
 
@@ -3996,6 +4003,21 @@ function onTipo(){const t=document.getElementById("f_type").value;
   document.getElementById("hint_name").textContent=(t==='company'?'Nombre tipo oración + sufijo (SRL, SAS…)':'Formato: Apellido, Nombre. Si tiene comercio: Pérez, Juan (Farmacia Pérez)');
   document.getElementById("f_name").placeholder=(t==='company'?'Ej: Farmacia del Sol S.R.L.':'Ej: Pérez, Juan');}
 function prevName(){}
+/* Se muestra cómo va a quedar el cartel. La abreviatura la pone el sistema,
+   así que si escriben "farmacia grandoli" o "GRANDOLI" sale igual; verlo
+   antes de guardar evita la sorpresa. */
+function prevFant(){
+  const el=document.getElementById("f_fant"), pv=document.getElementById("prev_fant");
+  if(!el||!pv) return;
+  const r=document.getElementById("f_rubro"), rub=r?r.value:"";
+  const q=EYG.cartelNorm(el.value, rub);
+  pv.textContent = (q && q!==el.value.trim()) ? ("Se guardará: "+q) : "";
+}
+function onRubro(){
+  const el=document.getElementById("f_fant"), r=document.getElementById("f_rubro");
+  if(el&&r) el.placeholder=EYG.cartelEjemplo(r.value);
+  prevFant();
+}
 function prevTel(){const v=document.getElementById("f_phone").value;const el=document.getElementById("prev_phone");if(el)el.textContent=v?('Se guardará: '+fmtTel(v)):'';}
 function prevDoc(){const t=parseInt(document.getElementById("f_idtype").value||0,10);const v=document.getElementById("f_vat").value;const el=document.getElementById("prev_doc");if(el)el.textContent=v?('→ '+fmtDoc(v,t)):'';}
 function cerrar(){document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");EDIT=null;ST._tomando=null;}
@@ -4044,6 +4066,10 @@ async function guardar(){
   /* El desplegable siempre trae el rubro que la ficha tiene hoy (EYG.rubroOpts
      agrega el viejo si lo tuviera), así que guardar sin tocarlo no lo borra. */
   vals[RUBRO_FIELD]=val("f_rubro")||false;
+  /* El cartel se guarda con la abreviatura del rubro ("Fcia. Grandoli",
+     "Distr. del Litoral"). Vacío va como false, que es lo que Odoo entiende
+     por "sin dato". */
+  vals[EYG.FANT]=EYG.cartelNorm(val("f_fant"), val("f_rubro"))||false;
   if(!vals.name){ btn.disabled=false; btn.textContent=EDIT.isNew?"Crear contacto":"Guardar ficha"; toast("⚠️ Falta el nombre"); return; }
   try{
     let id=EDIT.id;
