@@ -1569,12 +1569,28 @@ const soloDigitos=s=>{const t=String(s||"").trim(); return t.length>0 && t.split
    los movimientos del día, así que no sirve para ordenarlos— pero sí manda el saldo que
    quedó después de cada uno, adentro del detalle crudo de la transacción. Ese dato vale
    más que la hora: dice en qué orden pasaron las cosas y deja controlar la cadena. */
-function saldoDe(l){
+function detalleDe(l){
   let d=l.transaction_details;
   if(!d) return null;
   if(typeof d==="string"){ try{ d=JSON.parse(d); }catch(e){ return null; } }
+  return (d && typeof d==="object") ? d : null;
+}
+function saldoDe(l){
+  const d=detalleDe(l);
   const b=d && d.extra && d.extra.balance;
   return (typeof b==="number") ? b : null;
+}
+/* EL NÚMERO DE CHEQUE. El banco lo manda en `reference` dentro del detalle crudo, y es
+   el número COMPLETO del cheque — no un fragmento. Comprobado el 07/10/2026 contra 10
+   casos (5 pendientes y 5 ya resueltos): coincide con el "Cheque NNNNNNNN entregado"
+   del pago en Odoo, 10 de 10.
+   Esto es lo que saca a los e-cheq del emparejamiento por importe, que es ambiguo
+   cuando hay varios pagos iguales, y los lleva a uno que no falla. */
+function chequeDe(l){
+  if(soloDigitos(l.ref)) return String(l.ref).trim();
+  const d=detalleDe(l);
+  const r=d && d.reference;
+  return (r && soloDigitos(r)) ? String(r).trim() : "";
 }
 
 async function traerDelBanco(){
@@ -1618,7 +1634,7 @@ async function traerDelBanco(){
     const movs=lin.map(l=>({
       deOdoo:true, lineaId:l.id, yaEsta:l, online:!!l.online_transaction_identifier,
       fecha:l.date, concepto:String(l.payment_ref||"").trim().replace(/\s+/g," "),
-      cpbte:soloDigitos(l.ref)?String(l.ref).trim():"",
+      cpbte:chequeDe(l),
       importe:Math.round(l.amount*100)/100, saldo:saldoDe(l), cod:""
     }));
     ST.movs=await analizar(movs);
