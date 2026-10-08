@@ -402,6 +402,10 @@ let COMP={loaded:false,loading:false,rows:[],base:"",estado:"",prov:"",q:"",nPre
 let COT={po:null,lines:[]};                              // presupuesto que se está cotizando
 let cfil={q:"",fam:"",lab:"",prov:"",stock:"",sortK:"name",dir:1};
 // laboratorio fabricante = segmento después de "ETICOS" en la categoría (los éticos se ordenan por lab)
+// buscar sin importar acentos ni mayúsculas ("Bagó" = "bago")
+function fold(s){ return String(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase(); }
+// clave de laboratorio: sin acentos/mayúsculas/signos → "Bagó" (categoría) y "BAGO" (marca) son el mismo
+function labKey(s){ return fold(s).replace(/[^a-z0-9]+/g," ").trim(); }
 function labDe(categ){ if(!categ) return ""; const p=categ[1].split("/").map(s=>s.trim());
   const i=p.findIndex(s=>s.toUpperCase()==="ETICOS"); return (i>=0&&p[i+1])?p[i+1]:""; }
 // ===== Costo REAL del motor (idéntico a Costos y Rentabilidad) — NO es standard_price =====
@@ -1150,9 +1154,9 @@ function reponerSeccion(rd){
 }
 // Lista de quiebres (de stock en cero) con buscador — para encontrar cualquiera, no sólo el top
 function quiebresHTML(){
-  const q=(qBuscar||"").toLowerCase().trim();
+  const q=fold(qBuscar).trim();
   let rows=QCACHE;
-  if(q) rows=QCACHE.filter(x=>(cleanName(x.r.name)+" "+(x.r.code||"")).toLowerCase().includes(q));
+  if(q) rows=QCACHE.filter(x=>fold(cleanName(x.r.name)+" "+(x.r.code||"")).includes(q));
   if(!rows.length) return `<div class="qa-empty">Ningún quiebre coincide con "${esc(qBuscar)}".</div>`;
   const cap=Math.min(rows.length,80);
   return rows.slice(0,cap).map(x=>{const r=x.r; const multi=r.g&&r.g.n>1; const fr=gv(r,"freq"), inc=gv(r,"incoming"), mg=gv(r,"margenAnual"), vu=gv(r,"venta"); const pm=Math.round(fr/12);
@@ -1164,10 +1168,10 @@ function quiebresHTML(){
 function pintarQuiebres(){ const el=document.getElementById("qlist"); if(el) el.innerHTML=quiebresHTML(); }
 // ---- Lista maestra de reposición: dos vistas (Por reponer / Ya pedidos), buscador, filtro proveedor, carrito ----
 function reponerListaHTML(){
-  const q=(rBuscar||"").toLowerCase().trim();
+  const q=fold(rBuscar).trim();
   const pasa=x=>{
     if(rProv==="_none"){ if(x.r.provId) return false; } else if(rProv){ if(String(x.r.provId)!==String(rProv)) return false; }
-    if(q){ const ms=x.r.g?x.r.g.members:[x.r]; const hay=(cleanName(x.r.name)+" "+(x.r.provName||"")+" "+ms.map(m=>(m.name||"")+" "+(m.code||"")).join(" ")).toLowerCase().includes(q); if(!hay) return false; }
+    if(q){ const ms=x.r.g?x.r.g.members:[x.r]; const hay=fold(cleanName(x.r.name)+" "+(x.r.provName||"")+" "+ms.map(m=>(m.name||"")+" "+(m.code||"")).join(" ")).includes(q); if(!hay) return false; }
     return true;
   };
   const base=RCACHE.filter(pasa);
@@ -1388,11 +1392,11 @@ function onWinSearch(v){rfiltro.q=v;renderWin();}
 function toggleSoloRepo(el){rfiltro.soloRepo=!rfiltro.soloRepo;el.classList.toggle("on");renderWin();}
 function sortWin(k){if(rfiltro.sortK===k)rfiltro.dir*=-1;else{rfiltro.sortK=k;rfiltro.dir=(k==="name")?1:-1;}renderWin();}
 function renderWin(){
-  const q=rfiltro.q?rfiltro.q.toLowerCase():"";
+  const q=rfiltro.q?fold(rfiltro.q):"";
   // una fila por PRODUCTO (grupo de marcas): representante = la marca de mayor margen; los valores son del grupo
   const reps={};
   for(const r of DATA){ if(gv(r,"margenAnual")<=0) continue;
-    if(q){ const ms=r.g?r.g.members:[r]; if(!ms.some(m=>(m.name||"").toLowerCase().includes(q)||(m.code||"").toLowerCase().includes(q))) continue; }
+    if(q){ const ms=r.g?r.g.members:[r]; if(!ms.some(m=>fold(m.name).includes(q)||fold(m.code).includes(q))) continue; }
     const k=r.g?r.g.key:("SOLO#"+r.id); if(!reps[k]||r.margenAnual>reps[k].margenAnual) reps[k]=r;
   }
   // la reposición (necesita/urgencia) se evalúa SIEMPRE sobre la marca vigente del grupo, aunque la fila mostrada sea la de mayor margen
@@ -1475,7 +1479,7 @@ function tabInventario(){
       <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
         <input id="cq" placeholder="Buscar producto o código…" value="${esc(cfil.q)}" oninput="onCatSearch(this.value)"></div>
       <select onchange="cfil.fam=this.value;renderCatTabla()"><option value="">Todas las familias</option>${CAT.fams.map(f=>`<option ${cfil.fam===f?"selected":""}>${esc(f)}</option>`).join("")}</select>
-      <select onchange="cfil.lab=this.value;renderCatTabla()"><option value="">Todos los laboratorios</option>${CAT.labs.map(l=>`<option ${cfil.lab===l?"selected":""}>${esc(l)}</option>`).join("")}</select>
+      <select onchange="cfil.lab=this.value;renderCatTabla()"><option value="">Todos los laboratorios</option>${CAT.labs.map(l=>`<option value="${esc(l.k)}" ${cfil.lab===l.k?"selected":""}>${esc(l.l)}</option>`).join("")}</select>
       <select onchange="cfil.prov=this.value;renderCatTabla()"><option value="">Todos los proveedores</option>${CAT.provs.map(p=>`<option ${cfil.prov===p?"selected":""}>${esc(p)}</option>`).join("")}</select>
       <span class="chip ${cfil.stock==='con'?'on':''}" onclick="setCatChip('con',this)">Con stock</span>
       <span class="chip ${cfil.stock==='sin'?'on':''}" onclick="setCatChip('sin',this)">Sin stock</span>
@@ -1488,7 +1492,7 @@ function setInvMode(m){ invMode=m; render(); }
 const rotCls=m=>m<3?"green":m<6?"lime":m<12?"yel":m<36?"org":"red";
 function visibles(){
   return DATA.filter(r=>{
-    if(filtro.q){const q=filtro.q.toLowerCase(); const ms=r.g?r.g.members:[r]; if(!ms.some(x=>(x.name||"").toLowerCase().includes(q)||(x.code||"").toLowerCase().includes(q))) return false;}
+    if(filtro.q){const q=fold(filtro.q); const ms=r.g?r.g.members:[r]; if(!ms.some(x=>fold(x.name).includes(q)||fold(x.code).includes(q)||fold(x.marca).includes(q))) return false;}
     if(filtro.fam && r.fam!==filtro.fam) return false;
     if(filtro.chip==="sobre" && !(r.meses>12)) return false;
     if(filtro.chip==="muerto" && gv(r,"venta")!==0) return false;
@@ -1554,7 +1558,7 @@ function tabCat(){
       <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
         <input id="cq" placeholder="Buscar producto o código…" value="${esc(cfil.q)}" oninput="onCatSearch(this.value)"></div>
       <select onchange="cfil.fam=this.value;renderCatTabla()"><option value="">Todas las familias</option>${CAT.fams.map(f=>`<option ${cfil.fam===f?"selected":""}>${esc(f)}</option>`).join("")}</select>
-      <select onchange="cfil.lab=this.value;renderCatTabla()"><option value="">Todos los laboratorios</option>${CAT.labs.map(l=>`<option ${cfil.lab===l?"selected":""}>${esc(l)}</option>`).join("")}</select>
+      <select onchange="cfil.lab=this.value;renderCatTabla()"><option value="">Todos los laboratorios</option>${CAT.labs.map(l=>`<option value="${esc(l.k)}" ${cfil.lab===l.k?"selected":""}>${esc(l.l)}</option>`).join("")}</select>
       <select onchange="cfil.prov=this.value;renderCatTabla()"><option value="">Todos los proveedores</option>${CAT.provs.map(p=>`<option ${cfil.prov===p?"selected":""}>${esc(p)}</option>`).join("")}</select>
       <span class="chip ${cfil.stock==='con'?'on':''}" onclick="setCatChip('con',this)">Con stock</span>
       <span class="chip ${cfil.stock==='sin'?'on':''}" onclick="setCatChip('sin',this)">Sin stock</span>
@@ -1566,7 +1570,7 @@ async function loadCatalogo(){
   CAT.loading=true;
   try{
     const [prods, si] = await Promise.all([
-      rpc("product.product","search_read",[[["active","=",true]]],{fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","list_price","x_costo_motor","x_iva_compra","taxes_id"],limit:100000}),
+      rpc("product.product","search_read",[[["active","=",true]]],{fields:["id","default_code","name","categ_id","product_tmpl_id","standard_price","list_price","x_costo_motor","x_iva_compra","taxes_id","x_studio_many2one_field_6o_1if0l6ud2"],limit:100000}),
       rpc("product.supplierinfo","search_read",[[]],{fields:["product_tmpl_id","product_id","partner_id","price","min_qty"],limit:100000}),
     ]);
     const byTmpl={};
@@ -1578,12 +1582,18 @@ async function loadCatalogo(){
       const provs=t&&byTmpl[t]?Object.values(byTmpl[t]):[];
       const catId=p.categ_id?p.categ_id[0]:0, std=p.standard_price||0;
       const costoU=costoReal({xCostoMotor:p.x_costo_motor||0, std, ivaCompra:p.x_iva_compra||0, taxesId:p.taxes_id||[]}), pvp=p.list_price||0;
-      return {id:p.id, code:p.default_code||"", name:cleanName(p.name||""), fam:familia(p.categ_id), lab:labDe(p.categ_id), catId,
+      const labCat=labDe(p.categ_id), marca=p.x_studio_many2one_field_6o_1if0l6ud2?p.x_studio_many2one_field_6o_1if0l6ud2[1]:"";
+      const labKeys=[...new Set([labKey(labCat),labKey(marca)].filter(Boolean))];
+      return {id:p.id, code:p.default_code||"", name:cleanName(p.name||""), fam:familia(p.categ_id), lab:labCat||marca, labCat, marca, labKeys, catId,
         std, xCostoMotor:p.x_costo_motor||0, ivaCompra:p.x_iva_compra||0, taxesId:p.taxes_id||[], ivaAlCosto:tildeEfectiva({taxesId:p.taxes_id||[]})?(p.x_iva_compra||0):0,
         qty:Math.round(stQty[p.id]||0), costoU, pvp, margenPct:pvp>0?(pvp-costoU)/pvp*100:null,
         provs, provName:provs.length?provs[0].name:"", provId:provs.length?provs[0].id:null, provPrice:provs.length?provs[0].price:0}; });
     CAT.fams=[...new Set(CAT.rows.map(r=>r.fam).filter(Boolean))].sort();
-    CAT.labs=[...new Set(CAT.rows.map(r=>r.lab).filter(Boolean))].sort();
+    // un solo "Bagó" aunque venga como categoría "Bagó" y marca "BAGO": se agrupa por clave sin acentos; el nombre lindo es el de la categoría
+    const labsM=new Map();
+    for(const r of CAT.rows){ if(r.labCat){ const k=labKey(r.labCat); if(!labsM.has(k)||!labsM.get(k).cat) labsM.set(k,{k,l:r.labCat,cat:true}); }
+      if(r.marca){ const k=labKey(r.marca); if(k&&!labsM.has(k)) labsM.set(k,{k,l:r.marca,cat:false}); } }
+    CAT.labs=[...labsM.values()].sort((a,b)=>a.k.localeCompare(b.k));
     CAT.provs=[...new Set(CAT.rows.flatMap(r=>r.provs.map(p=>p.name)))].sort();
     CAT.loaded=true; CAT.loading=false;
     if(TAB==="inventario"&&invMode==="todo") render();
@@ -1594,9 +1604,9 @@ function setCatChip(c,el){const on=cfil.stock===c;document.querySelectorAll("#ta
 function sortCat(k){if(cfil.sortK===k)cfil.dir*=-1;else{cfil.sortK=k;cfil.dir=(k==="name"||k==="lab"||k==="provName")?1:-1;}renderCatTabla();}
 function catVisibles(){
   return CAT.rows.filter(r=>{
-    if(cfil.q){const q=cfil.q.toLowerCase(); if(!(r.name.toLowerCase().includes(q)||(r.code||"").toLowerCase().includes(q))) return false;}
+    if(cfil.q){const q=fold(cfil.q); if(!(fold(r.name).includes(q)||fold(r.code).includes(q)||fold(r.marca).includes(q))) return false;}
     if(cfil.fam && r.fam!==cfil.fam) return false;
-    if(cfil.lab && r.lab!==cfil.lab) return false;
+    if(cfil.lab && !r.labKeys.includes(cfil.lab)) return false;
     if(cfil.prov && !r.provs.some(p=>p.name===cfil.prov)) return false;
     if(cfil.stock==="con" && !(r.qty>0)) return false;
     if(cfil.stock==="sin" && r.qty>0) return false;
@@ -1614,7 +1624,7 @@ function renderCatTabla(){
   d=[...d].sort((a,b)=>{let x=a[k],y=b[k];if(typeof x==="string")return cfil.dir*x.localeCompare(y);return cfil.dir*((x??-1)-(y??-1));});
   const cap=d.slice(0,300);
   const arrow=key=>cfil.sortK===key?(cfil.dir<0?" ↓":" ↑"):"";
-  el.innerHTML=`<div class="count-line"><b>${d.length.toLocaleString("es-AR")}</b> productos${cfil.lab?` · lab ${esc(cfil.lab)}`:""}${cfil.prov?` · prov ${esc(cfil.prov)}`:""}</div>
+  el.innerHTML=`<div class="count-line"><b>${d.length.toLocaleString("es-AR")}</b> productos${cfil.lab?` · lab ${esc((CAT.labs.find(l=>l.k===cfil.lab)||{l:cfil.lab}).l)}`:""}${cfil.prov?` · prov ${esc(cfil.prov)}`:""}</div>
     <div class="tablecard">
       <div class="thead" style="${CG}">
         <div onclick="sortCat('name')" title="Nombre y código del producto.">Producto${arrow('name')}</div>
@@ -2230,10 +2240,10 @@ async function loadCompras(){
 }
 function renderComprasList(){
   const segEl=document.getElementById("compsegs"), el=document.getElementById("compslist"); if(!el) return;
-  const q=(COMP.q||"").toLowerCase().trim();
+  const q=fold(COMP.q).trim();
   let rows=COMP.rows;
   if(COMP.prov) rows=rows.filter(p=>p.partner_id&&String(p.partner_id[0])===String(COMP.prov));
-  if(q) rows=rows.filter(p=>((p.name||"")+" "+(p.partner_id?p.partner_id[1]:"")).toLowerCase().includes(q));
+  if(q) rows=rows.filter(p=>fold((p.name||"")+" "+(p.partner_id?p.partner_id[1]:"")).includes(q));
   const cnt=e=>rows.filter(p=> e==="pres"?(p.state==="draft"||p.state==="sent") : e?p.state===e : true).length;
   if(segEl) segEl.innerHTML=`
     <button class="${COMP.estado===''?'on':''}" onclick="COMP.estado='';renderComprasList()">Todas · ${cnt("")}</button>
