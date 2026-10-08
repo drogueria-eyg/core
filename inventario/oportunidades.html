@@ -225,6 +225,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js?v=111"></script>
 <script src="../assets/inventario-oportunidades.js?v=20251005b"></script>
+<script src="../assets/ofertas-canal.js?v=20261008"></script>
 <script>
 /* ============ EyG Core · Inventario · Oportunidades y Ofertas ============ */
 const LANG={context:{lang:"es_AR"}};
@@ -235,6 +236,9 @@ const hoy=()=>new Date().toISOString().slice(0,10);
 function masDias(n){ const d=new Date(); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
 function fmtF(s){ if(!s) return ""; const [y,m,d]=String(s).slice(0,10).split("-"); return d+"/"+m; }
 let OPOS=[], ARCH=[], OFERTAS=[], OPORT_STOCK=[], ESTADO={ignora:[],arch:[]}, stockLoading=true, UMBRAL=0.10, SYNC_OF=[];
+/* Destino de cada oferta (Farmacias / Instituciones / Ambos) — ver assets/ofertas-canal.js.
+   Se calcula en segunda ola: es una lectura pesada de ventas y no tiene por qué demorar la pantalla. */
+let CANAL_T={}, CANAL_V={}, CANAL_C={};
 let STOCK_T={};   // stock real por plantilla (para marcar "Agotada" en los descuentos por regla)
 let COSTO_T={};   // costo EFECTIVO por plantilla (x_costo_motor + IVA de compra si se vende exento)
 let COSTO_V={};   // idem por variante (los combos guardan ids de variante)
@@ -470,7 +474,36 @@ async function cargar(){
     ARCH=todos.filter(x=>x._arch);
     render();
     refrescarStockOpo();   // calcula en vivo las oportunidades por stock (sin bloquear el render)
+    cargarCanales();       // para quién es cada oferta (segunda ola)
   }catch(e){ cont.innerHTML='<div class="empty">No pude leer los datos: '+esc(e.message)+'</div>'; }
+}
+
+/* ¿Para quién es cada oferta? Lo sugiere lo vendido del producto en el último año. */
+async function cargarCanales(){
+  if(!window.EYGCanal) return;
+  try{
+    const tIds=SYNC_OF.filter(o=>o.tipo==='p'&&o.target).map(o=>o.target);
+    const vIds=OFERTAS.flatMap(o=>((o&&o.items)||[]).map(i=>i&&i.id)).filter(Boolean);
+    const cIds=[...new Set(SYNC_OF.filter(o=>o.tipo==='c'&&o.target).map(o=>o.target))];
+    const [t,v]=await Promise.all([EYGCanal.dePlantillas(tIds), EYGCanal.deVariantes(vIds)]);
+    const c={}; for(const id of cIds){ const x=await EYGCanal.deCategoria(id); if(x) c[id]=x; }
+    CANAL_T=t; CANAL_V=v; CANAL_C=c;
+    if(!rgDraft) render();   // con el editor abierto no se repinta (se perdería lo que se está escribiendo)
+  }catch(e){ console.warn("canales:",e); }
+}
+// destino sugerido de una oferta: regla del motor (plantilla o categoría) o tarjeta del panel (variantes)
+function canalSugerido(o){
+  if(o.tipo==='p') return CANAL_T[o.target]||null;
+  if(o.tipo==='c') return CANAL_C[o.target]||null;
+  const its=(o.items||[]).map(i=>i&&CANAL_V[i.id]).filter(Boolean);
+  if(!its.length) return null;
+  const f=its.reduce((a,x)=>a+x.farm,0), i=its.reduce((a,x)=>a+x.inst,0);
+  return f+i>0 ? EYGCanal.clasificar(f,i,"") : its[0];
+}
+function chipCanal(o){
+  if(!window.EYGCanal) return "";
+  const sug=canalSugerido(o), d=EYGCanal.destino(o, sug&&sug.canal);
+  return d ? EYGCanal.chip(d, !!o.destino) : "";
 }
 
 /* ============ MARGEN DE UNA OFERTA ============
@@ -872,7 +905,7 @@ function esCombo(o){
 function filaOferta(o){
   const its=(o.items||[]), lin=(o.lineas||[]), ag=!!o._agotada, m=mrgOferta(o);
   const n=lin.length||its.length;
-  const chips=[esCombo(o)?`<span class="chip c-teal">🎁 combo · ${n} prod.${o.codigo?" · "+esc(o.codigo):""}</span>`:`<span class="chip c-teal">🏷️ oferta</span>`,
+  const chips=[chipCanal(o), esCombo(o)?`<span class="chip c-teal">🎁 combo · ${n} prod.${o.codigo?" · "+esc(o.codigo):""}</span>`:`<span class="chip c-teal">🏷️ oferta</span>`,
     ag?`<span class="chip c-bad">⛔ agotada</span>`:"", o._venc?`<span class="chip c-gris">vencida</span>`:"",
     m!=null&&m<0?`<span class="chip c-bad">pierde plata</span>`:""].filter(Boolean).join(" ");
   const cols=(o.precioAntes?col("antes",money(o.precioAntes),"tach"):"")+col("precio",money(o.precio))
@@ -1049,7 +1082,7 @@ function filaRegla(o){
   const st=rgEstado(o), m=mrgRegla(o);
   const ag = o.tipo==='p' && STOCK_T[o.target]!=null && STOCK_T[o.target]<=0;
   const descPc = o.modo==='pct'?("−"+rgPct(o.valor)+"%"):o.modo==='monto'?("−"+money(o.valor)):"precio fijo";
-  const chips=[o.tipo==='p'?`<span class="chip c-teal">🔖 producto</span>`:`<span class="chip c-gris">📂 categoría</span>`,
+  const chips=[chipCanal(o), o.tipo==='p'?`<span class="chip c-teal">🔖 producto</span>`:`<span class="chip c-gris">📂 categoría</span>`,
     st.c==='pau'?`<span class="chip c-warn">pausado</span>`:"", st.c==='ven'?`<span class="chip c-gris">vencido</span>`:"",
     ag?`<span class="chip c-bad">⛔ agotada</span>`:"", (m!=null&&m<0)?`<span class="chip c-bad">pierde plata</span>`:"",
     (o.reemplaza||o.modo==='precio')?`<span class="chip c-gris">precio único</span>`:`<span class="chip c-gris">sobre la escalera</span>`].filter(Boolean).join(" ");
@@ -1113,6 +1146,7 @@ function rgFormHTML(){
       <div class="fld2"><label>Vigencia hasta</label><input type="date" id="rg-hasta" value="${esc(d.hasta||'')}"><div class="hint2">vacío = sin vencimiento</div></div>
       <div class="fld2"><label>Stock a ofertar (informativo)</label><input type="number" id="rg-stock" min="0" value="${d.stock||''}"><div class="hint2">no se descuenta con ventas · lo controlás vos</div></div>
     </div>
+    ${rgDestinoHTML()}
     ${rent}
     <div class="acts2"><button class="cancel" onclick="rgDraft=null;render()">Cancelar</button><button class="ok" onclick="rgGuardar()">Guardar oferta</button></div>
   </div>`;
@@ -1321,7 +1355,7 @@ window.rgNueva=(clase,donde)=>{ if((donde||'ofertas')==='ofertas') COLAPSA['ofer
   if(clase==='combo') rgProximoCodigo().then(c=>{ if(rgDraft&&!rgDraft.codigo){ rgDraft.codigo=c; render(); } });
   rgBusq=[];rgBusqQ="";rgCosto=null;rgRentPara=null;rgTramos=null;rgTramosBase=null;rgApplied=null;
   render(); rgAsomar(); };
-window.rgEditar=async id=>{ const o=SYNC_OF.find(x=>x.id===id); if(!o)return; COLAPSA['ofertas']=false; rgDraft=JSON.parse(JSON.stringify(o)); rgDraft.clase='desc'; rgDraft._edit=true; rgDraft._donde='rg:'+id; rgBusq=[];rgBusqQ="";rgCosto=null;rgRentPara=null;rgTramos=null;rgTramosBase=null;
+window.rgEditar=async id=>{ const o=SYNC_OF.find(x=>x.id===id); if(!o)return; COLAPSA['ofertas']=false; rgDraft=JSON.parse(JSON.stringify(o)); rgDraft.clase='desc'; rgDraft._edit=true; rgDraft._donde='rg:'+id; rgCanalDe(o.tipo, o.target); rgBusq=[];rgBusqQ="";rgCosto=null;rgRentPara=null;rgTramos=null;rgTramosBase=null;
   // la oferta guardada YA está aplicada al pricelist → guardo sus datos para deshacerla y recuperar la base
   rgApplied = o.tipo==='p'?{modo:o.modo,valor:o.valor,reemplaza:o.reemplaza,pausada:o.pausada,hasta:o.hasta}:null;
   render(); rgAsomar(); if(o.tipo==='p'&&o.target){ await rgCargarRent(o.target); render(); rgActualizarRent(); } };
@@ -1331,6 +1365,7 @@ window.rgDesde=(o, sug, desdeKey, desdeId)=>{ COLAPSA['ofertas']=false;
   if(desdeKey==='opo'){ rgDraft._desdeOpo=desdeId; rgDraft._donde='opo:'+desdeId; }
   if(desdeKey==='stock'){ rgDraft._desdeStock=desdeId; rgDraft._donde='stk:'+desdeId; }
   if(!rgDraft._donde) rgDraft._donde='ofertas';
+  rgCanalDe('p', o.tmpl);
   rgBusq=[];rgBusqQ="";rgCosto=null;rgRentPara=null;rgTramos=null;rgTramosBase=null;rgApplied=null;
   render(); rgAsomar();
   if(o.tmpl){ rgCargarRent(o.tmpl).then(()=>{ render(); rgActualizarRent(); }); } };
@@ -1351,7 +1386,36 @@ window.rgBuscar=EYG.debounce(async q=>{
   if(rgBusqQ!==q) return;   // llegó tarde: ya hay una búsqueda más nueva
   rgBusq=cats.concat(prods); EYG.repintar(render);
 },350);
-window.rgElegir=async(k,id,name)=>{ if(!rgDraft)return; rgDraft.tipo=k; rgDraft.target=id; rgDraft.targetName=name; rgDraft._pvp=0; rgBusq=[];rgBusqQ=""; rgCosto=null;rgRentPara=null;rgPiso=0;rgTramos=null;rgTramosBase=null;rgApplied=null; render(); if(k==='p'){ await rgCargarRent(id); render(); rgActualizarRent(); } else { rgCargarCatSim(id); } };
+window.rgElegir=async(k,id,name)=>{ if(!rgDraft)return; rgDraft.tipo=k; rgDraft.target=id; rgCanalDe(k,id); rgDraft.target=id; rgDraft.targetName=name; rgDraft._pvp=0; rgBusq=[];rgBusqQ=""; rgCosto=null;rgRentPara=null;rgPiso=0;rgTramos=null;rgTramosBase=null;rgApplied=null; render(); if(k==='p'){ await rgCargarRent(id); render(); rgActualizarRent(); } else { rgCargarCatSim(id); } };
+/* ---- Destino de la oferta (Farmacias / Instituciones / Ambos) ----
+   Al elegir el producto o la categoría se calcula a quién se le vendió en el último año y se
+   sugiere el destino. Se puede cambiar a mano; "Automático" deja que lo decidan las ventas. */
+function rgCanalDe(k,id){
+  if(!window.EYGCanal || !id || !rgDraft) return;
+  const d=rgDraft; d._canal=null;   // null = calculando
+  const p = k==='c' ? EYGCanal.deCategoria(id) : EYGCanal.dePlantillas([id]).then(m=>m[id]||null);
+  p.then(info=>{ if(rgDraft!==d || d.target!==id) return; d._canal=info||false; rgPintarDestino(); });
+}
+function rgPintarDestino(){ const el=document.getElementById("rg-destino"); if(el) el.outerHTML=rgDestinoHTML(); }
+window.rgSetDestino=v=>{ if(!rgDraft) return; rgDraft.destino=v||undefined; rgPintarDestino(); };
+function rgDestinoHTML(){
+  const d=rgDraft; if(!d || !d.target || !window.EYGCanal) return '<div id="rg-destino"></div>';
+  const M=EYGCanal.META, info=d._canal;
+  const sugTxt = info===null||info===undefined ? "calculando a quién se le vende…"
+               : info===false ? "no pude leer las ventas"
+               : M[info.canal].ico+" "+M[info.canal].t+" — "+EYGCanal.motivo(info);
+  const fin=EYGCanal.destino(d, info&&info.canal);
+  const opt=(v,t)=>`<option value="${v}" ${(d.destino||"")===v?'selected':''}>${t}</option>`;
+  // Hoy el descuento sólo cambia la lista (1) Farmacias: decirlo donde se decide.
+  const aviso = (fin==='inst'||fin==='ambos') ? `<div class="hint2" style="color:#8a5a00;margin-top:6px">⚠️ Este descuento cambia el precio de la lista <b>(1) Farmacias</b>. Las instituciones y SAMCO que compran con su propia lista no lo reciben en el pedido: para ellas el precio especial se carga en la capa temporal del Motor de precios.</div>` : "";
+  return `<div id="rg-destino" class="fld2" style="margin:4px 0 12px"><label>¿Para quién es la oferta?</label>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <select onchange="rgSetDestino(this.value)" style="max-width:260px">
+        ${opt("","Automático (según las ventas)")}${opt("farm","💊 Farmacias")}${opt("inst","🏥 Instituciones")}${opt("ambos","🔀 Farmacias e instituciones")}
+      </select>
+      <span class="hint2" style="margin:0">Sugerido: ${sugTxt}</span>
+    </div>${aviso}</div>`;
+}
 /* Una oferta de CATEGORÍA toca muchos productos a la vez: se traen una vez, con su costo
    efectivo, su piso y lo que hoy publican, para poder decir ANTES de aplicar cuántos perforan. */
 window.rgCargarCatSim=async(catId)=>{
@@ -1605,6 +1669,8 @@ window.rgGuardar=async()=>{
     hasta:(document.getElementById("rg-hasta").value||""),
     stock:(document.getElementById("rg-stock").value||""), pausada:!!d.pausada,
     perforar:false };   // sólo se autoriza confirmando el cartel, nunca de antemano
+  // destino: sólo se guarda si se eligió a mano; si no, queda el sugerido por las ventas (se recalcula solo)
+  if(d.destino) rule.destino=d.destino;
   // ÉTICOS · PRECIO ÚNICO: el descuento se define sobre el PVP → lo convertimos a un PRECIO FIJO
   // limpio. Así el motor fija ese precio y el panel/orden muestran el descuento contra el PVP.
   // ÉTICOS · ESCALERA (pisa): se deja como %/monto y el motor lo aplica a cada tramo (como el resto).
