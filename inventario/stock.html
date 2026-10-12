@@ -1833,12 +1833,53 @@ function sbPop(el,id,tipo){
       <span class="shint">${est}${desp?' · ⚠️ pocos clientes grandes':''}</span><br><span class="shint">Tocá para ver mes a mes.</span>`; }
   else if(tipo==="comp"){ const e=document.getElementById("sbComp"); html=`${nM}<b>${e?e.textContent:"…"}</b> compradas en el último año<br><span class="shint">El costo que usa el motor es el <b>facturado</b> (lo que pagaste), no el de la orden.</span><br><span class="shint">Tocá para ver a quién y a qué costo.</span>`; }
   else { html=`${nM}<b>¿Quién lo compra?</b><br><span class="shint">Los clientes que más lo piden, con su canal (farmacia / institución).</span><br><span class="shint">Tocá para verlos — así sabés a quién ofrecérselo.</span>`; }
+  showPop(el, html);
+}
+function showPop(el, html, ancho){
   let p=document.getElementById("sbpop"); if(!p){ p=document.createElement("div"); p.id="sbpop"; p.className="sbpop"; document.body.appendChild(p); }
   p.innerHTML=html; p.style.display="block";
-  const rc=el.getBoundingClientRect(), w=Math.min(300, window.innerWidth-16);
-  p.style.width=w+"px"; p.style.left=Math.max(8,Math.min(rc.left, window.innerWidth-w-8))+"px"; p.style.top=(rc.bottom+6)+"px";
+  const rc=el.getBoundingClientRect(), w=Math.min(ancho||300, window.innerWidth-16);
+  p.style.width=w+"px";
+  p.style.left=Math.max(8,Math.min(rc.left, window.innerWidth-w-8))+"px";
+  // si no entra abajo, lo muestro arriba de la fila
+  const abajo=rc.bottom+6, hAprox=200;
+  p.style.top=(abajo+hAprox>window.innerHeight && rc.top>hAprox ? Math.max(8,rc.top-hAprox-2) : abajo)+"px";
   requestAnimationFrame(()=>{ p.style.opacity="1"; });
 }
+// ---- Popover al pasar el mouse por una fila de producto en CUALQUIER listado ----
+function prodPop(el,id){
+  const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id); if(!r) return;
+  const vu=gv(r,"venta"), v3=gv(r,"venta3"), qty=gv(r,"qty"), avg=vu/12, rr=v3/3, mx=Math.max(avg,rr,1);
+  const fe=factorEstac(r), desp=demandaDespareja(r);
+  const est=fe>=1.25?'<span style="color:var(--green);font-weight:700">📈 sube en esta época</span>'
+           :fe<=0.8 ?'<span style="color:var(--org);font-weight:700">📉 floja en esta época</span>'
+           :'<span class="shint">ritmo estable</span>';
+  const cob = r.meses>900?"sin venta" : ("alcanza "+fmtDur(r.meses));
+  const mar = r.margenPct!=null?(" · margen "+Math.round(r.margenPct)+"%"):"";
+  const nmg = r.g&&r.g.n>1?`<span class="shint">${r.g.n} marcas sumadas</span><br>`:"";
+  const html=`<div style="font-weight:800;color:var(--teal-deep);margin-bottom:2px">${esc(tituloGrupo(r))}</div>
+    ${nmg}<b>${vu.toLocaleString("es-AR")} u</b> vendidas en el año · stock <b>${qty.toLocaleString("es-AR")} u</b> · ${cob}${mar}
+    <div class="sbbar"><span>Promedio/mes</span><i style="width:${Math.round(avg/mx*100)}%"></i><b>${Math.round(avg)}</b></div>
+    <div class="sbbar"><span>Ritmo ahora</span><i style="width:${Math.round(rr/mx*100)}%;background:var(--teal)"></i><b>${Math.round(rr)}</b></div>
+    <span class="shint">${est}${desp?' · ⚠️ demanda despareja (pocos clientes grandes)':''}</span><br>
+    <span class="shint">Tocá para abrir la ficha completa.</span>`;
+  showPop(el, html, 320);
+}
+let _rowPopT=null, _rowPopEl=null;
+function _prodDeEl(t){ const el=t&&t.closest?t.closest('[onclick*="abrirProd("]'):null; if(!el) return null;
+  const m=(el.getAttribute("onclick")||"").match(/abrirProd\((\d+)/); return m?{el,id:+m[1]}:null; }
+document.addEventListener("mouseover", e=>{
+  const h=_prodDeEl(e.target); if(!h){ return; }
+  if(_rowPopEl===h.el) return;               // ya estoy sobre la misma fila
+  _rowPopEl=h.el; clearTimeout(_rowPopT);
+  _rowPopT=setTimeout(()=>prodPop(h.el,h.id), 280);
+});
+document.addEventListener("mouseout", e=>{
+  const h=_prodDeEl(e.target); if(!h) return;
+  const to=_prodDeEl(e.relatedTarget);
+  if(to && to.el===h.el) return;             // sigo dentro de la misma fila
+  clearTimeout(_rowPopT); _rowPopEl=null; sbUnhover();
+});
 async function cargarSmart(id){
   const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id);
   if(r){ _sbSet(gv(r,"compradoU"), gv(r,"venta"), r.g?r.g.n:1); return; }   // producto del stock: 12m ya calculado
