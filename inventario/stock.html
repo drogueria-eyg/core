@@ -98,6 +98,8 @@
   .pol label{font-size:11.5px;font-weight:700;color:var(--gris);display:flex;justify-content:space-between}
   .pol label b{color:var(--teal-deep);font-size:13px}
   .pol input[type=range]{width:100%;accent-color:var(--teal)}
+  .iainput{font-family:inherit;font-size:17px;font-weight:800;padding:9px 12px;border:1px solid var(--line);border-radius:10px;width:100%;color:var(--teal-deep);background:#fff}
+  .iainput:focus{outline:none;border-color:var(--teal)}
   .segs{display:flex;gap:0;border:1px solid var(--line);border-radius:9px;overflow:hidden}
   .segs button{font-family:inherit;font-size:12px;font-weight:700;padding:8px 12px;border:0;background:var(--surface);color:var(--gris);cursor:pointer}
   .segs button.on{background:var(--teal);color:#fff}
@@ -389,6 +391,7 @@ let TAB="comprar";
 let comprarSub="reponer";   // sub-pestaña de Comprar: "reponer" | "pres"
 let liq={plazo:6};   // Liquidar: plazo de vencimiento en meses para el filtro "por vencer"
 let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
+let IA={loaded:false, loading:false, plazo:{}, canalF:{}, canalI:{}, presup:null, presupSug:0, periodo:"mes", sel:{}};   // compra inteligente: plazo x proveedor, canal x producto, presupuesto
 let STOCK_CRIT=new Set(), STOCK_PED=new Set();   // marcas manuales de German (param eyg.stock_modo): siempre-en-stock / siempre-contra-pedido
 let qBuscar="", QCACHE=[];   // buscador de la lista de quiebres
 let rBuscar="", rProv="", rVista="reponer", rStock="", RCACHE=[];   // buscador + filtro proveedor + vista (reponer/pedidos/nopedir) + filtro de stock (''/sin/bajo)
@@ -948,6 +951,7 @@ function tabsBar(rd){
   const nliq=DATA.filter(r=>r.min!=null && r.min<6).length;   // por vencer < 6 meses
   return `<div class="tabs">
     <button class="tab ${TAB==="comprar"?"on":""}" onclick="setTab('comprar')">🛒 Reponer ${nrep?`<span class="b">${nrep}</span>`:""}</button>
+    <button class="tab ${TAB==="compraia"?"on":""}" onclick="setTab('compraia')">🧠 Compra inteligente</button>
     <button class="tab ${TAB==="compras"?"on":""}" onclick="setTab('compras')">🧾 Compras${COMP.loaded&&COMP.nPres?`<span class="b">${COMP.nPres}</span>`:""}</button>
     <button class="tab ${TAB==="liquidar"?"on":""}" onclick="setTab('liquidar')">🏷️ Liquidar / Ofertar ${nliq?`<span class="b">${nliq}</span>`:""}</button>
     <button class="tab ${TAB==="win"?"on":""}" onclick="setTab('win')">⭐ Ganadores</button>
@@ -959,6 +963,7 @@ function setTab(t){ TAB=t; render(); }
 function renderTab(rd){
   const c=document.getElementById("tabc");
   if(TAB==="comprar") { c.innerHTML=tabComprar(rd); }
+  else if(TAB==="compraia") { c.innerHTML=tabCompraIA(rd); if(!IA.loaded&&!IA.loading) loadIA(); else pintarIA(); }
   else if(TAB==="compras") { c.innerHTML=tabCompras(); if(COMP.loaded) renderComprasList(); }
   else if(TAB==="liquidar") c.innerHTML=tabLiquidar(rd);
   else if(TAB==="win") { c.innerHTML=tabWin(rd); renderWin(); }
@@ -2210,6 +2215,104 @@ function copiarCompra(){
 }
 
 // ===================== PRESUPUESTOS · RFQ de Odoo (cotizar / enviar / confirmar) =====================
+// ===================== COMPRA INTELIGENTE · reparte un presupuesto en lo que más conviene comprar =====================
+// plazo de pago (días) a partir del nombre del término de pago
+function plazoDias(nombre){ const s=(nombre||"").toLowerCase();
+  if(/contado/.test(s)) return 0;
+  const m=s.match(/(\d+)\s*d[ií]as?/); if(m) return +m[1];
+  const r=s.match(/(\d+)/);
+  if(/recepci|cheque|neto/.test(s)) return r?+r[1]:(/cheque/.test(s)?30:0);
+  return 0; }
+let iaT;
+function onIApres(v){ IA.presup=+String(v).replace(/[^\d]/g,"")||0; clearTimeout(iaT); iaT=setTimeout(pintarIA,220); }
+async function loadIA(){
+  IA.loading=true;
+  try{
+    const ini12=iso(new Date(HOY.getFullYear(),HOY.getMonth()-12,1));
+    const curIni=iso(new Date(HOY.getFullYear(),HOY.getMonth(),1));
+    const ini6=iso(new Date(HOY.getFullYear(),HOY.getMonth()-6,1));
+    const RUB="x_studio_selection_field_6ui_1j42g6fu9";   // rubro del cliente (farmacia/institución/…)
+    const [plz, comprasMes, ventF, ventI] = await Promise.all([
+      rpc("purchase.order.line","read_group",[[["order_id.state","in",["purchase","done"]],["order_id.date_order",">=",ini12],["payment_term_id","!=",false],["partner_id","!=",PROVEEDOR_T]],["__count"],["partner_id","payment_term_id"]],{lazy:false,limit:700}),
+      rpc("purchase.order","read_group",[[["state","in",["purchase","done"]],["date_order",">=",ini6],["date_order","<",curIni],["partner_id","!=",PROVEEDOR_T]],["amount_untaxed:sum"],["date_order:month"]],{lazy:false}),
+      rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",ini12],["order_id.partner_id."+RUB,"=","FARMACIAS"]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
+      rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",ini12],["order_id.partner_id."+RUB,"in",["INSTITUCIONES","SAMCO"]]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
+    ]);
+    const byProv={}; for(const g of plz){ if(!g.partner_id||!g.payment_term_id)continue; const p=g.partner_id[0]; (byProv[p]=byProv[p]||[]).push([g.payment_term_id[1],g.__count||0]); }
+    IA.plazo={}; for(const p in byProv){ byProv[p].sort((a,b)=>b[1]-a[1]); IA.plazo[p]={nombre:byProv[p][0][0], dias:plazoDias(byProv[p][0][0])}; }
+    let tot=0,n=0; for(const g of comprasMes){ tot+=g.amount_untaxed||0; n++; } IA.presupSug=Math.round(tot/(n||1));
+    if(IA.presup==null) IA.presup=IA.presupSug;
+    IA.canalF={}; for(const v of ventF){ if(v.product_id) IA.canalF[v.product_id[0]]=Math.round(v.product_uom_qty||0); }
+    IA.canalI={}; for(const v of ventI){ if(v.product_id) IA.canalI[v.product_id[0]]=Math.round(v.product_uom_qty||0); }
+    IA.loaded=true; IA.loading=false; if(TAB==="compraia") render();
+  }catch(e){ IA.loading=false; const c=document.getElementById("iabody"); if(c) c.innerHTML='<div class="errbox">No pude cargar los datos: '+esc(e.message)+'</div>'; }
+}
+function plazoDe(r){ return r.provId&&IA.plazo[r.provId]?IA.plazo[r.provId]:null; }
+function canalDe(r){ const ids=r.g?r.g.members.map(m=>m.id):[r.id]; let f=0,i=0; for(const id of ids){ f+=IA.canalF[id]||0; i+=IA.canalI[id]||0; } const t=f+i;
+  if(t===0) return {lbl:"", f,i}; const pf=f/t; return {lbl: pf>=0.7?"farmacias":pf<=0.3?"instituciones":"mixto", f,i}; }
+// arma el plan: candidatos = necesita reponerse con proveedor; score = recupero de caja (ganancia/mes por peso × urgencia × plazo)
+function planIA(rd){
+  const cands=(rd.necesita||[]).filter(x=>x.r.provId && x.rp.sug>0).map(x=>{
+    const r=x.r, rp=x.rp, precio=r.provPrice>0?r.provPrice:r.costoU, costoLinea=Math.round(rp.sug*precio);
+    const dm=demandaMes(r), margenU=Math.max(0,r.margenU||0), gananciaMes=Math.round(margenU*dm);
+    const retPeso=costoLinea>0?gananciaMes/costoLinea:0;
+    const urgF=rp.urg==="quiebre"?2:rp.urg==="urgente"?1.6:rp.urg==="semana"?1.3:1;
+    const pl=plazoDe(r), plF=1+Math.min(pl?pl.dias:0,90)/180;
+    return {r, rp, precio, costoLinea, dm, margenU, gananciaMes, retPeso, urgF, pl, score:retPeso*urgF*plF, canal:canalDe(r)};
+  }).sort((a,b)=>b.score-a.score);
+  const presup=IA.periodo==="semana"?Math.round((IA.presup||0)/4.3):(IA.presup||0);
+  let gastado=0, ganaMes=0; const sel=[];
+  for(const c of cands){ if(gastado+c.costoLinea<=presup){ sel.push(c); gastado+=c.costoLinea; ganaMes+=c.gananciaMes; } }
+  const byProv={}; for(const c of sel){ const pid=c.r.provId; (byProv[pid]=byProv[pid]||{id:pid,name:c.r.provName,items:[],total:0,pl:c.pl}).items.push(c); byProv[pid].total+=c.costoLinea; }
+  return {cands, sel, provs:Object.values(byProv).sort((a,b)=>b.total-a.total), presup, gastado, ganaMes, quedanFuera:cands.length-sel.length};
+}
+function tabCompraIA(rd){
+  return `
+  <div class="note info">La <b>compra inteligente</b> reparte tu presupuesto en lo que más conviene comprar: prioriza lo de <b>alta rotación y en quiebre</b> (la plata vuelve rápido), con buen margen y aprovechando el <b>plazo de pago</b> del proveedor. Nunca compra más del objetivo de cobertura (no acumula). Mirá el canal (farmacias/instituciones) en cada renglón.</div>
+  <div class="policy" style="align-items:flex-end">
+    <div class="pol"><label>Presupuesto del período</label>
+      <input id="iapres" type="text" inputmode="numeric" class="iainput" value="${IA.presup!=null?IA.presup:""}" oninput="onIApres(this.value)" placeholder="$ del mes"></div>
+    <div class="pol" style="flex:0 0 auto;min-width:auto"><label>Período</label>
+      <div class="segs"><button class="${IA.periodo==='mes'?'on':''}" onclick="IA.periodo='mes';pintarIA()">Mes</button><button class="${IA.periodo==='semana'?'on':''}" onclick="IA.periodo='semana';pintarIA()">Semana</button></div></div>
+    <div class="pol" style="flex:1"><label>Sugerido (lo que comprás por mes)</label>
+      <div style="font-size:12.5px;color:var(--gris)">${IA.presupSug?('<b>'+money(IA.presupSug)+'</b>/mes'):'…'}${IA.periodo==='semana'?' · por semana ≈ <b>'+money(Math.round((IA.presup||0)/4.3))+'</b>':''} · <a onclick="IA.presup=IA.presupSug;render()" style="color:var(--teal);cursor:pointer;font-weight:700">usar sugerido</a></div></div>
+  </div>
+  <div id="iabody"></div>`;
+}
+function pintarIA(){
+  const el=document.getElementById("iabody"); if(!el) return;
+  if(!IA.loaded){ el.innerHTML='<div class="pcard empty"><div class="spinner" style="margin:6px auto 12px"></div>Cargando plazos de pago y canales…</div>'; return; }
+  const plan=planIA(repoData()); IA._plan=plan;
+  const pct=plan.presup>0?Math.round(plan.gastado/plan.presup*100):0;
+  const head=`<div class="pcard" style="margin-bottom:14px">
+    <div class="rotleg"><div class="rl"><span class="lb"><b>${plan.sel.length} productos</b><span>de ${plan.cands.length} que hay para reponer${plan.quedanFuera>0?` · ${plan.quedanFuera} no entran en el presupuesto`:""}</span></span>
+      <span class="vv">${fmtM(plan.gastado)}<span>de ${fmtM(plan.presup)} (${pct}%)</span></span></div>
+    <div class="rotbar" style="margin-top:8px"><div style="background:var(--teal);width:${Math.min(100,pct)}%">${pct>8?pct+"%":""}</div></div>
+    <div class="rl" style="margin-top:8px"><span class="lb"><b>Ganancia estimada/mes</b><span>de este pedido, al ritmo de venta actual</span></span><span class="vv" style="color:var(--green)">${fmtM(plan.ganaMes)}</span></div></div>`;
+  if(!plan.sel.length){ el.innerHTML=head+`<div class="pcard empty">${plan.cands.length?"El presupuesto no alcanza ni para el primero. Subilo.":"No hay nada por reponer con proveedor cargado ahora. 👌"}</div>`; return; }
+  const canalChip=c=>c.lbl?`<span class="tagmini" style="background:${c.lbl==='farmacias'?'#e6f3f1':c.lbl==='instituciones'?'#eef0f7':'#f3f0e6'};color:var(--gris)">${c.lbl}</span>`:"";
+  const just=c=>{ const fr=gv(c.r,"freq"); return `te lo piden ${fr}×/año · ${c.rp.urg==="quiebre"?"🔴 sin stock":c.rp.urg==="urgente"?"🟠 urgente":"cobertura "+(c.rp.cob>900?"—":fmtDur(c.rp.cob))} · margen ${c.r.margenPct!=null?Math.round(c.r.margenPct)+"%":"—"}${c.pl?` · paga a ${c.pl.dias} días`:""}`; };
+  el.innerHTML=head+plan.provs.map(p=>`
+    <div class="tablecard" style="margin-bottom:12px">
+      <div class="thead" style="grid-template-columns:1fr auto;align-items:center;background:var(--surface)">
+        <div><b style="color:var(--teal-deep)">${esc(p.name||"—")}</b> <span class="cmeta">${p.items.length} producto${p.items.length===1?"":"s"}${p.pl?" · paga a "+p.pl.dias+" días ("+esc(p.pl.nombre)+")":" · sin plazo cargado"}</span></div>
+        <div style="text-align:right"><b>${money(p.total)}</b> <button class="mini-btn" style="background:var(--teal);color:#fff;border-color:var(--teal)" onclick="iaAlCarrito(${p.id})">🛒 Al carrito</button></div>
+      </div>
+      ${p.items.map(c=>`<div class="row" style="grid-template-columns:2fr 0.9fr 1fr 1.2fr;cursor:pointer" onclick="abrirProd(${c.r.id})">
+        <div><div class="cname">${esc(c.r.g&&c.r.g.n>1?tituloGrupo(c.r):cleanName(c.r.name))} ${canalChip(c.canal)}</div><div class="cmeta">${just(c)}</div></div>
+        <div class="tr-r num">${c.rp.sug} u</div>
+        <div class="tr-r num" style="font-weight:600">${money(c.costoLinea)}</div>
+        <div class="tr-r num" style="color:var(--green)">+${money(c.gananciaMes)}/mes</div>
+      </div>`).join("")}
+    </div>`).join("");
+}
+function iaAlCarrito(provId){
+  const plan=IA._plan; if(!plan) return; const p=plan.provs.find(x=>x.id===provId); if(!p) return;
+  const c=cartOf(provId, p.name); let n=0;
+  for(const it of p.items){ if(!c.items.some(x=>x.id===it.r.id)){ c.items.push({id:it.r.id,code:it.r.code||"",name:cleanName(it.r.name),qty:it.rp.sug,precio:it.precio||0}); n++; } }
+  saveCarts(); pintarCarrito(); toast(n?`🛒 ${n} al carrito de ${p.name}`:"Ya estaban en el carrito");
+}
+
 // ===================== COMPRAS · órdenes de compra de Odoo (consulta tipo panel de ventas) =====================
 const EST_COMPRA={draft:["Borrador","pe-draft"],sent:["Presupuesto enviado","pe-sent"],purchase:["Confirmada","pe-ok"],done:["Recibida","pe-done"]};
 function odooPO(id){ return (COMP.base||"https://drogueriaeyg.odoo.com").replace(/\/$/,"")+"/web#id="+id+"&model=purchase.order&view_type=form"; }
