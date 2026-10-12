@@ -183,7 +183,7 @@
   .g-repo{grid-template-columns:2.4fr 1.4fr 0.8fr 0.8fr 0.9fr 0.9fr}
   .g-win{grid-template-columns:2.4fr 0.8fr 0.9fr 0.8fr 1fr 0.9fr}
   .g-rep{grid-template-columns:2.6fr 1fr 0.9fr 0.95fr 1.15fr}
-  .smartbtns{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:2px 0 14px}
+  .smartbtns{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:2px 0 14px}
   .sbtn{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:11px 13px;cursor:pointer;transition:.12s}
   .sbtn:hover{border-color:var(--teal);background:#F7FBFA;transform:translateY(-1px)}
   .sbtn .sb-ic{font-size:22px;flex-shrink:0}
@@ -390,7 +390,7 @@ let DATA=[], ARCH=[], VALROTO=[], QUIEBRE=[], REPO=[], LOTES={}, FLUJO={meses:[]
 let TAB="comprar";
 let comprarSub="reponer";   // sub-pestaña de Comprar: "reponer" | "pres"
 let liq={plazo:6};   // Liquidar: plazo de vencimiento en meses para el filtro "por vencer"
-let pol={umbral:1.0, objetivo:2.0, fuente:"12m"};
+let pol={umbral:1.0, objetivo:2.0, fuente:"auto"};
 let IA={loaded:false, loading:false, plazo:{}, canalF:{}, canalI:{}, presup:null, presupSug:0, periodo:"mes", sel:{}};   // compra inteligente: plazo x proveedor, canal x producto, presupuesto
 let STOCK_CRIT=new Set(), STOCK_PED=new Set();   // marcas manuales de German (param eyg.stock_modo): siempre-en-stock / siempre-contra-pedido
 let qBuscar="", QCACHE=[];   // buscador de la lista de quiebres
@@ -488,13 +488,14 @@ function agruparMarcas(rows){
   for(const r of rows){ const k=grpKeyDe(r); (GB[k]=GB[k]||[]).push(r); }
   for(const k in GB){ const ms=GB[k];
     const venta=ms.reduce((a,r)=>a+r.ventaU,0), venta3=ms.reduce((a,r)=>a+r.venta3,0), freq=ms.reduce((a,r)=>a+r.freq,0);
+    const seasUp=ms.reduce((a,r)=>a+(r.seasUp||0),0), seasTr=ms.reduce((a,r)=>a+(r.seasTr||0),0);
     const qty=ms.reduce((a,r)=>a+r.qty,0), incoming=ms.reduce((a,r)=>a+r.incoming,0);
     const val=ms.reduce((a,r)=>a+(r.val||0),0), valVenc=ms.reduce((a,r)=>a+(r.valVenc||0),0), val6=ms.reduce((a,r)=>a+(r.val6||0),0);
     const compraFreq=ms.reduce((a,r)=>a+(r.compraFreq||0),0), compradoU=ms.reduce((a,r)=>a+(r.compradoU||0),0), margenAnual=ms.reduce((a,r)=>a+(r.margenAnual||0),0);
     const _mins=ms.map(r=>r.min).filter(x=>x!=null); const min=_mins.length?Math.min(..._mins):null;   // el lote que vence primero entre todas las marcas
     let vig=ms[0], best=-1;   // marca VIGENTE: la que tiene stock / en camino / proveedor, más movida
     for(const r of ms){ const sc=(r.incoming>0?3:0)+(r.qty>0?2:0)+(r.provId?1:0)+(r.compraFreq/1000)+(r.ventaU/1e9); if(sc>best){best=sc;vig=r;} }
-    const g={key:k, n:ms.length, venta, venta3, freq, qty, incoming, val, valVenc, val6, min, compraFreq, compradoU, margenAnual, vigenteId:vig.id, members:ms};
+    const g={key:k, n:ms.length, venta, venta3, freq, seasUp, seasTr, qty, incoming, val, valVenc, val6, min, compraFreq, compradoU, margenAnual, vigenteId:vig.id, members:ms};
     for(const r of ms){ r.g=g; r.esVigente=(r.id===vig.id); }
   }
 }
@@ -506,9 +507,12 @@ async function cargar(){
     const curIni=new Date(HOY.getFullYear(),HOY.getMonth(),1);
     const ini12=new Date(HOY.getFullYear(),HOY.getMonth()-12,1);
     const ini3=new Date(HOY.getFullYear(),HOY.getMonth()-3,1);
+    // ventanas para ESTACIONALIDAD (comparar la misma época, el año pasado): próximos 3 meses vs los 3 previos
+    const seasUpDe=new Date(HOY.getFullYear()-1,HOY.getMonth(),1),   seasUpA=new Date(HOY.getFullYear()-1,HOY.getMonth()+3,1);
+    const seasTrDe=new Date(HOY.getFullYear()-1,HOY.getMonth()-3,1), seasTrA=new Date(HOY.getFullYear()-1,HOY.getMonth(),1);
 
     prog("stock, ventas y compras…");
-    const [stock, ventas, ventas3, so, po, cad, comprasF, modoParam, pedidosOC, pedidoManParam, descartParam, cartsParam] = await Promise.all([
+    const [stock, ventas, ventas3, so, po, cad, comprasF, modoParam, pedidosOC, pedidoManParam, descartParam, cartsParam, ventasSU, ventasST] = await Promise.all([
       rpc("stock.quant","read_group",[[["location_id.usage","=","internal"],["quantity","!=",0]],["value:sum","quantity:sum"],["product_id"]],{lazy:false,limit:6000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini12)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
       rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(ini3)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}),
@@ -521,7 +525,11 @@ async function cargar(){
       rpc("ir.config_parameter","get_param",["eyg.stock_pedido_manual"]).catch(()=>null),
       rpc("ir.config_parameter","get_param",["eyg.stock_descartados"]).catch(()=>null),
       rpc("ir.config_parameter","get_param",["eyg.stock_carritos"]).catch(()=>null),
+      rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(seasUpDe)],["order_id.date_order","<",iso(seasUpA)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}).catch(()=>[]),
+      rpc("sale.order.line","read_group",[[["order_id.state","in",["sale","done"]],["order_id.date_order",">=",iso(seasTrDe)],["order_id.date_order","<",iso(seasTrA)]],["product_uom_qty:sum"],["product_id"]],{lazy:false,limit:9000}).catch(()=>[]),
     ]);
+    const VSU={},VST={}; for(const v of ventasSU){ if(v.product_id) VSU[v.product_id[0]]=Math.round(v.product_uom_qty||0); }
+    for(const v of ventasST){ if(v.product_id) VST[v.product_id[0]]=Math.round(v.product_uom_qty||0); }
     // impuestos de venta: de ahí sale la regla del costo (igual que en el motor y en Costos y Rentabilidad)
     TASAS_VENTA = await EYG.tasasVenta();
 
@@ -599,7 +607,7 @@ async function cargar(){
       const std=cost, catId=m.categ_id?m.categ_id[0]:0;
       const costoU=costoReal({xCostoMotor:m.x_costo_motor||0, std, ivaCompra:m.x_iva_compra||0, taxesId:m.taxes_id||[]});
       return {id, code:m.default_code||"", archivado:m.active===false, valRoto, qa, xop:!!m.x_oportunidad, manualC:m.x_costo_manual||0, manualD:m.x_costo_manual_date||null, name:(s?s.product_id[1]:(m.name||("#"+id))), fam:familia(m.categ_id),
-        categ:m.categ_id?m.categ_id[1]:"", catId, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, marca:(m.x_studio_many2one_field_6o_1if0l6ud2?m.x_studio_many2one_field_6o_1if0l6ud2[1]:""), monodrug:(Array.isArray(m.monodrug)?(m.monodrug[1]||""):(typeof m.monodrug==="string"?m.monodrug:"")), val, qty, ventaU, venta3, freq, compraFreq:Math.round(CF[id]||0), compradoU:Math.round(CU[id]||0),
+        categ:m.categ_id?m.categ_id[1]:"", catId, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, marca:(m.x_studio_many2one_field_6o_1if0l6ud2?m.x_studio_many2one_field_6o_1if0l6ud2[1]:""), monodrug:(Array.isArray(m.monodrug)?(m.monodrug[1]||""):(typeof m.monodrug==="string"?m.monodrug:"")), val, qty, ventaU, venta3, freq, seasUp:Math.round(VSU[id]||0), seasTr:Math.round(VST[id]||0), compraFreq:Math.round(CF[id]||0), compradoU:Math.round(CU[id]||0),
         incoming:Math.round(m.incoming_qty||0),
         meses: meses>900?999:Math.round(meses*10)/10,
         std, xCostoMotor:m.x_costo_motor||0, ivaCompra:m.x_iva_compra||0, taxesId:m.taxes_id||[], ivaAlCosto:tildeEfectiva({taxesId:m.taxes_id||[]})?(m.x_iva_compra||0):0,
@@ -659,7 +667,19 @@ async function cargar(){
 // ---------- cálculo de reposición (depende de la política) ----------
 // agregados del GRUPO de marca (o del propio producto si no está agrupado)
 function gv(r,f){ if(r.g) return r.g[f]; return f==="venta"?r.ventaU : f==="venta3"?r.venta3 : f==="freq"?r.freq : f==="qty"?r.qty : f==="incoming"?r.incoming : (r[f]!==undefined?r[f]:0); }
-function demandaMes(r){ const vu=gv(r,"venta"), v3=gv(r,"venta3"); return pol.fuente==="3m" ? v3/3 : vu/12; }
+// factor estacional: cuánto sube/baja el producto al entrar en esta época, mirando el año pasado (próximos 3 meses vs los 3 previos)
+function factorEstac(r){ const up=gv(r,"seasUp"), tr=gv(r,"seasTr"); if(tr>0&&up>0) return Math.max(0.6,Math.min(2.0, up/tr)); if(up>0&&tr===0) return 1.5; return 1; }
+// demanda mensual INTELIGENTE (modo auto): ritmo reciente real (3m), nunca más que el promedio del año, piso 30% del promedio.
+// Para venta PAREJA aplica el ajuste estacional (sube/baja según la misma época del año pasado). Para venta DESPAREJA (pocos
+// clientes grandes, ej. ENOXAPARINA a sanatorios) NO aplica el salto estacional —con 1 año no se sabe si el pedido grande se
+// repite— y queda conservador + avisado para revisar a mano.
+function demandaMes(r){ const vu=gv(r,"venta"), v3=gv(r,"venta3"), avg=vu/12, rr=v3/3;
+  if(pol.fuente==="12m") return avg;
+  if(pol.fuente==="3m")  return rr;
+  const base=Math.min(avg, Math.max(rr, avg*0.3));   // base robusta
+  return demandaDespareja(r) ? base : base*factorEstac(r); }
+// ¿la demanda es DESPAREJA? (pocas ventas concentradas: el promedio del año engaña) → avisar para revisar a mano
+function demandaDespareja(r){ const vu=gv(r,"venta"), v3=gv(r,"venta3"); if(vu<=0) return false; const avg=vu/12, rr=v3/3; return avg>0 && (rr < avg*0.5 || rr > avg*2); }
 // Ritmo de venta por FRECUENCIA (nº de ventas/año) del GRUPO — un producto de "muchas unidades en 1 sola venta" NO es parejo.
 function claseDe(f){ if(f<=0)return"inactivo"; if(f>=12)return"constante"; if(f>=4)return"habitual"; return"esporadico"; }
 function claseVenta(r){ return claseDe(gv(r,"freq")); }
@@ -1107,7 +1127,7 @@ function tabComprar(rd){
   return `
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0 6px">
       <div style="font-size:13px;color:var(--gris)">Armá los carritos por proveedor. Las órdenes y presupuestos que mandes a Odoo los seguís en <a onclick="setTab('compras')" style="color:var(--teal);cursor:pointer;font-weight:700">🧾 Compras</a>.</div>
-      <button class="wa-send" style="width:auto;margin:0 0 0 auto;padding:10px 18px;background:var(--teal)" onclick="setTab('compraia')" title="Que el sistema te sugiera qué comprar según un presupuesto">🧠 Compra sugerida</button>
+      <button class="wa-send" style="width:auto;margin:0 0 0 auto;padding:10px 18px;background:var(--teal)" onclick="setTab('compraia')" title="Que el sistema te sugiera qué comprar según un presupuesto">🧠 Compra inteligente</button>
       <button class="wa-send" style="width:auto;margin:0;padding:10px 18px;background:var(--gold)" onclick="nuevaCompra()">➕ Nuevo pedido a mano</button>
     </div>
     ${reponerSeccion(rd)}
@@ -1134,7 +1154,7 @@ function reponerSeccion(rd){
       <div class="pol"><label>Reponer hasta cubrir <b id="lbO">${pol.objetivo} meses</b></label>
         <input type="range" min="1" max="6" step="0.5" value="${pol.objetivo}" oninput="setObjetivo(this.value)"></div>
       <div class="pol" style="flex:0 0 auto;min-width:auto"><label>Ritmo de venta que uso</label>
-        <div class="segs"><button class="${pol.fuente==='12m'?'on':''}" onclick="setFuente('12m')">Año</button><button class="${pol.fuente==='3m'?'on':''}" onclick="setFuente('3m')">Últimos 3m</button></div></div>
+        <div class="segs"><button class="${pol.fuente==='auto'?'on':''}" onclick="setFuente('auto')" title="Ritmo reciente real + ajuste estacional (recomendado)">Auto 🧠</button><button class="${pol.fuente==='12m'?'on':''}" onclick="setFuente('12m')">Año</button><button class="${pol.fuente==='3m'?'on':''}" onclick="setFuente('3m')">Últimos 3m</button></div></div>
     </div>
     <div class="note info" style="margin-top:2px">Una sola lista con <b>todo lo que hay que reponer</b>. Filtrá por <b>🔴 sin stock</b> (lo urgente) o <b>🟠 stock bajo</b> (el resto), por proveedor, y armá el carrito. Lo que EyG <b>compra contra pedido</b> (estar en cero es normal) no ensucia esta lista.</div>
 
@@ -1783,6 +1803,7 @@ function smartBtns(id){
   return `<div class="smartbtns">
     <div class="sbtn" onclick="histCompras(${id})"><span class="sb-ic">🛒</span><div class="sb-tx"><b id="sbComp">…</b><span id="sbCompSub">Comprado · ver a quién y a qué costo</span></div></div>
     <div class="sbtn" onclick="histVentas(${id})"><span class="sb-ic">📈</span><div class="sb-tx"><b id="sbVend">…</b><span id="sbVendSub">Vendido · ver mes a mes</span></div></div>
+    <div class="sbtn" onclick="histClientes(${id})"><span class="sb-ic">👥</span><div class="sb-tx"><b>Quién lo compra</b><span>top clientes · a quién venderle</span></div></div>
   </div>`;
 }
 function _sbSet(cu,vu,n){   // MISMO dato (12 meses) que la lista y las subfilas → los números coinciden en todas las vistas
@@ -1870,6 +1891,28 @@ async function histVentas(id){
       <p style="font-size:11.5px;color:var(--gris);margin:0 0 10px">Detalle mes a mes (histórico completo: ${Math.round(tot).toLocaleString("es-AR")} u en ${rows.length} meses con venta).</p>
       <div class="histbars">${rows.map(r=>`<div class="hb"><span class="hb-m">${esc(r.lab)}</span><span class="hb-bar"><i style="width:${Math.round(r.u/max*100)}%"></i></span><span class="hb-u">${r.u.toLocaleString("es-AR")}</span></div>`).join("")}</div>`;
   }catch(e){ const b=document.getElementById("hmBody"); if(b)b.innerHTML='<div class="errbox">No pude cargar las ventas: '+esc(e.message)+'</div>'; }
+}
+// TOP CLIENTES que compran el producto (a quién venderle): suma todas las marcas, con el canal de cada cliente
+async function histClientes(id){
+  const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id)||(CAT.loaded?CAT.rows.find(x=>x.id===id):null)||{};
+  const isG=r.g&&r.g.n>1, ids=r.g?r.g.members.map(m=>m.id):[id];
+  abrirHist("Quién compra "+(isG?tituloGrupo(r):cleanName(r.name||("#"+id)))+(isG?` · ${r.g.n} marcas`:""));
+  try{
+    const ini12s=iso(new Date(HOY.getFullYear(),HOY.getMonth()-12,1));
+    const g=await rpc("sale.order.line","read_group",[[["product_id","in",ids],["order_id.state","in",["sale","done"]],["order_id.date_order",">=",ini12s]],["product_uom_qty:sum","__count"],["order_partner_id"]],{lazy:false,limit:500});
+    const b=document.getElementById("hmBody"); if(!b) return;
+    let rows=g.filter(x=>x.order_partner_id).map(x=>({pid:x.order_partner_id[0], name:x.order_partner_id[1], u:Math.round(x.product_uom_qty||0), n:x.__count||0})).filter(x=>x.u>0).sort((a,b)=>b.u-a.u);
+    if(!rows.length){ b.innerHTML='<div class="empty" style="padding:30px">Nadie lo compró en el último año.</div>'; return; }
+    const top=rows.slice(0,25);
+    const RUB="x_studio_selection_field_6ui_1j42g6fu9";
+    const parts=await rpc("res.partner","read",[top.map(x=>x.pid),[RUB]]).catch(()=>[]);
+    const RB={}; parts.forEach(p=>RB[p.id]=p[RUB]||"");
+    const canalLbl=rb=>rb==="FARMACIAS"?"farmacia":(rb==="INSTITUCIONES"||rb==="SAMCO")?"institución":rb?rb.toLowerCase():"";
+    const max=Math.max(...top.map(x=>x.u))||1, tot=rows.reduce((a,x)=>a+x.u,0);
+    b.innerHTML=`<div class="count-line" style="margin:0 0 4px"><b>${rows.length}</b> clientes · ${Math.round(tot).toLocaleString("es-AR")} u en el último año</div>
+      <p style="font-size:11.5px;color:var(--gris);margin:0 0 10px">A quiénes les podés ofrecer este producto — los que más lo piden.</p>
+      <div class="histbars">${top.map(x=>`<div class="hb"><span class="hb-m" style="min-width:160px" title="${esc(x.name)}">${esc(cleanName(x.name).slice(0,30))}${RB[x.pid]?` <span class="tagmini">${canalLbl(RB[x.pid])}</span>`:""}</span><span class="hb-bar"><i style="width:${Math.round(x.u/max*100)}%"></i></span><span class="hb-u">${x.u.toLocaleString("es-AR")} u · ${x.n}×</span></div>`).join("")}</div>`;
+  }catch(e){ const b=document.getElementById("hmBody"); if(b)b.innerHTML='<div class="errbox">No pude cargar los clientes: '+esc(e.message)+'</div>'; }
 }
 function cerrar(){document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");}
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){cerrarHist();cerrar();cerrarGraf();}});
@@ -2295,7 +2338,10 @@ function pintarIA(){
     <div class="rl" style="margin-top:8px"><span class="lb"><b>Ganancia estimada/mes</b><span>de este pedido, al ritmo de venta actual</span></span><span class="vv" style="color:var(--green)">${fmtM(plan.ganaMes)}</span></div></div>`;
   if(!plan.sel.length){ el.innerHTML=head+`<div class="pcard empty">${plan.cands.length?"El presupuesto no alcanza ni para el primero. Subilo.":"No hay nada por reponer con proveedor cargado ahora. 👌"}</div>`; return; }
   const canalChip=c=>c.lbl?`<span class="tagmini" style="background:${c.lbl==='farmacias'?'#e6f3f1':c.lbl==='instituciones'?'#eef0f7':'#f3f0e6'};color:var(--gris)">${c.lbl}</span>`:"";
-  const just=c=>{ const fr=gv(c.r,"freq"); return `te lo piden ${fr}×/año · ${c.rp.urg==="quiebre"?"🔴 sin stock":c.rp.urg==="urgente"?"🟠 urgente":"cobertura "+(c.rp.cob>900?"—":fmtDur(c.rp.cob))} · margen ${c.r.margenPct!=null?Math.round(c.r.margenPct)+"%":"—"}${c.pl?` · paga a ${c.pl.dias} días`:""}`; };
+  const just=c=>{ const fr=gv(c.r,"freq"), vu=gv(c.r,"venta"), fe=factorEstac(c.r), desp=demandaDespareja(c.r);
+    const est = fe>=1.25?" · 📈 sube en esta época":fe<=0.8?" · 📉 baja en esta época":"";
+    const urg = c.rp.urg==="quiebre"?"🔴 sin stock":c.rp.urg==="urgente"?"🟠 urgente":"cobertura "+(c.rp.cob>900?"—":fmtDur(c.rp.cob));
+    return `vende <b>${vu.toLocaleString("es-AR")} u/año</b> en ${fr} venta${fr===1?"":"s"}${est}${desp?" · ⚠️ demanda despareja":""} · ${urg} · margen ${c.r.margenPct!=null?Math.round(c.r.margenPct)+"%":"—"}${c.pl?` · paga a ${c.pl.dias} días`:""}`; };
   el.innerHTML=head+plan.provs.map(p=>`
     <div class="tablecard" style="margin-bottom:12px">
       <div class="thead" style="grid-template-columns:1fr auto;align-items:center;background:var(--surface)">
