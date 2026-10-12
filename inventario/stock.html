@@ -183,7 +183,15 @@
   .g-repo{grid-template-columns:2.4fr 1.4fr 0.8fr 0.8fr 0.9fr 0.9fr}
   .g-win{grid-template-columns:2.4fr 0.8fr 0.9fr 0.8fr 1fr 0.9fr}
   .g-rep{grid-template-columns:2.6fr 1fr 0.9fr 0.95fr 1.15fr}
-  .smartbtns{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:2px 0 14px}
+  .smartbtns{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:2px 0 14px}
+  .sbtn .sb-tx span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sbpop{position:fixed;z-index:120;background:#fff;border:1px solid var(--line);border-radius:11px;box-shadow:0 10px 30px rgba(0,0,0,.15);padding:11px 13px;font-size:12.5px;color:var(--ink);line-height:1.5;opacity:0;transition:opacity .12s;pointer-events:none}
+  .sbpop b{color:var(--teal-deep)}
+  .sbpop .shint{font-size:11px;color:var(--gris)}
+  .sbpop .sbbar{display:flex;align-items:center;gap:7px;margin:6px 0;font-size:11px;color:var(--gris)}
+  .sbpop .sbbar span{min-width:82px;flex:0 0 auto}
+  .sbpop .sbbar i{height:7px;border-radius:4px;background:var(--gris2);display:inline-block;min-width:2px}
+  .sbpop .sbbar b{color:var(--ink);min-width:30px;text-align:right;flex:0 0 auto}
   .sbtn{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:11px 13px;cursor:pointer;transition:.12s}
   .sbtn:hover{border-color:var(--teal);background:#F7FBFA;transform:translateY(-1px)}
   .sbtn .sb-ic{font-size:22px;flex-shrink:0}
@@ -1798,19 +1806,38 @@ function sugerencia(r,rp){
   if(r.meses>12) return `Stock para <b>${fmtDur(r.meses)}</b>. Frenar la reposición hasta que baje.`;
   return `Rotación saludable. Mantener el nivel de reposición actual.`;
 }
-// ===== Comprado / Vendido (como en Odoo) + historial, en la ficha =====
+// ===== Comprado / Vendido / Clientes (como en Odoo): botones compactos; al pasar el mouse, popover con resumen + mini-gráfico; al tocar, el detalle completo =====
 function smartBtns(id){
   return `<div class="smartbtns">
-    <div class="sbtn" onclick="histCompras(${id})"><span class="sb-ic">🛒</span><div class="sb-tx"><b id="sbComp">…</b><span id="sbCompSub">Comprado · ver a quién y a qué costo</span></div></div>
-    <div class="sbtn" onclick="histVentas(${id})"><span class="sb-ic">📈</span><div class="sb-tx"><b id="sbVend">…</b><span id="sbVendSub">Vendido · ver mes a mes</span></div></div>
-    <div class="sbtn" onclick="histClientes(${id})"><span class="sb-ic">👥</span><div class="sb-tx"><b>Quién lo compra</b><span>top clientes · a quién venderle</span></div></div>
+    <div class="sbtn" onclick="histCompras(${id})" onmouseenter="sbHover(this,${id},'comp')" onmouseleave="sbUnhover()"><span class="sb-ic">🛒</span><div class="sb-tx"><b id="sbComp">…</b><span>Comprado/año</span></div></div>
+    <div class="sbtn" onclick="histVentas(${id})" onmouseenter="sbHover(this,${id},'vend')" onmouseleave="sbUnhover()"><span class="sb-ic">📈</span><div class="sb-tx"><b id="sbVend">…</b><span>Vendido/año</span></div></div>
+    <div class="sbtn" onclick="histClientes(${id})" onmouseenter="sbHover(this,${id},'cli')" onmouseleave="sbUnhover()"><span class="sb-ic">👥</span><div class="sb-tx"><b>Clientes</b><span>quién lo pide</span></div></div>
   </div>`;
 }
 function _sbSet(cu,vu,n){   // MISMO dato (12 meses) que la lista y las subfilas → los números coinciden en todas las vistas
-  const ec=document.getElementById("sbComp"); if(ec) ec.textContent=cu.toLocaleString("es-AR")+" u comprado";
-  const ev=document.getElementById("sbVend"); if(ev) ev.textContent=vu.toLocaleString("es-AR")+" u vendido";
-  const cs=document.getElementById("sbCompSub"); if(cs) cs.textContent=(n>1?n+" marcas · ":"")+"último año · a quién y a qué costo";
-  const vs=document.getElementById("sbVendSub"); if(vs) vs.textContent=(n>1?n+" marcas · ":"")+"último año · mes a mes";
+  const ec=document.getElementById("sbComp"); if(ec) ec.textContent=cu.toLocaleString("es-AR")+" u";
+  const ev=document.getElementById("sbVend"); if(ev) ev.textContent=vu.toLocaleString("es-AR")+" u";
+}
+let _sbHoverT;
+function sbHover(el,id,tipo){ clearTimeout(_sbHoverT); _sbHoverT=setTimeout(()=>sbPop(el,id,tipo),150); }
+function sbUnhover(){ clearTimeout(_sbHoverT); const p=document.getElementById("sbpop"); if(p){ p.style.opacity="0"; setTimeout(()=>{const q=document.getElementById("sbpop"); if(q&&q.style.opacity==="0")q.style.display="none";},130); } }
+function sbPop(el,id,tipo){
+  const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id); if(!r) return;
+  const nM=r.g&&r.g.n>1?`<span class="shint">${r.g.n} marcas sumadas</span><br>`:"";
+  let html="";
+  if(tipo==="vend"){ const vu=gv(r,"venta"),v3=gv(r,"venta3"),avg=vu/12,rr=v3/3,fe=factorEstac(r),desp=demandaDespareja(r),mx=Math.max(avg,rr,1);
+    const est=fe>=1.25?'<span style="color:var(--green);font-weight:700">📈 sube en esta época</span>':fe<=0.8?'<span style="color:var(--org);font-weight:700">📉 baja en esta época</span>':'ritmo estable';
+    html=`${nM}<b>${vu.toLocaleString("es-AR")} u</b> vendidas en el último año
+      <div class="sbbar"><span>Promedio/mes</span><i style="width:${Math.round(avg/mx*100)}%"></i><b>${Math.round(avg)}</b></div>
+      <div class="sbbar"><span>Ritmo ahora</span><i style="width:${Math.round(rr/mx*100)}%;background:var(--teal)"></i><b>${Math.round(rr)}</b></div>
+      <span class="shint">${est}${desp?' · ⚠️ pocos clientes grandes':''}</span><br><span class="shint">Tocá para ver mes a mes.</span>`; }
+  else if(tipo==="comp"){ const e=document.getElementById("sbComp"); html=`${nM}<b>${e?e.textContent:"…"}</b> compradas en el último año<br><span class="shint">El costo que usa el motor es el <b>facturado</b> (lo que pagaste), no el de la orden.</span><br><span class="shint">Tocá para ver a quién y a qué costo.</span>`; }
+  else { html=`${nM}<b>¿Quién lo compra?</b><br><span class="shint">Los clientes que más lo piden, con su canal (farmacia / institución).</span><br><span class="shint">Tocá para verlos — así sabés a quién ofrecérselo.</span>`; }
+  let p=document.getElementById("sbpop"); if(!p){ p=document.createElement("div"); p.id="sbpop"; p.className="sbpop"; document.body.appendChild(p); }
+  p.innerHTML=html; p.style.display="block";
+  const rc=el.getBoundingClientRect(), w=Math.min(300, window.innerWidth-16);
+  p.style.width=w+"px"; p.style.left=Math.max(8,Math.min(rc.left, window.innerWidth-w-8))+"px"; p.style.top=(rc.bottom+6)+"px";
+  requestAnimationFrame(()=>{ p.style.opacity="1"; });
 }
 async function cargarSmart(id){
   const r=DATA.find(x=>x.id===id)||QUIEBRE.find(x=>x.id===id);
@@ -1826,6 +1853,7 @@ async function cargarSmart(id){
   }catch(e){ const ec=document.getElementById("sbComp"); if(ec)ec.textContent="—"; const ev=document.getElementById("sbVend"); if(ev)ev.textContent="—"; }
 }
 function abrirHist(titulo){
+  sbUnhover();
   let m=document.getElementById("histmodal");
   if(!m){ m=document.createElement("div"); m.id="histmodal"; m.className="histmodal"; m.onclick=e=>{if(e.target===m)cerrarHist();}; document.body.appendChild(m); }
   m.innerHTML=`<div class="hm-card"><div class="hm-head"><b>${esc(titulo)}</b><span class="hm-x" onclick="cerrarHist()">✕</span></div><div class="hm-body" id="hmBody"><div class="loading" style="padding:40px"><div class="spinner"></div>Cargando…</div></div></div>`;
@@ -1914,7 +1942,7 @@ async function histClientes(id){
       <div class="histbars">${top.map(x=>`<div class="hb"><span class="hb-m" style="min-width:160px" title="${esc(x.name)}">${esc(cleanName(x.name).slice(0,30))}${RB[x.pid]?` <span class="tagmini">${canalLbl(RB[x.pid])}</span>`:""}</span><span class="hb-bar"><i style="width:${Math.round(x.u/max*100)}%"></i></span><span class="hb-u">${x.u.toLocaleString("es-AR")} u · ${x.n}×</span></div>`).join("")}</div>`;
   }catch(e){ const b=document.getElementById("hmBody"); if(b)b.innerHTML='<div class="errbox">No pude cargar los clientes: '+esc(e.message)+'</div>'; }
 }
-function cerrar(){document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");}
+function cerrar(){sbUnhover();document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");}
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){cerrarHist();cerrar();cerrarGraf();}});
 // Fijar a mano el modo de abastecimiento (pisa la inferencia). Se guarda en el parámetro eyg.stock_modo.
 async function marcarModo(id, modo){
