@@ -730,10 +730,6 @@ function render(){
   const pendConc= M.filter(m=>m.yaEsta&&!m.yaEsta.is_reconciled);  // están, pero sin conciliar
   const cerrados= M.filter(m=>m.yaEsta&&m.yaEsta.is_reconciled);   // cargados y conciliados
   const abiertos= M.filter(abierto);                               // todo lo que falta: nuevos + pendConc
-  /* Los cobros de clientes sin imputar: entra plata, no es un cargo del banco ni una
-     transferencia nuestra, y sigue abierto. Se miran juntos porque se resuelven
-     igual: mirando la cuenta corriente del que pagó. */
-  const cobros= abiertos.filter(m=>m.importe>0 && m.tipo!=="impuesto" && m.tipo!=="cargo" && m.tipo!=="interna");
   const porTipo={}; M.forEach(m=>{(porTipo[m.tipo]=porTipo[m.tipo]||[]).push(m);});
   const auto = m => m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1||(m.tipo==="interna"&&m.otroBanco);
   const listos=abiertos.filter(auto);
@@ -841,6 +837,10 @@ function avisoValidacion(){
 }
 
 function kpis(M,nuevos,pendConc,cerrados,listos,dudas){
+  /* Se calcula ACÁ y no afuera: el KPI vive en esta función, así que una variable
+     definida en otra no existe en este scope. Al hacerlo mal, el render entero se
+     caía con "cobros is not defined" y la pantalla quedaba sin movimientos. */
+  const cobros=M.filter(m=>abierto(m)&&m.importe>0&&m.tipo!=="impuesto"&&m.tipo!=="cargo"&&m.tipo!=="interna");
   const k=(id,clase,lbl,n,s,ayuda)=>
     '<button class="kpi '+clase+(ST.filtro===id?" on":"")+'" onclick="filtrar_('+JSON.stringify(id)+')" title="'+esc(ayuda)+'">'+
     '<div class="l">'+esc(lbl)+'</div><div class="n">'+n+'</div><div class="s">'+esc(s)+'</div></button>';
@@ -1859,7 +1859,10 @@ async function identificarPorCuit(escribir){
   log(n?("Identificadas por CUIT: "+n+" entradas. Falta decidir contra qué factura va cada una."):"No se pudo identificar ninguna.", n?"ok":"e");
   return {puestos:n, ambiguos:ambiguos.length, sinFicha:sinFicha.length, listos:listos.length};
 }
-window.identificarPorCuit=()=>conTrabajo(async()=>{ await identificarPorCuit(true); render(); });
+/* OJO: no poner acá un window.identificarPorCuit — una declaración `function X` ya vive
+   en window, así que asignarle encima PISA la función y la deja inservible. Pasó: como
+   el envoltorio llamaba a conTrabajo y traerDelBanco ya tenía ST.trabajando en true,
+   conTrabajo salía en la primera línea y la identificación no corría nunca, sin avisar. */
 
 async function traerDelBanco(){
   const B=BANCOS[ST.banco];
