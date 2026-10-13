@@ -4186,12 +4186,13 @@ async function registrarEnvio(id, tipo){
 /* Al compartir una OFERTA (botón de la tarjeta): abre WhatsApp y pide confirmar.
    Sólo cuenta como "enviada" si el comercial confirma. Se registra en su propio
    partner con el marcador [EyGOFENV] para contarlas por mes (puntaje). */
-/* ---- Compartir la oferta CON su placa desde el WhatsApp de la comercial ----
-   En el celular (y en las PC que lo permiten) se abre el menú de compartir del sistema con la
-   imagen y el texto juntos: elige WhatsApp y la farmacia, y sale todo en un solo mensaje. Las
-   imágenes se bajan antes, en segundo plano, porque el celular sólo deja compartir si se hace
-   en el mismo toque. Donde no se puede compartir un archivo (WhatsApp Web en algunas PC), la
-   placa queda copiada para pegarla con Ctrl+V y se abre WhatsApp con el texto. */
+/* ---- Compartir la oferta con su PLACA desde el WhatsApp de la comercial ----
+   Con placa se comparte SÓLO la imagen (decisión de Dirección, 13/10/2026): WhatsApp descarta el
+   texto cuando recibe una imagen desde el menú de compartir del celular, y la placa ya dice todo.
+   En el celular se abre el menú de compartir con la placa: elige WhatsApp y la farmacia. La
+   imagen se baja antes, en segundo plano, porque el celular sólo deja compartir en el mismo toque.
+   En la PC (donde no se puede compartir un archivo) la placa queda copiada para pegarla con
+   Ctrl+V y se abre WhatsApp. Las ofertas sin placa siguen mandando el texto, como siempre. */
 const PLACA_FILE={};
 async function placasPrecargar(){
   for(const o of OFERTAS){
@@ -4215,62 +4216,23 @@ async function placaAlPortapapeles(file){
   const png=await new Promise(r=>c.toBlob(r,"image/png"));
   await navigator.clipboard.write([new ClipboardItem({"image/png":png})]);
 }
-/* WhatsApp DESCARTA el texto cuando recibe una imagen desde el menú de compartir del celular
-   (lo reportaron las comerciales el 13/10/2026: llegaba sólo la placa). No hay forma de forzarlo
-   desde la página. Por eso, antes de compartir se abre un cartel: al tocar "Abrir WhatsApp" el
-   texto se copia solo y se abre el menú con la placa; en WhatsApp se pega en "Añadir un
-   comentario" y sale todo en un mensaje. El toque del botón del cartel es el que habilita el
-   menú de compartir (el celular lo exige). */
 window.ofCompartirPlaca=(ev,id)=>{
   const o=OFERTAS.find(x=>x.id===id); if(!o) return true;
-  const f=PLACA_FILE[id], texto=ofertaMsg(o);
+  ev.preventDefault();
+  const f=PLACA_FILE[id];
   if(f && navigator.canShare && navigator.canShare({files:[f]})){
-    ev.preventDefault();
-    ofCartelCompartir(o);
+    navigator.share({files:[f]})
+      .then(()=>confirmarCompartir(id))
+      .catch(err=>{ if(err && err.name==="AbortError") return; toast("No se pudo abrir el menú de compartir. Probá de nuevo."); });
     return false;
   }
-  // sin menú de compartir: la placa al portapapeles y WhatsApp con el texto (sigue el enlace)
+  // PC: la placa al portapapeles y se abre WhatsApp para elegir el chat
   if(f && navigator.clipboard && window.ClipboardItem){
-    placaAlPortapapeles(f).then(()=>toast("🖼️ La placa quedó copiada: en el chat pegala con Ctrl+V")).catch(()=>{});
+    placaAlPortapapeles(f).then(()=>toast("🖼️ La placa quedó copiada: en el chat pegala con Ctrl+V")).catch(()=>{ window.open(o.placa,"_blank"); toast("Guardá la placa y adjuntala en el chat"); });
   }else if(o.placa){ window.open(o.placa,"_blank"); toast("Guardá la placa y adjuntala en el chat"); }
+  window.open("https://api.whatsapp.com/send","_blank");
   confirmarCompartir(id);
-  return true;
-};
-
-function ofCartelCompartir(o){
-  let el=document.getElementById("placaShare");
-  if(!el){ el=document.createElement("div"); el.id="placaShare"; el.className="placa-ov"; el.style.cursor="default"; document.body.appendChild(el); }
-  const id=(o.id||"").replace(/'/g,"");
-  el.onclick=e=>{ if(e.target===el) el.remove(); };
-  el.innerHTML=`<div style="background:#fff;border-radius:16px;max-width:380px;width:100%;padding:18px 18px 16px;box-shadow:0 10px 40px rgba(0,0,0,.4);color:#0E1F1D">
-    <div style="display:flex;gap:14px;align-items:flex-start">
-      <img src="${esc(o.placa)}" alt="" style="width:78px;height:104px;object-fit:cover;border-radius:9px;border:1px solid #e3ecea;flex:0 0 auto">
-      <div style="font-size:13.5px;line-height:1.4">
-        <div style="font-weight:800;font-size:15px;margin-bottom:6px">Compartir la oferta</div>
-        <div><b>1.</b> Tocá <b>Abrir WhatsApp</b> y elegí la farmacia.</div>
-        <div style="margin-top:4px"><b>2.</b> El texto ya queda copiado: en <b>Añadir un comentario</b> mantené apretado y tocá <b>Pegar</b>.</div>
-      </div>
-    </div>
-    <button onclick="ofCompartirAhora('${id}')" style="margin-top:14px;width:100%;border:0;border-radius:11px;padding:12px;font-weight:800;font-size:14.5px;background:var(--wa,#25D366);color:#053b38;cursor:pointer">📲 Abrir WhatsApp</button>
-    <div style="display:flex;justify-content:space-between;margin-top:10px;font-size:12.5px;font-weight:700">
-      <a href="#" onclick="ofSoloTexto('${id}');return false" style="color:var(--teal-deep,#0b5c5c)">Mandar sólo el texto</a>
-      <a href="#" onclick="document.getElementById('placaShare').remove();return false" style="color:#7a8a87">Cancelar</a>
-    </div>
-  </div>`;
-}
-window.ofCompartirAhora=id=>{
-  const o=OFERTAS.find(x=>x.id===id), f=PLACA_FILE[id]; if(!o||!f) return;
-  const texto=ofertaMsg(o);
-  try{ navigator.clipboard && navigator.clipboard.writeText(texto).catch(()=>{}); }catch(e){}
-  navigator.share({files:[f], text:texto})
-    .then(()=>{ const el=document.getElementById("placaShare"); if(el) el.remove(); confirmarCompartir(id); })
-    .catch(err=>{ if(err && err.name==="AbortError") return; toast("No se pudo abrir el menú de compartir. Probá de nuevo o mandá sólo el texto."); });
-};
-window.ofSoloTexto=id=>{
-  const o=OFERTAS.find(x=>x.id===id); if(!o) return;
-  const el=document.getElementById("placaShare"); if(el) el.remove();
-  window.open("https://api.whatsapp.com/send?text="+encodeURIComponent(ofertaMsg(o)),"_blank");
-  confirmarCompartir(id);
+  return false;
 };
 
 function confirmarCompartir(ofId){
