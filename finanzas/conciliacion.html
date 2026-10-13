@@ -750,7 +750,7 @@ function render(){
     composicion(porTipo)+
     panelAcciones(nuevos,pendConc,cerrados,listos,dudas)+
     panelCobranzas(M)+
-    panelConfirmar()+ panelDirecto()+ panelResolver()+ panelAsignar()+
+    panelConfirmar()+ panelDirecto()+ panelMasivo()+ panelTransf()+ panelResolver()+ panelAsignar()+
     tablas(filtrar(M))+
     '<div class="panel"><h3>📋 Registro de lo que se hizo</h3>'+
     '<div class="sub">Todo lo que la herramienta ejecutó en Odoo, en orden.</div>'+
@@ -1008,7 +1008,7 @@ function panelAcciones(nuevos,pendConc,cerrados,listos,dudas){
     ? '<button class="btn" onclick="accionCargar()" '+(t?"disabled":"")+'>'+(t?'<span class="spin"></span> ':"")+
       'Cargar los '+nuevos.length+' movimientos nuevos</button>' : "";
   const bResolver = listos.length
-    ? '<button class="btn'+(nuevos.length?" gh":"")+'" onclick="accionResolver()" '+(t?"disabled":"")+'>'+(t&&!nuevos.length?'<span class="spin"></span> ':"")+
+    ? '<button class="btn'+(nuevos.length?" gh":"")+'" onclick="pedirConfirmarMasivo()" '+(t?"disabled":"")+'>'+(t&&!nuevos.length?'<span class="spin"></span> ':"")+
       'Resolver los '+listos.length+' que no tienen dudas</button>' : "";
 
   /* De dónde viene el trabajo, dicho en una línea, para que no haya que deducirlo. */
@@ -1224,7 +1224,7 @@ function accionDe(m,i){
   /* Transferencia entre cuentas propias con el otro banco ya identificado: se puede
      resolver de una, sin esperar el extracto del otro banco. */
   if(m.tipo==="interna"&&m.otroBanco&&m.cands.length===0)
-    return '<button class="btn sm" onclick="crearTransferencia('+i+')" title="Crea la transferencia interna en Odoo. La contrapartida en '+esc(m.otroBanco.nombre)+' la genera Odoo sola, y después se concilia esta línea.">'+
+    return '<button class="btn sm" onclick="pedirConfirmarTransf('+i+')" title="Crea la transferencia interna en Odoo. La contrapartida en '+esc(m.otroBanco.nombre)+' la genera Odoo sola, y después se concilia esta línea.">'+
       'Transferir '+(m.otroBanco.entra?"desde":"a")+' '+esc(m.otroBanco.nombre.replace(/^Banco /,""))+'</button>';
   if(m.cands.length===0&&m.tipo==="interna")
     return '<span class="muted" style="font-size:11.5px">falta cargar el otro extracto</span>';
@@ -1360,7 +1360,102 @@ window.accionCargar=()=>conTrabajo(async()=>{
 });
 
 /* Resuelve sólo lo inequívoco. Si hay más de un candidato, no toca nada. */
+/* ---------- CUADRO DEL BOTÓN MASIVO Y DE LA TRANSFERENCIA ---------------------------
+   Los dos escribían de una. El masivo es el que más cuidado merece: toca varios
+   movimientos seguidos y crea pagos de verdad. El cuadro arma la MISMA lista que va a
+   recorrer el proceso, agrupada por lo que le va a hacer a cada uno. */
+
+/* Qué le va a hacer el botón masivo a cada movimiento. Mismo orden de decisión que
+   accionResolver: si cambia uno hay que cambiar el otro. */
+function destinoMasivo(m){
+  if(!m.yaEsta || m.yaEsta.is_reconciled) return null;
+  if(m.tipo==="interna" && m.otroBanco) return "transferencia";
+  if(m.tipo==="impuesto" && m.cta)      return "impuesto";
+  if(m.tipo==="cargo")                  return "cargo";
+  if((m.cands||[]).length===1)          return "candidato";
+  return null;
+}
+window.pedirConfirmarMasivo=()=>{ ST.masivo=true; render(); window.scrollTo({top:0,behavior:"smooth"}); };
+window.cerrarMasivo=()=>{ ST.masivo=null; render(); };
+
+function panelMasivo(){
+  if(!ST.masivo) return "";
+  const B=BANCOS[ST.banco];
+  const lista=ST.movs.map(m=>({m, d:destinoMasivo(m)})).filter(x=>x.d);
+  if(!lista.length) return '<div class="panel resolver"><h3>👁️ No quedó nada para resolver solo</h3>'+
+    '<div class="sub">Ningún movimiento tiene hoy un destino único.</div>'+
+    '<div class="acciones"><button class="btn gh" onclick="cerrarMasivo()">Cerrar</button></div></div>';
+  const por={}; lista.forEach(x=>(por[x.d]=por[x.d]||[]).push(x.m));
+  const tot=a=>a.reduce((s,m)=>s+m.importe,0);
+  const QUE={
+    impuesto:     ["Impuestos y sellos","Se imputa cada uno a su cuenta contable. No se crea ningún comprobante."],
+    cargo:        ["Cargos del banco","Se crea un pago a nombre del banco por cada uno y se concilia. Lleva el método de pago de "+esc(B.nombre)+"."],
+    candidato:    ["Con un único comprobante posible","Se cruza cada uno con su comprobante. No hay nada que elegir: hay uno solo."],
+    transferencia:["Entre cuentas propias","Se crea la transferencia y su contrapartida en el otro banco, y se concilia."]
+  };
+  const detalle=k=>por[k].slice(0,40).map(function(m){
+    const q = k==="candidato" ? ((m.cands[0].partner_id&&m.cands[0].partner_id[1])||(m.cliente&&m.cliente.nombre)||"")
+            : k==="transferencia" ? (m.otroBanco.entra? m.otroBanco.nombre+" → "+B.nombre : B.nombre+" → "+m.otroBanco.nombre)
+            : esc(m.sub||"");
+    const contra = k==="candidato" ? esc(String(m.cands[0].move_id[1]).slice(0,26)) : "";
+    return '<tr><td class="muted">'+esc(m.fecha)+'</td>'+
+      '<td class="r"><b>'+money(m.importe)+'</b></td>'+
+      '<td>'+esc(String(q).slice(0,34))+'</td>'+
+      '<td class="muted">'+(contra||esc(String(m.concepto).slice(0,34)))+'</td></tr>';
+  }).join("")+(por[k].length>40?'<tr><td colspan="4" class="muted">… y '+(por[k].length-40)+' más</td></tr>':"");
+
+  return '<div class="panel resolver"><h3>👁️ Se van a resolver '+lista.length+' movimientos</h3>'+
+    '<div class="sub">Nada se escribe en Odoo hasta que confirmes. Esta es la lista exacta que va a recorrer, '+
+    'agrupada por lo que se le va a hacer a cada uno. Si algo falla, se anota en el registro y sigue con el resto.</div>'+
+    Object.keys(QUE).filter(k=>por[k]).map(k=>
+      '<div class="sub" style="margin:13px 0 5px"><b>'+QUE[k][0]+' · '+por[k].length+' por '+money(tot(por[k]))+'</b><br>'+QUE[k][1]+'</div>'+
+      '<div class="tw"><table><thead><tr><th>Fecha</th><th class="r">Importe</th><th>'+
+        (k==="candidato"?"Contacto":k==="transferencia"?"Movimiento":"Concepto")+'</th><th>'+
+        (k==="candidato"?"Comprobante":"Detalle")+'</th></tr></thead><tbody>'+detalle(k)+'</tbody></table></div>'
+    ).join("")+
+    (por.cargo?'<div class="aviso info" style="margin:12px 0 0">ℹ️ <div>Los cargos del banco crean <b>'+por.cargo.length+
+      ' pagos</b> a nombre de '+esc(B.nombre)+'. Si después llega la factura del banco, esos pagos se imputan contra ella.</div></div>':"")+
+    '<div class="acciones" style="margin:14px 0 0">'+
+      '<button class="btn" onclick="accionResolver()" '+(ST.trabajando?"disabled":"")+'>'+
+        (ST.trabajando?'<span class="spin"></span> ':"")+'Confirmar y resolver los '+lista.length+'</button>'+
+      '<button class="btn gh" onclick="cerrarMasivo()">Cancelar</button>'+
+    '</div></div>';
+}
+
+/* El cuadro de una transferencia entre cuentas propias. */
+window.pedirConfirmarTransf=(i)=>{ ST.transf=i; render(); window.scrollTo({top:0,behavior:"smooth"}); };
+window.cerrarTransf=()=>{ ST.transf=null; render(); };
+
+function panelTransf(){
+  if(ST.transf===null||ST.transf===undefined) return "";
+  const m=ST.movs[ST.transf]; if(!m||!m.otroBanco) return "";
+  const B=BANCOS[ST.banco], o=m.otroBanco;
+  const desde = o.entra ? o.nombre : B.nombre;
+  const hacia = o.entra ? B.nombre : o.nombre;
+  const metodo = o.entra ? o.metodo : B.metodoSalida;
+  return '<div class="panel resolver"><h3>👁️ Esto es lo que se va a hacer</h3>'+
+    '<div class="sub">Nada se escribe en Odoo hasta que confirmes.</div>'+
+    '<div class="movres"><span>'+esc(m.fecha)+'</span><b class="'+(m.importe<0?"neg":"pos")+'">'+money(m.importe)+'</b>'+
+      '<span class="cp">'+esc(String(m.concepto).slice(0,70))+'</span></div>'+
+    '<ol class="pasos">'+
+      '<li>Se registra una transferencia de <b>'+money(Math.abs(m.importe))+'</b> de <b>'+esc(desde)+'</b> a <b>'+esc(hacia)+'</b>.</li>'+
+      '<li>Se crean <b>dos comprobantes</b>: el pago en el banco de donde sale la plata y su contrapartida en el que la recibe. '+
+        'Una transferencia interna siempre tiene las dos patas.</li>'+
+      '<li>Se concilia este movimiento del banco contra la pata que le corresponde.</li>'+
+    '</ol>'+
+    (!metodo?'<div class="aviso bad" style="margin:11px 0 0">⛔ <div>Falta el método de pago Manual de <b>'+esc(o.entra?o.nombre:B.nombre)+
+      '</b> en el mapa del banco. Sin eso no se puede crear: si confirmás, se va a frenar sin escribir nada.</div></div>'
+     :'<div class="aviso info" style="margin:11px 0 0">ℹ️ <div>La contrapartida queda en <b>'+esc(o.nombre)+
+      '</b>. Cuando cargues el extracto de ese banco, el movimiento espejo ya va a tener con qué cruzarse.</div></div>')+
+    '<div class="acciones" style="margin:13px 0 0">'+
+      '<button class="btn" onclick="crearTransferencia('+ST.transf+')" '+(ST.trabajando?"disabled":"")+'>'+
+        (ST.trabajando?'<span class="spin"></span> ':"")+'Confirmar y crear la transferencia</button>'+
+      '<button class="btn gh" onclick="cerrarTransf()">Cancelar</button>'+
+    '</div></div>';
+}
+
 window.accionResolver=()=>conTrabajo(async()=>{
+  ST.masivo=null;   /* el cuadro ya cumplió: se cierra al arrancar */
   const B=BANCOS[ST.banco];
   let imp=0,car=0,con=0,trf=0;
   for(const m of ST.movs){
@@ -1842,6 +1937,7 @@ async function transferenciaInterna(m){
 }
 
 window.crearTransferencia=(i)=>conTrabajo(async()=>{
+  ST.transf=null;
   const m=ST.movs[i];
   if(!m.otroBanco){ log("No pude identificar el otro banco: sin eso no creo nada","e"); return; }
   if(!m.yaEsta){ log("Primero hay que cargar el movimiento a Odoo","e"); return; }
