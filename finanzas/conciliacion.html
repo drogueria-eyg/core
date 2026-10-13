@@ -91,6 +91,11 @@
 
   /* tabla */
   .tw{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+  .pasos{margin:12px 0 0;padding-left:20px;font-size:12.5px;line-height:1.75;color:var(--ink)}
+  .pasos li{margin-bottom:3px}
+  .editables{display:flex;flex-direction:column;gap:11px;background:#F4FAF9;border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .editables label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:700;color:var(--teal-deep)}
+  .editables .muted{font-weight:500;font-size:11.5px;line-height:1.5}
   table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:900px}
   thead th{background:#F1F7F6;color:var(--teal-deep);font-weight:800;font-size:11px;text-transform:uppercase;letter-spacing:.4px;
            padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap;cursor:help}
@@ -745,7 +750,7 @@ function render(){
     composicion(porTipo)+
     panelAcciones(nuevos,pendConc,cerrados,listos,dudas)+
     panelCobranzas(M)+
-    panelResolver()+ panelAsignar()+
+    panelConfirmar()+ panelResolver()+ panelAsignar()+
     tablas(filtrar(M))+
     '<div class="panel"><h3>📋 Registro de lo que se hizo</h3>'+
     '<div class="sub">Todo lo que la herramienta ejecutó en Odoo, en orden.</div>'+
@@ -1597,8 +1602,8 @@ function panelResolver(){
           ' <b>a cuenta</b> del cliente, para imputar a una factura futura. Es correcto si pagó de más o adelantado.</div></div>':"");
     }
     cuerpo+='<div class="acciones" style="margin:13px 0 0">'+
-      '<button class="btn" onclick="crearRecibo()" '+(ST.trabajando||selTot>Math.abs(m.importe)?"disabled":"")+'>'+
-        (ST.trabajando?'<span class="spin"></span> ':"")+'Crear el recibo'+(RES.sel.size?" e imputar "+RES.sel.size+" factura(s)":" a cuenta")+'</button>'+
+      '<button class="btn" onclick="abrirConfirmar()" '+(ST.trabajando||selTot>Math.abs(m.importe)?"disabled":"")+'>'+
+        (ST.trabajando?'<span class="spin"></span> ':"")+'Revisar y conciliar'+(RES.sel.size?" e imputar "+RES.sel.size+" factura(s)":" a cuenta")+'</button>'+
       '<button class="btn gh" onclick="cerrarResolver()">Cancelar</button></div>';
   }
   return '<div class="panel resolver"><h3>🔧 Resolver este movimiento'+(sale(m)?" · pago a proveedor":"")+'</h3>'+
@@ -1642,9 +1647,115 @@ async function cerrarDiferencia(lineaRecibo, cliente, fechaMov){
   return true;
 }
 
+/* ---------- ANTES DE ESCRIBIR: MOSTRAR QUÉ SE VA A HACER -----------------------------
+   El botón de conciliar escribía directo en Odoo. Ahora arma el plan, lo muestra paso a
+   paso con los números finales, y recién escribe cuando se confirma. Lo que se puede
+   cambiar acá —la fecha del comprobante y qué hacer con la diferencia— es lo único que
+   cambia el resultado contable; el resto sale de lo que ya se tildó. */
+function planDeCobro(){
+  const m=ST.movs[RES.i]; if(!m||!RES.cliente) return null;
+  const L=LADO(m), B=BANCOS[ST.banco];
+  const elegidas=RES.facturas.filter(f=>RES.sel.has(f.id));
+  const impu=elegidas.reduce((s,f)=>s+Math.abs(f.amount_residual),0);
+  const total=Math.abs(m.importe);
+  const dif=Math.round((total-impu)*100)/100;
+  return { m, L, B, elegidas, impu, total, dif,
+    metodo: sale(m) ? (m.tipo==="echeq" ? 22 : 21) : 20,
+    metodoNom: sale(m) ? (m.tipo==="echeq" ? "Cheques" : "Manual") : "Manual",
+    fecha: ST.plan && ST.plan.fecha ? ST.plan.fecha : m.fecha,
+    ajustar: ST.plan && ST.plan.ajustar!==undefined ? ST.plan.ajustar : (dif>0 && dif<=TOPE_AJUSTE) };
+}
+window.abrirConfirmar=()=>{ const p=planDeCobro(); if(!p) return;
+  /* si la diferencia pasa el tope no hay nada que elegir: queda a cuenta sí o sí. Dejar
+     marcada la opción de ajustar (deshabilitada) hacía creer que iba a cerrarse. */
+  const puede = p.dif!==0 && Math.abs(p.dif)<=TOPE_AJUSTE;
+  ST.plan={fecha:p.fecha, ajustar: puede ? p.ajustar : false};
+  render(); window.scrollTo({top:0,behavior:"smooth"}); };
+window.cerrarConfirmar=()=>{ ST.plan=null; render(); };
+window.planFecha=(v)=>{ if(ST.plan){ ST.plan.fecha=v; render(); } };
+window.planAjuste=(v)=>{ if(ST.plan){ ST.plan.ajustar=(v==="1"); render(); } };
+
+function panelConfirmar(){
+  if(!ST.plan) return "";
+  const p=planDeCobro(); if(!p) return "";
+  const { m, L, elegidas, impu, total, dif } = p;
+  const ajustar = ST.plan.ajustar && dif!==0 && Math.abs(dif)<=TOPE_AJUSTE;
+  const quedaACuenta = dif!==0 && !ajustar;
+
+  /* el asiento tal como va a quedar, para que no haya que imaginárselo */
+  const asiento=[];
+  asiento.push([L.quien==="cliente"?"Créditos por ventas":"Proveedores", dif&&ajustar?impu:total, 0, L.quien==="cliente"?"baja la deuda del cliente":"baja lo que le debemos"]);
+  if(ajustar) asiento.push(["Ajuste por redondeo", Math.abs(dif), 0, dif>0?"lo que pagó de más":"lo que faltó"]);
+  asiento.push([L.quien==="cliente"?"Recibos pendientes":"Pagos pendientes", 0, total, "se cruza con el movimiento del banco"]);
+
+  const pasos=[
+    'Se crea <b>'+(L.doc==="recibo"?"un recibo":"una orden de pago")+'</b> de '+money(total)+' a nombre de <b>'+esc(RES.cliente.nombre)+'</b>'+
+      ', con fecha <b>'+esc(ST.plan.fecha)+'</b>, en el diario <b>'+esc(p.B.nombre||ST.banco)+'</b> y método <b>'+p.metodoNom+'</b>.',
+    elegidas.length
+      ? 'Se imputa a <b>'+elegidas.length+' '+(elegidas.length===1?"comprobante":"comprobantes")+'</b> por '+money(impu)+'.'
+      : 'No se imputa a ningún comprobante: queda <b>a cuenta</b> de '+esc(RES.cliente.nombre)+'.',
+    ajustar
+      ? 'La diferencia de <b>'+money(Math.abs(dif))+'</b> se cierra contra <b>Ajuste por redondeo</b> con un asiento en Operaciones varias. <b>No se emite nota de crédito ni de débito.</b>'
+      : quedaACuenta
+        ? 'Quedan <b>'+money(Math.abs(dif))+'</b> <b>a cuenta</b> de '+esc(RES.cliente.nombre)+', para imputar más adelante.'
+        : 'No hay diferencia: cierra exacto.',
+    'Se concilia contra el movimiento del banco del <b>'+esc(m.fecha)+'</b> por '+money(total)+'.'
+  ];
+
+  return '<div class="panel resolver"><h3>👁️ Esto es lo que se va a hacer</h3>'+
+    '<div class="sub">Nada se escribe en Odoo hasta que confirmes. Revisá los números.</div>'+
+
+    '<div class="movres"><span>'+esc(m.fecha)+'</span><b class="'+(m.importe<0?"neg":"pos")+'">'+money(m.importe)+'</b>'+
+      '<span class="cp">'+esc(String(m.concepto).slice(0,70))+'</span></div>'+
+
+    '<ol class="pasos">'+pasos.map(x=>'<li>'+x+'</li>').join("")+'</ol>'+
+
+    (elegidas.length?'<div class="sub" style="margin:12px 0 5px">A qué se aplica:</div>'+
+      '<div class="tw"><table><thead><tr><th>Comprobante</th><th>Vence</th><th class="r">Debe hoy</th><th class="r">Se cancela</th></tr></thead><tbody>'+
+      elegidas.map(f=>'<tr><td>'+esc(String(f.move_id[1]).slice(0,30))+'</td>'+
+        '<td class="muted">'+esc(f.date_maturity||f.date)+'</td>'+
+        '<td class="r">'+money(Math.abs(f.amount_residual))+'</td>'+
+        '<td class="r"><b>'+money(Math.abs(f.amount_residual))+'</b></td></tr>').join("")+
+      '<tr><td colspan="3" class="r"><b>Total imputado</b></td><td class="r"><b>'+money(impu)+'</b></td></tr>'+
+      '</tbody></table></div>':"")+
+
+    '<div class="sub" style="margin:13px 0 5px">Cómo queda el asiento:</div>'+
+    '<div class="tw"><table><thead><tr><th>Cuenta</th><th class="r">Debe</th><th class="r">Haber</th><th>Qué significa</th></tr></thead><tbody>'+
+      asiento.map(a=>'<tr><td><b>'+esc(a[0])+'</b></td><td class="r">'+(a[1]?money(a[1]):"")+'</td>'+
+        '<td class="r">'+(a[2]?money(a[2]):"")+'</td><td class="muted">'+esc(a[3])+'</td></tr>').join("")+
+    '</tbody></table></div>'+
+
+    '<div class="sub" style="margin:14px 0 6px"><b>Lo que podés cambiar:</b></div>'+
+    '<div class="editables">'+
+      '<label>Fecha del comprobante'+
+        '<input type="date" class="busca" style="max-width:190px" value="'+esc(ST.plan.fecha)+'" onchange="planFecha(this.value)">'+
+        '<span class="muted">Por defecto, la del movimiento del banco.</span></label>'+
+      (dif!==0 ? '<label>Qué hacer con la diferencia de '+money(Math.abs(dif))+
+        '<select class="busca" style="max-width:330px" onchange="planAjuste(this.value)">'+
+          '<option value="1"'+(ST.plan.ajustar?" selected":"")+(Math.abs(dif)>TOPE_AJUSTE?" disabled":"")+'>Cerrarla contra Ajuste por redondeo'+(Math.abs(dif)>TOPE_AJUSTE?" (no se puede: pasa el tope)":"")+'</option>'+
+          '<option value="0"'+(!ST.plan.ajustar?" selected":"")+'>Dejarla a cuenta del cliente</option>'+
+        '</select>'+
+        '<span class="muted">'+(Math.abs(dif)>TOPE_AJUSTE
+          ? 'Supera el tope de '+money(TOPE_AJUSTE)+': una diferencia así puede ser un pago parcial o un error, y conviene revisarla.'
+          : 'Cerrarla no emite ningún comprobante; dejarla a cuenta la arrastra hasta que se impute.')+'</span></label>' : "")+
+    '</div>'+
+
+    (Math.abs(dif)>TOPE_AJUSTE&&dif!==0?'<div class="aviso warn" style="margin:12px 0 0">⚠️ <div>'+
+      'La diferencia de <b>'+money(Math.abs(dif))+'</b> es grande. Si esperabas que cerrara exacto, revisá si falta tildar un comprobante o si el pago es parcial.</div></div>':"")+
+
+    '<div class="acciones" style="margin:14px 0 0">'+
+      '<button class="btn" onclick="ejecutarPlan()" '+(ST.trabajando?"disabled":"")+'>'+
+        (ST.trabajando?'<span class="spin"></span> ':"")+'Confirmar y escribir en Odoo</button>'+
+      '<button class="btn gh" onclick="cerrarConfirmar()">Volver a revisar</button>'+
+    '</div></div>';
+}
+
 /* Crea el recibo igual que lo hace Cobranzas, lo imputa a las facturas
    tildadas y lo concilia contra la línea del extracto. Todo o nada. */
-window.crearRecibo=()=>conTrabajo(async()=>{
+window.ejecutarPlan=()=>conTrabajo(async()=>{
+  /* lo que se dejó tocar en el cuadro: la fecha del comprobante y qué hacer con la
+     diferencia. Si alguien llama a esto sin pasar por el cuadro, se usa lo de antes. */
+  const plan=ST.plan||{fecha:((ST.movs[RES.i]||{}).fecha), ajustar:true};
   const m=ST.movs[RES.i]; const B=BANCOS[ST.banco];
   if(!m||!RES.cliente){ log("Falta elegir el "+LADO(m||{}).quien,"e"); return; }
   if(!m.yaEsta){ log("Primero hay que cargar el movimiento a Odoo","e"); return; }
@@ -1657,7 +1768,7 @@ window.crearRecibo=()=>conTrabajo(async()=>{
     partner_id:RES.cliente.id, journal_id:B.diario,
     payment_type:L.tipo, partner_type:L.parte,
     payment_method_line_id:metodo, destination_account_id:L.cta,
-    amount:Math.abs(m.importe), date:m.fecha}]]);
+    amount:Math.abs(m.importe), date:plan.fecha}]]);
   const pid=Array.isArray(p)?p[0]:p;
   await rpc("account.payment","action_post",[[pid]]);
   const pv=await rpc("account.payment","read",[[pid],["name","move_id"]]);
@@ -1674,7 +1785,11 @@ window.crearRecibo=()=>conTrabajo(async()=>{
     /* Lo que sobra cuando el cobro no da exacto con las facturas. Antes quedaba
        "a cuenta" y había que arrastrarlo hasta que alguien le hiciera una nota de
        crédito. Si es chico se cierra acá mismo contra Ajuste por redondeo. */
-    await cerrarDiferencia(lCred.id, RES.cliente, m.fecha);
+    /* sólo si en el cuadro se eligió cerrarla; si no, queda a cuenta a propósito */
+    if(plan.ajustar) await cerrarDiferencia(lCred.id, RES.cliente, plan.fecha);
+    else { const vq=await rpc("account.move.line","read",[[lCred.id],["amount_residual","full_reconcile_id"]]);
+      if(!vq[0].full_reconcile_id && Math.abs(vq[0].amount_residual)>0.005)
+        log("Quedan "+money(Math.abs(vq[0].amount_residual))+" a cuenta de "+RES.cliente.nombre+", como pediste","o"); }
   } else log("Queda a cuenta del cliente (sin imputar)");
 
   /* y ahora contra el extracto */
@@ -1686,7 +1801,7 @@ window.crearRecibo=()=>conTrabajo(async()=>{
     await rpc("account.move.line","reconcile",[[tra.id,lRec.id]]);
     log("Conciliado con el movimiento del banco","o");
   }
-  RES.i=null; RES.cliente=null; RES.facturas=[]; RES.sel=new Set();
+  RES.i=null; RES.cliente=null; RES.facturas=[]; RES.sel=new Set(); ST.plan=null;
 });
 
 /* El usuario eligió cuál de los candidatos es el correcto. */
