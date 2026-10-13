@@ -1715,6 +1715,97 @@ function chequeDe(l){
   return (r && soloDigitos(r)) ? String(r).trim() : "";
 }
 
+/* ---------- IDENTIFICAR POR CUIT ----------------------------------------------------
+   El Macro manda el CUIT de quien transfiere dentro del concepto
+   ("TRANSF:3D5W612EW81LOQ3O2GXYVR-27374091390"). Con eso se sabe QUIÉN pagó sin que
+   nadie lo busque a mano, que es la parte tediosa. Medido sobre 3 meses: el 30% de las
+   entradas del Macro se identifican así; el BBVA y el Nación no mandan el CUIT nunca.
+
+   Esto NO concilia nada: sólo escribe el contacto. Conciliar queda para la pantalla de
+   Odoo, donde la regla "Coincidencia perfecta de facturas" propone la factura. Así no
+   hay manera de que se duplique una conciliación.
+
+   Dos cuidados que no son opcionales:
+   - Un CUIT de verdad tiene 11 dígitos y empieza con 20, 23, 24, 27, 30, 33 o 34. Sin
+     ese filtro, los números de operación del banco (de 20 y 30 dígitos) se leen como
+     CUIT y apuntan a cualquier lado.
+   - Odoo guarda el CUIT con guiones ("27-37409139-0") y el banco lo manda pelado, así
+     que se busca por las dos formas.
+   - Si un mismo CUIT está en más de un contacto (hay 123 así), NO se elige: se avisa. */
+const PREF_CUIT=["20","23","24","27","30","33","34"];
+function cuitsDelTexto(t){
+  /* Se buscan las tiradas de dígitos COMPLETAS y se toman sólo las de exactamente 11.
+     Buscar "11 dígitos" a secas agarra los primeros 11 de un número de operación de 30
+     ("332000922074000000000011035181" daba el falso CUIT 33200092207, y como empieza
+     con 33 el filtro de prefijo no lo frenaba). */
+  const tiradas=String(t||"").match(/\d+/g)||[];
+  const out=[];
+  tiradas.forEach(function(c){
+    if(c.length!==11) return;
+    if(c===EYG_CUIT) return;
+    if(PREF_CUIT.indexOf(c.slice(0,2))<0) return;
+    if(out.indexOf(c)<0) out.push(c);
+  });
+  return out;
+}
+const conGuiones=c=>c.slice(0,2)+"-"+c.slice(2,10)+"-"+c.slice(10);
+
+/* Busca los contactos de una tanda de CUIT. Devuelve {cuit: [contactos activos]}. */
+async function contactosPorCuit(cuits){
+  if(!cuits.length) return {};
+  const variantes=[];
+  cuits.forEach(function(c){ variantes.push(c); variantes.push(conGuiones(c)); });
+  const ps=await rpc("res.partner","search_read",[[["vat","in",variantes],["active","=",true]],["id","name","vat"]],{limit:0});
+  const out={};
+  ps.forEach(function(p){
+    const v=String(p.vat||"").replace(/[^0-9]/g,"");
+    if(!p.name) return;                       /* hay contactos con CUIT y sin nombre */
+    (out[v]=out[v]||[]).push({id:p.id, nombre:p.name});
+  });
+  return out;
+}
+
+/* Corre sobre lo que está en pantalla. Si `escribir` es false, sólo cuenta. */
+async function identificarPorCuit(escribir){
+  const B=BANCOS[ST.banco];
+  const pend=ST.movs.filter(m=>m.yaEsta && !m.yaEsta.is_reconciled && !m.yaEsta.partner_id && m.importe>0);
+  const conCuit=[];
+  pend.forEach(function(m){
+    const cs=cuitsDelTexto(m.concepto);
+    if(cs.length) conCuit.push({m, cuits:cs});
+  });
+  if(!conCuit.length){ log("Ninguna entrada sin contacto trae el CUIT en el concepto.","o"); return {puestos:0,ambiguos:0,sinFicha:0}; }
+  const mapa=await contactosPorCuit([...new Set(conCuit.flatMap(x=>x.cuits))]);
+  const listos=[], ambiguos=[], sinFicha=[];
+  conCuit.forEach(function(x){
+    let c=null;
+    for(const k of x.cuits){ if(mapa[k]){ c=k; break; } }
+    if(!c) return sinFicha.push(x);
+    const cand=mapa[c];
+    if(cand.length===1) listos.push({m:x.m, p:cand[0], cuit:c});
+    else ambiguos.push({m:x.m, cand, cuit:c});
+  });
+  log("Entradas sin contacto: "+pend.length+" · con CUIT en el concepto: "+conCuit.length+
+      " · se puede identificar solas: "+listos.length+
+      (ambiguos.length?" · con el CUIT repetido en varios contactos: "+ambiguos.length:"")+
+      (sinFicha.length?" · CUIT sin ficha en Odoo: "+sinFicha.length:""));
+  ambiguos.forEach(a=>log("El CUIT "+a.cuit+" ("+money(a.m.importe)+" del "+a.m.fecha+") está en "+a.cand.length+" contactos: "+
+      a.cand.map(c=>c.nombre).join(" / ")+". Hay que elegir a mano.","o"));
+  if(!escribir || !listos.length) return {puestos:0, ambiguos:ambiguos.length, sinFicha:sinFicha.length, listos:listos.length};
+  let n=0;
+  for(const y of listos){
+    try{
+      const v=await ponerContactoEnOdoo(y.m.yaEsta.id, y.m.yaEsta.move_id[0], y.p.id, B.cuenta);
+      y.m.yaEsta.partner_id=[y.p.id, y.p.nombre];
+      y.m.yaEsta.is_reconciled=v.is_reconciled;
+      y.m.ctoRecien=true; n++;
+    }catch(e){ log("No se pudo poner el contacto en "+money(y.m.importe)+" del "+y.m.fecha+": "+((e&&e.message)||e),"e"); }
+  }
+  log(n?("Identificadas por CUIT: "+n+" entradas. Falta decidir contra qué factura va cada una."):"No se pudo identificar ninguna.", n?"ok":"e");
+  return {puestos:n, ambiguos:ambiguos.length, sinFicha:sinFicha.length, listos:listos.length};
+}
+window.identificarPorCuit=()=>conTrabajo(async()=>{ await identificarPorCuit(true); render(); });
+
 async function traerDelBanco(){
   const B=BANCOS[ST.banco];
   if(ST.trabajando) return;
@@ -1777,6 +1868,9 @@ async function traerDelBanco(){
       importe:Math.round(l.amount*100)/100, saldo:saldoDe(l), cod:""
     }));
     ST.movs=await analizar(movs);
+    /* Identificar por CUIT va acá: apenas llegan los movimientos y antes de que
+       nadie los mire, para que la pantalla ya muestre quién pagó. */
+    try{ await identificarPorCuit(true); }catch(e){ log("No se pudo identificar por CUIT: "+((e&&e.message)||e),"e"); }
     ST.listo=true; ST.trabajando=false; render();
   }catch(e){
     ST.trabajando=false; ST.listo=false;
