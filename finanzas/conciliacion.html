@@ -750,7 +750,7 @@ function render(){
     composicion(porTipo)+
     panelAcciones(nuevos,pendConc,cerrados,listos,dudas)+
     panelCobranzas(M)+
-    panelConfirmar()+ panelResolver()+ panelAsignar()+
+    panelConfirmar()+ panelDirecto()+ panelResolver()+ panelAsignar()+
     tablas(filtrar(M))+
     '<div class="panel"><h3>📋 Registro de lo que se hizo</h3>'+
     '<div class="sub">Todo lo que la herramienta ejecutó en Odoo, en orden.</div>'+
@@ -1198,7 +1198,7 @@ function accionDe(m,i){
       const corto=n.length>46 ? n.slice(0,45)+"…" : n;      // entra el cartel del formato nuevo
       return '<option value="'+c.id+'">'+esc(String(c.move_id[1]).slice(0,26))+" · "+(n?esc(corto):"sin cliente")+'</option>';
     }).join("")+
-    '</select> <button class="btn sm" onclick="elegirCand('+i+')">Aplicar</button>';
+    '</select> <button class="btn sm" onclick="pedirConfirmarDirecto('+i+',+(document.getElementById(\'sel'+i+'\')||{}).value)">Aplicar</button>';
   if(m.cands.length===0&&(m.tipo==="cobro"||m.tipo==="echeq"))
     return '<button class="btn sm '+(RES.i===i?"":"gh")+'" onclick="abrirResolver('+i+')" '+
       'title="'+(m.tipo==="echeq"
@@ -1207,7 +1207,7 @@ function accionDe(m,i){
       (RES.i===i?"Cerrar":"Resolver")+'</button>';
   /* Un solo candidato: no hay nada que decidir, pero igual se puede cerrar de a uno. */
   if(m.cands.length===1)
-    return '<button class="btn sm gh" onclick="conciliarUno('+i+')" title="'+
+    return '<button class="btn sm gh" onclick="pedirConfirmarDirecto('+i+')" title="'+
       (m.porCheque?"El N° de cheque "+esc(m.cpbte)+" lo identifica sin ambigüedad. ":"")+
       'Concilia este movimiento contra su único candidato. También lo hace el botón de arriba, junto con los demás.">Conciliar</button>';
   /* Impuestos y cargos: su destino es único y no tienen candidato que mostrar.
@@ -1871,6 +1871,83 @@ async function conciliarLinea(m, apunteId, cta){
    todos o ninguno, y no había forma de cerrar un movimiento y dejar el resto para
    mirarlo con calma. Vuelve a verificar el importe contra el candidato, porque entre
    que se leyó el archivo y se aprieta el botón alguien pudo tocar ese apunte. */
+/* ---------- CONFIRMAR TAMBIÉN EN LOS BOTONES DE LA TABLA ----------------------------
+   El cuadro de "esto es lo que se va a hacer" estaba sólo en el camino del panel
+   Resolver. Los botones de la tabla —Conciliar, cuando hay un único candidato, y
+   Aplicar, cuando se elige de la lista— seguían escribiendo de una. Son los que más
+   se usan, así que también avisan antes. */
+function planDirecto(i, apunteId){
+  const m=ST.movs[i]; if(!m) return null;
+  const c=(m.cands||[]).find(x=>x.id===apunteId)||(m.cands||[])[0];
+  if(!c) return null;
+  return { i, m, c, apunteId:c.id,
+    cta: sale(m) ? CTA_PAGOS : CTA_RECIBOS,
+    ctaNom: sale(m) ? "Pagos pendientes" : "Recibos pendientes" };
+}
+window.pedirConfirmarDirecto=(i,apunteId)=>{
+  const p=planDirecto(i, apunteId);
+  if(!p){ log("No encuentro contra qué conciliar ese movimiento","e"); return; }
+  ST.directo={i, apunteId:p.apunteId}; render(); window.scrollTo({top:0,behavior:"smooth"});
+};
+window.cerrarDirecto=()=>{ ST.directo=null; render(); };
+
+function panelDirecto(){
+  if(!ST.directo) return "";
+  const p=planDirecto(ST.directo.i, ST.directo.apunteId); if(!p) return "";
+  const { m, c } = p;
+  const quien=c.partner_id?String(c.partner_id[1]):"sin contacto";
+  const resid=Math.abs(c.amount_residual||0);
+  const dif=Math.round((Math.abs(m.importe)-resid)*100)/100;
+  return '<div class="panel resolver"><h3>👁️ Esto es lo que se va a hacer</h3>'+
+    '<div class="sub">Nada se escribe en Odoo hasta que confirmes.</div>'+
+    '<div class="movres"><span>'+esc(m.fecha)+'</span><b class="'+(m.importe<0?"neg":"pos")+'">'+money(m.importe)+'</b>'+
+      '<span class="cp">'+esc(String(m.concepto).slice(0,70))+'</span></div>'+
+    '<ol class="pasos">'+
+      '<li>Se cruza este movimiento del banco con <b>'+esc(String(c.move_id[1]).slice(0,34))+'</b>'+
+        (quien!=="sin contacto"?', de <b>'+esc(quien)+'</b>':"")+'.</li>'+
+      '<li>La contrapartida del movimiento pasa de <b>Cuenta transitoria</b> a <b>'+p.ctaNom+'</b>, '+
+        'que es donde espera el '+(sale(m)?"pago":"recibo")+'.</li>'+
+      '<li>Las dos quedan conciliadas entre sí: ni el movimiento ni el comprobante vuelven a aparecer como pendientes.</li>'+
+    '</ol>'+
+    '<div class="tw"><table><thead><tr><th>Concepto</th><th class="r">Importe</th></tr></thead><tbody>'+
+      '<tr><td>Movimiento del banco</td><td class="r"><b>'+money(Math.abs(m.importe))+'</b></td></tr>'+
+      '<tr><td>'+esc(String(c.move_id[1]).slice(0,34))+' — lo que debe hoy</td><td class="r"><b>'+money(resid)+'</b></td></tr>'+
+      '<tr><td><b>Diferencia</b></td><td class="r"><b class="'+(Math.abs(dif)<0.005?"":"neg")+'">'+money(dif)+'</b></td></tr>'+
+    '</tbody></table></div>'+
+    (Math.abs(dif)>=0.005
+      ? '<div class="aviso bad" style="margin:11px 0 0">⛔ <div>Los importes <b>no coinciden</b> por '+money(Math.abs(dif))+'. '+
+        'Este camino sólo concilia cuando dan iguales: si confirmás, se va a frenar sin escribir nada. '+
+        'Usá <b>Resolver</b> para elegir comprobantes y tratar la diferencia.</div></div>'
+      : '<div class="aviso ok" style="margin:11px 0 0">✔️ <div>Los importes coinciden exactamente. No hace falta ningún ajuste.</div></div>')+
+    '<div class="acciones" style="margin:13px 0 0">'+
+      '<button class="btn" onclick="ejecutarDirecto()" '+(ST.trabajando?"disabled":"")+'>'+
+        (ST.trabajando?'<span class="spin"></span> ':"")+'Confirmar y escribir en Odoo</button>'+
+      '<button class="btn gh" onclick="cerrarDirecto()">Cancelar</button>'+
+    '</div></div>';
+}
+
+window.ejecutarDirecto=()=>conTrabajo(async()=>{
+  if(!ST.directo) return;
+  const { i, apunteId } = ST.directo;
+  const m=ST.movs[i];
+  if(!m||!m.yaEsta){ log("Primero hay que cargar el movimiento a Odoo","e"); return; }
+  if(m.yaEsta.is_reconciled){ log("Ese movimiento ya está conciliado","e"); return; }
+  /* se vuelve a mirar el saldo: entre que se abrió el cuadro y se confirmó, alguien
+     pudo cobrar ese comprobante por otro lado */
+  const vivo=await rpc("account.move.line","read",[[apunteId],["amount_residual","full_reconcile_id","partner_id","name"]]);
+  if(!vivo.length||vivo[0].full_reconcile_id){ log("Ese comprobante ya fue conciliado por otro lado. Volvé a traer del banco.","e"); return; }
+  if(Math.abs(Math.abs(vivo[0].amount_residual)-Math.abs(m.importe))>0.005){
+    log("El saldo cambió ("+money(vivo[0].amount_residual)+" contra "+money(m.importe)+"): no concilio","e"); return; }
+  const cta = sale(m) ? CTA_PAGOS : CTA_RECIBOS;
+  await conciliarLinea(m, apunteId, cta);
+  m.yaEsta.is_reconciled=true;
+  const quien=vivo[0].partner_id?vivo[0].partner_id[1]:"";
+  log("Conciliado "+money(m.importe)+(quien?" — "+quien:"")+(m.porCheque?"  (por N° de cheque "+m.cpbte+")":""),"o");
+  ST.directo=null;
+});
+
+/* El camino viejo queda, pero ya no lo llama ningún botón: ahora todo pasa por el
+   cuadro de confirmación. Se deja porque sirve para resolver de a uno desde consola. */
 window.conciliarUno=(i)=>conTrabajo(async()=>{
   const m=ST.movs[i];
   if(!m.yaEsta){ log("Primero hay que cargar el movimiento a Odoo","e"); return; }
