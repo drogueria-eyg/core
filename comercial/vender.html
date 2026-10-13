@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js?v=111"></script>
+<script src="../assets/ofertas-canal.js?v=20261013"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF; --agua:#E2F1EF;
@@ -1167,7 +1168,7 @@ async function cargarOfertas(){
     // (2) eyg.sync_ofertas: reglas del motor de precios. tipo 'p' → target = PLANTILLA (product.template).
     const raw2=await rpc("ir.config_parameter","get_param",["eyg.sync_ofertas"]);
     (JSON.parse(raw2||"[]")||[]).filter(o=>o && !o.pausada && (!o.hasta || o.hasta>=hoy)).forEach(o=>{
-      if(o.tipo==="p" && o.target){ ST.ofertaTmpls.add(o.target); ST.ofertaRule[o.target]={modo:o.modo, valor:o.valor}; }
+      if(o.tipo==="p" && o.target){ ST.ofertaTmpls.add(o.target); ST.ofertaRule[o.target]={modo:o.modo, valor:o.valor, destino:o.destino}; }
       // tipo 'c' (categoría entera) queda pendiente: marcar toda una familia sería demasiado amplio.
     });
   }catch(e){}
@@ -1179,8 +1180,34 @@ async function cargarOfertas(){
       tps.forEach(t=>{ if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) ST.ofertaPvp[t.id]=Math.round(t.list_price||0); });
     }catch(e){}
   }
+  try{ await ofertasDelCliente(); }catch(e){}
   ST._ofLoaded=true;
   if(ST.view==="venta" && !ST.cargandoCat) renderGrid();   // repinta para mostrar las ofertas
+}
+/* Cada cliente ve SUS ofertas: a una farmacia, las de farmacias; a una institución o SAMCO, las
+   de instituciones; las "para ambos", a todos. Manda el RUBRO del cliente (decisión de Dirección,
+   8/10/2026); sin rubro o de otro rubro (distribuidora, veterinaria…) cuenta como farmacia, que
+   es la lista con la que compran. El destino de la oferta es el elegido en Oportunidades o, si
+   no, el que sugieren las ventas del producto. Si algo falla, no se saca nada (se ve todo). */
+async function segCliente(){
+  const pid=ST.order&&ST.order.partnerId; if(!pid) return null;
+  const RF=EYG.RUBRO_FIELD;
+  const [p]=await rpc("res.partner","read",[[pid],[RF,"commercial_partner_id"]]);
+  let r=p&&p[RF];
+  if(!r && p && p.commercial_partner_id && p.commercial_partner_id[0]!==pid){
+    const [c]=await rpc("res.partner","read",[[p.commercial_partner_id[0]],[RF]]); r=c&&c[RF];
+  }
+  r=EYG.rubroNorm?EYG.rubroNorm(r):r;
+  return (r==="INSTITUCIONES"||r==="SAMCO")?"inst":"farm";
+}
+async function ofertasDelCliente(){
+  if(!window.EYGCanal) return;
+  const seg=await segCliente(); ST.cliSeg=seg; if(!seg) return;
+  const tm=[...ST.ofertaTmpls], pv=[...ST.ofertaPids];
+  const [ct,cv]=await Promise.all([EYGCanal.dePlantillas(tm), EYGCanal.deVariantes(pv)]);
+  const va=d=>!d || d==="ambos" || d===seg;
+  tm.forEach(t=>{ const d=EYGCanal.destino(ST.ofertaRule[t]||{}, ct[t]&&ct[t].canal); if(!va(d)) ST.ofertaTmpls.delete(t); });
+  pv.forEach(p=>{ const d=cv[p]&&cv[p].canal; if(!va(d)) ST.ofertaPids.delete(p); });
 }
 // ¿este producto está en oferta? (por variante o por plantilla)
 function esOferta(p){ return (ST.ofertaPids&&ST.ofertaPids.has(p.id)) || (ST.ofertaTmpls&&p.product_tmpl_id&&ST.ofertaTmpls.has(p.product_tmpl_id[0])); }

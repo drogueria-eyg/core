@@ -12,6 +12,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="../assets/core.js?v=111"></script>
+<script src="../assets/ofertas-canal.js?v=20261013"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -3436,18 +3437,19 @@ function ofertaMsg(o){
 function ofStat(o){ const g=ST.ofertas[o.id]||{}; const env=g.gEnv||0, ven=g.gVen||0, conv=env>0?ven/env:0; return {env,ven,conv, score:conv*100+ven}; }
 function ofertasHTML(){
   if(!OFERTAS.length) return "";
-  const SC=OFERTAS.map(ofStat);
+  const OFS=OFERTAS.filter(ofVisible);
+  const SC=OFS.map(ofStat);
   // Las mejores: hasta 4 con ventas reales, ordenadas por rendimiento. Llevan la llamita.
-  const hotIds=new Set(OFERTAS.map((o,i)=>({id:o.id,s:SC[i]})).filter(x=>x.s.ven>=1)
+  const hotIds=new Set(OFS.map((o,i)=>({id:o.id,s:SC[i]})).filter(x=>x.s.ven>=1)
     .sort((a,b)=>b.s.score-a.s.score).slice(0,4).map(x=>x.id));
   // Orden de aparición: primero las mejores (por rendimiento), después las nuevas/resto (orden original).
-  const order=OFERTAS.map((o,i)=>i).sort((a,b)=>{
-    const ha=hotIds.has(OFERTAS[a].id), hb=hotIds.has(OFERTAS[b].id);
+  const order=OFS.map((o,i)=>i).sort((a,b)=>{
+    const ha=hotIds.has(OFS[a].id), hb=hotIds.has(OFS[b].id);
     if(ha!==hb) return ha?-1:1;
     if(ha&&hb) return SC[b].score-SC[a].score;
     return a-b;
   });
-  const cards=order.map(i=>{ const o=OFERTAS[i];
+  const cards=order.map(i=>{ const o=OFS[i];
     const st=ST.ofertas[o.id]; const col=st?st.colocados:null;
     const meta=ofMeta(o);
     const pct=col==null?0:Math.min(100,Math.round(col/meta*100));
@@ -3479,7 +3481,7 @@ function ofertasHTML(){
       </div>
       ${envN?`<div class="of-shared">📤 la compartiste ${envN}${envN===1?' vez':' veces'} este mes</div>`:''}
       <div class="of-actions">
-        <span class="of-venc">⏳ ${venc}</span>
+        <span class="of-venc">⏳ ${venc}</span>${ofDestTxt(o)}
         <a class="of-wa" href="https://api.whatsapp.com/send?text=${encodeURIComponent(ofertaMsg(o))}" target="_blank" rel="noopener" onclick="confirmarCompartir('${(o.id||'').replace(/'/g,'')}')">${hot?'<span class="of-fire">🔥</span> ':''}Compartir por WhatsApp</a>
       </div>
     </div>`;
@@ -3491,8 +3493,46 @@ function ofertasHTML(){
       <span>📤 ${ST.ofEnviadas||0} enviada${(ST.ofEnviadas||0)===1?'':'s'} este mes</span>
       <span title="Incluye las ofertas que ya cerraron: lo vendido este mes no se borra cuando la oferta sale de la lista">🛒 ${ST.ofVendidas||0} vendida${(ST.ofVendidas||0)===1?'':'s'} este mes</span>
     </div>
-    <div class="of-grid">${cards}</div>
+    ${ofFiltroHTML()}
+    ${OFS.length?`<div class="of-grid">${cards}</div>`:`<div style="font-size:13px;font-weight:700;color:rgba(255,255,255,.85);padding:6px 0 4px">No hay ofertas para ${ST.ofFiltro==='inst'?'instituciones':'farmacias'} en este momento.</div>`}
   </div>`;
+}
+/* ---- ¿Para quién es cada oferta? (Farmacias / Instituciones) ----
+   Cada oferta tiene destino: el que se eligió en Oportunidades y Ofertas o, si no, el que sugieren
+   las ventas del producto (assets/ofertas-canal.js). El comercial ve primero las de SU cartera:
+   si no tiene instituciones arranca en Farmacias, si no tiene farmacias en Instituciones, y si
+   tiene de las dos, todas. Las "para ambos" se ven siempre. Sólo filtra la vista: el puntaje
+   sigue contando todas. */
+function ofVisible(o){ const f=ST.ofFiltro||"todas"; return f==="todas" || !o._dest || o._dest==="ambos" || o._dest===f; }
+function ofDestTxt(o){
+  if(!o._dest || !window.EYGCanal) return "";
+  const m=EYGCanal.META[o._dest]; return m?`<span class="of-venc" title="${o._destManual?'Destino elegido en Oportunidades':'Destino según a quién se le vende el producto'}">${m.ico} ${m.corto}</span>`:"";
+}
+function ofFiltroHTML(){
+  if(!OFERTAS.some(o=>o._dest)) return "";
+  const n=k=>OFERTAS.filter(o=>k==="todas"||!o._dest||o._dest==="ambos"||o._dest===k).length;
+  const b=(k,t)=>`<button onclick="ofFiltrar('${k}')" style="border:1px solid rgba(255,255,255,.55);background:${(ST.ofFiltro||'todas')===k?'#fff':'transparent'};color:${(ST.ofFiltro||'todas')===k?'var(--teal-deep,#0b5c5c)':'#fff'};border-radius:20px;padding:4px 12px;font-size:12px;font-weight:800;cursor:pointer">${t} · ${n(k)}</button>`;
+  return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">${b("todas","Todas")}${b("farm","💊 Farmacias")}${b("inst","🏥 Instituciones")}</div>`;
+}
+// repinta sólo adentro de la tarjeta: con render() la tarjeta se cerraba al tocar un filtro
+window.ofFiltrar=k=>{ ST.ofFiltro=k; const box=document.querySelector("#ofertasBox .accin"); if(box) box.innerHTML=ofertasHTML(); else render(); };
+async function marcarDestinos(list, reglas){
+  if(!window.EYGCanal || !list.length) return;
+  const dRegla={}; (reglas||[]).forEach(r=>{ if(r && r.destino) dRegla["sync:"+r.id]=r.destino; });
+  const pv=[...new Set(list.flatMap(o=>(o.items||[]).map(i=>i&&i.id)).filter(Boolean))];
+  const cv=await EYGCanal.deVariantes(pv);
+  list.forEach(o=>{
+    if(dRegla[o.id]){ o._dest=dRegla[o.id]; o._destManual=true; return; }
+    const its=(o.items||[]).map(i=>i&&cv[i.id]).filter(Boolean); if(!its.length) return;
+    const fa=its.reduce((a,x)=>a+x.farm,0), ia=its.reduce((a,x)=>a+x.inst,0);
+    o._dest=(fa+ia>0?EYGCanal.clasificar(fa,ia,""):its[0]).canal;
+  });
+  // filtro de arranque según la cartera del comercial
+  if(!ST.ofFiltro){
+    const segs=(ST.contactos||[]).map(c=>{ const r=EYG.rubroDe(c); return (r==="INSTITUCIONES"||r==="SAMCO")?"inst":(r==="FARMACIAS"?"farm":null); });
+    const hayF=segs.includes("farm"), hayI=segs.includes("inst");
+    ST.ofFiltro = (hayF&&!hayI)?"farm":(hayI&&!hayF)?"inst":"todas";
+  }
 }
 
 /* Texto del descuento de una oferta de Configuración de precios, que es relativo. */
@@ -3602,6 +3642,7 @@ async function cargarOfertas(ids){
       const sm=await EYG.ofStockMap(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i&&i.id)));
       if(sm) OFERTAS=OFERTAS.filter(o=>!EYG.ofAgotada(o,sm));
     }catch(e){}
+    try{ await marcarDestinos(OFERTAS, todasSync); }catch(e){}
 
     // ---- lo que puntúa: vigentes + vencidas + dadas de baja (historial), sin repetir ----
     const hist=(JSON.parse(rawHist||"[]")||[]).filter(o=>o && o.id);

@@ -488,6 +488,7 @@ async function cargarCanales(){
     const [t,v]=await Promise.all([EYGCanal.dePlantillas(tIds), EYGCanal.deVariantes(vIds)]);
     const c={}; for(const id of cIds){ const x=await EYGCanal.deCategoria(id); if(x) c[id]=x; }
     CANAL_T=t; CANAL_V=v; CANAL_C=c;
+    try{ await sincronizarEspejoInst(); }catch(e){ console.warn("espejo inst:",e); }
     if(!rgDraft) render();   // con el editor abierto no se repinta (se perdería lo que se está escribiendo)
   }catch(e){ console.warn("canales:",e); }
 }
@@ -504,6 +505,116 @@ function chipCanal(o){
   if(!window.EYGCanal) return "";
   const sug=canalSugerido(o), d=EYGCanal.destino(o, sug&&sug.canal);
   return d ? EYGCanal.chip(d, !!o.destino) : "";
+}
+
+/* ===================== LA OFERTA LLEGA AL PEDIDO DE LAS INSTITUCIONES =====================
+   Una oferta del motor cambia SOLO la lista (1) Farmacias. Las instituciones y SAMCO que compran
+   con su propia lista ((2) SAMCOs y clínicas, (3) Instituciones) la veían en el panel pero, al
+   cargar el pedido, Odoo les ponía el precio de su lista: el caso del macrogotero (oferta $180,
+   los SAMCO pagaron $228,57) y la levotiroxina (oferta $5.990, al SAMCO le salía $8.550).
+
+   Arreglo SIN tocar el motor: el motor ya sabe aplicar un precio fijo por producto en esas dos
+   listas (la "capa temporal" de cada lista, eyg.t2/t3_precios_fijos_flat). Cuando una oferta es
+   para instituciones o para ambos, acá se escribe esa línea con el mismo precio que la oferta
+   publica en Farmacias y la misma vigencia — una "línea espejo", marcada "[OFERTA <id>]" en el
+   nombre para reconocerla. Al pausar, borrar o vencer la oferta, la línea se va.
+
+   Tres reglas:
+   · nunca SUBE un precio: si la lista de la institución ya es más barata que la oferta, no se
+     escribe nada (el precio normal de cada lista se guarda en eyg.ofertas_inst_espejo al poner
+     la línea, para poder compararlo después aunque la línea ya esté aplicada);
+   · una línea cargada A MANO en la capa manda: no se pisa ni se borra;
+   · si todavía no se sabe el destino de una oferta (no cargaron las ventas), sus líneas quedan
+     como están: ni se agregan ni se sacan.
+   El formato de la línea es el que lee el motor (9 campos: tmpl~precio~~~~0~hasta~pausado~nombre). */
+const ESPEJO_KEY="eyg.ofertas_inst_espejo";
+const ESPEJO_TIERS=[{t:2, lista:16, key:"eyg.t2_precios_fijos_flat", nom:"SAMCO y clínicas"},
+                    {t:3, lista:5,  key:"eyg.t3_precios_fijos_flat", nom:"Instituciones"}];
+const ESPEJO_MARCA="[OFERTA ";
+let ESPEJO_RES={};   // tmpl → {2:estado, 3:estado}  ('puesta' | 'mas_barato' | 'manual' | 'sin_dato')
+function capaNombre(f){ return (f.length>=9 ? f.slice(8) : f.slice(4)).join("~"); }
+function capaEsEspejo(line){ return capaNombre(line.split("~")).startsWith(ESPEJO_MARCA); }
+function capaEspejoDe(line){ const m=capaNombre(line.split("~")).match(/^\[OFERTA ([^\]]+)\]/); return m?m[1]:null; }
+function capaA9(l){ const f=l.split("~"); if(f.length>=9) return l; return [f[0],f[1]||"0","","","","0",(f[2]||"").trim(),f[3]==="1"?"1":"0",f.slice(4).join("-")].join("~"); }
+function lineaEspejo(tmpl, precio, hasta, ofId, nombre){
+  const nom=(ESPEJO_MARCA+ofId+"] "+(nombre||("#"+tmpl))).replace(/~/g,"-").replace(/\n/g," ");
+  return [tmpl, (Math.round(precio*100)/100).toFixed(2), "", "", "", "0", hasta||"", "0", nom].join("~");
+}
+async function sincronizarEspejoInst(){
+  if(!window.EYGCanal) return null;
+  const hoyS=hoy();
+  const act=SYNC_OF.filter(o=>o.tipo==='p' && o.target && !o.pausada && (!o.hasta || o.hasta>=hoyS));
+  const quiere=[], dudosas=new Set();
+  for(const o of act){
+    const sug=CANAL_T[o.target];
+    if(!o.destino && !sug){ dudosas.add(String(o.id)); continue; }
+    const d=EYGCanal.destino(o, sug&&sug.canal);
+    if(d==='inst' || d==='ambos') quiere.push(o);
+  }
+  // precio que la oferta publica HOY en Farmacias (primer tramo), ya aplicado por el motor
+  const tmpls=[...new Set(quiere.map(o=>o.target))];
+  const p1={};
+  if(tmpls.length){
+    const its=await EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",tmpls]]],{fields:["product_tmpl_id","min_quantity","fixed_price"],limit:20000});
+    const q={}; its.forEach(i=>{ const t=i.product_tmpl_id[0]; if(q[t]==null || i.min_quantity<q[t]){ q[t]=i.min_quantity; p1[t]=i.fixed_price; } });
+  }
+  // precio actual de cada plantilla en las listas institucionales (los ítems van por variante)
+  const vars=tmpls.length?await EYG.rpc("product.product","search_read",[[["product_tmpl_id","in",tmpls]]],{fields:["id","product_tmpl_id"],limit:0}):[];
+  const vt={}; vars.forEach(v=>vt[v.id]=v.product_tmpl_id[0]);
+  const pt={2:{},3:{}};
+  if(vars.length){
+    const its=await EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","in",[16,5]],["product_id","in",vars.map(v=>v.id)]]],{fields:["pricelist_id","product_id","fixed_price"],limit:20000});
+    its.forEach(i=>{ const t=i.pricelist_id[0]===16?2:3, tm=vt[i.product_id[0]]; if(pt[t][tm]==null || i.fixed_price<pt[t][tm]) pt[t][tm]=i.fixed_price; });
+  }
+  let estado={}; try{ estado=JSON.parse(await getParam(ESPEJO_KEY,"{}")||"{}")||{}; }catch(e){ estado={}; }
+  const nuevoEstado={}, res={}, tocados=new Set();
+  for(const T of ESPEJO_TIERS){
+    const lines=String(await getParam(T.key,"")||"").split("\n").map(l=>l.trim()).filter(Boolean);
+    // las líneas cargadas a mano en el formato viejo (5 campos) pasan al del motor: en el viejo la
+    // vigencia y la pausa caían en otra posición y el motor nunca las veía
+    const manual=lines.filter(l=>!capaEsEspejo(l)).map(capaA9);
+    const manualT=new Set(manual.map(l=>parseInt(l.split("~")[0])||0));
+    const nuestras=lines.filter(capaEsEspejo);
+    // las de ofertas que todavía no tienen destino: se conservan tal cual
+    const out=manual.concat(nuestras.filter(l=>dudosas.has(capaEspejoDe(l))));
+    for(const o of quiere){
+      const tm=o.target, r=res[tm]||(res[tm]={});
+      if(manualT.has(tm)){ r[T.t]="manual"; continue; }
+      const precio=p1[tm];
+      if(!(precio>0)){ r[T.t]="sin_dato"; continue; }
+      const prev=nuestras.find(l=>(parseInt(l.split("~")[0])||0)===tm);
+      // precio normal de la lista: el guardado al poner la línea; si no hay línea nuestra, el de hoy
+      let normal=estado[tm]&&estado[tm]["t"+T.t];
+      if(!(normal>0) && !prev) normal=pt[T.t][tm];
+      if(normal>0 && precio>=normal-0.005){ r[T.t]="mas_barato"; continue; }
+      const ln=lineaEspejo(tm, precio, o.hasta, o.id, o.targetName);
+      out.push(ln); r[T.t]="puesta";
+      (nuevoEstado[tm]||(nuevoEstado[tm]={of:o.id}))["t"+T.t]=(normal>0?normal:null);
+      if(!prev || prev!==ln) tocados.add(tm);
+    }
+    nuestras.forEach(l=>{ const tm=parseInt(l.split("~")[0])||0; if(!out.includes(l) && !dudosas.has(capaEspejoDe(l))) tocados.add(tm); });
+    const txt=out.join("\n");
+    if(txt!==lines.join("\n")) await setParam(T.key, txt);
+  }
+  // las líneas de ofertas sin destino conservan su precio normal guardado
+  Object.keys(estado).forEach(tm=>{ if(!nuevoEstado[tm] && dudosas.has(String(estado[tm].of))) nuevoEstado[tm]=estado[tm]; });
+  if(JSON.stringify(nuevoEstado)!==JSON.stringify(estado)) await setParam(ESPEJO_KEY, JSON.stringify(nuevoEstado));
+  ESPEJO_RES=res;
+  // el motor lo aplica ya, producto por producto (sin esperar la corrida de 15 minutos)
+  if(tocados.size){
+    const vs=await EYG.rpc("product.product","search_read",[[["product_tmpl_id","in",[...tocados]]]],{fields:["id"],limit:0});
+    for(const v of vs){ try{ await EYG.rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR",eyg_solo_producto:v.id}}); }catch(e){} }
+  }
+  return {res, tocados:[...tocados]};
+}
+// cómo le llega la oferta a las instituciones, para la fila de la oferta
+function chipEspejo(o){
+  const r=o.tipo==='p' && ESPEJO_RES[o.target]; if(!r) return "";
+  const v=[r[2],r[3]];
+  if(v.includes("puesta")) return `<span class="chip c-oro" title="Las instituciones y SAMCO con su propia lista también pagan el precio de la oferta">🏥 llega a instituciones</span>`;
+  if(v.every(x=>x==="mas_barato")) return `<span class="chip c-gris" title="La lista de las instituciones ya es más barata que la oferta: no se toca">🏥 su lista ya es menor</span>`;
+  if(v.includes("manual")) return `<span class="chip c-gris" title="Hay un precio cargado a mano en el Motor de precios para las listas institucionales: manda ese">🏥 precio a mano</span>`;
+  return "";
 }
 
 /* ============ MARGEN DE UNA OFERTA ============
@@ -1082,7 +1193,7 @@ function filaRegla(o){
   const st=rgEstado(o), m=mrgRegla(o);
   const ag = o.tipo==='p' && STOCK_T[o.target]!=null && STOCK_T[o.target]<=0;
   const descPc = o.modo==='pct'?("−"+rgPct(o.valor)+"%"):o.modo==='monto'?("−"+money(o.valor)):"precio fijo";
-  const chips=[chipCanal(o), o.tipo==='p'?`<span class="chip c-teal">🔖 producto</span>`:`<span class="chip c-gris">📂 categoría</span>`,
+  const chips=[chipCanal(o), chipEspejo(o), o.tipo==='p'?`<span class="chip c-teal">🔖 producto</span>`:`<span class="chip c-gris">📂 categoría</span>`,
     st.c==='pau'?`<span class="chip c-warn">pausado</span>`:"", st.c==='ven'?`<span class="chip c-gris">vencido</span>`:"",
     ag?`<span class="chip c-bad">⛔ agotada</span>`:"", (m!=null&&m<0)?`<span class="chip c-bad">pierde plata</span>`:"",
     (o.reemplaza||o.modo==='precio')?`<span class="chip c-gris">precio único</span>`:`<span class="chip c-gris">sobre la escalera</span>`].filter(Boolean).join(" ");
@@ -1407,7 +1518,7 @@ function rgDestinoHTML(){
   const fin=EYGCanal.destino(d, info&&info.canal);
   const opt=(v,t)=>`<option value="${v}" ${(d.destino||"")===v?'selected':''}>${t}</option>`;
   // Hoy el descuento sólo cambia la lista (1) Farmacias: decirlo donde se decide.
-  const aviso = (fin==='inst'||fin==='ambos') ? `<div class="hint2" style="color:#8a5a00;margin-top:6px">⚠️ Este descuento cambia el precio de la lista <b>(1) Farmacias</b>. Las instituciones y SAMCO que compran con su propia lista no lo reciben en el pedido: para ellas el precio especial se carga en la capa temporal del Motor de precios.</div>` : "";
+  const aviso = (fin==='inst'||fin==='ambos') ? `<div class="hint2" style="margin-top:6px">🏥 Al guardar, el mismo precio se pone también en las listas <b>SAMCO y clínicas</b> e <b>Instituciones</b>, con la misma vigencia — salvo donde esa lista ya sea más barata o tenga un precio cargado a mano.</div>` : "";
   return `<div id="rg-destino" class="fld2" style="margin:4px 0 12px"><label>¿Para quién es la oferta?</label>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <select onchange="rgSetDestino(this.value)" style="max-width:260px">
@@ -1654,6 +1765,8 @@ async function rgSave(recalcTmpl){
       else await EYG.rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
     } else { await EYG.rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}}); }
   }catch(e){}
+  // y la oferta llega a las listas institucionales (o se va de ellas, si se pausó o borró)
+  try{ await sincronizarEspejoInst(); }catch(e){ console.warn("espejo inst:",e); }
 }
 window.rgGuardar=async()=>{
   const d=rgDraft; if(!d) return;
@@ -1692,6 +1805,7 @@ window.rgGuardar=async()=>{
 /* Guarda y aplica la oferta (después de pasar el chequeo, o de confirmarlo en el cartel). */
 async function rgAplicar(rule, d){
   const desdeOpo=d._desdeOpo, desdeStock=d._desdeStock;
+  if(rule.tipo==='p' && d._canal) CANAL_T[rule.target]=d._canal;   // destino ya calculado en el editor
   const i=SYNC_OF.findIndex(o=>o.id===rule.id);
   if(i>=0) SYNC_OF[i]=rule; else SYNC_OF.push(rule);
   const esProd=rule.tipo==='p';
