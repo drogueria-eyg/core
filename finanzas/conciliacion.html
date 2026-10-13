@@ -548,6 +548,9 @@ async function analizar(movs){
   await construirMapaCuit();
   movs.forEach(m=>{ m.cliente=(m.cuit&&ST.mapaCuit[m.cuit])?ST.mapaCuit[m.cuit]:null; m.porPadron=false; });
   await resolverPorPadron(movs);
+  /* customer_rank y etiquetas de los contactos: sin esto, los dueños (que están
+     cargados como clientes) caen en la cola de cobranzas. */
+  try{ await cargarFichas(movs); }catch(e){ log("No pude leer las fichas de los contactos: "+((e&&e.message)||e),"o"); }
   /* Tercera fuente: el nombre del titular. Va al final porque el CUIT es más
      preciso, pero rescata los cobros donde el CUIT no está o no se conoce. */
   let porNom=0;
@@ -841,7 +844,7 @@ function kpis(M,nuevos,pendConc,cerrados,listos,dudas){
   /* Se calcula ACÁ y no afuera: el KPI vive en esta función, así que una variable
      definida en otra no existe en este scope. Al hacerlo mal, el render entero se
      caía con "cobros is not defined" y la pantalla quedaba sin movimientos. */
-  const cobros=M.filter(m=>abierto(m)&&m.importe>0&&(m.tipo==="cobro"||(m.tipo==="otro"&&m.cliente)));
+  const cobros=M.filter(m=>abierto(m)&&cajonDe(m)==="cliente");
   const k=(id,clase,lbl,n,s,ayuda)=>
     /* Las comillas van como &quot;: el onclick está dentro de un atributo con comillas
        dobles, así que meterle JSON.stringify crudo lo parte al medio y el navegador se
@@ -861,40 +864,101 @@ function kpis(M,nuevos,pendConc,cerrados,listos,dudas){
   '</div>';
 }
 
+/* ---------- DE QUIÉN ES CADA PESO QUE ENTRA ------------------------------------------
+   "Cobro de cliente" no es "entró plata y tiene un contacto". En esta base los dueños
+   (German, Federico, Irene) están cargados con customer_rank alto —40, 21 y 76—, así
+   que por marca de Odoo parecen clientes. Y la propia Droguería aparece como contacto
+   de sus transferencias entre cuentas. Si no se separan, la cola de cobranzas mezcla
+   plata de los socios con pagos de farmacias y no se puede trabajar.
+
+   Cada entrada cae en UN cajón con nombre. Lo que no se puede nombrar queda en
+   "sin identificar", que es trabajo pendiente y no se esconde. */
+const IDS_EMPRESA=[1,2215,3878,4205];      /* las fichas de la propia Droguería EyG */
+const IDS_DUENOS =[15,16,17];              /* Federico Banquero · German Banquero · Irene Ercoli */
+const CAT_BANCOS =[64,65];                 /* etiquetas BANCOS y BANCOS / PRESTAMOS */
+
+/* customer_rank y etiquetas de los contactos que aparecen en pantalla. Se piden una vez
+   por análisis: sin esto no hay forma de saber si un contacto es cliente de verdad. */
+async function cargarFichas(movs){
+  const ids=[...new Set(movs.map(m=>{
+    const q=m.cliente||(m.yaEsta&&m.yaEsta.partner_id?{id:m.yaEsta.partner_id[0]}:null);
+    return q?q.id:null;
+  }).filter(Boolean))];
+  ST.fichas=ST.fichas||{};
+  const faltan=ids.filter(id=>!ST.fichas[id]);
+  if(!faltan.length) return;
+  const P=await rpc("res.partner","read",[faltan,["name","customer_rank","supplier_rank","category_id","vat"]]);
+  P.forEach(p=>{ST.fichas[p.id]=p;});
+}
+
+/* El cajón de una entrada de plata. Devuelve null si no es una entrada. */
+function cajonDe(m){
+  if(!(m.importe>0)) return null;
+  if(m.tipo==="impuesto"||m.tipo==="cargo") return "banco";
+  if(m.tipo==="interna") return "propia";
+  if(m.tipo==="liquidacion") return "liquidacion";
+  if(m.tipo==="prestamo") return "prestamo";
+  const q=m.cliente||(m.yaEsta&&m.yaEsta.partner_id?{id:m.yaEsta.partner_id[0],nombre:m.yaEsta.partner_id[1]}:null);
+  if(!q) return "sinIdentificar";
+  if(IDS_EMPRESA.indexOf(q.id)>=0) return "propia";
+  if(IDS_DUENOS.indexOf(q.id)>=0)  return "duenos";
+  const fi=(ST.fichas||{})[q.id];
+  if(!fi) return "cliente";                                   /* sin ficha leída: no se descarta */
+  if((fi.category_id||[]).some(c=>CAT_BANCOS.indexOf(c)>=0)) return "banco";
+  if((fi.customer_rank||0)>0) return "cliente";
+  if((fi.supplier_rank||0)>0) return "proveedor";             /* devolución de un proveedor */
+  return "otroContacto";
+}
+const CAJONES={
+  cliente:       {rot:"Cobros de clientes",        ayuda:"Farmacias e instituciones que nos compran. Es la cola de cobranzas."},
+  duenos:        {rot:"De los dueños",             ayuda:"Plata que entra de German, Federico o Irene. No es una venta: cómo se registra lo define el contador."},
+  propia:        {rot:"Entre cuentas propias",     ayuda:"Plata que EyG se pasó de una cuenta a otra. Se resuelve como transferencia interna."},
+  liquidacion:   {rot:"Descuento de cheques",      ayuda:"Lo que acredita el banco al descontar cheques. Necesita el resumen de liquidación."},
+  prestamo:      {rot:"Préstamos",                 ayuda:"Acreditación de un crédito bancario. Necesita el cuadro de cuotas."},
+  banco:         {rot:"Del banco",                 ayuda:"Reintegros, intereses y movimientos del propio banco."},
+  proveedor:     {rot:"De un proveedor",           ayuda:"Entró plata de alguien que es proveedor: suele ser una devolución o una nota de crédito."},
+  otroContacto:  {rot:"Contacto que no es cliente",ayuda:"Tiene ficha en Odoo pero no está marcado como cliente ni proveedor."},
+  sinIdentificar:{rot:"Sin identificar",           ayuda:"El banco no mandó el CUIT, o ese CUIT no tiene ficha en Odoo. Hay que averiguar quién es."}
+};
+
 /* Encabezado de la cola de cobranzas. Aparece sólo cuando se está mirando «Cobros de
    clientes», y dice lo único que importa para trabajarla: de cuántos ya se sabe quién
    pagó y de cuántos no, porque son dos trabajos distintos. Lo que no tiene cliente hay
    que averiguarlo; lo que sí, se imputa a sus facturas y se cierra. */
 function panelCobranzas(M){
   if(ST.filtro!=="cobros") return "";
-  const C=filtrar(M);
-  if(!C.length) return '<div class="panel"><h3>💰 Cobros de clientes</h3>'+
-    '<div class="sub">No hay cobros pendientes de imputar en este banco. 🎉</div></div>';
+  const entra=M.filter(m=>abierto(m)&&m.importe>0);
+  const por={}; entra.forEach(function(m){ const c=cajonDe(m)||"sinIdentificar"; (por[c]=por[c]||[]).push(m); });
+  const C=por.cliente||[];
+  const tot=a=>a.reduce((s,m)=>s+m.importe,0);
   const quien=m=>m.cliente||(m.yaEsta&&m.yaEsta.partner_id?{id:m.yaEsta.partner_id[0],nombre:m.yaEsta.partner_id[1]}:null);
   const con=C.filter(quien), sin=C.filter(m=>!quien(m));
-  const tot=a=>a.reduce((s,m)=>s+m.importe,0);
-  /* cuántos clientes distintos, para saber si es mucha gente o pocos pagos grandes */
-  const nombres={}; con.forEach(m=>{const q=quien(m); nombres[q.nombre]=(nombres[q.nombre]||0)+m.importe;});
+  const nombres={}; con.forEach(function(m){ const q=quien(m); nombres[q.nombre]=(nombres[q.nombre]||0)+m.importe; });
   const top=Object.entries(nombres).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  /* el resto de los cajones, para que se vea POR QUÉ el número es más chico de lo que
+     uno esperaría: la plata que entra no es toda cobranza */
+  const otros=Object.keys(por).filter(k=>k!=="cliente").sort((a,b)=>tot(por[b])-tot(por[a]));
   return '<div class="panel"><h3>💰 Cobros de clientes · '+C.length+' por '+money(tot(C))+'</h3>'+
-    '<div class="sub">Plata que entró de clientes y todavía no está imputada a sus facturas. '+
-    'Cada uno se resuelve con su botón en la tabla de abajo: <b>Resolver</b> abre la cuenta corriente del que pagó '+
-    'para tildar qué facturas cancela. Si lo que pagó no da exacto, la diferencia de hasta '+money(TOPE_AJUSTE)+
-    ' se cierra sola contra Ajuste por redondeo, sin emitir nota de crédito.</div>'+
-    '<div class="kpis" style="margin:0 0 11px">'+
+    '<div class="sub">Sólo farmacias e instituciones que nos compran. Cada uno se resuelve con su botón en la tabla de abajo: '+
+    '<b>Resolver</b> abre la cuenta corriente del que pagó para tildar qué facturas cancela. Si lo que pagó no da exacto, '+
+    'la diferencia de hasta '+money(TOPE_AJUSTE)+' se cierra sola contra Ajuste por redondeo, sin nota de crédito.</div>'+
+    (C.length?'<div class="kpis" style="margin:0 0 11px">'+
       '<div class="kpi ok"><div class="l">Se sabe quién pagó</div><div class="n">'+con.length+'</div>'+
         '<div class="s">'+money(tot(con))+' · listos para imputar</div></div>'+
       '<div class="kpi '+(sin.length?"warn":"")+'"><div class="l">Falta saber quién</div><div class="n">'+sin.length+'</div>'+
-        '<div class="s">'+money(tot(sin))+(sin.length?' · usá «¿De quién es?»':' · ninguno')+'</div></div>'+
+        '<div class="s">'+money(tot(sin))+'</div></div>'+
       '<div class="kpi"><div class="l">Clientes distintos</div><div class="n">'+Object.keys(nombres).length+'</div>'+
         '<div class="s">en los '+con.length+' identificados</div></div>'+
     '</div>'+
-    (top.length?'<div class="sub" style="margin:0 0 5px">Los que más mandaron:</div>'+
-      '<div class="leyenda">'+top.map(t=>'<span><b>'+esc(t[0]).slice(0,28)+'</b> '+money(t[1])+'</span>').join("")+'</div>':"")+
-    (sin.length?'<div class="aviso warn" style="margin:11px 0 0">⚠️ <div><b>'+sin.length+' cobro'+(sin.length===1?"":"s")+
-      ' sin identificar por '+money(tot(sin))+'.</b> El banco no mandó el CUIT o el CUIT no tiene ficha en Odoo. '+
-      'Si el movimiento todavía no está cargado, conviene resolverlo con <b>¿De quién es?</b> antes de cargarlo: '+
-      'después Odoo no deja escribir el contacto en una línea conciliada.</div></div>':"")+
+    (top.length?'<div class="sub" style="margin:0 0 5px">Los que más mandaron:</div><div class="leyenda">'+
+      top.map(x=>'<span><b>'+esc(x[0]).slice(0,28)+'</b> '+money(x[1])+'</span>').join("")+'</div>':"")
+    :'<div class="aviso ok" style="margin:0">✔️ <div>No hay cobros de clientes pendientes de imputar en este banco.</div></div>')+
+    (otros.length?'<div class="sub" style="margin:13px 0 5px"><b>El resto de lo que entró no es cobranza</b>, y por eso no está en la lista:</div>'+
+      '<div class="tw"><table><thead><tr><th>Qué es</th><th class="r">Movs.</th><th class="r">Importe</th><th>Qué hace falta</th></tr></thead><tbody>'+
+      otros.map(function(k){ const C2=CAJONES[k]||{rot:k,ayuda:""};
+        return '<tr><td><b>'+esc(C2.rot)+'</b></td><td class="r muted">'+por[k].length+'</td>'+
+          '<td class="r"><b>'+money(tot(por[k]))+'</b></td><td class="muted">'+esc(C2.ayuda)+'</td></tr>';
+      }).join("")+'</tbody></table></div>':"")+
     '</div>';
 }
 
@@ -970,7 +1034,7 @@ function filtrar(M){
   if(ST.filtro==="nuevo")   return M.filter(m=>!m.yaEsta);
   if(ST.filtro==="pend")    return M.filter(m=>m.yaEsta&&!m.yaEsta.is_reconciled);
   if(ST.filtro==="cerrado") return M.filter(m=>m.yaEsta&&m.yaEsta.is_reconciled);
-  if(ST.filtro==="cobros")  return M.filter(m=>abierto(m)&&m.importe>0&&(m.tipo==="cobro"||(m.tipo==="otro"&&m.cliente)));
+  if(ST.filtro==="cobros")  return M.filter(m=>abierto(m)&&cajonDe(m)==="cliente");
   const auto = m => m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1||(m.tipo==="interna"&&m.otroBanco);
   if(ST.filtro==="listo")   return M.filter(m=>abierto(m)&&auto(m));
   if(ST.filtro==="duda")    return M.filter(m=>abierto(m)&&!auto(m)&&(m.cands.length>1||m.cands.length===0&&EMPAREJA.indexOf(m.tipo)>=0||m.tipo==="otro"));
