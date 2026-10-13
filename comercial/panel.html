@@ -12,7 +12,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="../assets/core.js?v=111"></script>
-<script src="../assets/ofertas-canal.js?v=20261013"></script>
+<script src="../assets/ofertas-canal.js?v=20261014"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -2495,7 +2495,7 @@ function render(){
 
     <div id="waSection">${waSectionHTML()}</div>
     ${OFERTAS.length?`<div id="ofertasBox" class="kpi ofcard neon" style="margin-bottom:20px">
-      <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">🎁</span><div class="kmeta"><div class="kl">Combos y ofertas de la semana</div><div class="kv" style="font-size:19px">${OFERTAS.length} activa${OFERTAS.length>1?'s':''}</div><div class="ks">tocá para verlas y compartir por WhatsApp</div></div><span class="kchev">▾</span></div>
+      <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">🎁</span><div class="kmeta"><div class="kl">Combos y ofertas de la semana</div><div class="kv" style="font-size:19px">${OFERTAS.filter(ofVisible).length} activa${OFERTAS.filter(ofVisible).length!==1?'s':''}</div><div class="ks">tocá para verlas y compartir por WhatsApp</div></div><span class="kchev">▾</span></div>
       <div class="acc"><div class="accw"><div class="accin" style="padding-top:8px">${ofertasHTML()}</div></div></div>
     </div>`:''}
     ${conquistarCardHTML()}
@@ -3494,28 +3494,25 @@ function ofertasHTML(){
       <span title="Incluye las ofertas que ya cerraron: lo vendido este mes no se borra cuando la oferta sale de la lista">🛒 ${ST.ofVendidas||0} vendida${(ST.ofVendidas||0)===1?'':'s'} este mes</span>
     </div>
     ${ofFiltroHTML()}
-    ${OFS.length?`<div class="of-grid">${cards}</div>`:`<div style="font-size:13px;font-weight:700;color:rgba(255,255,255,.85);padding:6px 0 4px">No hay ofertas para ${ST.ofFiltro==='inst'?'instituciones':'farmacias'} en este momento.</div>`}
+    ${OFS.length?`<div class="of-grid">${cards}</div>`:`<div style="font-size:13px;font-weight:700;color:rgba(255,255,255,.85);padding:6px 0 4px">No hay ofertas para ${ST.ofSeg==='inst'?'instituciones':'farmacias'} en este momento.</div>`}
   </div>`;
 }
 /* ---- ¿Para quién es cada oferta? (Farmacias / Instituciones) ----
    Cada oferta tiene destino: el que se eligió en Oportunidades y Ofertas o, si no, el que sugieren
-   las ventas del producto (assets/ofertas-canal.js). El comercial ve primero las de SU cartera:
-   si no tiene instituciones arranca en Farmacias, si no tiene farmacias en Instituciones, y si
-   tiene de las dos, todas. Las "para ambos" se ven siempre. Sólo filtra la vista: el puntaje
-   sigue contando todas. */
-function ofVisible(o){ const f=ST.ofFiltro||"todas"; return f==="todas" || !o._dest || o._dest==="ambos" || o._dest===f; }
+   las ventas del producto (assets/ofertas-canal.js). Cada comercial ve SÓLO las de su público y
+   las de ambos rubros (pedido de Dirección, 13/10/2026). Su público sale de a quién le vende
+   (EYGCanal.segmentoComercial): quien vende a los dos, ve todas. El líder o el admin que entra con
+   ?c= ve lo mismo que ese comercial. Sólo filtra la vista: el puntaje sigue contando todas. */
+function ofVisible(o){ const f=ST.ofSeg||"ambos"; return f==="ambos" || !o._dest || o._dest==="ambos" || o._dest===f; }
 function ofDestTxt(o){
   if(!o._dest || !window.EYGCanal) return "";
   const m=EYGCanal.META[o._dest]; return m?`<span class="of-venc" title="${o._destManual?'Destino elegido en Oportunidades':'Destino según a quién se le vende el producto'}">${m.ico} ${m.corto}</span>`:"";
 }
 function ofFiltroHTML(){
   if(!OFERTAS.some(o=>o._dest)) return "";
-  const n=k=>OFERTAS.filter(o=>k==="todas"||!o._dest||o._dest==="ambos"||o._dest===k).length;
-  const b=(k,t)=>`<button onclick="ofFiltrar('${k}')" style="border:1px solid rgba(255,255,255,.55);background:${(ST.ofFiltro||'todas')===k?'#fff':'transparent'};color:${(ST.ofFiltro||'todas')===k?'var(--teal-deep,#0b5c5c)':'#fff'};border-radius:20px;padding:4px 12px;font-size:12px;font-weight:800;cursor:pointer">${t} · ${n(k)}</button>`;
-  return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">${b("todas","Todas")}${b("farm","💊 Farmacias")}${b("inst","🏥 Instituciones")}</div>`;
+  if(ST.ofSeg==="farm"||ST.ofSeg==="inst") return `<div style="font-size:12.5px;font-weight:700;color:rgba(255,255,255,.85);margin:0 0 12px">Ves las ofertas para ${ST.ofSeg==="inst"?"🏥 instituciones":"💊 farmacias"} y las de ambos rubros.</div>`;
+  return "";
 }
-// repinta sólo adentro de la tarjeta: con render() la tarjeta se cerraba al tocar un filtro
-window.ofFiltrar=k=>{ ST.ofFiltro=k; const box=document.querySelector("#ofertasBox .accin"); if(box) box.innerHTML=ofertasHTML(); else render(); };
 async function marcarDestinos(list, reglas){
   if(!window.EYGCanal || !list.length) return;
   const dRegla={}; (reglas||[]).forEach(r=>{ if(r && r.destino) dRegla["sync:"+r.id]=r.destino; });
@@ -3527,12 +3524,8 @@ async function marcarDestinos(list, reglas){
     const fa=its.reduce((a,x)=>a+x.farm,0), ia=its.reduce((a,x)=>a+x.inst,0);
     o._dest=(fa+ia>0?EYGCanal.clasificar(fa,ia,""):its[0]).canal;
   });
-  // filtro de arranque según la cartera del comercial
-  if(!ST.ofFiltro){
-    const segs=(ST.contactos||[]).map(c=>{ const r=EYG.rubroDe(c); return (r==="INSTITUCIONES"||r==="SAMCO")?"inst":(r==="FARMACIAS"?"farm":null); });
-    const hayF=segs.includes("farm"), hayI=segs.includes("inst");
-    ST.ofFiltro = (hayF&&!hayI)?"farm":(hayI&&!hayF)?"inst":"todas";
-  }
+  // el público del comercial: a quién le vende
+  if(!ST.ofSeg && ST.userId) ST.ofSeg=await EYGCanal.segmentoComercial(ST.userId);
 }
 
 /* Texto del descuento de una oferta de Configuración de precios, que es relativo. */

@@ -94,6 +94,26 @@
     }catch(e){ return null; }
   }
 
+  /* ¿A qué público le vende un COMERCIAL? Misma regla, sobre lo que vendió en los últimos 6 meses:
+     70% o más a un rubro → ese ('farm' | 'inst'); si no, 'ambos'. Sin ventas, por los clientes de
+     su cartera. Medido el 13/10/2026: Natividad 99% y Ruth 100% instituciones; Claudia 98%,
+     Maricruz 97% y Samanta 85% farmacias; Antonella (51%) y Germán (64%) venden a los dos. */
+  async function segmentoComercial(userId){
+    try{
+      const d=new Date(Date.now()-182*864e5).toISOString().slice(0,10);
+      const g=await EYG.rpc("sale.order","read_group",[[["user_id","=",userId],["state","in",["sale","done"]],["date_order",">=",d]],["amount_untaxed:sum"],["partner_id"]],{lazy:false});
+      await rubros([...new Set(g.map(x=>x.partner_id&&x.partner_id[0]).filter(Boolean))]);
+      let f=0,i=0; g.forEach(x=>{ const s=x.partner_id&&_rub[x.partner_id[0]]; if(s==="f") f+=x.amount_untaxed||0; else if(s==="i") i+=x.amount_untaxed||0; });
+      if(f+i<=0){
+        const ps=await EYG.rpc("res.partner","search_read",[[["user_id","=",userId],["type","=","contact"],["parent_id","=",false]]],{fields:["id"],limit:0});
+        await rubros(ps.map(p=>p.id));
+        ps.forEach(p=>{ const s=_rub[p.id]; if(s==="f") f++; else if(s==="i") i++; });
+      }
+      if(f+i<=0) return "ambos";
+      const ip=i/(f+i); return ip>=UMBRAL?"inst":(ip<=1-UMBRAL?"farm":"ambos");
+    }catch(e){ return "ambos"; }   // ante la duda, que vea todo
+  }
+
   // el destino de una oferta: el que se eligió a mano, si no el sugerido
   const destino = (o, sugerido) => (o && o.destino && META[o.destino]) ? o.destino : (sugerido || null);
   // por qué se sugiere, en criollo
@@ -109,5 +129,5 @@
     return `<span class="chip ${canal==='inst'?'c-oro':canal==='farm'?'c-teal':'c-gris'}" title="${manual?'Destino elegido a mano':'Destino sugerido por las ventas del producto'}">${m.ico} ${m.corto}${manual?'':' · auto'}</span>`;
   }
 
-  window.EYGCanal = { UMBRAL, META, clasificar, deVariantes, dePlantillas, deCategoria, destino, motivo, chip };
+  window.EYGCanal = { UMBRAL, META, clasificar, deVariantes, dePlantillas, deCategoria, segmentoComercial, destino, motivo, chip };
 })();
