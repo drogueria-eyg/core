@@ -359,6 +359,15 @@ const BANCOS={
   nacion:    {nombre:"Nación",            cuentaBanco:"30354480100005",   diario:14, cuenta:345, partner:4045, metodoSalida:16,  codigos:null}
 };
 const CTA_TRANSIT=349, CTA_RECIBOS=350, CTA_PAGOS=351, CTA_PROVEEDORES=148;
+/* Diferencia de centavos al imputar un cobro: hasta acá se cierra contra "Ajuste por
+   redondeo" con un asiento simple, SIN emitir nota de crédito ni de débito.
+   Por qué: hoy cada diferencia genera una Nota de Crédito A fiscal con numeración.
+   En 2026 fueron 1.479 comprobantes, y 1.391 de ellos (94%) repartieron $82.468 en
+   total. El tope de $500 cubre el 92% de los casos; de ahí para arriba son 34 por
+   año y conviene que los mire una persona, porque ya puede ser un error de pago.
+   El asiento va al diario Operaciones varias (11), que NO emite comprobantes
+   fiscales — a diferencia del diario Redondeo, que además infla las ventas. */
+const TOPE_AJUSTE=500, CTA_AJUSTE=187, DIARIO_AJUSTE=11;
 const CTA_PUENTE=356;                 // 6.0.00.00.01 Transferencia de liquidez
 const EYG_CUIT="30716356988";         // el CUIT propio: marca las transferencias entre cuentas nuestras
 const EYG_PARTNER=1;                  // Droguería EyG S.R.L. como contraparte de la transferencia
@@ -721,6 +730,10 @@ function render(){
   const pendConc= M.filter(m=>m.yaEsta&&!m.yaEsta.is_reconciled);  // están, pero sin conciliar
   const cerrados= M.filter(m=>m.yaEsta&&m.yaEsta.is_reconciled);   // cargados y conciliados
   const abiertos= M.filter(abierto);                               // todo lo que falta: nuevos + pendConc
+  /* Los cobros de clientes sin imputar: entra plata, no es un cargo del banco ni una
+     transferencia nuestra, y sigue abierto. Se miran juntos porque se resuelven
+     igual: mirando la cuenta corriente del que pagó. */
+  const cobros= abiertos.filter(m=>m.importe>0 && m.tipo!=="impuesto" && m.tipo!=="cargo" && m.tipo!=="interna");
   const porTipo={}; M.forEach(m=>{(porTipo[m.tipo]=porTipo[m.tipo]||[]).push(m);});
   const auto = m => m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1||(m.tipo==="interna"&&m.otroBanco);
   const listos=abiertos.filter(auto);
@@ -838,6 +851,7 @@ function kpis(M,nuevos,pendConc,cerrados,listos,dudas){
     k("pend","warn","Cargados sin conciliar",pendConc.length,suma(pendConc),"Ya están en Odoo pero les falta el recibo o el pago: siguen dando trabajo. Clic para verlos.")+
     k("cerrado","dup","Conciliados",cerrados.length,suma(cerrados),"Cargados y conciliados. Están cerrados: no hay nada que hacer con ellos.")+
     k("listo","ok","Se resuelven solos",listos.length,suma(listos),"Tienen un único destino posible. Se resuelven sin decidir nada, estén cargados o no.")+
+    k("cobros","ok","Cobros de clientes",cobros.length,suma(cobros),"Lo que entró de un cliente y todavía no está imputado a sus facturas. Es la cola de cobranzas: clic para verla sola.")+
     k("duda","warn","Necesitan que decidas",dudas.length,suma(dudas),"O tienen varios candidatos, o no tienen ninguno, o el código no está en el mapa.")+
   '</div>';
 }
@@ -914,6 +928,7 @@ function filtrar(M){
   if(ST.filtro==="nuevo")   return M.filter(m=>!m.yaEsta);
   if(ST.filtro==="pend")    return M.filter(m=>m.yaEsta&&!m.yaEsta.is_reconciled);
   if(ST.filtro==="cerrado") return M.filter(m=>m.yaEsta&&m.yaEsta.is_reconciled);
+  if(ST.filtro==="cobros")  return M.filter(m=>abierto(m)&&m.importe>0&&m.tipo!=="impuesto"&&m.tipo!=="cargo"&&m.tipo!=="interna");
   const auto = m => m.tipo==="impuesto"||m.tipo==="cargo"||m.cands.length===1||(m.tipo==="interna"&&m.otroBanco);
   if(ST.filtro==="listo")   return M.filter(m=>abierto(m)&&auto(m));
   if(ST.filtro==="duda")    return M.filter(m=>abierto(m)&&!auto(m)&&(m.cands.length>1||m.cands.length===0&&EMPAREJA.indexOf(m.tipo)>=0||m.tipo==="otro"));
@@ -1485,6 +1500,42 @@ function panelResolver(){
     '<span class="cp">'+esc(m.concepto.slice(0,80))+'</span></div>'+cuerpo+'</div>';
 }
 
+/* Cierra el sobrante de un recibo ya imputado, si es chico.
+   Arma un asiento de dos líneas en Operaciones varias: le devuelve al cliente el
+   debe que le sobra y manda el peso a Ajuste por redondeo. Después lo concilia
+   contra el residuo del recibo, así la cuenta corriente queda en cero y no hay
+   nada que arrastrar. No emite ningún comprobante.
+   Si el sobrante pasa el tope, NO se toca: se avisa y queda a cuenta, como antes. */
+async function cerrarDiferencia(lineaRecibo, cliente, fechaMov){
+  const v=await rpc("account.move.line","read",[[lineaRecibo],["amount_residual","full_reconcile_id"]]);
+  if(!v.length||v[0].full_reconcile_id) return false;          /* cerró exacto */
+  const resid=Math.round(Math.abs(v[0].amount_residual)*100)/100;
+  if(resid<0.005) return false;
+  if(resid>TOPE_AJUSTE){
+    log("Quedan "+money(resid)+" a cuenta de "+cliente.nombre+": es más de "+money(TOPE_AJUSTE)+
+        ", así que no lo cierro solo. Puede ser un pago parcial o un error — miralo.","o");
+    return false;
+  }
+  const asiento=await rpc("account.move","create",[[{
+    journal_id:DIARIO_AJUSTE, date:fechaMov,
+    ref:"Ajuste por redondeo · cobro de "+cliente.nombre,
+    line_ids:[
+      [0,0,{account_id:CTA_CLIENTES, partner_id:cliente.id, name:"Ajuste por redondeo del cobro", debit:resid, credit:0}],
+      [0,0,{account_id:CTA_AJUSTE,   name:"Ajuste por redondeo del cobro", debit:0, credit:resid}]
+    ]}]]);
+  const aid=Array.isArray(asiento)?asiento[0]:asiento;
+  await rpc("account.move","action_post",[[aid]]);
+  const ls=await rpc("account.move.line","search_read",[[["move_id","=",aid]],["id","account_id","debit"]],{limit:0});
+  const lCli=ls.find(x=>x.account_id[0]===CTA_CLIENTES);
+  if(!lCli) throw new Error("el asiento de ajuste no tiene la línea del cliente");
+  await rpc("account.move.line","reconcile",[[lineaRecibo,lCli.id]]);
+  const q=await rpc("account.move.line","read",[[lineaRecibo],["full_reconcile_id","amount_residual"]]);
+  if(!q[0].full_reconcile_id && Math.abs(q[0].amount_residual)>0.005)
+    throw new Error("la diferencia no quedó cerrada: siguen "+money(q[0].amount_residual));
+  log("Diferencia de "+money(resid)+" cerrada contra Ajuste por redondeo, sin emitir comprobante","ok");
+  return true;
+}
+
 /* Crea el recibo igual que lo hace Cobranzas, lo imputa a las facturas
    tildadas y lo concilia contra la línea del extracto. Todo o nada. */
 window.crearRecibo=()=>conTrabajo(async()=>{
@@ -1514,6 +1565,10 @@ window.crearRecibo=()=>conTrabajo(async()=>{
   if(RES.sel.size&&lCred){
     await rpc("account.move.line","reconcile",[[lCred.id,...[...RES.sel]]]);
     log("Imputado a "+RES.sel.size+" factura(s)");
+    /* Lo que sobra cuando el cobro no da exacto con las facturas. Antes quedaba
+       "a cuenta" y había que arrastrarlo hasta que alguien le hiciera una nota de
+       crédito. Si es chico se cierra acá mismo contra Ajuste por redondeo. */
+    await cerrarDiferencia(lCred.id, RES.cliente, m.fecha);
   } else log("Queda a cuenta del cliente (sin imputar)");
 
   /* y ahora contra el extracto */
