@@ -741,6 +741,7 @@ function render(){
     kpis(M,nuevos,pendConc,cerrados,listos,dudas)+
     composicion(porTipo)+
     panelAcciones(nuevos,pendConc,cerrados,listos,dudas)+
+    panelCobranzas(M)+
     panelResolver()+ panelAsignar()+
     tablas(filtrar(M))+
     '<div class="panel"><h3>📋 Registro de lo que se hizo</h3>'+
@@ -858,6 +859,43 @@ function kpis(M,nuevos,pendConc,cerrados,listos,dudas){
     k("cobros","ok","Cobros de clientes",cobros.length,suma(cobros),"Lo que entró de un cliente y todavía no está imputado a sus facturas. Es la cola de cobranzas: clic para verla sola.")+
     k("duda","warn","Necesitan que decidas",dudas.length,suma(dudas),"O tienen varios candidatos, o no tienen ninguno, o el código no está en el mapa.")+
   '</div>';
+}
+
+/* Encabezado de la cola de cobranzas. Aparece sólo cuando se está mirando «Cobros de
+   clientes», y dice lo único que importa para trabajarla: de cuántos ya se sabe quién
+   pagó y de cuántos no, porque son dos trabajos distintos. Lo que no tiene cliente hay
+   que averiguarlo; lo que sí, se imputa a sus facturas y se cierra. */
+function panelCobranzas(M){
+  if(ST.filtro!=="cobros") return "";
+  const C=filtrar(M);
+  if(!C.length) return '<div class="panel"><h3>💰 Cobros de clientes</h3>'+
+    '<div class="sub">No hay cobros pendientes de imputar en este banco. 🎉</div></div>';
+  const quien=m=>m.cliente||(m.yaEsta&&m.yaEsta.partner_id?{id:m.yaEsta.partner_id[0],nombre:m.yaEsta.partner_id[1]}:null);
+  const con=C.filter(quien), sin=C.filter(m=>!quien(m));
+  const tot=a=>a.reduce((s,m)=>s+m.importe,0);
+  /* cuántos clientes distintos, para saber si es mucha gente o pocos pagos grandes */
+  const nombres={}; con.forEach(m=>{const q=quien(m); nombres[q.nombre]=(nombres[q.nombre]||0)+m.importe;});
+  const top=Object.entries(nombres).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  return '<div class="panel"><h3>💰 Cobros de clientes · '+C.length+' por '+money(tot(C))+'</h3>'+
+    '<div class="sub">Plata que entró de clientes y todavía no está imputada a sus facturas. '+
+    'Cada uno se resuelve con su botón en la tabla de abajo: <b>Resolver</b> abre la cuenta corriente del que pagó '+
+    'para tildar qué facturas cancela. Si lo que pagó no da exacto, la diferencia de hasta '+money(TOPE_AJUSTE)+
+    ' se cierra sola contra Ajuste por redondeo, sin emitir nota de crédito.</div>'+
+    '<div class="kpis" style="margin:0 0 11px">'+
+      '<div class="kpi ok"><div class="l">Se sabe quién pagó</div><div class="n">'+con.length+'</div>'+
+        '<div class="s">'+money(tot(con))+' · listos para imputar</div></div>'+
+      '<div class="kpi '+(sin.length?"warn":"")+'"><div class="l">Falta saber quién</div><div class="n">'+sin.length+'</div>'+
+        '<div class="s">'+money(tot(sin))+(sin.length?' · usá «¿De quién es?»':' · ninguno')+'</div></div>'+
+      '<div class="kpi"><div class="l">Clientes distintos</div><div class="n">'+Object.keys(nombres).length+'</div>'+
+        '<div class="s">en los '+con.length+' identificados</div></div>'+
+    '</div>'+
+    (top.length?'<div class="sub" style="margin:0 0 5px">Los que más mandaron:</div>'+
+      '<div class="leyenda">'+top.map(t=>'<span><b>'+esc(t[0]).slice(0,28)+'</b> '+money(t[1])+'</span>').join("")+'</div>':"")+
+    (sin.length?'<div class="aviso warn" style="margin:11px 0 0">⚠️ <div><b>'+sin.length+' cobro'+(sin.length===1?"":"s")+
+      ' sin identificar por '+money(tot(sin))+'.</b> El banco no mandó el CUIT o el CUIT no tiene ficha en Odoo. '+
+      'Si el movimiento todavía no está cargado, conviene resolverlo con <b>¿De quién es?</b> antes de cargarlo: '+
+      'después Odoo no deja escribir el contacto en una línea conciliada.</div></div>':"")+
+    '</div>';
 }
 
 function composicion(porTipo){
