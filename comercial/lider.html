@@ -395,6 +395,7 @@
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js?v=111"></script>
+<script src="../assets/ofertas-canal.js?v=20261013"></script>
 <script src="../assets/metrics.js?v=5"></script>
 <script src="../assets/liquidacion.js?v=7"></script>
 <script>
@@ -1119,10 +1120,12 @@ async function cargarOfertasLider(){
     if(tmpls.length){ const tps=await EYG.rpc("product.template","read",[tmpls,["product_variant_id"]]).catch(()=>[]); tps.forEach(t=>{if(t.product_variant_id)varOf[t.id]=t.product_variant_id[0];}); }
     let OF=[
       ...propias.map(o=>({titulo:o.titulo||ofItems(o), tipo:o.tipo||"oferta", pv:(o.items||[])[0]&&o.items[0].id, desde:o.desde, hasta:o.hasta})),
-      ...sync.map(o=>{const mts=/^of(\d{13})$/.exec(o.id);return{titulo:o.targetName, tipo:"oferta", pv:varOf[o.target], desde:mts?new Date(+mts[1]).toISOString().slice(0,19).replace("T"," "):"", hasta:o.hasta};}),
+      ...sync.map(o=>{const mts=/^of(\d{13})$/.exec(o.id);return{titulo:o.targetName, tipo:"oferta", pv:varOf[o.target], desde:mts?new Date(+mts[1]).toISOString().slice(0,19).replace("T"," "):"", hasta:o.hasta, dest:o.destino, destManual:!!o.destino};}),
     ].filter(o=>o.pv&&o.titulo);
     // sin stock = oferta apagada: los comerciales ya no la ven, así que tampoco se lista acá
     try{ const smOF=await EYG.ofStockMap(OF.map(o=>o.pv)); if(smOF) OF=OF.filter(o=>(smOF[o.pv]||0)>0); }catch(e){}
+    // para quién es cada oferta: la elegida en Oportunidades o la que sugieren las ventas
+    try{ if(window.EYGCanal){ const cv=await EYGCanal.deVariantes(OF.map(o=>o.pv)); OF.forEach(o=>{ if(!o.dest && cv[o.pv]) o.dest=cv[o.pv].canal; }); } }catch(e){}
     // enviadas del equipo este mes
     const notes=await EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","in",Object.values(PART)],["date",">=",inicioMes+" 00:00:00"],["body","like","EyGOFENV"]]],{fields:["body"],limit:0}).catch(()=>[]);
     const sent=notes.map(n=>(n.body||"").replace(/<[^>]+>/g,""));
@@ -1141,10 +1144,18 @@ async function cargarOfertasLider(){
     const msg='<div class="scopenote">No pude cargar las ofertas. '+esc(e.message||"")+'</div>';
     if(box) box.innerHTML=msg; if(t) t.innerHTML=msg; }
 }
+let LD_OFDEST="todas";
+window.ldOfDest=k=>{ LD_OFDEST=k; renderOfertasLider(); };
 function renderOfertasLider(){
   const box=document.getElementById("ofLider"); if(!box)return;
   if(!OF_LIDER){ box.innerHTML='<div class="floading" style="padding:26px;text-align:center;color:var(--gris)"><span class="spin-sm"></span> cargando ofertas y estadísticas del equipo…</div>'; return; }
-  const {OF,uidName}=OF_LIDER; const fn=uid=>(uidName[uid]||"?").split(" ")[0];
+  const {uidName}=OF_LIDER; const fn=uid=>(uidName[uid]||"?").split(" ")[0];
+  // filtro Todas / Farmacias / Instituciones (las "para ambos" entran en las dos)
+  const OF=OF_LIDER.OF.filter(o=>LD_OFDEST==="todas"||!o.dest||o.dest==="ambos"||o.dest===LD_OFDEST);
+  const nDest=k=>OF_LIDER.OF.filter(o=>k==="todas"||!o.dest||o.dest==="ambos"||o.dest===k).length;
+  const pill=(k,t)=>`<button onclick="ldOfDest('${k}')" style="border:1px solid var(--teal,#0f766e);background:${LD_OFDEST===k?'var(--teal,#0f766e)':'#fff'};color:${LD_OFDEST===k?'#fff':'var(--teal-deep,#0b5c5c)'};border-radius:20px;padding:4px 12px;font-size:12px;font-weight:800;cursor:pointer">${t} · ${nDest(k)}</button>`;
+  const pills=OF_LIDER.OF.some(o=>o.dest)?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">${pill("todas","Todas")}${pill("farm","💊 Farmacias")}${pill("inst","🏥 Instituciones")}</div>`:"";
+  const destChip=o=>{ const m=o.dest&&window.EYGCanal&&EYGCanal.META[o.dest]; return m?`<div style="font-size:11px;font-weight:800;color:var(--gris);margin:-4px 0 8px" title="${o.destManual?'Destino elegido en Oportunidades':'Destino según a quién se le vende el producto'}">${m.ico} para ${m.corto==='ambos'?'farmacias e instituciones':m.corto}</div>`:""; };
   if(!OF.length){ box.innerHTML='<div class="scopenote">No hay ofertas ni combos vigentes en este momento.</div>'; return; }
   const sum=o=>Object.values(o).reduce((a,b)=>a+b,0);
   const totEnv=OF.reduce((s,o)=>s+sum(o.sent),0), totVen=OF.reduce((s,o)=>s+sum(o.sold),0);
@@ -1155,6 +1166,8 @@ function renderOfertasLider(){
       <div style="flex:1;min-width:130px;background:linear-gradient(135deg,#0E5C46,#12A366);color:#fff;border-radius:14px;padding:12px 15px"><div style="font-size:12px;opacity:.9">📤 Envíos del equipo (mes)</div><div style="font-size:26px;font-weight:800">${totEnv}</div></div>
       <div style="flex:1;min-width:130px;background:linear-gradient(135deg,#8a4b0e,#c47a12);color:#fff;border-radius:14px;padding:12px 15px"><div style="font-size:12px;opacity:.9">🛒 Ventas del equipo</div><div style="font-size:26px;font-weight:800">${totVen}</div></div>
     </div>
+    ${pills}
+    ${OF.length?"":'<div class="scopenote">No hay ofertas vigentes para ese grupo.</div>'}
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px">
     ${OF.map(o=>{
       const env=Object.entries(o.sent).sort((a,b)=>b[1]-a[1]);
@@ -1162,7 +1175,7 @@ function renderOfertasLider(){
       const te=sum(o.sent), tv=sum(o.sold);
       return `<div style="background:#fff;border:1px solid #e8efee;border-radius:14px;padding:13px 14px;box-shadow:0 2px 10px rgba(0,0,0,.05)">
         <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;margin-bottom:8px"><span style="font-weight:800;font-size:13.5px;color:#0E1F1D;line-height:1.25">${esc(o.titulo)}</span><span style="font-size:10.5px;font-weight:700;color:#12A366;background:#E3F3F0;border-radius:999px;padding:2px 7px;white-space:nowrap">${o.tipo==="combo"?"combo":"oferta"}</span></div>
-        <div style="display:flex;gap:10px;margin-bottom:9px"><span style="font-size:12px;font-weight:700;color:#0E5C46">📤 ${te} enviadas</span><span style="font-size:12px;font-weight:700;color:#8a4b0e">🛒 ${tv} vendidas</span></div>
+        ${destChip(o)}<div style="display:flex;gap:10px;margin-bottom:9px"><span style="font-size:12px;font-weight:700;color:#0E5C46">📤 ${te} enviadas</span><span style="font-size:12px;font-weight:700;color:#8a4b0e">🛒 ${tv} vendidas</span></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
           <div><div style="font-size:11px;font-weight:800;color:var(--gris2);text-transform:uppercase;letter-spacing:.03em;margin-bottom:3px">Enviaron</div>${env.length?env.map(([n,c])=>row(n.split(" ")[0],c)).join(""):'<div style="font-size:12px;color:var(--gris2)">nadie aún</div>'}</div>
           <div><div style="font-size:11px;font-weight:800;color:var(--gris2);text-transform:uppercase;letter-spacing:.03em;margin-bottom:3px">Vendieron</div>${ven.length?ven.map(([u,c])=>row(fn(u),c,o.monto[u]?` · ${M(o.monto[u])}`:'')).join(""):'<div style="font-size:12px;color:var(--gris2)">nadie aún</div>'}</div>

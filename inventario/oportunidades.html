@@ -275,6 +275,23 @@ async function cargarReglasMotor(){
   });
 }
 let FOCO="";      // KPI seleccionado: "" | "perdida" | "ofertas" | "costo" | "stock" | "agotadas"
+/* Filtro por destino en "Ofertas, combos y descuentos": "" (todas) | "farm" | "inst" | "ambos".
+   Es exacto: "Farmacias" muestra sólo las de farmacias; las de los dos públicos van en "Ambas". */
+let DEST_FILT="";
+window.setDestFilt=k=>{ DEST_FILT=(DEST_FILT===k?"":k); render(); };
+function destDe(o){ if(!window.EYGCanal) return null; const sug=canalSugerido(o); return EYGCanal.destino(o, sug&&sug.canal); }
+function chipsDestino(base){
+  const c={farm:0,inst:0,ambos:0}; let sin=0;
+  for(const o of base){ const d=destDe(o); if(c[d]!=null) c[d]++; else sin++; }
+  const chip=(k,txt,n)=>`<span class="fchip ${DEST_FILT===k?"on":""}" onclick="setDestFilt('${k}')">${txt} <b>${n}</b></span>`;
+  return `<div class="fbar">
+    ${chip("","Todas",base.length)}
+    ${chip("farm","💊 Farmacias",c.farm)}
+    ${chip("inst","🏥 Instituciones",c.inst)}
+    ${chip("ambos","🔀 Ambas",c.ambos)}
+    ${sin?`<span class="hint2" style="align-self:center">${sin} calculando a quién se le vende…</span>`:""}
+  </div>`;
+}
 let STOCK_FILT="";   // filtro por motivo en "por stock": "" | "liq" | "vence" | "muerto" | "clavado" | "discontinuada" | "sobre"
 let VER_OCULTAS=false;   // mostrar las oportunidades que el módulo filtra (sin stock / ya no aplican)
 let STOCK_MAX=5, STOCK_DESC={vence:0.25,sobre:0.15,muerto:0.20};   // config del módulo (Configuración)
@@ -893,8 +910,11 @@ function render(){
   const fRg=o=>(soloPerd?enPerdida(o,true):soloAgot?(o.tipo==='p'&&STOCK_T[o.target]!=null&&STOCK_T[o.target]<=0):true);
   const verOf=ver("ofertas")||soloPerd||soloAgot;
   // ---- y encima de todo, el buscador ----
-  const combos=combosT.filter(qOferta).filter(fOf), singles=singlesT.filter(qOferta).filter(fOf);
-  const rules=rulesT.filter(qRegla).filter(fRg);
+  const combos0=combosT.filter(qOferta).filter(fOf), singles0=singlesT.filter(qOferta).filter(fOf);
+  const rules0=rulesT.filter(qRegla).filter(fRg);
+  const fDest=o=>!DEST_FILT || destDe(o)===DEST_FILT;
+  const combos=combos0.filter(fDest), singles=singles0.filter(fDest), rules=rules0.filter(fDest);
+  const ofDestBar=(combos0.length+singles0.length+rules0.length) ? chipsDestino([...combos0,...singles0,...rules0]) : "";
   const nOf=combos.length+singles.length+rules.length, nOfT=combosT.length+singlesT.length+rulesT.length;
   const opos=opoOK.filter(qOpo), arch=archOK.filter(qOpo);
   const oStockBase=stkAll.filter(qOpo), oStock=oStockBase.filter(stockFiltOK), oStockArch=stkArch.filter(qOpo);
@@ -924,9 +944,10 @@ function render(){
     + (oStockArch.length?`<div class="subsec">📥 Archivadas (${cnt(oStockArch.length,stkArch.length)})</div><div class="lista">${oStockArch.map(o=>filaOpoStock(o,true)+edIn("stk:"+o.id)).join("")}</div>`:"");
   // ---- sección: ofertas y descuentos ----
   const editor = edIn("ofertas");
-  const ofBody = editor + (nOf
+  const ofBody = editor + ofDestBar + (nOf
     ? `<div class="lista">${combos.map(o=>filaOferta(o)+edIn("of:"+o.id)).join("")}${singles.map(o=>filaOferta(o)+edIn("of:"+o.id)).join("")}${rules.map(r=>filaRegla(r)+edIn("rg:"+r.id)).join("")}</div>`
-    : vacio(soloPerd?"Ninguna oferta está por debajo del costo. 👌"
+    : vacio(DEST_FILT?"No hay ofertas con ese destino. Tocá <b>Todas</b> para ver el resto."
+        :soloPerd?"Ninguna oferta está por debajo del costo. 👌"
         :soloAgot?"Ninguna oferta se quedó sin stock. 👌"
         :"Todavía no hay ofertas ni descuentos. Tocá <b>+ Nueva oferta o descuento</b>."));
   // si la fila que lo anclaba no se dibujó (una búsqueda o un filtro la dejó afuera), el
