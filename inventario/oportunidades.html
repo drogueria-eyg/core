@@ -495,6 +495,60 @@ async function cargar(){
   }catch(e){ cont.innerHTML='<div class="empty">No pude leer los datos: '+esc(e.message)+'</div>'; }
 }
 
+/* ===================== PLACAS DE LAS OFERTAS =====================
+   La placa es la imagen de la oferta que las comerciales comparten desde su WhatsApp (panel del
+   comercial: miniatura + botón que abre WhatsApp con la imagen y el texto). Se guarda en el
+   depósito público "ofertas-placas" de Supabase (cualquiera la ve con el enlace; sólo sube quien
+   tiene sesión en el Core) y la oferta guarda el enlace en "placa". El motor de precios no la
+   usa: guardarla no recalcula nada. Cada subida es un archivo nuevo (no se pisa), así nadie ve
+   una versión vieja guardada en caché. */
+const PLACAS_BUCKET="ofertas-placas";
+function placaMini(o){
+  return o.placa?`<a href="${esc(o.placa)}" target="_blank" rel="noopener" title="Ver la placa"><img src="${esc(o.placa)}" alt="Placa" loading="lazy" style="width:30px;height:40px;object-fit:cover;border-radius:5px;border:1px solid #dfe8e6;vertical-align:middle;margin-right:6px"></a>`:"";
+}
+function placaBtns(kind,o){
+  const id=esc(o.id);
+  return `<button class="btn ghost sm" onclick="placaElegir('${kind}','${id}')" title="La imagen que comparten las comerciales">🖼️ ${o.placa?"Cambiar placa":"Subir placa"}</button>`
+    +(o.placa?`<button class="btn ghost sm" onclick="placaQuitar('${kind}','${id}')">Quitar placa</button>`:"");
+}
+window.placaElegir=(kind,id)=>{
+  const inp=document.createElement("input"); inp.type="file"; inp.accept="image/jpeg,image/png,image/webp";
+  inp.onchange=()=>{ const f=inp.files&&inp.files[0]; if(f) placaSubir(kind,id,f); };
+  inp.click();
+};
+async function placaSubir(kind,id,file){
+  if(!/^image\/(jpeg|png|webp)$/.test(file.type)){ toast("La placa tiene que ser JPG, PNG o WEBP"); return; }
+  if(file.size>5*1024*1024){ toast("La imagen pesa más de 5 MB"); return; }
+  toast("Subiendo la placa…");
+  try{
+    const ext=file.type==="image/png"?"png":file.type==="image/webp"?"webp":"jpg";
+    const ruta=String(id).replace(/[^a-zA-Z0-9_-]/g,"_")+"-"+Date.now()+"."+ext;
+    const sb=EYG.supa().storage.from(PLACAS_BUCKET);
+    const {error}=await sb.upload(ruta,file,{contentType:file.type,upsert:false,cacheControl:"31536000"});
+    if(error) throw error;
+    await placaGuardar(kind,id,sb.getPublicUrl(ruta).data.publicUrl);
+    toast("Placa guardada ✓ Ya la ven las comerciales.");
+  }catch(e){ toast("No pude subir la placa: "+(e.message||e)); }
+}
+window.placaQuitar=async(kind,id)=>{
+  if(!confirm("¿Quitar la placa de esta oferta? Las comerciales vuelven a compartir sólo el texto.")) return;
+  try{ await placaGuardar(kind,id,null); toast("Placa quitada"); }catch(e){ toast("Error: "+(e.message||e)); }
+};
+// se relee el parámetro antes de escribir: así no se pisa un cambio hecho en otra pantalla
+async function placaGuardar(kind,id,url){
+  const poner=o=>{ if(!o) return; if(url) o.placa=url; else delete o.placa; };
+  if(kind==="rg"){
+    const arr=await leerSyncOf(); const o=arr.find(x=>x.id===id); if(!o) throw new Error("no encontré la oferta");
+    poner(o); await setParam(KEY_SYNC_OF, JSON.stringify(arr));
+    poner(SYNC_OF.find(x=>x.id===id));
+  }else{
+    const arr=JSON.parse(await getParam("eyg.ofertas","[]")||"[]")||[]; const o=arr.find(x=>x.id===id); if(!o) throw new Error("no encontré la oferta");
+    poner(o); await setParam("eyg.ofertas", JSON.stringify(arr));
+    poner(OFERTAS.find(x=>x.id===id));
+  }
+  render();
+}
+
 /* ¿Para quién es cada oferta? Lo sugiere lo vendido del producto en el último año. */
 async function cargarCanales(){
   if(!window.EYGCanal) return;
@@ -1043,11 +1097,12 @@ function filaOferta(o){
   const cols=(o.precioAntes?col("antes",money(o.precioAntes),"tach"):"")+col("precio",money(o.precio))
     +colMrg(m)+col("stock ofertado",o.stock?nfmt(o.stock):"—")+col("vigencia",o.hasta?fmtF(o.hasta):"sin límite");
   const acts=`<button class="btn ghost sm" onclick="rgEditarCombo('${o.id}')">Editar</button>`
+    +placaBtns("of",o)
     +`<button class="btn warn sm" onclick="eliminarOferta('${o.id}')">Eliminar</button>`;
   const nom=esc(o.titulo||its.map(i=>i.nombre).join(" + "));
   // en los combos nuevos se listan los renglones con su cantidad; en los viejos, los productos sueltos
   const detalle = lin.length ? lin.map(l=>l.qty+" × "+l.nombre).join(" · ") : its.map(i=>i.nombre).join(" + ");
-  const meta=(esCombo(o)?"":catBadge(o._cat))+chips+(n?` <span>${esc(detalle)}</span>`:"");
+  const meta=placaMini(o)+(esCombo(o)?"":catBadge(o._cat))+chips+(n?` <span>${esc(detalle)}</span>`:"");
   return fila("of"+(m!=null&&m<0?" mala":"")+(ag||o._venc?" gris":""), nom, meta, cols, acts);
 }
 
@@ -1227,8 +1282,9 @@ function filaRegla(o){
     +col("vigencia",o.hasta?fmtF(o.hasta):"sin límite");
   const acts=`<button class="btn ghost sm" onclick="rgEditar('${esc(o.id)}')">Editar</button>`
     +`<button class="btn ghost sm" onclick="rgPausar('${esc(o.id)}')">${o.pausada?"Reanudar":"Pausar"}</button>`
+    +placaBtns("rg",o)
     +`<button class="btn warn sm" onclick="rgEliminar('${esc(o.id)}')">Eliminar</button>`;
-  const meta=(o.tipo==='p'?catBadge(o._cat)+(o._sku?esc(o._sku)+" ":""):"")+chips+ofAlertaFila(o);
+  const meta=placaMini(o)+(o.tipo==='p'?catBadge(o._cat)+(o._sku?esc(o._sku)+" ":""):"")+chips+ofAlertaFila(o);
   return fila("of"+(m!=null&&m<0?" mala":"")+((ag||st.c!=='act')?" gris":""), esc(o.targetName||("#"+o.target)), meta, cols, acts);
 }
 
@@ -1546,7 +1602,7 @@ function rgDestinoHTML(){
         ${opt("","Automático (según las ventas)")}${opt("farm","💊 Farmacias")}${opt("inst","🏥 Instituciones")}${opt("ambos","🔀 Farmacias e instituciones")}
       </select>
       <span class="hint2" style="margin:0">Sugerido: ${sugTxt}</span>
-    </div>${aviso}</div>`;
+    </div>${aviso}${d.placa?`<div class="hint2" style="margin-top:6px">🖼️ Esta oferta tiene placa. Si cambiás el precio o la vigencia, subí una placa nueva desde la fila: la que está muestra los datos de antes.</div>`:""}</div>`;
 }
 /* Una oferta de CATEGORÍA toca muchos productos a la vez: se traen una vez, con su costo
    efectivo, su piso y lo que hoy publican, para poder decir ANTES de aplicar cuántos perforan. */
@@ -1805,6 +1861,7 @@ window.rgGuardar=async()=>{
     perforar:false };   // sólo se autoriza confirmando el cartel, nunca de antemano
   // destino: sólo se guarda si se eligió a mano; si no, queda el sugerido por las ventas (se recalcula solo)
   if(d.destino) rule.destino=d.destino;
+  if(d.placa) rule.placa=d.placa;   // la placa no se pierde al editar la oferta
   // ÉTICOS · PRECIO ÚNICO: el descuento se define sobre el PVP → lo convertimos a un PRECIO FIJO
   // limpio. Así el motor fija ese precio y el panel/orden muestran el descuento contra el PVP.
   // ÉTICOS · ESCALERA (pisa): se deja como %/monto y el motor lo aplica a cada tramo (como el resto).

@@ -272,6 +272,9 @@
   .of-venc{font-size:10.5px;color:#f2d38a;background:rgba(229,169,59,.14);border:1px solid rgba(229,169,59,.3);padding:2px 8px;border-radius:20px;align-self:flex-start}
   .of-wa{display:flex;align-items:center;justify-content:center;gap:6px;background:var(--wa);color:#053b38;font-weight:800;font-size:12.5px;padding:9px;border-radius:10px;text-decoration:none}
   .of-wa:hover{filter:brightness(1.05)}
+  .of-placa{display:block;align-self:center;width:96px;height:128px;object-fit:cover;border-radius:9px;margin:0 auto 10px;cursor:zoom-in;box-shadow:0 3px 12px rgba(0,0,0,.3);background:#fff}
+  .placa-ov{position:fixed;inset:0;z-index:10050;background:rgba(5,30,28,.82);display:flex;align-items:center;justify-content:center;padding:18px;cursor:zoom-out}
+  .placa-ov img{max-width:min(520px,100%);max-height:92vh;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.5)}
   .of-card.hot{border-color:rgba(255,180,90,.65);box-shadow:0 0 0 1px rgba(255,180,90,.45),0 6px 22px rgba(255,140,60,.2)}
   .of-card.hot .of-wa{box-shadow:0 0 0 2px rgba(255,180,90,.55)}
   .of-fire{display:inline-block;animation:ofFire 1.15s ease-in-out infinite;transform-origin:center}
@@ -3468,6 +3471,7 @@ function ofertasHTML(){
     const s=SC[i], hot=hotIds.has(o.id), rendPct=s.env>0?Math.round(s.conv*100):null;
     const rendCls=rendPct==null?'':(rendPct>=40?'alta':rendPct>=15?'media':'baja');
     return `<div class="of-card${hot?' hot':''}">
+      ${o.placa?`<img class="of-placa" src="${esc(o.placa)}" alt="Placa de la oferta" loading="lazy" onclick="ofVerPlaca('${(o.id||'').replace(/'/g,'')}')" title="Ver la placa">`:''}
       <div class="of-top"><span class="of-name">${esc(tit)}</span>${badge}</div>
       <div class="of-prod">${o._info?esc(o._alcance||'Descuento en la categoría'):((items&&items!==tit)?esc(items):'&nbsp;')}</div>
       <div class="of-price">${o._info?`<span class="of-new" style="font-size:14px">🏷️ Descuento aplicado</span>`:`${o.precioAntes>o.precio?`<span class="of-old">${money(o.precioAntes)}</span>`:''}<span class="of-new">${money(o.precio)}</span>`}</div>
@@ -3482,7 +3486,7 @@ function ofertasHTML(){
       ${envN?`<div class="of-shared">📤 la compartiste ${envN}${envN===1?' vez':' veces'} este mes</div>`:''}
       <div class="of-actions">
         <span class="of-venc">⏳ ${venc}</span>${ofDestTxt(o)}
-        <a class="of-wa" href="https://api.whatsapp.com/send?text=${encodeURIComponent(ofertaMsg(o))}" target="_blank" rel="noopener" onclick="confirmarCompartir('${(o.id||'').replace(/'/g,'')}')">${hot?'<span class="of-fire">🔥</span> ':''}Compartir por WhatsApp</a>
+        <a class="of-wa" href="https://api.whatsapp.com/send?text=${encodeURIComponent(ofertaMsg(o))}" target="_blank" rel="noopener" onclick="${o.placa?`return ofCompartirPlaca(event,'${(o.id||'').replace(/'/g,'')}')`:`confirmarCompartir('${(o.id||'').replace(/'/g,'')}')`}">${hot?'<span class="of-fire">🔥</span> ':''}Compartir por WhatsApp</a>
       </div>
     </div>`;
   }).join("");
@@ -3562,7 +3566,7 @@ async function normalizarSync(sync){
     // fecha de creación: el id de sync es "of<timestamp ms>" → así el conteo cuenta
     // clientes DESDE que se publicó la oferta, no de los últimos 30 días.
     const mts=/^of(\d{13})$/.exec(o.id||""); const creada=mts?new Date(+mts[1]).toISOString().slice(0,19).replace("T"," "):"";
-    const com={ id:"sync:"+o.id, tipo:"oferta", titulo:o.targetName||("#"+o.target),
+    const com={ id:"sync:"+o.id, tipo:"oferta", titulo:o.targetName||("#"+o.target), placa:o.placa||"",
       stock:o.stock||0, hasta:o.hasta||"", nota:"", creada, _off:ofTxtSync(o) };
     if(o.tipo!=="p") return {...com, items:[], precio:0, precioAntes:0, _info:true,
       _alcance:"📂 Descuento en toda la línea"};
@@ -3636,6 +3640,7 @@ async function cargarOfertas(ids){
       if(sm) OFERTAS=OFERTAS.filter(o=>!EYG.ofAgotada(o,sm));
     }catch(e){}
     try{ await marcarDestinos(OFERTAS, todasSync); }catch(e){}
+    placasPrecargar();   // en segundo plano: para compartir la imagen en el mismo toque
 
     // ---- lo que puntúa: vigentes + vencidas + dadas de baja (historial), sin repetir ----
     const hist=(JSON.parse(rawHist||"[]")||[]).filter(o=>o && o.id);
@@ -4181,6 +4186,53 @@ async function registrarEnvio(id, tipo){
 /* Al compartir una OFERTA (botón de la tarjeta): abre WhatsApp y pide confirmar.
    Sólo cuenta como "enviada" si el comercial confirma. Se registra en su propio
    partner con el marcador [EyGOFENV] para contarlas por mes (puntaje). */
+/* ---- Compartir la oferta CON su placa desde el WhatsApp de la comercial ----
+   En el celular (y en las PC que lo permiten) se abre el menú de compartir del sistema con la
+   imagen y el texto juntos: elige WhatsApp y la farmacia, y sale todo en un solo mensaje. Las
+   imágenes se bajan antes, en segundo plano, porque el celular sólo deja compartir si se hace
+   en el mismo toque. Donde no se puede compartir un archivo (WhatsApp Web en algunas PC), la
+   placa queda copiada para pegarla con Ctrl+V y se abre WhatsApp con el texto. */
+const PLACA_FILE={};
+async function placasPrecargar(){
+  for(const o of OFERTAS){
+    if(!o.placa || PLACA_FILE[o.id]) continue;
+    try{
+      const b=await (await fetch(o.placa)).blob();
+      const ext=(b.type.split("/")[1]||"jpg").replace("jpeg","jpg");
+      PLACA_FILE[o.id]=new File([b],"oferta-eyg."+ext,{type:b.type||"image/jpeg"});
+    }catch(e){}
+  }
+}
+window.ofVerPlaca=id=>{
+  const o=OFERTAS.find(x=>x.id===id); if(!o||!o.placa) return;
+  const ov=document.createElement("div"); ov.className="placa-ov"; ov.onclick=()=>ov.remove();
+  ov.innerHTML=`<img src="${esc(o.placa)}" alt="Placa de la oferta">`; document.body.appendChild(ov);
+};
+async function placaAlPortapapeles(file){
+  // el portapapeles sólo acepta PNG: se convierte
+  const bmp=await createImageBitmap(file); const c=document.createElement("canvas"); c.width=bmp.width; c.height=bmp.height;
+  c.getContext("2d").drawImage(bmp,0,0);
+  const png=await new Promise(r=>c.toBlob(r,"image/png"));
+  await navigator.clipboard.write([new ClipboardItem({"image/png":png})]);
+}
+window.ofCompartirPlaca=(ev,id)=>{
+  const o=OFERTAS.find(x=>x.id===id); if(!o) return true;
+  const f=PLACA_FILE[id], texto=ofertaMsg(o);
+  if(f && navigator.canShare && navigator.canShare({files:[f]})){
+    ev.preventDefault();
+    navigator.share({files:[f], text:texto})
+      .then(()=>confirmarCompartir(id))
+      .catch(err=>{ if(err && err.name==="AbortError") return; window.open("https://api.whatsapp.com/send?text="+encodeURIComponent(texto),"_blank"); confirmarCompartir(id); });
+    return false;
+  }
+  // sin menú de compartir: la placa al portapapeles y WhatsApp con el texto (sigue el enlace)
+  if(f && navigator.clipboard && window.ClipboardItem){
+    placaAlPortapapeles(f).then(()=>toast("🖼️ La placa quedó copiada: en el chat pegala con Ctrl+V")).catch(()=>{});
+  }else if(o.placa){ window.open(o.placa,"_blank"); toast("Guardá la placa y adjuntala en el chat"); }
+  confirmarCompartir(id);
+  return true;
+};
+
 function confirmarCompartir(ofId){
   const o=OFERTAS.find(x=>x.id===ofId); const tit=o?(o.titulo||ofItems(o)||"la oferta"):"la oferta";
   let el=document.getElementById("waconfirm");
