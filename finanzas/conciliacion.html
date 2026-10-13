@@ -748,7 +748,7 @@ function render(){
     /* Los cuadros de confirmación y los paneles de trabajo van PRIMERO: el botón que
        los abre lleva el scroll al tope, así que si quedan debajo de los KPIs y del
        encabezado de cobranzas no se ven, y parece que el botón no hizo nada. */
-    panelConfirmar()+ panelDirecto()+ panelMasivo()+ panelTransf()+ panelResolver()+ panelAsignar()+
+    panelConfirmar()+ panelDirecto()+ panelMasivo()+ panelTransf()+ panelCto()+ panelCtos()+ panelCarga()+ panelResolver()+ panelAsignar()+
     avisoValidacion()+
     kpis(M,nuevos,pendConc,cerrados,listos,dudas)+
     composicion(porTipo)+
@@ -998,7 +998,7 @@ function panelAcciones(nuevos,pendConc,cerrados,listos,dudas){
   /* Las que ya están cargadas, sabemos de quién son, y les falta el contacto. */
   const sinCto = ST.movs.filter(m=>m.yaEsta && !m.yaEsta.partner_id && m.cliente && abierto(m));
   const bContactos = sinCto.length
-    ? '<button class="btn'+((nuevos.length||listos.length)?" gh":"")+'" onclick="accionContactos()" '+(t?"disabled":"")+'>'+
+    ? '<button class="btn'+((nuevos.length||listos.length)?" gh":"")+'" onclick="pedirConfirmarCtos()" '+(t?"disabled":"")+'>'+
       'Poner el contacto a '+sinCto.length+' línea'+(sinCto.length===1?"":"s")+'</button>' : "";
 
   if(!abiertos) return '<div class="aviso ok">✔️ <div><b>Este día ya está cerrado.</b> '+
@@ -1009,7 +1009,7 @@ function panelAcciones(nuevos,pendConc,cerrados,listos,dudas){
      ya conciliada. En esta base el 99,5% de los cobros lo tiene. */
   const mudos = nuevos.filter(m=>!m.cliente && m.importe>0 && m.tipo!=="impuesto" && m.tipo!=="cargo");
   const bCargar = nuevos.length
-    ? '<button class="btn" onclick="accionCargar()" '+(t?"disabled":"")+'>'+(t?'<span class="spin"></span> ':"")+
+    ? '<button class="btn" onclick="pedirConfirmarCarga()" '+(t?"disabled":"")+'>'+(t?'<span class="spin"></span> ':"")+
       'Cargar los '+nuevos.length+' movimientos nuevos</button>' : "";
   const bResolver = listos.length
     ? '<button class="btn'+(nuevos.length?" gh":"")+'" onclick="pedirConfirmarMasivo()" '+(t?"disabled":"")+'>'+(t&&!nuevos.length?'<span class="spin"></span> ':"")+
@@ -1113,6 +1113,7 @@ async function ponerContactoEnOdoo(lineaId, moveId, partnerId, ctaBanco){
 }
 
 window.aplicarContacto=async i=>{
+  ST.cto=null;
   const m=ST.movs[i]; if(!m||!m.yaEsta||!m.cliente||ST.trabajando) return;
   const B=BANCOS[ST.banco];
   ST.trabajando=true; render();
@@ -1132,6 +1133,7 @@ window.aplicarContacto=async i=>{
    su asiento a borrador y lo vuelve a publicar, y hacer eso en paralelo sobre el mismo
    diario es pedir problemas. Si una falla se sigue con las demás y se dice cuál fue. */
 window.accionContactos=async ()=>{
+  ST.ctos=null;
   if(ST.trabajando) return;
   const B=BANCOS[ST.banco];
   const lista=ST.movs.filter(m=>m.yaEsta && !m.yaEsta.partner_id && m.cliente && abierto(m));
@@ -1193,7 +1195,7 @@ function accionDe(m,i){
      y volviéndolo a publicar. Se ofrece sólo en las líneas sin conciliar: si estuviera
      conciliada habría que romper y rearmar la conciliación, y eso no va en un botón. */
   if(m.yaEsta && !m.yaEsta.partner_id && m.cliente)
-    return '<button class="btn sm" onclick="aplicarContacto('+i+')" title="Escribe «'+esc(m.cliente.nombre)+
+    return '<button class="btn sm" onclick="pedirConfirmarCto('+i+')" title="Escribe «'+esc(m.cliente.nombre)+
       '» como contacto de esta línea. El asiento pasa a borrador, se escribe y se vuelve a publicar; '+
       'si la contrapartida estaba imputada a una cuenta, se la devuelve a esa cuenta.">Poner contacto</button>';
   if(m.cands.length>1) return '<select class="cand" id="sel'+i+'"><option value="">Elegí cuál…</option>'+
@@ -1328,7 +1330,120 @@ async function reAnalizar(){
 
 /* Carga las líneas que faltan. NUNCA pisa lo que ya está: los que tienen
    `yaEsta` se saltean, y el estado de cuenta del día se reusa si existe. */
+/* ---------- LOS QUE FALTABAN: CONTACTO Y CARGA ---------------------------------------
+   Regla del módulo: nada se escribe en Odoo sin decir antes qué se va a hacer. Estos
+   tres no conciliaban, pero sí escriben: poner el contacto toca un asiento publicado
+   (hay que pasarlo a borrador y volver a publicarlo) y cargar crea las líneas del
+   extracto. Ninguno es inocuo. */
+
+/* --- poner el contacto en UNA línea --- */
+window.pedirConfirmarCto=(i)=>{ ST.cto=i; render(); irAlCuadro(); };
+window.cerrarCto=()=>{ ST.cto=null; render(); };
+function panelCto(){
+  if(ST.cto===null||ST.cto===undefined) return "";
+  const m=ST.movs[ST.cto]; if(!m||!m.cliente) return "";
+  const comoLoSupo = m.porMano?"lo elegiste a mano"
+    : m.porPadron?"el CUIT "+(m.cuit||"")+" figura en su ficha"
+    : m.porNombre?"el nombre del titular coincide con el de su ficha"
+    : m.porMapa?"ese CUIT ya pagó antes por este cliente"
+    : "quedó asignado al analizar el movimiento";
+  return '<div class="panel resolver"><h3>👁️ Esto es lo que se va a hacer</h3>'+
+    '<div class="sub">Nada se escribe en Odoo hasta que confirmes.</div>'+
+    '<div class="movres"><span>'+esc(m.fecha)+'</span><b class="'+(m.importe<0?"neg":"pos")+'">'+money(m.importe)+'</b>'+
+      '<span class="cp">'+esc(String(m.concepto).slice(0,70))+'</span></div>'+
+    '<ol class="pasos">'+
+      '<li>Se escribe <b>'+esc(m.cliente.nombre)+'</b> como contacto de esta línea del banco. '+
+        '<span class="muted">Por qué se le asignó: '+esc(comoLoSupo)+'.</span></li>'+
+      '<li>Odoo no deja cambiar el contacto de un asiento publicado, así que el asiento '+
+        '<b>pasa a borrador, se escribe y se vuelve a publicar</b>. Los importes no cambian.</li>'+
+      '<li>Al hacer eso, Odoo <b>regenera la contrapartida</b> y la manda a la cuenta por defecto del diario. '+
+        'Si estaba imputada a otra cuenta, se la devuelve a la que tenía.</li>'+
+      '<li>Se comprueba que el asiento haya quedado <b>idéntico</b>: si algo cambió además del contacto, se frena y avisa.</li>'+
+    '</ol>'+
+    '<div class="aviso info" style="margin:11px 0 0">ℹ️ <div>Esto <b>no concilia nada</b>: sólo completa de quién es el movimiento. '+
+      'Conviene hacerlo <b>antes</b> de conciliar, porque en una línea ya conciliada Odoo no deja tocar el contacto.</div></div>'+
+    '<div class="acciones" style="margin:13px 0 0">'+
+      '<button class="btn" onclick="aplicarContacto('+ST.cto+')" '+(ST.trabajando?"disabled":"")+'>'+
+        (ST.trabajando?'<span class="spin"></span> ':"")+'Confirmar y escribir el contacto</button>'+
+      '<button class="btn gh" onclick="cerrarCto()">Cancelar</button>'+
+    '</div></div>';
+}
+
+/* --- poner el contacto en VARIAS líneas --- */
+window.pedirConfirmarCtos=()=>{ ST.ctos=true; render(); irAlCuadro(); };
+window.cerrarCtos=()=>{ ST.ctos=null; render(); };
+function panelCtos(){
+  if(!ST.ctos) return "";
+  const lista=ST.movs.filter(m=>m.yaEsta && !m.yaEsta.partner_id && m.cliente && abierto(m));
+  if(!lista.length) return '<div class="panel resolver"><h3>👁️ No queda ninguna línea sin contacto</h3>'+
+    '<div class="acciones"><button class="btn gh" onclick="cerrarCtos()">Cerrar</button></div></div>';
+  return '<div class="panel resolver"><h3>👁️ Se le va a poner el contacto a '+lista.length+' línea'+(lista.length===1?"":"s")+'</h3>'+
+    '<div class="sub">Nada se escribe hasta que confirmes. En cada una: el asiento pasa a borrador, se escribe el contacto '+
+    'y se vuelve a publicar, devolviendo la contrapartida a la cuenta que tenía. <b>No se concilia nada.</b> '+
+    'Si alguna falla, se anota en el registro y sigue con el resto.</div>'+
+    '<div class="tw"><table><thead><tr><th>Fecha</th><th class="r">Importe</th><th>Contacto que se le pone</th><th>Por qué</th></tr></thead><tbody>'+
+      lista.slice(0,50).map(function(m){
+        const por = m.porMano?"elegido a mano" : m.porPadron?"CUIT en su ficha" : m.porNombre?"nombre del titular"
+                  : m.porMapa?"ese CUIT ya pagó antes" : "del análisis";
+        return '<tr><td class="muted">'+esc(m.fecha)+'</td><td class="r"><b>'+money(m.importe)+'</b></td>'+
+          '<td>'+esc(String(m.cliente.nombre).slice(0,34))+'</td><td class="muted">'+esc(por)+'</td></tr>';
+      }).join("")+
+      (lista.length>50?'<tr><td colspan="4" class="muted">… y '+(lista.length-50)+' más</td></tr>':"")+
+    '</tbody></table></div>'+
+    '<div class="acciones" style="margin:13px 0 0">'+
+      '<button class="btn" onclick="accionContactos()" '+(ST.trabajando?"disabled":"")+'>'+
+        (ST.trabajando?'<span class="spin"></span> ':"")+'Confirmar y escribir los '+lista.length+'</button>'+
+      '<button class="btn gh" onclick="cerrarCtos()">Cancelar</button>'+
+    '</div></div>';
+}
+
+/* --- cargar los movimientos nuevos a Odoo --- */
+window.pedirConfirmarCarga=()=>{ ST.carga=true; render(); irAlCuadro(); };
+window.cerrarCarga=()=>{ ST.carga=null; render(); };
+function panelCarga(){
+  if(!ST.carga) return "";
+  const B=BANCOS[ST.banco];
+  const nuevos=ST.movs.filter(m=>!m.yaEsta);
+  if(!nuevos.length) return '<div class="panel resolver"><h3>👁️ No hay movimientos nuevos</h3>'+
+    '<div class="sub">Todo lo que trae el archivo ya está en Odoo.</div>'+
+    '<div class="acciones"><button class="btn gh" onclick="cerrarCarga()">Cerrar</button></div></div>';
+  const dias={}; nuevos.forEach(m=>{(dias[m.fecha]=dias[m.fecha]||[]).push(m);});
+  const fechas=Object.keys(dias).sort();
+  const entra=nuevos.filter(m=>m.importe>0), sale=nuevos.filter(m=>m.importe<0);
+  const mudos=nuevos.filter(m=>!m.cliente && m.importe>0 && m.tipo!=="impuesto" && m.tipo!=="cargo");
+  return '<div class="panel resolver"><h3>👁️ Se van a cargar '+nuevos.length+' movimientos a Odoo</h3>'+
+    '<div class="sub">Nada se escribe hasta que confirmes. Se carga <b>todo</b> el extracto, no sólo lo que da trabajo: '+
+    'si falta un movimiento, el saldo del banco en Odoo no cuadra con el real.</div>'+
+    '<ol class="pasos">'+
+      '<li>Por cada día se usa el <b>estado de cuenta</b> de '+esc(B.nombre)+' si ya existe, y si no se crea uno nuevo '+
+        'con el saldo inicial y final que dice el propio extracto.</li>'+
+      '<li>Se crean las '+nuevos.length+' líneas con su fecha, importe, concepto y, cuando se sabe, el contacto.</li>'+
+      '<li><b>No se concilia nada todavía</b>: eso queda para los botones de resolver.</li>'+
+    '</ol>'+
+    '<div class="tw"><table><thead><tr><th>Día</th><th class="r">Movimientos</th><th class="r">Entra</th><th class="r">Sale</th></tr></thead><tbody>'+
+      fechas.map(function(d){ const g=dias[d];
+        const e=g.filter(m=>m.importe>0).reduce((s,m)=>s+m.importe,0);
+        const s=g.filter(m=>m.importe<0).reduce((su,m)=>su+m.importe,0);
+        return '<tr><td><b>'+esc(d)+'</b></td><td class="r muted">'+g.length+'</td>'+
+          '<td class="r">'+(e?money(e):"")+'</td><td class="r">'+(s?money(s):"")+'</td></tr>';
+      }).join("")+
+      '<tr><td><b>Total</b></td><td class="r"><b>'+nuevos.length+'</b></td>'+
+        '<td class="r"><b>'+money(entra.reduce((s,m)=>s+m.importe,0))+'</b></td>'+
+        '<td class="r"><b>'+money(sale.reduce((s,m)=>s+m.importe,0))+'</b></td></tr>'+
+    '</tbody></table></div>'+
+    (mudos.length?'<div class="aviso warn" style="margin:11px 0 0">⚠️ <div><b>'+mudos.length+' cobro'+(mudos.length===1?"":"s")+
+      ' va'+(mudos.length===1?"":"n")+' a entrar sin contacto.</b> Después de cargarlos, escribirlo es un trámite '+
+      '(el asiento tiene que pasar a borrador y volver a publicarse), y si para entonces ya están conciliados hay que '+
+      'rearmar la conciliación. Conviene resolverlos antes con <b>¿De quién es?</b>.</div></div>':"")+
+    '<div class="acciones" style="margin:13px 0 0">'+
+      '<button class="btn" onclick="accionCargar()" '+(ST.trabajando?"disabled":"")+'>'+
+        (ST.trabajando?'<span class="spin"></span> ':"")+'Confirmar y cargar los '+nuevos.length+'</button>'+
+      '<button class="btn gh" onclick="cerrarCarga()">Cancelar</button>'+
+    '</div></div>';
+}
+
 window.accionCargar=()=>conTrabajo(async()=>{
+  ST.carga=null;   /* el cuadro ya cumplió */
   const B=BANCOS[ST.banco];
   const nuevos=ST.movs.filter(m=>!m.yaEsta);
   if(!nuevos.length){ log("No hay movimientos nuevos para cargar"); return; }
