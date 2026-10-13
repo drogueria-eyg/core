@@ -335,7 +335,7 @@ window.EYGHome = (function(){
       return {ok:true, dia,
         hoy:neto(HOY,HOY), sem:neto(SEM_INI), mes:neto(MES_INI), ano:neto(ANO_INI),
         mesAnt:neto(addM(MES_INI,-1), addD(MES_INI,-1)),
-        ticketMes: facMes.n?facMes.m/facMes.n:0, nFacMes:facMes.n};
+        ticketMes: facMes.n?neto(MES_INI)/facMes.n:0, nFacMes:facMes.n};
     }catch(e){ return {ok:false}; }
   }
 
