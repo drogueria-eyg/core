@@ -1814,7 +1814,36 @@ async function cargarFacturas(pid){
       ["full_reconcile_id","=",false],[sale(m)?"credit":"debit",">",0]],
      ["move_id","date","date_maturity","debit","credit","amount_residual"]],{limit:0,order:"date_maturity,date"});
   RES.facturas=ls.filter(l=>Math.abs(l.amount_residual)>0.005);
+  sugerirTildes();
   RES.buscando=false; render();
+}
+
+/* Deja tildadas las facturas que suman EXACTO lo que entró, para no hacer buscar a mano
+   lo que la cuenta ya dice. La regla que evita el error: se tilda SÓLO si la respuesta es
+   una sola. Si hay dos combinaciones distintas que dan el mismo total, elegir una sería
+   adivinar, así que no se tilda nada y se avisa. Tildar y destildar sigue siendo libre, y
+   el cuadro de confirmación muestra igual contra qué va a ir cada peso. */
+function sugerirTildes(){
+  RES.auto=0; RES.ambiguo=0;
+  const m=ST.movs[RES.i]; if(!m) return;
+  const objetivo=Math.round(Math.abs(m.importe)*100);
+  /* en centavos enteros: sumar decimales arrastra errores y haría fallar el == */
+  const F=RES.facturas.map(f=>({id:f.id, c:Math.round(Math.abs(f.amount_residual)*100)}));
+  if(!F.length || F.length>60) return;          /* con demasiadas, no vale la pena probar */
+  const hallados=[];
+  const anotar=a=>{ if(hallados.length<3) hallados.push(a.map(x=>x.id)); };
+  for(let a=0;a<F.length && hallados.length<3;a++){
+    if(F[a].c===objetivo) anotar([F[a]]);
+    for(let b=a+1;b<F.length && hallados.length<3;b++){
+      const dos=F[a].c+F[b].c;
+      if(dos===objetivo){ anotar([F[a],F[b]]); continue; }
+      if(dos>objetivo) continue;
+      for(let c=b+1;c<F.length && hallados.length<3;c++)
+        if(dos+F[c].c===objetivo) anotar([F[a],F[b],F[c]]);
+    }
+  }
+  if(hallados.length===1){ RES.sel=new Set(hallados[0]); RES.auto=hallados[0].length; }
+  else if(hallados.length>1){ RES.ambiguo=hallados.length; }
 }
 window.buscarCliente=async(txt)=>{
   if(!txt||txt.length<3){ RES.opciones=null; render(); return; }
@@ -1950,7 +1979,15 @@ function panelResolver(){
       cuerpo+='<div class="aviso warn" style="margin:10px 0 0">⚠️ <div><b>Este '+LADO(m).quien+' no tiene comprobantes abiertos.</b> '+
         'El movimiento se puede registrar igual: queda <b>a cuenta</b> y se imputa cuando haya factura.</div></div>';
     } else {
-      cuerpo+='<div class="sub" style="margin:11px 0 7px">Tildá qué facturas cancela este '+(sale(m)?"pago":"cobro")+'. '+
+      cuerpo+=(RES.auto
+        ? '<div class="aviso info" style="margin:11px 0 7px">✓ <div>Dejé <b>tildado'+(RES.auto===1?"":"s")+' '+RES.auto+
+          ' comprobante'+(RES.auto===1?"":"s")+'</b> porque suma'+(RES.auto===1?"":"n")+' <b>exacto</b> lo que entró, y es la '+
+          'única combinación que da ese importe. <b>Revisalo</b>: podés tildar y destildar lo que quieras antes de seguir.</div></div>'
+        : RES.ambiguo
+          ? '<div class="aviso warn" style="margin:11px 0 7px">⚠️ <div>Hay <b>más de una combinación</b> de facturas que da '+
+            'exactamente lo que entró, así que no tildé ninguna: elegir por vos sería adivinar. Fijate cuál corresponde.</div></div>'
+          : '')+
+        '<div class="sub" style="margin:11px 0 7px">Tildá qué facturas cancela este '+(sale(m)?"pago":"cobro")+'. '+
         'Las más viejas primero, que es como se imputa normalmente.</div>'+
         '<div class="facs">'+RES.facturas.map(f=>{
           const on=RES.sel.has(f.id);
