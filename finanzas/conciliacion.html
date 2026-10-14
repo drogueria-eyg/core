@@ -52,6 +52,15 @@
   .selbanco select{font-family:inherit;font-size:13px;font-weight:700;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);cursor:pointer}
   .selbanco .cta-num{font-size:11.5px;color:var(--gris);font-weight:600;cursor:help}
   /* el banco conectado: no necesita archivo, se trae con un botón */
+  /* Los cuadros de trabajo salen como ventanita sobre la página. Antes eran paneles
+     comunes dibujados arriba de todo: había que subir para verlos y volver a bajar
+     para seguir. Ahora aparecen donde uno está mirando. */
+  .modal{position:fixed;inset:0;background:rgba(10,38,36,.45);z-index:60;display:flex;
+    align-items:flex-start;justify-content:center;padding:22px 16px;overflow:auto}
+  .modal-caja{width:min(940px,100%);margin:auto}
+  .modal-caja .panel{box-shadow:0 20px 56px rgba(0,0,0,.28);margin:0 0 12px}
+  body.con-modal{overflow:hidden}
+  @media (max-width:700px){ .modal{padding:10px 8px} }
   .conexion{margin-top:12px;padding:13px 15px;background:var(--infobg);border:1px solid #C6D8F8;border-radius:10px}
   .conexion .cx-t{font-size:12.5px;color:#2E5AA8;line-height:1.55;margin-bottom:11px}
   .conexion .cx-e{font-size:11.5px;color:var(--gris);margin-top:10px;line-height:1.6}
@@ -748,7 +757,8 @@ const LADO = m => sale(m)
    ══════════════════════════════════════════════════════════════════════════ */
 function render(){
   const app=document.getElementById("app");
-  if(!ST.listo){ app.innerHTML=zonaCarga(); engancharDrop(); return; }
+  /* sin la quita, si se recarga la pantalla con un cuadro abierto el fondo queda trabado */
+  if(!ST.listo){ document.body.classList.remove("con-modal"); app.innerHTML=zonaCarga(); engancharDrop(); return; }
   const M=ST.movs;
   const nuevos  = M.filter(m=>!m.yaEsta);                          // no están en Odoo
   const pendConc= M.filter(m=>m.yaEsta&&!m.yaEsta.is_reconciled);  // están, pero sin conciliar
@@ -759,14 +769,18 @@ function render(){
   const listos=abiertos.filter(auto);
   const dudas =abiertos.filter(m=>!auto(m)&&(m.cands.length>1||m.cands.length===0&&EMPAREJA.indexOf(m.tipo)>=0||m.tipo==="otro"));
 
+  /* Todos los cuadros van dentro de una ventanita flotante: así salen donde uno está
+     parado y no hay que subir a buscarlos ni bajar de nuevo después. */
+  const hayCuadros = panelConfirmar()+ panelDirecto()+ panelMasivo()+ panelTransf()+ panelCto()+
+                     panelCtos()+ panelCarga()+ panelResolver()+ panelAsignar();
+  const cuadros = hayCuadros ? '<div class="modal"><div class="modal-caja">'+hayCuadros+'</div></div>' : "";
+  document.body.classList.toggle("con-modal", !!hayCuadros);
+
   app.innerHTML=
     zonaCarga()+
     (ST.error?'<div class="aviso bad" style="margin:12px 0 0">⛔ <div><b>No se pudo escribir en Odoo.</b><br>'+
       esc(ST.error)+'<br><span class="muted">No quedó nada a medias: si algo falla, no se escribe.</span></div></div>':"")+
-    /* Los cuadros de confirmación y los paneles de trabajo van PRIMERO: el botón que
-       los abre lleva el scroll al tope, así que si quedan debajo de los KPIs y del
-       encabezado de cobranzas no se ven, y parece que el botón no hizo nada. */
-    panelConfirmar()+ panelDirecto()+ panelMasivo()+ panelTransf()+ panelCto()+ panelCtos()+ panelCarga()+ panelResolver()+ panelAsignar()+
+    cuadros+
     avisoValidacion()+
     kpis(M,nuevos,pendConc,cerrados,listos,dudas)+
     composicion(porTipo)+
@@ -1973,11 +1987,9 @@ window.planAjuste=(v)=>{ if(ST.plan){ ST.plan.ajustar=(v==="1"); render(); } };
    si arriba había algo alto (la zona de carga, el encabezado de cobranzas), el cuadro
    quedaba fuera de pantalla: el botón parecía no hacer nada. */
 function irAlCuadro(){
-  setTimeout(function(){
-    const el=document.querySelector(".panel.resolver");
-    if(el && el.scrollIntoView) el.scrollIntoView({behavior:"smooth", block:"start"});
-    else window.scrollTo({top:0, behavior:"smooth"});
-  },30);
+  /* La ventanita ya aparece sobre la página: sólo hay que asegurarse de verla desde
+     arriba si es larga. La página de atrás no se mueve. */
+  setTimeout(function(){ const el=document.querySelector(".modal"); if(el) el.scrollTop=0; },30);
 }
 
 function panelConfirmar(){
@@ -2106,6 +2118,16 @@ window.ejecutarPlan=()=>conTrabajo(async()=>{
     await rpc("account.move.line","reconcile",[[tra.id,lRec.id]]);
     log("Conciliado con el movimiento del banco","o");
   }
+  /* Que el movimiento se vaya de la lista en el momento. Se relee su línea del extracto
+     y se actualiza en memoria: si quedó cruzada, el filtro de pendientes ya no la toma.
+     Antes seguía a la vista como si faltara hacerla, hasta que alguien apretaba
+     Actualizar — y daba la sensación de que no se había hecho nada. */
+  try{
+    const vl=await rpc("account.bank.statement.line","read",
+      [[m.yaEsta.id],["is_reconciled","partner_id","amount","date","to_check"]]);
+    if(vl.length) m.yaEsta=Object.assign({}, m.yaEsta, vl[0]);
+    if(m.yaEsta.is_reconciled) log("Listo: el movimiento sale de los pendientes","ok");
+  }catch(e){ /* si no se puede releer, se verá al actualizar: no es motivo de error */ }
   RES.i=null; RES.cliente=null; RES.facturas=[]; RES.sel=new Set(); ST.plan=null;
 });
 
