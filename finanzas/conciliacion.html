@@ -723,6 +723,22 @@ function abierto(m){ return !(m.yaEsta && m.yaEsta.is_reconciled); }
    es un cobro de un cliente. El panel de resolver es el mismo para los dos lados. */
 function sale(m){ return (m.importe||0) < 0; }
 const CTA_CLIENTES=52;
+/* Los métodos de pago son POR DIARIO. El "Manual" con id 20 es el del Credicoop y Odoo
+   rechaza un recibo del Macro que lo use: "el método de pago seleccionado no está
+   disponible para este pago". Estaban fijos en los del Credicoop, así que TODO cobro de
+   otro banco fallaba al crear el recibo — y como el error iba al registro del final,
+   parecía que el botón no hacía nada. Ahora se le preguntan al diario y se guardan. */
+const METODOS={};
+async function metodoDe(diario, tipo, code){
+  const k=diario+"|"+tipo+"|"+code;
+  if(METODOS[k]) return METODOS[k];
+  const r=await rpc("account.payment.method.line","search_read",
+    [[["journal_id","=",diario],["payment_type","=",tipo],["code","=",code]],["id","name"]],{limit:1});
+  if(!r.length) throw new Error("este banco no tiene método de pago \""+code+"\" para "+
+    (tipo==="inbound"?"cobros":"pagos")+" en Odoo: hay que configurárselo al diario");
+  return (METODOS[k]={id:r[0].id, nombre:r[0].name});
+}
+
 const LADO = m => sale(m)
   ? {cta:CTA_PROVEEDORES, tipo:"outbound", parte:"supplier", transit:CTA_PAGOS,   quien:"proveedor", doc:"orden de pago"}
   : {cta:CTA_CLIENTES,    tipo:"inbound",  parte:"customer", transit:CTA_RECIBOS, quien:"cliente",   doc:"recibo"};
@@ -745,6 +761,8 @@ function render(){
 
   app.innerHTML=
     zonaCarga()+
+    (ST.error?'<div class="aviso bad" style="margin:12px 0 0">⛔ <div><b>No se pudo escribir en Odoo.</b><br>'+
+      esc(ST.error)+'<br><span class="muted">No quedó nada a medias: si algo falla, no se escribe.</span></div></div>':"")+
     /* Los cuadros de confirmación y los paneles de trabajo van PRIMERO: el botón que
        los abre lleva el scroll al tope, así que si quedan debajo de los KPIs y del
        encabezado de cobranzas no se ven, y parece que el botón no hizo nada. */
@@ -1368,9 +1386,11 @@ function filasDe(M){
    ══════════════════════════════════════════════════════════════════════════ */
 async function conTrabajo(fn){
   if(ST.trabajando) return;
-  ST.trabajando=true; render();
+  ST.trabajando=true; ST.error=null; render();
   try{ await fn(); }
-  catch(e){ log("ERROR: "+(e.message||e),"e"); }
+  /* El error iba SÓLO al registro del final, abajo de todo: quien apretaba el botón
+     veía que no pasaba nada y no se enteraba de por qué. Ahora además queda arriba. */
+  catch(e){ ST.error=(e&&e.message)||String(e); log("ERROR: "+ST.error,"e"); }
   ST.trabajando=false;
   await reAnalizar();
 }
@@ -1934,7 +1954,7 @@ function planDeCobro(){
   const total=Math.abs(m.importe);
   const dif=Math.round((total-impu)*100)/100;
   return { m, L, B, elegidas, impu, total, dif,
-    metodo: sale(m) ? (m.tipo==="echeq" ? 22 : 21) : 20,
+    /* el id del método lo resuelve ejecutarPlan contra el diario: acá sólo el nombre */
     metodoNom: sale(m) ? (m.tipo==="echeq" ? "Cheques" : "Manual") : "Manual",
     fecha: ST.plan && ST.plan.fecha ? ST.plan.fecha : m.fecha,
     ajustar: ST.plan && ST.plan.ajustar!==undefined ? ST.plan.ajustar : (dif>0 && dif<=TOPE_AJUSTE) };
@@ -2047,7 +2067,7 @@ window.ejecutarPlan=()=>conTrabajo(async()=>{
   const L=LADO(m);
   /* Un e-cheq se paga CON CHEQUE, y ese método tiene su propia cuenta: usar Manual
      mandaría el asiento a otro lado. Es el molde de Fede (OP-X 7947, Dnm Farma). */
-  const metodo = sale(m) ? (m.tipo==="echeq" ? 22 : 21) : 20;
+  const metodo = (await metodoDe(B.diario, L.tipo, (sale(m)&&m.tipo==="echeq") ? "check_printing" : "manual")).id;
 
   const p=await rpc("account.payment","create",[[{
     partner_id:RES.cliente.id, journal_id:B.diario,
