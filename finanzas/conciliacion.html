@@ -767,7 +767,15 @@ function render(){
    que permite darse cuenta de que la conexión está "conectada" pero muda. */
 function bloqueConexion(B){
   const c=ST.conexion;
-  return '<div class="conexion">'+
+  const vg=ST.vigila, atraso=vg&&vg.habiles>=2;
+  return (atraso?'<div class="aviso '+(vg.habiles>=3?"bad":"warn")+'" style="margin:12px 0 0">'+(vg.habiles>=3?"⛔":"⚠️")+' <div><b>'+
+      esc(B.nombre)+' no trae movimientos desde el '+esc(vg.ultimo)+' ('+vg.habiles+' días hábiles).</b> '+
+      (vg.sinRespaldo?'Mientras tanto hay <b>'+vg.sinRespaldo+' cobro'+(vg.sinRespaldo===1?"":"s")+' ya cargado'+(vg.sinRespaldo===1?"":"s")+
+        ' contra este banco sin respaldo en el extracto</b>, así que movimientos hubo. ':'')+
+      'Que el vínculo diga <b>conectado</b> sólo quiere decir que Odoo guardó las credenciales, no que la sesión con el '+
+      'banco esté viva. Hay que volver a validarse en el home banking: en Odoo, <b>Contabilidad → Configuración → '+
+      'Conexiones bancarias → '+esc(B.nombre)+' → Actualizar credenciales</b>. <b>Eso lo tiene que hacer una persona.</b>'+
+      '</div></div>':"")+'<div class="conexion">'+
     '<div class="cx-t"><b>🔗 Traer del banco.</b> Si este banco tiene conexión en Odoo, los movimientos los pide '+
       'Odoo directamente y no hace falta ningún archivo. El botón busca la cuenta '+esc(B.cuentaBanco||"")+' entre las '+
       'que trajo el proveedor, la vincula al diario si hace falta, y pide lo nuevo. <b>Con la conexión andando, este '+
@@ -793,6 +801,32 @@ function bloqueConexion(B){
        '</div>'
       : "")+
     '</div>';
+}
+
+/* ---- Vigilancia de la conexión ----------------------------------------------
+   El corte de la sincronización es SILENCIOSO: el vínculo sigue diciendo "conectado",
+   el pedido termina sin error y no trae nada. Pasó con el Macro el 14/10/2026: cuatro
+   días sin un solo movimiento mientras se cargaban seis cobros de farmacias contra ese
+   mismo diario. Nadie se enteró porque el aviso aparecía sólo DESPUÉS de apretar el
+   botón. Así que ahora la pantalla lo mira sola al abrir. */
+async function vigilarBanco(){
+  const B=BANCOS[ST.banco]; if(!B||!B.diario) return;
+  try{
+    const u=await rpc("account.bank.statement.line","search_read",
+      [[["journal_id","=",B.diario]],["date"]],{limit:1, order:"date desc"});
+    if(!u.length){ ST.vigila=null; return; }
+    const ultimo=u[0].date;
+    /* días hábiles desde el último movimiento que mandó el banco (sin sábados ni domingos) */
+    let habiles=0;
+    const d=new Date(ultimo+"T00:00:00"), hoy=new Date(EYG.argToday()+"T00:00:00");
+    while(d<hoy){ d.setDate(d.getDate()+1); const w=d.getDay(); if(w!==0&&w!==6) habiles++; }
+    /* lo que ya se cargó contra este banco y el extracto todavía no respalda: eso es lo
+       que le da peso al aviso, porque prueba que hubo movimientos de verdad */
+    const sinRespaldo=await rpc("account.payment","search_count",
+      [[["journal_id","=",B.diario],["date",">",ultimo],["is_matched","=",false]]]);
+    ST.vigila={ultimo, habiles, sinRespaldo};
+    if(habiles>=2) render();
+  }catch(e){ ST.vigila=null; }
 }
 
 function zonaCarga(){
@@ -825,7 +859,7 @@ window.cambiarBanco=k=>{
   if(ST.movs.length && !confirm("Cambiar de banco descarta lo que subiste. ¿Seguimos?")){
     document.getElementById("selBanco").value=ST.banco; return;
   }
-  ST.banco=k; ST.movs=[]; ST.archivos=[]; ST.validacion=null; ST.listo=false; ST.mapaCuit={}; ST.logs=[]; render();
+  ST.banco=k; ST.movs=[]; ST.archivos=[]; ST.validacion=null; ST.listo=false; ST.mapaCuit={}; ST.logs=[]; ST.vigila=null; render(); vigilarBanco();
 };
 function engancharDrop(){
   const d=document.getElementById("drop"), f=document.getElementById("file"); if(!d||!f) return;
@@ -2518,6 +2552,7 @@ async function procesar(files){
 }
 
 EYG.guard(["finanzas","direccion","admin"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]}).then(function(){
+  vigilarBanco();
   render();
 });
 </script>
