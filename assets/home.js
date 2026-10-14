@@ -490,6 +490,7 @@ window.EYGHome = (function(){
       </div>
     </div>
     <div id="dz-aviso"></div>
+    <div id="dz-banco"></div>
     ${V.ventas?`<div id="dz-kpi" class="rise" style="animation-delay:.04s">${kpiSkel()}</div>`:""}
     ${V.salud?`<div id="dz-salud" class="cx" hidden></div>`:""}
     ${V.ventas?`<div id="dz-ritmo" class="cx rise" style="animation-delay:.06s">${cxSkel("📅 Ritmo del mes")}</div>`:""}
@@ -799,6 +800,68 @@ window.EYGHome = (function(){
 
   /* Puntaje: promedio ponderado SÓLO con los signos que llegaron. Los pesos se
      reparten entre ellos, así el número no se hunde por lo que todavía falta. */
+  /* ---- Vigilancia de la conexión con los bancos --------------------------------
+     Cuando la sincronización se corta no avisa nada: el vínculo sigue diciendo
+     "conectado" y el pedido termina sin error. Pasó cuatro días con el Macro y nadie
+     se enteró. Esto lo mira solo al entrar, y separa dos cosas para no gritar al pedo:
+
+       · CAÍDA PROBADA: hay cobros cargados contra ese banco con fecha POSTERIOR al
+         último movimiento del extracto. Si alguien cargó un cobro con el comprobante
+         en la mano y el banco no lo trajo, entonces faltan movimientos. Eso no admite
+         otra lectura, así que va en rojo.
+       · Sospecha: días hábiles sin movimientos y nada que lo pruebe. Bien puede ser
+         que no haya habido movimientos, así que avisa más flojo y no asusta.
+
+     El botón abre DERECHO el cuadro donde se ponen las claves del banco: son acciones
+     de Odoo hechas a medida, porque los botones propios del vínculo están ocultos
+     (Odoo deja vacío su campo provider_data y de ahí dependen). Si se rehace una
+     conexión, el número de vínculo cambia y hay que actualizar este mapa. */
+  const REVALIDAR={36:1317, 33:1318, 37:1319};   /* vínculo de Odoo -> acción que abre el cuadro */
+  async function vigilarBancos(){
+    try{
+      const ctas=await rpc("account.online.account","search_read",
+        [[["journal_ids","!=",false]],["name","journal_ids","account_online_link_id"]],
+        Object.assign({limit:0},CTX));
+      const hoy=EYG.argToday(), filas=[];
+      for(const c of ctas){
+        const j=(c.journal_ids||[])[0]; if(!j) continue;
+        const u=await rpc("account.bank.statement.line","search_read",
+          [[["journal_id","=",j]],["date"]], Object.assign({limit:1, order:"date desc"},CTX));
+        if(!u.length) continue;
+        const ultimo=u[0].date;
+        let habiles=0; const d=new Date(ultimo+"T00:00:00"), f=new Date(hoy+"T00:00:00");
+        while(d<f){ d.setDate(d.getDate()+1); const w=d.getDay(); if(w!==0&&w!==6) habiles++; }
+        if(habiles<2) continue;
+        const sinRespaldo=await rpc("account.payment","search_count",
+          [[["journal_id","=",j],["date",">",ultimo],["is_matched","=",false]]], CTX);
+        const jn=await rpc("account.journal","read",[[j],["name"]], CTX);
+        filas.push({banco:((jn[0]||{}).name||c.name), ultimo, habiles, sinRespaldo,
+                    link:(c.account_online_link_id||[])[0]||null});
+      }
+      if(!filas.length) return;
+      filas.sort((a,b)=>(b.sinRespaldo-a.sinRespaldo)||(b.habiles-a.habiles));
+      put("dz-banco", filas.map(bandaBanco).join(""));
+    }catch(e){ /* si no se deja leer, no se muestra nada: mejor eso que un susto falso */ }
+  }
+
+  function bandaBanco(b){
+    const probada=b.sinRespaldo>0;
+    const col=probada?"bad":"warn";
+    const accion=b.link&&REVALIDAR[b.link];
+    return `<div style="background:var(--${col}bg);border-left:3px solid var(--${col});border-radius:10px;
+         padding:11px 14px;margin-bottom:12px;font-size:12.5px;line-height:1.6;color:var(--ink)">
+      <b style="color:var(--${col})">${probada?"⛔":"⚠️"} ${esc(b.banco)} no trae movimientos desde el ${esc(b.ultimo)}</b>
+      — ${b.habiles} días hábiles.
+      ${probada?`Hay <b>${b.sinRespaldo} cobro${b.sinRespaldo===1?"":"s"}</b> ya cargado${b.sinRespaldo===1?"":"s"} contra este banco
+          que el extracto no respalda, así que movimientos hubo: <b>la conexión está caída</b>.`
+        :`Puede que no haya habido movimientos, pero conviene mirarlo.`}
+      ${accion?`<div style="margin-top:9px"><a class="btn-teal" style="display:inline-block;text-decoration:none"
+        target="_blank" rel="noopener"
+        href="https://drogueriaeyg.odoo.com/web#action=${accion}">🔑 Poner de nuevo las claves de ${esc(b.banco)}</a>
+        <span style="color:var(--gris);margin-left:9px">se abre el cuadro del banco; después de cargarlas, dale unos minutos</span></div>`
+        :`<div style="margin-top:6px;color:var(--gris)">Este banco no tiene conexión configurada.</div>`}
+    </div>`;
+  }
   function saludCalc(){
     const filas=VITALES.map(v=>({v, r:v.calc()}));
     const listos=filas.filter(f=>f.r);
@@ -1682,6 +1745,7 @@ window.EYGHome = (function(){
 
   /* ======================= OLA 3 · stock, tops, novedades ======================= */
   function ola3(){
+    if(V.salud) vigilarBancos();   // dirección, admin y finanzas: los que pueden revalidar
     if(V.salud) cargarSaludExtra().catch(()=>{});   // si no llega, esos signos quedan en "leyendo…"
     if(V.stock) cargarStock().catch(e=>fail("dz-stk",e,"el stock"));
     if(V.ventas){
