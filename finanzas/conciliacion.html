@@ -382,6 +382,14 @@ const CTA_TRANSIT=349, CTA_RECIBOS=350, CTA_PAGOS=351, CTA_PROVEEDORES=148;
    El asiento va al diario Operaciones varias (11), que NO emite comprobantes
    fiscales — a diferencia del diario Redondeo, que además infla las ventas. */
 const TOPE_AJUSTE=500, CTA_AJUSTE=187, DIARIO_AJUSTE=11;
+/* Cuando el cliente paga DE MENOS el tope es más chico, y a propósito: lo que sobra es
+   plata de él y le queda a favor, pero lo que falta se le perdona y es pérdida nuestra.
+   $100 es donde se aplana la curva — sobre las 456 notas de crédito de redondeo de 2026:
+   hasta $50 entran 368, hasta $100 entran 404, y de ahí a $200 se suman apenas 7 en todo
+   el año. Perdonar hasta $100 cuesta unos $4.900 anuales; más arriba ya no es redondeo
+   sino un pago mal hecho, y conviene mirarlo. */
+const TOPE_FALTA=100;
+const topeDe = d => d<0 ? TOPE_FALTA : TOPE_AJUSTE;
 const CTA_PUENTE=356;                 // 6.0.00.00.01 Transferencia de liquidez
 const EYG_CUIT="30716356988";         // el CUIT propio: marca las transferencias entre cuentas nuestras
 const EYG_PARTNER=1;                  // Droguería EyG S.R.L. como contraparte de la transferencia
@@ -1896,8 +1904,14 @@ function panelResolver(){
           '<div class="dif"><span>'+(exacto?"Cierra exacto":(dif>0?(dif<=TOPE_AJUSTE?"Diferencia · va a Ajuste por redondeo":"Queda a cuenta"):"Se pasa por"))+'</span>'+
             '<b>'+(exacto?"$0,00":money(Math.abs(dif)))+'</b></div>'+
         '</div>'+
-        (selTot>Math.abs(m.importe)?'<div class="aviso bad" style="margin:10px 0 0">⛔ <div>Tildaste '+money(selTot-Math.abs(m.importe))+
-          ' <b>más</b> de lo que entró. Sacá alguna factura: no se puede cancelar más de lo que el banco acreditó.</div></div>':"")+
+        /* Que falte poco es lo más común del mundo: el cliente redondea para abajo. Se
+           frena sólo cuando la diferencia ya no es redondeo. */
+        (dif<0 && Math.abs(dif)>TOPE_FALTA?'<div class="aviso bad" style="margin:10px 0 0">⛔ <div>Tildaste '+money(Math.abs(dif))+
+          ' <b>más</b> de lo que entró, y pasa el tope de '+money(TOPE_FALTA)+'. Sacá alguna factura: una diferencia así '+
+          'no es redondeo, puede ser un pago parcial o faltar un cobro.</div></div>':"")+
+        (dif<0 && Math.abs(dif)<=TOPE_FALTA?'<div class="aviso info" style="margin:10px 0 0">ℹ️ <div>Faltan <b>'+money(Math.abs(dif))+
+          '</b> para cancelar lo tildado. Se <b>perdonan</b> contra <b>Ajuste por redondeo</b>, sin nota de crédito, y la factura '+
+          'queda cerrada. En el paso siguiente podés cambiarlo.</div></div>':"")+
         /* Hasta el tope la diferencia NO queda a cuenta: se cierra contra Ajuste por
            redondeo, sin emitir nada. Este cartel decía lo viejo y contradecía al cuadro
            de confirmación, que ya venía con el ajuste marcado. */
@@ -1910,13 +1924,44 @@ function panelResolver(){
             'Una diferencia así puede ser un pago parcial o un error, conviene mirarla.</div></div>'):"");
     }
     cuerpo+='<div class="acciones" style="margin:13px 0 0">'+
-      '<button class="btn" onclick="abrirConfirmar()" '+(ST.trabajando||selTot>Math.abs(m.importe)?"disabled":"")+'>'+
+      '<button class="btn" onclick="abrirConfirmar()" '+(ST.trabajando||(dif<0&&Math.abs(dif)>TOPE_FALTA)?"disabled":"")+'>'+
         (ST.trabajando?'<span class="spin"></span> ':"")+'Revisar y conciliar'+(RES.sel.size?" e imputar "+RES.sel.size+" factura(s)":" a cuenta")+'</button>'+
       '<button class="btn gh" onclick="cerrarResolver()">Cancelar</button></div>';
   }
   return '<div class="panel resolver"><h3>🔧 Resolver este movimiento'+(sale(m)?" · pago a proveedor":"")+'</h3>'+
     '<div class="movres"><span>'+m.fecha+'</span><b class="'+(m.importe<0?"neg":"pos")+'">'+money(m.importe)+'</b>'+
     '<span class="cp">'+esc(m.concepto.slice(0,80))+'</span></div>'+cuerpo+'</div>';
+}
+
+/* El cliente pagó DE MENOS: el recibo se consumió entero y lo que quedó debiendo está en
+   las facturas. Asiento al revés que el del sobrante — el Ajuste por redondeo se come la
+   pérdida y la deuda del cliente baja — y se concilia contra lo que quedó abierto, así la
+   factura cierra y no le queda un resto colgado. Tampoco emite comprobante. */
+async function cerrarFaltante(idsFacturas, cliente, fechaMov){
+  const ls=await rpc("account.move.line","read",[idsFacturas,["amount_residual","full_reconcile_id"]]);
+  const abiertas=ls.filter(l=>!l.full_reconcile_id && Math.abs(l.amount_residual)>0.005);
+  if(!abiertas.length) return false;                              /* cerró exacto */
+  const falta=Math.round(abiertas.reduce((s,l)=>s+Math.abs(l.amount_residual),0)*100)/100;
+  if(falta>TOPE_FALTA){
+    log("Faltan "+money(falta)+" para cancelar las facturas: es más de "+money(TOPE_FALTA)+
+        ", así que no lo cierro solo. Queda como saldo del cliente — revisalo.","o");
+    return false;
+  }
+  const asiento=await rpc("account.move","create",[[{
+    journal_id:DIARIO_AJUSTE, date:fechaMov,
+    ref:"Ajuste por redondeo · pagó de menos "+cliente.nombre,
+    line_ids:[
+      [0,0,{account_id:CTA_AJUSTE,   name:"Diferencia perdonada del cobro", debit:falta, credit:0}],
+      [0,0,{account_id:CTA_CLIENTES, partner_id:cliente.id, name:"Diferencia perdonada del cobro", debit:0, credit:falta}]
+    ]}]]);
+  const aid=Array.isArray(asiento)?asiento[0]:asiento;
+  await rpc("account.move","action_post",[[aid]]);
+  const nl=await rpc("account.move.line","search_read",[[["move_id","=",aid]],["id","account_id"]],{limit:0});
+  const lCli=nl.find(x=>x.account_id[0]===CTA_CLIENTES);
+  if(!lCli) throw new Error("el asiento de ajuste no tiene la línea del cliente");
+  await rpc("account.move.line","reconcile",[[lCli.id].concat(abiertas.map(l=>l.id))]);
+  log("Faltaban "+money(falta)+": se cerraron contra Ajuste por redondeo, sin emitir comprobante","ok");
+  return true;
 }
 
 /* Cierra el sobrante de un recibo ya imputado, si es chico.
@@ -1971,12 +2016,12 @@ function planDeCobro(){
     /* el id del método lo resuelve ejecutarPlan contra el diario: acá sólo el nombre */
     metodoNom: sale(m) ? (m.tipo==="echeq" ? "Cheques" : "Manual") : "Manual",
     fecha: ST.plan && ST.plan.fecha ? ST.plan.fecha : m.fecha,
-    ajustar: ST.plan && ST.plan.ajustar!==undefined ? ST.plan.ajustar : (dif>0 && dif<=TOPE_AJUSTE) };
+    ajustar: ST.plan && ST.plan.ajustar!==undefined ? ST.plan.ajustar : (dif!==0 && Math.abs(dif)<=topeDe(dif)) };
 }
 window.abrirConfirmar=()=>{ const p=planDeCobro(); if(!p) return;
   /* si la diferencia pasa el tope no hay nada que elegir: queda a cuenta sí o sí. Dejar
      marcada la opción de ajustar (deshabilitada) hacía creer que iba a cerrarse. */
-  const puede = p.dif!==0 && Math.abs(p.dif)<=TOPE_AJUSTE;
+  const puede = p.dif!==0 && Math.abs(p.dif)<=topeDe(p.dif);
   ST.plan={fecha:p.fecha, ajustar: puede ? p.ajustar : false};
   render(); irAlCuadro(); };
 window.cerrarConfirmar=()=>{ ST.plan=null; render(); };
@@ -1996,13 +2041,16 @@ function panelConfirmar(){
   if(!ST.plan) return "";
   const p=planDeCobro(); if(!p) return "";
   const { m, L, elegidas, impu, total, dif } = p;
-  const ajustar = ST.plan.ajustar && dif!==0 && Math.abs(dif)<=TOPE_AJUSTE;
+  const ajustar = ST.plan.ajustar && dif!==0 && Math.abs(dif)<=topeDe(dif);
   const quedaACuenta = dif!==0 && !ajustar;
 
   /* el asiento tal como va a quedar, para que no haya que imaginárselo */
   const asiento=[];
   asiento.push([L.quien==="cliente"?"Créditos por ventas":"Proveedores", dif&&ajustar?impu:total, 0, L.quien==="cliente"?"baja la deuda del cliente":"baja lo que le debemos"]);
-  if(ajustar) asiento.push(["Ajuste por redondeo", Math.abs(dif), 0, dif>0?"lo que pagó de más":"lo que faltó"]);
+  /* del lado que corresponda: si SOBRA acompaña a la deuda que baja, si FALTA va del otro
+     lado, porque es la parte de la factura que absorbe el ajuste en vez del cobro */
+  if(ajustar) asiento.push(["Ajuste por redondeo", dif>0?Math.abs(dif):0, dif<0?Math.abs(dif):0,
+    dif>0?"lo que pagó de más":"lo que se le perdona, para que la factura cierre"]);
   asiento.push([L.quien==="cliente"?"Recibos pendientes":"Pagos pendientes", 0, total, "se cruza con el movimiento del banco"]);
 
   const pasos=[
@@ -2012,9 +2060,9 @@ function panelConfirmar(){
       ? 'Se imputa a <b>'+elegidas.length+' '+(elegidas.length===1?"comprobante":"comprobantes")+'</b> por '+money(impu)+'.'
       : 'No se imputa a ningún comprobante: queda <b>a cuenta</b> de '+esc(RES.cliente.nombre)+'.',
     ajustar
-      ? 'La diferencia de <b>'+money(Math.abs(dif))+'</b> se cierra contra <b>Ajuste por redondeo</b> con un asiento en Operaciones varias. <b>No se emite nota de crédito ni de débito.</b>'
+      ? (dif>0?'Lo que sobra, ':'Lo que falta, ')+'<b>'+money(Math.abs(dif))+'</b>, se cierra contra <b>Ajuste por redondeo</b> con un asiento en Operaciones varias'+(dif<0?': la factura queda cancelada y al cliente no le queda un resto colgado':'')+'. <b>No se emite nota de crédito ni de débito.</b>'
       : quedaACuenta
-        ? 'Quedan <b>'+money(Math.abs(dif))+'</b> <b>a cuenta</b> de '+esc(RES.cliente.nombre)+', para imputar más adelante.'
+        ? (dif>0?'Quedan <b>'+money(Math.abs(dif))+'</b> <b>a cuenta</b> de '+esc(RES.cliente.nombre)+', para imputar más adelante.':'Las facturas quedan con <b>'+money(Math.abs(dif))+'</b> sin cancelar: se le siguen reclamando a '+esc(RES.cliente.nombre)+'.')
         : 'No hay diferencia: cierra exacto.',
     'Se concilia contra el movimiento del banco del <b>'+esc(m.fecha)+'</b> por '+money(total)+'.'
   ];
@@ -2049,15 +2097,15 @@ function panelConfirmar(){
         '<span class="muted">Por defecto, la del movimiento del banco.</span></label>'+
       (dif!==0 ? '<label>Qué hacer con la diferencia de '+money(Math.abs(dif))+
         '<select class="busca" style="max-width:330px" onchange="planAjuste(this.value)">'+
-          '<option value="1"'+(ST.plan.ajustar?" selected":"")+(Math.abs(dif)>TOPE_AJUSTE?" disabled":"")+'>Cerrarla contra Ajuste por redondeo'+(Math.abs(dif)>TOPE_AJUSTE?" (no se puede: pasa el tope)":"")+'</option>'+
-          '<option value="0"'+(!ST.plan.ajustar?" selected":"")+'>Dejarla a cuenta del cliente</option>'+
+          '<option value="1"'+(ST.plan.ajustar?" selected":"")+(Math.abs(dif)>topeDe(dif)?" disabled":"")+'>Cerrarla contra Ajuste por redondeo'+(Math.abs(dif)>topeDe(dif)?" (no se puede: pasa el tope)":"")+'</option>'+
+          '<option value="0"'+(!ST.plan.ajustar?" selected":"")+'>'+(dif>0?"Dejarla a cuenta del cliente":"Dejar la factura sin cancelar del todo")+'</option>'+
         '</select>'+
-        '<span class="muted">'+(Math.abs(dif)>TOPE_AJUSTE
-          ? 'Supera el tope de '+money(TOPE_AJUSTE)+': una diferencia así puede ser un pago parcial o un error, y conviene revisarla.'
+        '<span class="muted">'+(Math.abs(dif)>topeDe(dif)
+          ? 'Supera el tope de '+money(topeDe(dif))+': una diferencia así puede ser un pago parcial o un error, y conviene revisarla.'
           : 'Cerrarla no emite ningún comprobante; dejarla a cuenta la arrastra hasta que se impute.')+'</span></label>' : "")+
     '</div>'+
 
-    (Math.abs(dif)>TOPE_AJUSTE&&dif!==0?'<div class="aviso warn" style="margin:12px 0 0">⚠️ <div>'+
+    (Math.abs(dif)>topeDe(dif)&&dif!==0?'<div class="aviso warn" style="margin:12px 0 0">⚠️ <div>'+
       'La diferencia de <b>'+money(Math.abs(dif))+'</b> es grande. Si esperabas que cerrara exacto, revisá si falta tildar un comprobante o si el pago es parcial.</div></div>':"")+
 
     '<div class="acciones" style="margin:14px 0 0">'+
@@ -2102,11 +2150,22 @@ window.ejecutarPlan=()=>conTrabajo(async()=>{
     /* Lo que sobra cuando el cobro no da exacto con las facturas. Antes quedaba
        "a cuenta" y había que arrastrarlo hasta que alguien le hiciera una nota de
        crédito. Si es chico se cierra acá mismo contra Ajuste por redondeo. */
-    /* sólo si en el cuadro se eligió cerrarla; si no, queda a cuenta a propósito */
-    if(plan.ajustar) await cerrarDiferencia(lCred.id, RES.cliente, plan.fecha);
-    else { const vq=await rpc("account.move.line","read",[[lCred.id],["amount_residual","full_reconcile_id"]]);
+    /* sólo si en el cuadro se eligió cerrarla; si no, queda abierta a propósito.
+       Son dos casos opuestos: si SOBRA, el resto está en el recibo y queda a favor del
+       cliente; si FALTA, el recibo se consumió entero y el resto quedó en las facturas. */
+    const facturas=[...RES.sel];
+    if(plan.ajustar){
+      await cerrarDiferencia(lCred.id, RES.cliente, plan.fecha);      /* pagó de más */
+      await cerrarFaltante(facturas, RES.cliente, plan.fecha);        /* pagó de menos */
+    } else {
+      const vq=await rpc("account.move.line","read",[[lCred.id],["amount_residual","full_reconcile_id"]]);
       if(!vq[0].full_reconcile_id && Math.abs(vq[0].amount_residual)>0.005)
-        log("Quedan "+money(Math.abs(vq[0].amount_residual))+" a cuenta de "+RES.cliente.nombre+", como pediste","o"); }
+        log("Quedan "+money(Math.abs(vq[0].amount_residual))+" a cuenta de "+RES.cliente.nombre+", como pediste","o");
+      const vf=await rpc("account.move.line","read",[facturas,["amount_residual","full_reconcile_id"]]);
+      const queda=vf.filter(l=>!l.full_reconcile_id && Math.abs(l.amount_residual)>0.005)
+                    .reduce((t,l)=>t+Math.abs(l.amount_residual),0);
+      if(queda>0.005) log("Las facturas quedan con "+money(queda)+" sin cancelar, como pediste","o");
+    }
   } else log("Queda a cuenta del cliente (sin imputar)");
 
   /* y ahora contra el extracto */
