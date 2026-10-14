@@ -818,6 +818,8 @@ async function cargarDesempeno(){
     const last3=series.slice(Math.max(0,series.length-4),series.length-1);
     const c3=last3.reduce((s,x)=>s+x.cob,0), f3=last3.reduce((s,x)=>s+x.facN,0);
     const cobradoSemana=pagos30.filter(p=>p.date>=d7).reduce((s,p)=>s+(p.amount||0),0);
+    const pagosHoy=pagos30.filter(p=>p.date===hoyStr);
+    const cobradoHoy=pagosHoy.reduce((s,p)=>s+(p.amount||0),0);
     const deuda=CLI.filter(c=>!c.boveda).reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
     // Conversión de gestión: de los clientes gestionados, cuántos pagaron DESPUÉS de la gestión
     const pagByP={}; pagos30.forEach(p=>{if(!p.partner_id)return;const id=p.partner_id[0];(pagByP[id]=pagByP[id]||[]).push(p);});
@@ -825,7 +827,7 @@ async function cargarDesempeno(){
     const gestP=Object.keys(gestFirst); let paidN=0,cobradoGest=0;
     gestP.forEach(id=>{const g=gestFirst[id];const ps=(pagByP[id]||[]).filter(x=>x.date>=g);if(ps.length){paidN++;cobradoGest+=ps.reduce((s,x)=>s+(x.amount||0),0);}});
     DESEMP={
-      series12:series.slice(-12), cobradoMes:cur.cob, cobradoMesPrev:prev.cob, cobradoSemana,
+      series12:series.slice(-12), cobradoMes:cur.cob, cobradoMesPrev:prev.cob, cobradoSemana, cobradoHoy, nHoy:pagosHoy.length,
       cov3: f3>0?c3/f3:0, covMesPrev: prev.facN>0?prev.cob/prev.facN:0,
       dso: prev.facN>0? deuda/prev.facN*30 : 0,
       conv:{gest:gestP.length, paid:paidN, cobrado:cobradoGest, total:gest.length}
@@ -873,6 +875,10 @@ function desempenoHTML(totalReal,totalVenc){
   return `<div class="panorama desemp">
     <div class="ptop"><h3>📊 Desempeño de cobranzas</h3><div class="cap" style="font-weight:700;color:${semC}">${sem} ${semTxt}</div></div>
     <div class="dtiles">
+      <div class="dtile" onclick="openCobradoHoy()" style="cursor:pointer;border:1.5px solid #1B7F4C;background:#F2FBF6" title="Ver cómo se cobró, por rubro y día a día">
+        <div class="dv" style="color:#0E5C46">${money(D.cobradoHoy||0)}</div>
+        <div class="dl">💵 Cobrado hoy${D.nHoy?` · ${D.nHoy} pago${D.nHoy===1?"":"s"}`:""}</div>
+        <div class="ds" style="color:#1B7F4C;font-weight:700">tocá: cómo, por rubro y día a día →</div></div>
       <div class="dtile"><div class="dv">${money(D.cobradoMes)}</div><div class="dl">Cobrado este mes (al día ${diaMes})</div><div class="ds">proyección ~${money(proy)} · mes ant. ${money(D.cobradoMesPrev)}</div></div>
       <div class="dtile"><div class="dv">${money(D.cobradoSemana)}</div><div class="dl">Cobrado últimos 7 días</div><div class="ds">pagos reales de clientes</div></div>
       <div class="dtile"><div class="dv" style="color:${covC}">${Math.round(cov*100)}%</div><div class="dl">Cobertura (últ. 3 meses)</div><div class="ds">cobrado ÷ facturado neto · ≥100% baja la deuda</div></div>
@@ -1095,6 +1101,74 @@ function onHover(e){
 }
 function hideHover(){["cmGuide","cmDotC","cmDotF","cmDotD"].forEach(id=>{const el=document.getElementById(id);if(el)el.setAttribute("opacity","0");});const t=document.getElementById("cmTip");if(t)t.style.opacity="0";}
 function cerrarGraf(){const s=document.getElementById("scrim2"),m=document.getElementById("chartmodal");if(s)s.classList.remove("on");if(m)m.classList.remove("on");}
+
+/* ===================== Cobranza de HOY (cómo se cobró, por rubro, día a día) ===================== */
+function cerrarCobHoy(){const s=document.getElementById("scrim2"),m=document.getElementById("cobhoymodal");if(s)s.classList.remove("on");if(m)m.classList.remove("on");}
+function _barList(obj,tot,color){
+  const items=Object.entries(obj).sort((a,b)=>b[1]-a[1]);
+  if(!items.length) return '<div class="muted">—</div>';
+  return items.map(([k,v])=>{const pct=tot>0?Math.round(v/tot*100):0;
+    return `<div style="margin:7px 0">
+      <div style="display:flex;justify-content:space-between;font-size:12.5px"><span>${esc(k)}</span><b>${money(v)} · ${pct}%</b></div>
+      <div style="height:7px;background:#EEF3F1;border-radius:5px;overflow:hidden;margin-top:2px"><i style="display:block;height:100%;width:${Math.max(2,pct)}%;background:${color}"></i></div>
+    </div>`;}).join("");
+}
+function _diaChartCob(dia){
+  if(!dia.length) return '<div class="muted">sin datos</div>';
+  const W=920,H=180,pl=48,pr=10,pt=12,pb=28, mx=Math.max(...dia.map(d=>d.v),1), n=dia.length, bw=(W-pl-pr)/n;
+  const Y=v=>H-pb-(v/mx)*(H-pt-pb);
+  let grid=""; for(let i=0;i<=3;i++){const v=mx*i/3,y=Y(v);
+    grid+=`<line x1="${pl}" y1="${y.toFixed(1)}" x2="${W-pr}" y2="${y.toFixed(1)}" stroke="#E7F0EE"/><text x="${pl-6}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="10" fill="#8A9A97">${fmtM(v)}</text>`;}
+  let bars="",xlab=""; const step=Math.max(1,Math.ceil(n/12));
+  dia.forEach((d,i)=>{const x=pl+i*bw, y=Y(d.v), hoyB=i===n-1;
+    bars+=`<rect x="${(x+1).toFixed(1)}" y="${y.toFixed(1)}" width="${(bw-2).toFixed(1)}" height="${(H-pb-y).toFixed(1)}" rx="1.5" fill="${hoyB?'#0E5C46':'#1B7F4C'}"><title>${d.lab}: ${money(d.v)}</title></rect>`;
+    if(i%step===0||i===n-1) xlab+=`<text x="${(x+bw/2).toFixed(1)}" y="${H-8}" text-anchor="middle" font-size="9.5" fill="#8A9A97">${d.lab}</text>`;});
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%" role="img" aria-label="Cobranza día a día">${grid}${bars}${xlab}</svg>`;
+}
+function diarioCobranza(nd){
+  const C=(DIARIO&&DIARIO.C)||{}, out=[], pp=x=>String(x).padStart(2,"0");
+  for(let i=nd-1;i>=0;i--){ const x=new Date(hoy); x.setDate(x.getDate()-i);
+    const k=`${x.getFullYear()}-${pp(x.getMonth()+1)}-${pp(x.getDate())}`;
+    out.push({k, v:C[k]||0, lab:`${pp(x.getDate())}/${pp(x.getMonth()+1)}`}); }
+  return out;
+}
+function cobHoyHTML(tot,n,porMedio,porRubro,dia){
+  return `
+    <div style="text-align:center;margin-bottom:14px">
+      <div style="font-size:30px;font-weight:800;color:#0E5C46">${money(tot)}</div>
+      <div class="muted">cobrado hoy · ${n} pago${n===1?"":"s"} de clientes (por fecha de pago)</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px">
+      <div><h4 style="margin:0 0 6px">🏦 Cómo se cobró</h4>${_barList(porMedio,tot,"#1B7F4C")}</div>
+      <div><h4 style="margin:0 0 6px">🏷️ Por rubro</h4>${_barList(porRubro,tot,"#048782")}</div>
+    </div>
+    <div style="margin-top:20px"><h4 style="margin:0 0 6px">📅 Cobranza día a día (últimos ${dia.length} días)</h4>${_diaChartCob(dia)}</div>
+    <div class="faith" style="margin-top:12px">🔒 Mismo criterio que todo el módulo: pagos de clientes posteados, sin transferencias internas. "Hoy" = por su fecha de pago.</div>`;
+}
+async function openCobradoHoy(){
+  let sc=document.getElementById("scrim2"); if(!sc){sc=document.createElement("div");sc.className="scrim2";sc.id="scrim2";document.body.appendChild(sc);} sc.onclick=cerrarCobHoy;
+  let m=document.getElementById("cobhoymodal"); if(!m){m=document.createElement("div");m.className="chartmodal";m.id="cobhoymodal";document.body.appendChild(m);}
+  m.innerHTML=`<div class="cm-head"><h3>💵 Cobranza de hoy</h3><span class="x" onclick="cerrarCobHoy()">✕</span></div>
+    <div id="cobhoyBody" style="padding:18px 22px;overflow:auto"><div class="loading" style="padding:50px"><div class="spinner"></div>Cargando la cobranza de hoy…</div></div>`;
+  sc.classList.add("on"); m.classList.add("on");
+  try{
+    const pays=await rpc("account.payment","search_read",
+      [[["partner_type","=","customer"],["payment_type","=","inbound"],["state","=","posted"],["is_internal_transfer","=",false],["date","=",hoyStr]]],
+      {fields:["amount","journal_id","partner_id"],limit:0,context:{lang:"es_AR"}});
+    // rubro por ENTIDAD FISCAL: partner -> commercial_partner -> rubro
+    const pids=[...new Set(pays.map(p=>p.partner_id?p.partner_id[0]:0).filter(Boolean))];
+    const comOf={}, comIds=new Set();
+    if(pids.length){ try{(await rpc("res.partner","read",[pids,["commercial_partner_id"]],{context:{lang:"es_AR"}})).forEach(p=>{const cid=p.commercial_partner_id?p.commercial_partner_id[0]:p.id;comOf[p.id]=cid;comIds.add(cid);});}catch(e){} }
+    const rubroByCom={};
+    if(comIds.size){ try{(await rpc("res.partner","read",[[...comIds],[RUBRO_FIELD]],{context:{lang:"es_AR"}})).forEach(p=>rubroByCom[p.id]=p[RUBRO_FIELD]||"");}catch(e){} }
+    const porMedio={}, porRubro={}; let tot=0;
+    pays.forEach(p=>{const a=p.amount||0;tot+=a;
+      const j=p.journal_id?p.journal_id[1]:"—"; porMedio[j]=(porMedio[j]||0)+a;
+      const cid=p.partner_id?comOf[p.partner_id[0]]:0; const ru=(cid&&rubroByCom[cid])||"Sin rubro"; porRubro[ru]=(porRubro[ru]||0)+a;});
+    let dia=[]; try{ await fetchDiarioCob(); dia=diarioCobranza(45); }catch(e){}
+    const b=document.getElementById("cobhoyBody"); if(b) b.innerHTML=cobHoyHTML(tot,pays.length,porMedio,porRubro,dia);
+  }catch(e){ const b=document.getElementById("cobhoyBody"); if(b) b.innerHTML='<div class="errbox" style="margin:10px">No pude cargar la cobranza de hoy: '+esc(e.message||e)+'</div>'; }
+}
 
 function render(){
   const app=document.getElementById("app");
