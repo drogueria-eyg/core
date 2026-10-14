@@ -434,6 +434,18 @@ async function cargarPagos(){
     PAGOS=data||[];
   }catch(e){ PAGOS=[]; }
 }
+/* Cruza los pagos pendientes contra Odoo (igual que el cron cada 15 min) y saca los que
+   ya están: nro de operación conciliado en el extracto, o pago posteado con mismo importe
+   y cliente. Corre en 2º plano al abrir; si sacó alguno, recarga la lista y repinta. */
+let _conciliando=false;
+async function conciliarPagosAuto(){
+  if(_conciliando) return; _conciliando=true;
+  try{
+    const {data,error}=await EYG.supa().rpc("wsp_pagos_conciliar");
+    if(!error && (data||0)>0){ await cargarPagos(); render(); }
+  }catch(e){ /* silencioso: la lista sigue sirviendo */ }
+  finally{ _conciliando=false; }
+}
 /* Lo resuelve una persona y queda su nombre: si mañana aparece un pago imputado
    dos veces, se sabe quién lo marcó y cuándo. */
 async function resolverPago(clave,estado){
@@ -681,6 +693,7 @@ async function cargar(silent){
     render();
     if(silent) window.scrollTo(0, _sy);
     if(!silent) cargarDesempeno();
+    if(!silent) conciliarPagosAuto();   // 2º plano: saca de la lista los pagos que YA están en Odoo (idem al cron)
   }catch(e){
     if(silent){ console.warn("Refresco falló, mantengo la vista actual", e); return; }
     document.getElementById("app").innerHTML='<div class="errbox"><b>No pude calcular la deuda.</b><br>'+esc(e.message||e)+'</div>';
