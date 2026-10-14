@@ -1437,34 +1437,90 @@ async function reAnalizar(){
    extracto. Ninguno es inocuo. */
 
 /* --- poner el contacto en UNA línea --- */
-window.pedirConfirmarCto=(i)=>{ ST.cto=i; render(); irAlCuadro(); };
+window.pedirConfirmarCto=(i)=>{ ST.cto=i; ST.ctoFac=null; render(); irAlCuadro(); verFacturasDe(i); };
+/* Ponerle el nombre a un movimiento no sirve de nada por sí solo: lo que importa es qué
+   factura cancela. Se traen sus comprobantes abiertos para mostrarlos en el mismo cuadro,
+   y de paso se avisa si el importe calza exacto con alguno. */
+async function verFacturasDe(i){
+  const m=ST.movs[i]; if(!m||!m.cliente) return;
+  try{
+    const fs=await rpc("account.move.line","search_read",
+      [[["partner_id","=",m.cliente.id],["account_id","=",CTA_CLIENTES],["parent_state","=","posted"],["full_reconcile_id","=",false]],
+       ["move_id","amount_residual","date_maturity"]],{limit:0, order:"date_maturity"});
+    const ab=fs.filter(x=>Math.abs(x.amount_residual)>0.005);
+    const imp=Math.abs(m.importe);
+    let calza=null;
+    const v=ab.map(x=>Math.round(x.amount_residual*100)/100);
+    for(let a=0;a<v.length&&!calza;a++){
+      if(Math.abs(v[a]-imp)<0.005) calza=[ab[a]];
+      else for(let b=a+1;b<v.length&&!calza;b++) if(Math.abs(v[a]+v[b]-imp)<0.005) calza=[ab[a],ab[b]];
+    }
+    if(ST.cto===i){ ST.ctoFac={lista:ab, total:ab.reduce((t,x)=>t+x.amount_residual,0), calza}; render(); }
+  }catch(e){ /* si no se puede leer, el cuadro se muestra igual, sin esta parte */ }
+}
+/* Pone el contacto y sigue derecho con las facturas, que es lo que se quiere casi siempre.
+   Sólo sigue si el contacto QUEDÓ escrito: aplicarContacto no tira error, lo deja en el
+   registro, así que lo que vale es mirar si la línea tiene contacto. */
+window.ctoYResolver=async(i)=>{
+  await aplicarContacto(i);
+  const m=ST.movs[i];
+  if(m && m.yaEsta && m.yaEsta.partner_id) abrirResolver(i);
+};
 window.cerrarCto=()=>{ ST.cto=null; render(); };
 function panelCto(){
   if(ST.cto===null||ST.cto===undefined) return "";
   const m=ST.movs[ST.cto]; if(!m||!m.cliente) return "";
-  const comoLoSupo = m.porMano?"lo elegiste a mano"
-    : m.porPadron?"el CUIT "+(m.cuit||"")+" figura en su ficha"
+  const comoLoSupo = m.porMano?"lo elegiste vos de la lista"
+    : m.porPadron?"el CUIT "+(m.cuit||"")+" está en su ficha de Odoo"
     : m.porNombre?"el nombre del titular coincide con el de su ficha"
-    : m.porMapa?"ese CUIT ya pagó antes por este cliente"
+    : m.porMapa?"ese mismo CUIT ya pagó antes por este cliente"
     : "quedó asignado al analizar el movimiento";
-  return '<div class="panel resolver"><h3>👁️ Esto es lo que se va a hacer</h3>'+
+  const F=ST.ctoFac;
+  /* Lo que se ve primero es de quién es la plata y contra qué va; el cómo lo hace Odoo
+     por dentro va al final y en chico, porque no cambia ninguna decisión. */
+  return '<div class="panel resolver"><h3>👤 Anotar de quién es este movimiento</h3>'+
     '<div class="sub">Nada se escribe en Odoo hasta que confirmes.</div>'+
     '<div class="movres"><span>'+esc(m.fecha)+'</span><b class="'+(m.importe<0?"neg":"pos")+'">'+money(m.importe)+'</b>'+
       '<span class="cp">'+esc(String(m.concepto).slice(0,70))+'</span></div>'+
-    '<ol class="pasos">'+
-      '<li>Se escribe <b>'+esc(m.cliente.nombre)+'</b> como contacto de esta línea del banco. '+
-        '<span class="muted">Por qué se le asignó: '+esc(comoLoSupo)+'.</span></li>'+
-      '<li>Odoo no deja cambiar el contacto de un asiento publicado, así que el asiento '+
-        '<b>pasa a borrador, se escribe y se vuelve a publicar</b>. Los importes no cambian.</li>'+
-      '<li>Al hacer eso, Odoo <b>regenera la contrapartida</b> y la manda a la cuenta por defecto del diario. '+
-        'Si estaba imputada a otra cuenta, se la devuelve a la que tenía.</li>'+
-      '<li>Se comprueba que el asiento haya quedado <b>idéntico</b>: si algo cambió además del contacto, se frena y avisa.</li>'+
-    '</ol>'+
-    '<div class="aviso info" style="margin:11px 0 0">ℹ️ <div>Esto <b>no concilia nada</b>: sólo completa de quién es el movimiento. '+
-      'Conviene hacerlo <b>antes</b> de conciliar, porque en una línea ya conciliada Odoo no deja tocar el contacto.</div></div>'+
-    '<div class="acciones" style="margin:13px 0 0">'+
-      '<button class="btn" onclick="aplicarContacto('+ST.cto+')" '+(ST.trabajando?"disabled":"")+'>'+
-        (ST.trabajando?'<span class="spin"></span> ':"")+'Confirmar y escribir el contacto</button>'+
+
+    '<div class="aviso info" style="margin:11px 0 0">👤 <div>Este movimiento queda anotado como de '+
+      '<b>'+esc(m.cliente.nombre)+'</b>. <span class="muted">Por qué: '+esc(comoLoSupo)+'.</span><br>'+
+      '<b>Esto solo no cancela ninguna factura</b>: deja dicho quién pagó. Después hay que elegir '+
+      'qué comprobantes cancela, y eso se hace con <b>Resolver</b>.</div></div>'+
+
+    (F===null||F===undefined
+      ? '<div class="muted" style="margin:11px 0 0">Buscando sus facturas abiertas…</div>'
+      : !F.lista.length
+        ? '<div class="aviso warn" style="margin:11px 0 0">⚠️ <div><b>'+esc(m.cliente.nombre)+' no tiene facturas abiertas.</b> '+
+          'El cobro va a quedar a cuenta hasta que haya una. Si no esperabas eso, puede que el cliente no sea este.</div></div>'
+        : '<div class="sub" style="margin:13px 0 5px">Lo que '+esc(m.cliente.nombre)+' debe hoy '+
+            '(<b>'+money(F.total)+'</b> en '+F.lista.length+' comprobante'+(F.lista.length===1?"":"s")+'):</div>'+
+          '<div class="tw"><table><thead><tr><th>Comprobante</th><th>Vence</th><th class="r">Debe</th></tr></thead><tbody>'+
+          F.lista.slice(0,6).map(function(x){
+            const marcado = F.calza && F.calza.some(c=>c.move_id[0]===x.move_id[0]);
+            return '<tr'+(marcado?' style="background:var(--okbg)"':'')+'><td>'+(marcado?"✓ ":"")+esc(String(x.move_id[1]).slice(0,30))+'</td>'+
+              '<td class="muted">'+esc(x.date_maturity||"")+'</td>'+
+              '<td class="r">'+money(Math.abs(x.amount_residual))+'</td></tr>';
+          }).join("")+
+          (F.lista.length>6?'<tr><td colspan="3" class="muted">…y '+(F.lista.length-6)+' más</td></tr>':"")+
+          '</tbody></table></div>'+
+          (F.calza
+            ? '<div class="aviso info" style="margin:9px 0 0">✓ <div>Los '+money(Math.abs(m.importe))+' que entraron '+
+              '<b>calzan exacto</b> con '+(F.calza.length===1?"ese comprobante":"esos dos comprobantes")+', marcado'+
+              (F.calza.length===1?"":"s")+' en verde. Con <b>Resolver</b> se cancela'+(F.calza.length===1?"":"n")+' y cierra sin diferencia.</div></div>'
+            : '<div class="muted" style="margin:9px 0 0">Los '+money(Math.abs(m.importe))+' que entraron no coinciden con ningún '+
+              'comprobante suelto ni con la suma de dos: al resolver habrá que elegir cuáles cancela.</div>'))+
+
+    '<div class="muted" style="margin:13px 0 0;font-size:11.5px;line-height:1.6">'+
+      '<b>Por dentro:</b> Odoo no deja cambiar el contacto de un asiento publicado, así que el asiento pasa a borrador, '+
+      'se escribe el contacto y se vuelve a publicar. Los importes no cambian, y se verifica que haya quedado idéntico: '+
+      'si cambió algo más, se frena y avisa. Conviene anotarlo <b>antes</b> de conciliar, porque en una línea ya '+
+      'conciliada Odoo no deja tocar el contacto.</div>'+
+
+    '<div class="acciones" style="margin:14px 0 0">'+
+      '<button class="btn" onclick="ctoYResolver('+ST.cto+')" '+(ST.trabajando?"disabled":"")+'>'+
+        (ST.trabajando?'<span class="spin"></span> ':"")+'Anotarlo y elegir las facturas</button>'+
+      '<button class="btn gh" onclick="aplicarContacto('+ST.cto+')" '+(ST.trabajando?"disabled":"")+'>Sólo anotarlo</button>'+
       '<button class="btn gh" onclick="cerrarCto()">Cancelar</button>'+
     '</div></div>';
 }
