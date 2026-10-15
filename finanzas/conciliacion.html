@@ -1480,7 +1480,20 @@ async function verFacturasDe(i){
       if(Math.abs(v[a]-imp)<0.005) calza=[ab[a]];
       else for(let b=a+1;b<v.length&&!calza;b++) if(Math.abs(v[a]+v[b]-imp)<0.005) calza=[ab[a],ab[b]];
     }
-    if(ST.cto===i){ ST.ctoFac={lista:ab, total:ab.reduce((t,x)=>t+x.amount_residual,0), calza}; render(); }
+    /* Lo más importante del cuadro: si YA hay un comprobante cargado esperando justo este
+       importe, el cobro ya se asentó y lo único que falta es cruzarlo con el banco. Sin
+       este aviso alguien resuelve el movimiento, se crea un segundo recibo y la plata
+       queda cargada dos veces. Pasó con Colautti el 15/10. */
+    let yaHay=null;
+    try{
+      const L=LADO(m);
+      const pend=await rpc("account.move.line","search_read",
+        [[["account_id","=",L.transit],["parent_state","=","posted"],["full_reconcile_id","=",false],
+          ["partner_id","=",m.cliente.id]],["move_id","amount_residual","date"]],{limit:0});
+      const ex=pend.filter(x=>Math.abs(Math.abs(x.amount_residual)-Math.abs(m.importe))<0.005);
+      if(ex.length) yaHay={doc:String(ex[0].move_id[1]), fecha:ex[0].date};
+    }catch(e){}
+    if(ST.cto===i){ ST.ctoFac={lista:ab, total:ab.reduce((t,x)=>t+x.amount_residual,0), calza, yaHay}; render(); }
   }catch(e){ /* si no se puede leer, el cuadro se muestra igual, sin esta parte */ }
 }
 /* Pone el contacto y sigue derecho con las facturas, que es lo que se quiere casi siempre.
@@ -1513,6 +1526,13 @@ function panelCto(){
       '<b>Esto solo no cancela ninguna factura</b>: deja dicho quién pagó. Después hay que elegir '+
       'qué comprobantes cancela, y eso se hace con <b>Resolver</b>.</div></div>'+
 
+    (F && F.yaHay
+      ? '<div class="aviso warn" style="margin:11px 0 0">⚠️ <div><b>Ojo: este cobro ya está cargado.</b> Hay un comprobante '+
+        'esperando por el mismo importe: <b>'+esc(F.yaHay.doc)+'</b>, del '+esc(F.yaHay.fecha)+'. '+
+        'Lo único que falta es <b>cruzarlo con este movimiento del banco</b>. '+
+        '<b>No uses «Resolver»</b>: eso crea un recibo nuevo y la plata quedaría cargada dos veces. '+
+        'Traé los movimientos otra vez y el botón de la fila te va a ofrecer el cruce directo.</div></div>'
+      : '')+
     (F===null||F===undefined
       ? '<div class="muted" style="margin:11px 0 0">Buscando sus facturas abiertas…</div>'
       : !F.lista.length
@@ -1996,7 +2016,14 @@ function panelResolver(){
   } else if(RES.buscando){
     cuerpo='<div class="cargando">Buscando las facturas abiertas de '+esc(RES.cliente.nombre)+'…</div>';
   } else {
-    cuerpo='<div class="clienteEl">👤 <b>'+esc(RES.cliente.nombre)+'</b>'+
+    /* Si este movimiento ya tiene un comprobante abierto que calza, seguir por acá crea un
+       SEGUNDO recibo por la misma plata: el camino correcto es el cruce directo. */
+    const yaCargado=(m.cands||[]).length===1 ? m.cands[0] : null;
+    cuerpo=(yaCargado?'<div class="aviso warn" style="margin:0 0 10px">⚠️ <div><b>Este cobro ya está cargado.</b> '+
+      '<b>'+esc(String(yaCargado.move_id[1]).slice(0,34))+'</b> está esperando por el mismo importe. Si seguís acá se '+
+      'crea <b>otro</b> comprobante y la plata queda cargada dos veces: lo que corresponde es <b>cruzar el movimiento '+
+      'con el que ya existe</b>, desde el botón de imputar de la fila.</div></div>':'')+
+      '<div class="clienteEl">👤 <b>'+esc(RES.cliente.nombre)+'</b>'+
       (m.cliente?' <span class="badge b-ok">identificado por CUIT</span>':' <span class="badge b-warn">elegido a mano</span>')+
       (sale(m)?' <span class="badge b-nu">proveedor</span>':"")+
       ' <button class="btn gh sm" onclick="RES.cliente=null;RES.facturas=[];RES.sel=new Set();render()">Cambiar</button></div>';
