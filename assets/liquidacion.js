@@ -451,6 +451,8 @@ const P1=n=>n.toFixed(1).replace(".",",");
 const esc=s=>String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 const MESES_L=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 const mesLargo=k=>{ const [y,m]=String(k).split("-"); return (MESES_L[(+m)-1]||k)+" "+y; };
+// fecha corta para las tablas: 2026-10-03 -> 03/10. Se usa en el detalle de clientes nuevos.
+const fD=f=>{ const p=String(f||"").slice(0,10).split("-"); return p.length===3 ? p[2]+"/"+p[1] : "—"; };
 
 /* Los clientes nuevos con nombre y apellido: cuáles compraron y cuáles quedaron en una ficha.
    Es el control que pidió Dirección — que no sean altas inventadas y se pueda seguir si se les vendió. */
