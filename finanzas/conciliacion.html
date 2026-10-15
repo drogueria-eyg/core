@@ -567,7 +567,7 @@ async function analizar(movs){
   });
 
   /* ---- 3) mapa CUIT → cliente, aprendido del historial ---- */
-  await construirMapaCuit();
+  await mapaCuitListo();
   movs.forEach(m=>{ m.cliente=(m.cuit&&ST.mapaCuit[m.cuit])?ST.mapaCuit[m.cuit]:null; m.porPadron=false; });
   await resolverPorPadron(movs);
   /* customer_rank y etiquetas de los contactos: sin esto, los dueños (que están
@@ -694,6 +694,10 @@ async function resolverPorPadron(movs){
 
    El CBU NO se usa: se probó y el mismo CBU aparece con 13 clientes distintos
    (es de una cuenta recaudadora, no del pagador). */
+/* Se guarda la promesa, no sólo el resultado: así se puede arrancar en paralelo con la
+   lectura de las líneas y, cuando analizar() lo pida, espera el mismo pedido en vez de
+   hacer otro. Son ~2 segundos menos en cada traída. */
+function mapaCuitListo(){ return (ST.mapaProm = ST.mapaProm || construirMapaCuit()); }
 async function construirMapaCuit(){
   if(Object.keys(ST.mapaCuit).length || Object.keys(ST.mapaNom).length) return;
   const desde=new Date(); desde.setMonth(desde.getMonth()-6);
@@ -944,7 +948,7 @@ window.cambiarBanco=k=>{
   if(ST.movs.length && !confirm("Cambiar de banco descarta lo que subiste. ¿Seguimos?")){
     document.getElementById("selBanco").value=ST.banco; return;
   }
-  ST.banco=k; ST.movs=[]; ST.archivos=[]; ST.validacion=null; ST.listo=false; ST.mapaCuit={}; ST.logs=[]; ST.vigila=null; render(); vigilarBanco();
+  ST.banco=k; ST.movs=[]; ST.archivos=[]; ST.validacion=null; ST.listo=false; ST.mapaCuit={}; ST.mapaProm=null; ST.logs=[]; ST.vigila=null; render(); vigilarBanco();
 };
 function engancharDrop(){
   const d=document.getElementById("drop"), f=document.getElementById("file"); if(!d||!f) return;
@@ -1444,7 +1448,7 @@ async function conTrabajo(fn){
   await reAnalizar();
 }
 async function reAnalizar(){
-  ST.mapaCuit={};                       // se reconstruye: puede haber aprendido clientes nuevos
+  ST.mapaCuit={}; ST.mapaProm=null;       // se reconstruye: puede haber aprendido clientes nuevos
   await analizar(ST.movs);
   render();
 }
@@ -2698,10 +2702,15 @@ async function traerDelBanco(){
        {status:"success", nb_fetched_transactions:N} —con N en cero si no había nada—, y
        si no contestó queda vacío. Es lo único que distingue «entró y no había nada» de
        «no está entrando». Como no se limpia solo, lo que vale es si CAMBIA al pedir. */
+    /* Las tres juntas, no una después de otra: cada consulta al conector paga ~1,4s de
+       latencia fija traiga una fila o tres mil, así que lo que cuesta es CUÁNTAS se hacen.
+       En serie esta foto tardaba más de 4 segundos; en paralelo, poco más de uno. */
     const foto=async()=>{
-      const l=await rpc("account.online.link","read",[[linkId],["state","last_refresh","name","connection_state_details"]]);
-      const a=await rpc("account.online.account","read",[[cx.mia.id],["last_sync","balance"]]);
-      const n=await rpc("account.bank.statement.line","search_count",[[["journal_id","=",B.diario]]]);
+      const [l,a,n]=await Promise.all([
+        rpc("account.online.link","read",[[linkId],["state","last_refresh","name","connection_state_details"]]),
+        rpc("account.online.account","read",[[cx.mia.id],["last_sync","balance"]]),
+        rpc("account.bank.statement.line","search_count",[[["journal_id","=",B.diario]]])
+      ]);
       const d=((l[0].connection_state_details||{})[String(B.diario)])||{};
       return {lk:l[0], ac:a[0], n:n, det:JSON.stringify(d), status:d.status||""};
     };
@@ -2713,8 +2722,8 @@ async function traerDelBanco(){
     let d=await foto();
     /* Sólo se espera si el pedido volvió con las manos vacías, y poco: cuando el banco
        contesta, contesta enseguida. Antes se esperaba siempre y la pantalla se hacía lenta. */
-    for(let i=0; i<4 && d.n===antes.n && d.ac.last_sync===antes.ac.last_sync && d.det===antes.det; i++){
-      await new Promise(r=>setTimeout(r,2000));
+    for(let i=0; i<2 && d.n===antes.n && d.ac.last_sync===antes.ac.last_sync && d.det===antes.det; i++){
+      await new Promise(r=>setTimeout(r,1500));
       d=await foto();
     }
     const nuevas=d.n-antes.n;
@@ -2728,6 +2737,9 @@ async function traerDelBanco(){
                  link:linkId, cuenta:cx.mia.account_number};
 
     /* ---- las líneas sin resolver del diario: eso es lo que hay para trabajar ---- */
+    /* el mapa de CUIT se pide YA, mientras se leen las líneas: son dos consultas que no
+       dependen una de la otra y en paralelo cuestan lo que la más lenta */
+    mapaCuitListo();
     const lin=await rpc("account.bank.statement.line","search_read",
       [[["journal_id","=",B.diario],["is_reconciled","=",false]],
        ["id","date","payment_ref","amount","ref","partner_id","is_reconciled","to_check","move_id","online_transaction_identifier","transaction_details"]],
@@ -2801,7 +2813,7 @@ async function procesar(files){
       inicial:todos.length?Math.round((todos[0].saldo-todos[0].importe)*100)/100:0,
       final:todos.length?todos[todos.length-1].saldo:0
     };
-    ST.movs=todos; ST.mapaCuit={}; ST.mapaNom={};
+    ST.movs=todos; ST.mapaCuit={}; ST.mapaNom={}; ST.mapaProm=null;
     log("Leídos "+porArchivo.length+" archivo(s): "+todos.length+" movimientos en "+vistos.size+" día(s)");
     if(conFalla.length){ ST.listo=true; render(); return; }
     await analizar(todos);
