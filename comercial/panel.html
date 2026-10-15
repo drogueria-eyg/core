@@ -272,6 +272,13 @@
   .of-venc{font-size:10.5px;color:#f2d38a;background:rgba(229,169,59,.14);border:1px solid rgba(229,169,59,.3);padding:2px 8px;border-radius:20px;align-self:flex-start}
   .of-wa{display:flex;align-items:center;justify-content:center;gap:6px;background:var(--wa);color:#053b38;font-weight:800;font-size:12.5px;padding:9px;border-radius:10px;text-decoration:none}
   .of-wa:hover{filter:brightness(1.05)}
+  .of-sug{background:rgba(255,255,255,.08);border-radius:9px;padding:7px 9px;margin:6px 0 8px}
+  .of-sug-t{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;color:rgba(255,255,255,.75);margin-bottom:3px}
+  .of-sug-r{display:flex;align-items:center;gap:6px;font-size:12px;line-height:1.5}
+  .of-sug-r>a:first-child{color:#fff;font-weight:700;cursor:pointer;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-decoration:none}
+  .of-sug-r>a:first-child:hover{text-decoration:underline}
+  .of-sug-d{color:rgba(255,255,255,.65);font-size:11px;white-space:nowrap}
+  .of-sug-wa{text-decoration:none;font-size:13px}
   .of-placa{display:block;align-self:center;width:96px;height:128px;object-fit:cover;border-radius:9px;margin:0 auto 10px;cursor:zoom-in;box-shadow:0 3px 12px rgba(0,0,0,.3);background:#fff}
   .placa-ov{position:fixed;inset:0;z-index:10050;background:rgba(5,30,28,.82);display:flex;align-items:center;justify-content:center;padding:18px;cursor:zoom-out}
   .placa-ov img{max-width:min(520px,100%);max-height:92vh;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.5)}
@@ -3470,6 +3477,7 @@ function ofertasHTML(){
       <div class="of-top"><span class="of-name">${esc(tit)}</span>${badge}</div>
       <div class="of-prod">${o._info?esc(o._alcance||'Descuento en la categoría'):((items&&items!==tit)?esc(items):'&nbsp;')}</div>
       <div class="of-price">${o._info?`<span class="of-new" style="font-size:14px">🏷️ Descuento aplicado</span>`:`${o.precioAntes>o.precio?`<span class="of-old">${money(o.precioAntes)}</span>`:''}<span class="of-new">${money(o.precio)}</span>`}</div>
+      ${ofSugHTML(o)}
       <div class="of-extra">${(o.stock>0||o.nota)?`${o.stock>0?'📦 '+o.stock+' disp.':''}${(o.stock>0&&o.nota)?' · ':''}${o.nota?'📝 '+esc(o.nota):''}`:'&nbsp;'}</div>
       ${o._info?'':`<div class="of-bar"><i style="width:${pct}%"></i></div>`}
       <div class="of-perf" title="Rendimiento de esta oferta en toda la droguería (últimos 120 días)">
@@ -3531,6 +3539,7 @@ function ofFiltroHTML(){
    toca: cuenta todas las ofertas, se vean o no. Los números se ajustan en ROT_CFG. */
 const ROT_CFG={ total:15, fijas:5, minCompradores:2, novedadDias:3, urgenciaDias:5 };
 let OF_AFIN={};   // variante → clientes de la cartera que la compraron en el último año
+let OF_HIST={};   // variante → [{p: cliente, n: veces que lo pidió en 12 m, last: última vez}]
 function rotSemilla(txt){ let h=2166136261; for(const c of String(txt)){ h^=c.charCodeAt(0); h=Math.imul(h,16777619); } return h>>>0; }
 function rotAzar(seed){ let a=seed||1; return ()=>{ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
 function rotDias(fecha){ if(!fecha) return 999; const t=Date.parse(String(fecha).replace(" ","T")); return isNaN(t)?999:(Date.now()-t)/864e5; }
@@ -3579,13 +3588,50 @@ function rotEstrellas(lista){
 }
 // afinidad: qué productos en oferta ya compran los clientes de esta cartera (una consulta, en caché)
 async function cargarAfinidad(ids){
-  OF_AFIN={};
+  OF_AFIN={}; OF_HIST={};
   const pv=[...new Set(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i&&i.id)).filter(Boolean))];
   if(!pv.length || !ids || !ids.length) return;
   const d=new Date(Date.now()-365*864e5).toISOString().slice(0,10);
-  const g=await EYG.cacheOdoo("of-afin-"+(ST.userId||COMERCIAL)+"-"+hoyStr, 3600, ()=>rpc("sale.order.line","read_group",
-    [[["product_id","in",pv],["order_partner_id","in",ids],["state","in",["sale","done"]],["order_id.date_order",">=",d]],["product_uom_qty:sum"],["product_id","order_partner_id"]],{lazy:false}));
-  (g||[]).forEach(x=>{ const p=x.product_id&&x.product_id[0]; if(p) OF_AFIN[p]=(OF_AFIN[p]||0)+1; });
+  // create_date del renglón = cuándo se cargó el pedido (el renglón no guarda la fecha del pedido)
+  const g=await EYG.cacheOdoo("of-afin2-"+(ST.userId||COMERCIAL)+"-"+hoyStr, 3600, ()=>rpc("sale.order.line","read_group",
+    [[["product_id","in",pv],["order_partner_id","in",ids],["state","in",["sale","done"]],["order_id.date_order",">=",d]],["product_uom_qty:sum","create_date:max"],["product_id","order_partner_id"]],{lazy:false}));
+  (g||[]).forEach(x=>{ const p=x.product_id&&x.product_id[0], c=x.order_partner_id&&x.order_partner_id[0]; if(!p||!c) return;
+    OF_AFIN[p]=(OF_AFIN[p]||0)+1;
+    (OF_HIST[p]=OF_HIST[p]||[]).push({p:c, n:x.__count||1, last:x.create_date||""}); });
+}
+
+/* ===================== A QUIÉN OFRECERLE CADA OFERTA (15/10/2026) =====================
+   En cada tarjeta, hasta 3 clientes DE SU CARTERA que ya compran ese producto y "les toca":
+   · lo pidieron en el último año (OF_HIST, misma consulta que la afinidad de la rotación);
+   · hace más de 14 días que no lo piden (al que lo compró recién no le hace falta);
+   · se ordena por cuánto se pasaron de su ritmo: días sin pedirlo ÷ cada cuánto lo pide
+     (365 / veces en el año, entre 15 y 180 días). El que lo pide todos los meses y lleva dos sin
+     pedirlo va primero; el que lo compró una sola vez hace 8 meses, después;
+   · no se sugiere al que ya la compró desde que salió la oferta, ni a un cliente del otro
+     público (una oferta de farmacias no se le sugiere a una institución).
+   Tocar el nombre abre su ficha; el globito abre su WhatsApp. */
+const SUG_MAX=3, SUG_MIN_DIAS=14;
+function ofSugeridos(o){
+  const pv=(o.items||[]).map(i=>i&&i.id).filter(Boolean); if(!pv.length) return [];
+  const ya=new Set(((ST.ofertas[o.id]||{}).cli)||[]);
+  const porCli={};
+  pv.forEach(p=>(OF_HIST[p]||[]).forEach(h=>{ const a=porCli[h.p]||(porCli[h.p]={p:h.p,n:0,last:""}); a.n+=h.n; if(h.last>a.last) a.last=h.last; }));
+  const seg=c=>{ const r=EYG.rubroDe(c); return (r==="INSTITUCIONES"||r==="SAMCO")?"inst":"farm"; };
+  return Object.values(porCli).map(a=>{
+    const c=(ST.contactos||[]).find(x=>x.id===a.p); if(!c || ya.has(a.p)) return null;
+    if(o._dest==="farm"||o._dest==="inst"){ if(seg(c)!==o._dest) return null; }
+    const dias=Math.floor(rotDias(a.last)); if(dias<SUG_MIN_DIAS) return null;
+    const ritmo=Math.min(180,Math.max(15,365/Math.max(1,a.n)));
+    return {c, dias, n:a.n, atraso:dias/ritmo};
+  }).filter(Boolean).sort((x,y)=>(y.atraso-x.atraso)||(y.n-x.n)).slice(0,SUG_MAX);
+}
+function ofSugHTML(o){
+  const l=ofSugeridos(o); if(!l.length) return "";
+  const nom=c=>EYG.fantasia&&EYG.fantasia(c) || c.name || "";
+  return `<div class="of-sug"><div class="of-sug-t">👥 Para ofrecérsela</div>${l.map(x=>{
+    const n=waN(x.c.mobile||x.c.phone||"");
+    return `<div class="of-sug-r"><a onclick="abrir(${x.c.id})" title="Lo pidió ${x.n} ${x.n===1?"vez":"veces"} en el año · abrir la ficha">${esc(nom(x.c))}</a><span class="of-sug-d">hace ${x.dias} d</span>${n?`<a class="of-sug-wa" href="https://wa.me/${n}" target="_blank" rel="noopener" title="Abrir su WhatsApp">💬</a>`:""}</div>`;
+  }).join("")}</div>`;
 }
 
 async function marcarDestinos(list, reglas){
