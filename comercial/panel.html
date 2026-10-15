@@ -2498,7 +2498,7 @@ function render(){
 
     <div id="waSection">${waSectionHTML()}</div>
     ${OFERTAS.length?`<div id="ofertasBox" class="kpi ofcard neon" style="margin-bottom:20px">
-      <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">🎁</span><div class="kmeta"><div class="kl">Combos y ofertas de la semana</div><div class="kv" style="font-size:19px">${OFERTAS.filter(ofVisible).length} activa${OFERTAS.filter(ofVisible).length!==1?'s':''}</div><div class="ks">tocá para verlas y compartir por WhatsApp</div></div><span class="kchev">▾</span></div>
+      <div class="khead" onclick="tk(this.parentNode)"><span class="kic pop">🎁</span><div class="kmeta"><div class="kl">Combos y ofertas de la semana</div><div class="kv" style="font-size:19px">${ofRotacion(OFERTAS.filter(ofVisible)).lista.length} para hoy</div><div class="ks">tocá para verlas y compartir por WhatsApp</div></div><span class="kchev">▾</span></div>
       <div class="acc"><div class="accw"><div class="accin" style="padding-top:8px">${ofertasHTML()}</div></div></div>
     </div>`:''}
     ${conquistarCardHTML()}
@@ -3440,18 +3440,13 @@ function ofertaMsg(o){
 function ofStat(o){ const g=ST.ofertas[o.id]||{}; const env=g.gEnv||0, ven=g.gVen||0, conv=env>0?ven/env:0; return {env,ven,conv, score:conv*100+ven}; }
 function ofertasHTML(){
   if(!OFERTAS.length) return "";
-  const OFS=OFERTAS.filter(ofVisible);
+  // las de su público, y de esas la selección del día (ver ofRotacion)
+  const ROT=ofRotacion(OFERTAS.filter(ofVisible));
+  const OFS=ROT.lista;
   const SC=OFS.map(ofStat);
-  // Las mejores: hasta 4 con ventas reales, ordenadas por rendimiento. Llevan la llamita.
-  const hotIds=new Set(OFS.map((o,i)=>({id:o.id,s:SC[i]})).filter(x=>x.s.ven>=1)
-    .sort((a,b)=>b.s.score-a.s.score).slice(0,4).map(x=>x.id));
-  // Orden de aparición: primero las mejores (por rendimiento), después las nuevas/resto (orden original).
-  const order=OFS.map((o,i)=>i).sort((a,b)=>{
-    const ha=hotIds.has(OFS[a].id), hb=hotIds.has(OFS[b].id);
-    if(ha!==hb) return ha?-1:1;
-    if(ha&&hb) return SC[b].score-SC[a].score;
-    return a-b;
-  });
+  // las que más venden llevan la llamita; el orden ya viene mezclado
+  const hotIds=ROT.estrellas;
+  const order=OFS.map((o,i)=>i);
   const cards=order.map(i=>{ const o=OFS[i];
     const st=ST.ofertas[o.id]; const col=st?st.colocados:null;
     const meta=ofMeta(o);
@@ -3498,6 +3493,7 @@ function ofertasHTML(){
       <span title="Incluye las ofertas que ya cerraron: lo vendido este mes no se borra cuando la oferta sale de la lista">🛒 ${ST.ofVendidas||0} vendida${(ST.ofVendidas||0)===1?'':'s'} este mes</span>
     </div>
     ${ofFiltroHTML()}
+    ${ROT.total>OFS.length?`<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.8);margin:-4px 0 12px">Hoy ves ${OFS.length} de ${ROT.total} ofertas: las ${ROT.estrellas.size} que más se venden y una selección que cambia todos los días.</div>`:""}
     ${OFS.length?`<div class="of-grid">${cards}</div>`:`<div style="font-size:13px;font-weight:700;color:rgba(255,255,255,.85);padding:6px 0 4px">No hay ofertas para ${ST.ofSeg==='inst'?'instituciones':'farmacias'} en este momento.</div>`}
   </div>`;
 }
@@ -3517,6 +3513,81 @@ function ofFiltroHTML(){
   if(ST.ofSeg==="farm"||ST.ofSeg==="inst") return `<div style="font-size:12.5px;font-weight:700;color:rgba(255,255,255,.85);margin:0 0 12px">Ves las ofertas para ${ST.ofSeg==="inst"?"🏥 instituciones":"💊 farmacias"} y las de ambos rubros.</div>`;
   return "";
 }
+/* ===================== ROTACIÓN DE OFERTAS (pedido de Dirección, 15/10/2026) =====================
+   Cada comercial ve, de las ofertas activas de su público, como máximo ROT.total (15):
+   · ROT.fijas (5) "ESTRELLAS": las que más se venden. Se miden por clientes que la compraron
+     por semana desde que salió (toda la droguería), y hace falta evidencia: 2 compradores o más.
+     Si no hay 5 con evidencia, esos lugares pasan a la rotación (nunca se muestran menos).
+   · El resto ROTA: se elige por sorteo con pesos, para que todas salgan en algún momento pero
+     salgan más las que tienen más chances de venderse A ESTA cartera:
+        + afinidad: clientes de SU cartera que compraron ese producto en el último año
+        + novedad: publicada o reanudada en los últimos 3 días (entra seguro mientras haya lugar)
+        + urgencia: le quedan 5 días o menos
+        + sin placa pesa menos (se comparte peor)
+   · El ORDEN se mezcla (estrellas incluidas): las comerciales tocan las primeras, así que cada
+     día y cada comercial ve un orden distinto y no se reparten todas la misma oferta.
+   El sorteo usa una semilla de comercial + día: durante el día la selección y el orden no se
+   mueven (se puede volver a buscar una oferta), y cambian al día siguiente. El puntaje no se
+   toca: cuenta todas las ofertas, se vean o no. Los números se ajustan en ROT_CFG. */
+const ROT_CFG={ total:15, fijas:5, minCompradores:2, novedadDias:3, urgenciaDias:5 };
+let OF_AFIN={};   // variante → clientes de la cartera que la compraron en el último año
+function rotSemilla(txt){ let h=2166136261; for(const c of String(txt)){ h^=c.charCodeAt(0); h=Math.imul(h,16777619); } return h>>>0; }
+function rotAzar(seed){ let a=seed||1; return ()=>{ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+function rotDias(fecha){ if(!fecha) return 999; const t=Date.parse(String(fecha).replace(" ","T")); return isNaN(t)?999:(Date.now()-t)/864e5; }
+function ofRotacion(lista){ return rotDia(lista, hoyStr, true); }
+// la selección de un día; con "recordar", lo que salió AYER en la rotación pesa un tercio hoy
+// (sin eso se repetían 11 de 15 de un día al otro; con esto rota de verdad)
+function rotDia(lista, dia, recordar){
+  const total=lista.length;
+  if(total<=ROT_CFG.total){
+    // entran todas: igual se mezcla el orden
+    const az=rotAzar(rotSemilla((COMERCIAL||"")+"|"+dia+"|orden"));
+    const l=lista.map(o=>({o,k:az()})).sort((a,b)=>a.k-b.k).map(x=>x.o);
+    return { lista:l, estrellas:rotEstrellas(lista), total };
+  }
+  const estrellas=rotEstrellas(lista);
+  const az=rotAzar(rotSemilla((COMERCIAL||"")+"|"+dia));
+  let ayer=new Set();
+  if(recordar){ const d=new Date(dia+"T12:00:00"); d.setDate(d.getDate()-1);
+    const prev=rotDia(lista, d.toISOString().slice(0,10), false); prev.lista.forEach(o=>{ if(!prev.estrellas.has(o.id)) ayer.add(o.id); }); }
+  const resto=lista.filter(o=>!estrellas.has(o.id));
+  const lugares=ROT_CFG.total-estrellas.size;
+  // novedades primero (las más nuevas), mientras haya lugar
+  const nuevas=resto.filter(o=>Math.min(rotDias(o.creada||ofDesde(o)), rotDias(o.reanudada))<=ROT_CFG.novedadDias)
+    .sort((a,b)=>Math.min(rotDias(a.creada||ofDesde(a)),rotDias(a.reanudada))-Math.min(rotDias(b.creada||ofDesde(b)),rotDias(b.reanudada)))
+    .slice(0,lugares);
+  const elegidas=new Set(nuevas.map(o=>o.id));
+  // el resto por sorteo con pesos (Efraimidis–Spirakis: clave = azar^(1/peso), se toman las mayores)
+  const peso=o=>{
+    const afin=(o.items||[]).reduce((s,i)=>s+(OF_AFIN[i&&i.id]||0),0);
+    const dl=o.hasta?(Date.parse(o.hasta+"T23:59:59")-Date.now())/864e5:99;
+    const p=1 + Math.min(afin,10)*0.6 + (dl<=ROT_CFG.urgenciaDias?1.5:0) + (o.placa?0.5:0);
+    return ayer.has(o.id) ? p/3 : p;
+  };
+  const sorteo=resto.filter(o=>!elegidas.has(o.id)).map(o=>({o,k:Math.pow(az(),1/peso(o))})).sort((a,b)=>b.k-a.k);
+  for(const x of sorteo){ if(elegidas.size>=lugares) break; elegidas.add(x.o.id); }
+  const sel=lista.filter(o=>estrellas.has(o.id)||elegidas.has(o.id));
+  const azO=rotAzar(rotSemilla((COMERCIAL||"")+"|"+dia+"|orden"));
+  return { lista:sel.map(o=>({o,k:azO()})).sort((a,b)=>a.k-b.k).map(x=>x.o), estrellas, total };
+}
+// las que más se venden: compradores por semana desde que salió, con evidencia mínima
+function rotEstrellas(lista){
+  const c=lista.map(o=>{ const g=ST.ofertas[o.id]||{}; const sem=Math.max(1,rotDias(o.creada||ofDesde(o))/7);
+    return {id:o.id, ven:g.gVen||0, r:(g.gVen||0)/sem, m:(g.gMonto||0)/sem}; })
+    .filter(x=>x.ven>=ROT_CFG.minCompradores).sort((a,b)=>(b.r-a.r)||(b.m-a.m));
+  return new Set(c.slice(0,ROT_CFG.fijas).map(x=>x.id));
+}
+// afinidad: qué productos en oferta ya compran los clientes de esta cartera (una consulta, en caché)
+async function cargarAfinidad(ids){
+  OF_AFIN={};
+  const pv=[...new Set(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i&&i.id)).filter(Boolean))];
+  if(!pv.length || !ids || !ids.length) return;
+  const d=new Date(Date.now()-365*864e5).toISOString().slice(0,10);
+  const g=await EYG.cacheOdoo("of-afin-"+(ST.userId||COMERCIAL)+"-"+hoyStr, 3600, ()=>rpc("sale.order.line","read_group",
+    [[["product_id","in",pv],["order_partner_id","in",ids],["state","in",["sale","done"]],["order_id.date_order",">=",d]],["product_uom_qty:sum"],["product_id","order_partner_id"]],{lazy:false}));
+  (g||[]).forEach(x=>{ const p=x.product_id&&x.product_id[0]; if(p) OF_AFIN[p]=(OF_AFIN[p]||0)+1; });
+}
+
 async function marcarDestinos(list, reglas){
   if(!window.EYGCanal || !list.length) return;
   const dRegla={}; (reglas||[]).forEach(r=>{ if(r && r.destino) dRegla["sync:"+r.id]=r.destino; });
@@ -3566,7 +3637,7 @@ async function normalizarSync(sync){
     // fecha de creación: el id de sync es "of<timestamp ms>" → así el conteo cuenta
     // clientes DESDE que se publicó la oferta, no de los últimos 30 días.
     const mts=/^of(\d{13})$/.exec(o.id||""); const creada=mts?new Date(+mts[1]).toISOString().slice(0,19).replace("T"," "):"";
-    const com={ id:"sync:"+o.id, tipo:"oferta", titulo:o.targetName||("#"+o.target), placa:o.placa||"",
+    const com={ id:"sync:"+o.id, tipo:"oferta", titulo:o.targetName||("#"+o.target), placa:o.placa||"", reanudada:o.reanudada||"",
       stock:o.stock||0, hasta:o.hasta||"", nota:"", creada, _off:ofTxtSync(o) };
     if(o.tipo!=="p") return {...com, items:[], precio:0, precioAntes:0, _info:true,
       _alcance:"📂 Descuento en toda la línea"};
@@ -3640,6 +3711,7 @@ async function cargarOfertas(ids){
       if(sm) OFERTAS=OFERTAS.filter(o=>!EYG.ofAgotada(o,sm));
     }catch(e){}
     try{ await marcarDestinos(OFERTAS, todasSync); }catch(e){}
+    try{ await cargarAfinidad(ids); }catch(e){}   // para la rotación: qué compra esta cartera
     placasPrecargar();   // en segundo plano: para compartir la imagen en el mismo toque
 
     // ---- lo que puntúa: vigentes + vencidas + dadas de baja (historial), sin repetir ----
