@@ -526,6 +526,11 @@ function hojaHTML(r){
 }
 
 function docHTML(data,cerrado){
+  /* El freno del 3% se nombra en DOS funciones: la hoja de cada comercial y el pie del documento.
+     Cada una lo calcula por su cuenta. Se exige nivelSoloTramoBase===true a proposito: un cierre
+     anterior a octubre no tiene esa clave, asi que su hoja sigue diciendo que el nivel multiplicaba
+     toda la comision, que es como se le pago. */
+  const _freno=!!(data.config && data.config.nivelSoloTramoBase===true && EYG.paqueteRige(data.mes,data.config));
   const cs=data.comerciales||[];
   const tot=cs.reduce((s,r)=>s+r.comiFinal,0), totNeto=cs.reduce((s,r)=>s+(r.neto||0),0);
   const crec=Math.round(((data.config&&data.config.metaCrecimiento)||0.20)*100);
