@@ -80,6 +80,35 @@
   .fmrg.ok{background:var(--okbg);color:var(--ok)} .fmrg.bajo{background:var(--warnbg);color:var(--warn)}
   .fmrg.neg{background:var(--badbg);color:var(--bad)} .fmrg.nd{background:#EEF2F2;color:var(--gris2)}
   .acts{display:flex;gap:6px;flex-wrap:wrap}
+  /* ---- FILA DE OFERTA: siempre el mismo orden ----
+     izquierda: nombre · categoría y código · etiquetas · botones (Editar, placa, Eliminar)
+     centro: seis columnas fijas (PVP/antes, precio, desc., margen, stock, vigencia), vacías si
+     no aplican, para que los números queden alineados entre filas
+     derecha: pausar/reanudar y la placa */
+  .fila.ofrow{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:10px 18px;flex-wrap:nowrap}
+  .ofrow .ofmain{min-width:0}
+  .ofrow .ofsub{font-size:11.5px;color:var(--gris2);font-weight:600;margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .ofrow .ofchips{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
+  .ofrow .ofacts{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+  .ofrow .ofnums{display:grid;grid-template-columns:repeat(6,72px);gap:10px;align-items:center}
+  .ofrow .ofnums .fnum,.ofrow .ofnums .fmrg{min-width:0}
+  .ofrow .ofside{display:flex;align-items:center;gap:10px}
+  .ofrow .fplaca{position:static;transform:none}
+  .pp{width:46px;height:46px;border-radius:50%;border:1.5px solid var(--line);background:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--teal-deep);padding:0;flex:0 0 auto}
+  .pp svg{width:20px;height:20px}
+  .pp:hover{border-color:var(--teal);background:var(--agua)}
+  .pp.pausada{background:#FFF4E0;border-color:#E8B35A;color:#9A6B12}
+  .pp.pausada:hover{background:#FFE9C2}
+  .pp.guardando{opacity:.55;cursor:progress}
+  .pp-lbl{display:block;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;color:var(--gris2);text-align:center;margin-top:3px}
+  .ppwrap{display:flex;flex-direction:column;align-items:center;width:58px}
+  @media(max-width:900px){ .ofrow .ofnums{grid-template-columns:repeat(3,72px)} }
+  @media(max-width:700px){
+    .fila.ofrow{grid-template-columns:minmax(0,1fr) auto;padding-right:12px}
+    .ofrow .ofnums{grid-column:1/-1;grid-row:2;grid-template-columns:repeat(3,minmax(0,1fr))}
+    .ofrow .ofside{grid-column:2;grid-row:1;align-self:start}
+    .ofrow .ofacts button{flex:1}
+  }
   /* placa de la oferta: miniatura a la derecha de la fila; sin placa, un recuadro genérico */
   .fila.conplaca{padding-right:92px;min-height:100px}
   .fplaca{position:absolute;right:14px;top:50%;transform:translateY(-50%)}
@@ -660,10 +689,11 @@ async function sincronizarEspejoInst(){
     const its=await EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","in",[16,5]],["product_id","in",vars.map(v=>v.id)]]],{fields:["pricelist_id","product_id","fixed_price"],limit:20000});
     its.forEach(i=>{ const t=i.pricelist_id[0]===16?2:3, tm=vt[i.product_id[0]]; if(pt[t][tm]==null || i.fixed_price<pt[t][tm]) pt[t][tm]=i.fixed_price; });
   }
-  let estado={}; try{ estado=JSON.parse(await getParam(ESPEJO_KEY,"{}")||"{}")||{}; }catch(e){ estado={}; }
+  const [estRaw, ...capas]=await Promise.all([getParam(ESPEJO_KEY,"{}"), ...ESPEJO_TIERS.map(T=>getParam(T.key,""))]);
+  let estado={}; try{ estado=JSON.parse(estRaw||"{}")||{}; }catch(e){ estado={}; }
   const nuevoEstado={}, res={}, tocados=new Set();
-  for(const T of ESPEJO_TIERS){
-    const lines=String(await getParam(T.key,"")||"").split("\n").map(l=>l.trim()).filter(Boolean);
+  for(const [iT,T] of ESPEJO_TIERS.entries()){
+    const lines=String(capas[iT]||"").split("\n").map(l=>l.trim()).filter(Boolean);
     // las líneas cargadas a mano en el formato viejo (5 campos) pasan al del motor: en el viejo la
     // vigencia y la pausa caían en otra posición y el motor nunca las veía
     const manual=lines.filter(l=>!capaEsEspejo(l)).map(capaA9);
@@ -1063,6 +1093,18 @@ function render(){
 const nfmt=n=>(n||0).toLocaleString("es-AR");
 function col(k,v,cls){ return `<div class="fnum"><span class="k">${k}</span><span class="v ${cls||""}">${v}</span></div>`; }
 function colMrg(m,k){ return `<div class="fmrg ${mrgCls(m)}"><span class="k">${k||"margen"}</span><span class="v">${mrgTxt(m)}</span></div>`; }
+/* Fila de una oferta, descuento o combo (ver el CSS de .ofrow). cols = exactamente 6 celdas. */
+function filaOf(cls,nom,sub,chips,cols,acts,side){
+  return `<div class="fila of ofrow ${cls}"><div class="ofmain"><div class="fnom">${nom}</div>${sub?`<div class="ofsub">${sub}</div>`:""}${chips?`<div class="ofchips">${chips}</div>`:""}<div class="ofacts">${acts}</div></div>
+    <div class="ofnums">${cols}</div><div class="ofside">${side}</div></div>`;
+}
+const celdaVacia=()=>`<div class="fnum"></div>`;
+const SVG_PAUSA=`<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>`;
+const SVG_PLAY=`<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>`;
+function botonPausa(o){
+  const g=RG_GUARDANDO.has(o.id), p=!!o.pausada;
+  return `<div class="ppwrap"><button class="pp${p?" pausada":""}${g?" guardando":""}" ${g?"disabled":""} onclick="rgPausar('${esc(o.id)}')" title="${p?"Pausada: tocá para reanudarla":"Activa: tocá para pausarla"}" aria-label="${p?"Reanudar":"Pausar"}">${p?SVG_PLAY:SVG_PAUSA}</button><span class="pp-lbl">${g?"guardando…":p?"reanudar":"pausar"}</span></div>`;
+}
 function fila(cls,nom,meta,cols,acts,placa){
   return `<div class="fila ${cls}${placa?" conplaca":""}"><div class="fmain"><div class="fnom">${nom}</div><div class="fmeta">${meta}</div></div>
     <div class="fnums">${cols}</div><div class="acts">${acts}</div>${placa?`<div class="fplaca">${placa}</div>`:""}</div>`;
@@ -1114,19 +1156,23 @@ function esCombo(o){
 function filaOferta(o){
   const its=(o.items||[]), lin=(o.lineas||[]), ag=!!o._agotada, m=mrgOferta(o);
   const n=lin.length||its.length;
-  const chips=[chipCanal(o), esCombo(o)?`<span class="chip c-teal">🎁 combo · ${n} prod.${o.codigo?" · "+esc(o.codigo):""}</span>`:`<span class="chip c-teal">🏷️ oferta</span>`,
+  const chips=[
     ag?`<span class="chip c-bad">⛔ agotada</span>`:"", o._venc?`<span class="chip c-gris">vencida</span>`:"",
-    m!=null&&m<0?`<span class="chip c-bad">pierde plata</span>`:""].filter(Boolean).join(" ");
-  const cols=(o.precioAntes?col("antes",money(o.precioAntes),"tach"):"")+col("precio",money(o.precio))
-    +colMrg(m)+col("stock ofertado",o.stock?nfmt(o.stock):"—")+col("vigencia",o.hasta?fmtF(o.hasta):"sin límite");
+    m!=null&&m<0?`<span class="chip c-bad">pierde plata</span>`:"",
+    chipCanal(o),
+    esCombo(o)?`<span class="chip c-teal">🎁 combo · ${n} prod.${o.codigo?" · "+esc(o.codigo):""}</span>`:`<span class="chip c-teal">🏷️ oferta</span>`].filter(Boolean).join("");
+  const cols=(o.precioAntes?col("antes",money(o.precioAntes),"tach"):celdaVacia())+col("precio",money(o.precio))
+    +celdaVacia()+colMrg(m)+col("stock ofert.",o.stock?nfmt(o.stock):"—")+col("vigencia",o.hasta?fmtF(o.hasta):"sin límite");
   const acts=`<button class="btn ghost sm" onclick="rgEditarCombo('${o.id}')">Editar</button>`
     +placaBtns("of",o)
     +`<button class="btn warn sm" onclick="eliminarOferta('${o.id}')">Eliminar</button>`;
   const nom=esc(o.titulo||its.map(i=>i.nombre).join(" + "));
   // en los combos nuevos se listan los renglones con su cantidad; en los viejos, los productos sueltos
   const detalle = lin.length ? lin.map(l=>l.qty+" × "+l.nombre).join(" · ") : its.map(i=>i.nombre).join(" + ");
-  const meta=placaMini(o)+(esCombo(o)?"":catBadge(o._cat))+chips+(n?` <span>${esc(detalle)}</span>`:"");
-  return fila("of"+(m!=null&&m<0?" mala":"")+(ag||o._venc?" gris":""), nom, meta, cols, acts, placaThumb("of",o));
+  const sub=(esCombo(o)?"":catBadge(o._cat))+(n?`<span>${esc(detalle)}</span>`:"");
+  // estas tarjetas no se pausan: se deja el lugar vacío para que la placa quede alineada
+  return filaOf((m!=null&&m<0?" mala":"")+(ag||o._venc?" gris":""), nom, sub, chips, cols, acts,
+    `<div class="ppwrap"></div><div class="fplaca">${placaThumb("of",o)}</div>`);
 }
 
 function ofertarDesdeStock(pid){
@@ -1292,23 +1338,26 @@ function filaRegla(o){
   const st=rgEstado(o), m=mrgRegla(o);
   const ag = o.tipo==='p' && STOCK_T[o.target]!=null && STOCK_T[o.target]<=0;
   const descPc = o.modo==='pct'?("−"+rgPct(o.valor)+"%"):o.modo==='monto'?("−"+money(o.valor)):"precio fijo";
-  const chips=[chipCanal(o), chipEspejo(o), o.tipo==='p'?`<span class="chip c-teal">🔖 producto</span>`:`<span class="chip c-gris">📂 categoría</span>`,
-    st.c==='pau'?`<span class="chip c-warn">pausado</span>`:"", st.c==='ven'?`<span class="chip c-gris">vencido</span>`:"",
+  // etiquetas en orden fijo: estado (lo que hay que mirar) · para quién · tipo · cómo aplica
+  const chips=[
+    st.c==='pau'?`<span class="chip c-warn">⏸ pausada</span>`:"", st.c==='ven'?`<span class="chip c-gris">vencida</span>`:"",
     ag?`<span class="chip c-bad">⛔ agotada</span>`:"", (m!=null&&m<0)?`<span class="chip c-bad">pierde plata</span>`:"",
-    (o.reemplaza||o.modo==='precio')?`<span class="chip c-gris">precio único</span>`:`<span class="chip c-gris">sobre la escalera</span>`].filter(Boolean).join(" ");
-  // en éticos el "antes" es el PVP de Alfabeta; si no, no hay referencia y se muestra el descuento
+    chipCanal(o), chipEspejo(o),
+    o.tipo==='p'?`<span class="chip c-teal">🔖 producto</span>`:`<span class="chip c-gris">📂 categoría</span>`,
+    (o.reemplaza||o.modo==='precio')?`<span class="chip c-gris">precio único</span>`:`<span class="chip c-gris">sobre la escalera</span>`].filter(Boolean).join("");
+  // en éticos el "antes" es el PVP de Alfabeta; si no, la celda queda vacía (las columnas no se corren)
   const antes = (o._pvp>o._precio)?o._pvp:null;
-  const cols=(antes?col("PVP",money(antes),"tach"):"")
+  const cols=(antes?col("PVP",money(antes),"tach"):celdaVacia())
     +col("precio",o._precio?money(o._precio):descPc)
-    +(antes&&o._precio?col("desc.","−"+Math.round((1-o._precio/antes)*100)+"%","baja"):"")
+    +(antes&&o._precio?col("desc.","−"+Math.round((1-o._precio/antes)*100)+"%","baja"):celdaVacia())
     +colMrg(m)+col("stock",o.tipo==='p'&&STOCK_T[o.target]!=null?nfmt(STOCK_T[o.target]):"—")
     +col("vigencia",o.hasta?fmtF(o.hasta):"sin límite");
   const acts=`<button class="btn ghost sm" onclick="rgEditar('${esc(o.id)}')">Editar</button>`
-    +`<button class="btn ghost sm" onclick="rgPausar('${esc(o.id)}')">${o.pausada?"Reanudar":"Pausar"}</button>`
     +placaBtns("rg",o)
     +`<button class="btn warn sm" onclick="rgEliminar('${esc(o.id)}')">Eliminar</button>`;
-  const meta=placaMini(o)+(o.tipo==='p'?catBadge(o._cat)+(o._sku?esc(o._sku)+" ":""):"")+chips+ofAlertaFila(o);
-  return fila("of"+(m!=null&&m<0?" mala":"")+((ag||st.c!=='act')?" gris":""), esc(o.targetName||("#"+o.target)), meta, cols, acts, placaThumb("rg",o));
+  const sub=(o.tipo==='p'?catBadge(o._cat)+(o._sku?`<span>${esc(o._sku)}</span>`:""):"")+ofAlertaFila(o);
+  return filaOf((m!=null&&m<0?" mala":"")+((ag||st.c!=='act')?" gris":""), esc(o.targetName||("#"+o.target)), sub, chips, cols, acts,
+    botonPausa(o)+`<div class="fplaca">${placaThumb("rg",o)}</div>`);
 }
 
 /* Línea de aviso de la fila: lo que esa oferta está publicando HOY contra el costo de hoy.
@@ -1855,11 +1904,12 @@ window.ofWarnConfirmar=async()=>{
 };
 // Escribe eyg.sync_ofertas (+_flat) con TODO SYNC_OF y recalcula (1 producto → instantáneo; categoría → completo).
 async function rgSave(recalcTmpl){
-  await setParam(KEY_SYNC_OF, JSON.stringify(SYNC_OF));
-  await setParam(KEY_SYNC_OF_FLAT, ofSyncFlat(SYNC_OF));
+  // las dos copias de las ofertas y la variante a recalcular, a la vez
+  const tP = recalcTmpl ? EYG.rpc("product.template","read",[[recalcTmpl],["product_variant_id"]],LANG).catch(()=>null) : null;
+  await Promise.all([setParam(KEY_SYNC_OF, JSON.stringify(SYNC_OF)), setParam(KEY_SYNC_OF_FLAT, ofSyncFlat(SYNC_OF))]);
   try{
     if(recalcTmpl){
-      const t=await EYG.rpc("product.template","read",[[recalcTmpl],["product_variant_id"]],LANG);
+      const t=await tP;
       const vid=t&&t[0]&&t[0].product_variant_id&&t[0].product_variant_id[0];
       if(vid) await EYG.rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR",eyg_solo_producto:vid}});
       else await EYG.rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR"}});
@@ -1992,7 +2042,21 @@ window.rgGuardarCombo=async()=>{
     toast("Error creando el combo: "+e.message);
   }
 };
-window.rgPausar=async id=>{ const o=SYNC_OF.find(x=>x.id===id); if(!o)return; o.pausada=!o.pausada; await rgSave(o.tipo==='p'?o.target:null); render(); toast(o.pausada?"Oferta pausada ✓":"Oferta reanudada ✓"); };
+/* Pausar / reanudar: la pantalla cambia AL INSTANTE y el guardado sigue por detrás (guardar,
+   recalcular el precio y actualizar las listas de instituciones son ~15 s de viajes a Odoo, y
+   mientras tanto parecía que el botón no hacía nada). Los guardados van en fila, uno por vez,
+   para que dos toques seguidos no se pisen. Si falla, vuelve al estado anterior y avisa. */
+const RG_GUARDANDO=new Set();
+let _rgCola=Promise.resolve();
+window.rgPausar=id=>{
+  const o=SYNC_OF.find(x=>x.id===id); if(!o || RG_GUARDANDO.has(id)) return;
+  o.pausada=!o.pausada; RG_GUARDANDO.add(id);
+  if(!rgDraft) render();
+  toast(o.pausada?"⏸ Pausada: ya no la ven las comerciales":"▶ Reanudada: ya la ven las comerciales");
+  _rgCola=_rgCola.then(()=>rgSave(o.tipo==='p'?o.target:null))
+    .catch(e=>{ o.pausada=!o.pausada; toast("No se pudo guardar: "+(e&&e.message||e)); })
+    .finally(()=>{ RG_GUARDANDO.delete(id); if(!rgDraft) render(); });
+};
 window.rgEliminar=async id=>{
   const o=SYNC_OF.find(x=>x.id===id); if(!o)return;
   if(!confirm("¿Eliminar esta oferta? Vuelve la escalera normal.")) return;
