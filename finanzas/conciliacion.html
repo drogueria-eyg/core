@@ -835,11 +835,7 @@ function bloqueConexion(B){
       'banco no se carga a mano</b>: lo que se sube a mano no se reconoce como repetido y queda duplicado.</div>'+
     '<button class="btn wide" onclick="traerDelBanco()"'+(ST.trabajando?" disabled":"")+'>'+
       (ST.trabajando?"Conectando con el banco…":"⬇  Traer los movimientos del banco")+'</button>'+
-    /* Que no traiga nada puede ser que no haya movimientos o que la conexión esté trabada,
-       y son dos cosas muy distintas. Este botón las separa. */
-    '<button class="btn gh wide" style="margin-top:7px" onclick="probarConexion()"'+(ST.probando||ST.trabajando?" disabled":"")+'>'+
-      (ST.probando?'<span class="spin"></span> Probando si el banco contesta…':'🔌  ¿Se puede entrar al banco?')+'</button>'+
-    resultadoPrueba(B)+
+
     (c&&c.sinCuenta
       ? '<div class="cx-e"><span class="cx-ojo">⚠️ <b>No encontré la cuenta '+esc(B.cuentaBanco||"")+' entre las del proveedor'+
           (c.hay?' (hay '+c.hay+' de otras cuentas)':' — no hay ninguna')+'.</b> '+
@@ -849,13 +845,22 @@ function bloqueConexion(B){
       : c
       ? '<div class="cx-e">'+
         (c.nombre?esc(c.nombre)+' · cuenta <b>'+esc(String(c.cuenta||""))+'</b> · ':"")+
-        'última vez que el banco mandó datos: <b>'+esc(String(c.sync||"nunca"))+'</b> · '+
-        'saldo que informó: <b>'+money(c.saldo)+'</b> · '+
-        'esta vez trajo <b>'+c.nuevas+'</b> movimiento'+(c.nuevas===1?"":"s")+'.'+
-        (c.nuevas===0?'<span class="cx-ojo">⚠️ Que diga <b>conectado</b> sólo quiere decir que Odoo tiene las credenciales guardadas, '+
-          'no que la sesión con el banco esté viva. <b>El saldo es la prueba</b>: cambia todos los días que hay movimiento, '+
-          'así que si no se mueve, el proveedor no está leyendo la cuenta. Hay que volver a validarse en el home banking, '+
-          'y eso lo tiene que hacer una persona.</span>':'')+
+        'movimientos hasta el <b>'+esc(String(c.sync||"nunca"))+'</b> · esta vez trajo <b>'+c.nuevas+'</b>'+
+        (c.nuevas===1?' movimiento':' movimientos')+'.'+
+        /* Las tres respuestas posibles, que antes había que adivinar: trajo cosas, entró
+           pero no había nada, o no está entrando. */
+        (c.nuevas>0 ? ''
+         : c.contesto
+           ? '<span class="cx-ojo" style="color:#1E7D46">✅ <b>La conexión funciona</b>: el banco contestó y no tenía '+
+             'movimientos nuevos para dar. Si falta un pago que ya te mandaron, es que el banco todavía no lo acreditó.</span>'
+           : '<span class="cx-ojo" style="color:#B0413E">⛔ <b>El banco no contesta: la conexión está trabada.</b> No es que no '+
+             'haya movimientos — se le pidió y no respondió nada: ni movimientos, ni la fecha, ni el resultado de la consulta. '+
+             'Que figure <b>conectado</b> sólo quiere decir que Odoo guardó las credenciales. Hay que volver a cargarlas en el '+
+             'home banking, y <b>eso lo tiene que hacer una persona</b>.'+
+             (REVALIDAR[c.link]?'<div style="margin-top:9px"><a class="btn" target="_blank" rel="noopener" '+
+               'href="https://drogueriaeyg.odoo.com/web#action='+REVALIDAR[c.link]+'">🔑 Poner de nuevo las claves de '+esc(B.nombre)+'</a>'+
+               '<span class="muted" style="margin-left:9px">después esperá un par de minutos y volvé a dar al botón</span></div>':'')+
+             '</span>')+
        '</div>'
       : "")+
     '</div>';
@@ -872,53 +877,6 @@ function bloqueConexion(B){
    que el proveedor deja vacío. Si se rehace una conexión, el vínculo cambia de número y
    hay que actualizar este mapa. */
 const REVALIDAR={36:1317, 33:1318, 37:1319};
-/* ---- Probar si se puede ENTRAR al banco -------------------------------------------
-   Ninguna señal de Odoo dice sola si la conexión está viva: el vínculo siempre figura
-   "conectado", el saldo queda congelado, y pedir días pasados devuelve vacío aunque esté
-   sana porque el proveedor no reenvía lo ya entregado. Lo único que lo dice de verdad es
-   `connection_state_details`, donde Odoo anota el resultado de la ÚLTIMA conversación con
-   el banco: si contestó queda {status:"success", nb_fetched_transactions:N} — con N en
-   cero si no había nada —, y si no contestó queda {} vacío.
-
-   Como ese dato NO se limpia solo (puede quedar un success viejo), la prueba es activa:
-   se pide, y se mira si algo se movió DESPUÉS de pedir. Así distingue las dos cosas que
-   se confundían: «entró y no había movimientos» de «no pudo entrar». */
-async function probarConexion(){
-  const B=BANCOS[ST.banco];
-  if(ST.probando) return;
-  ST.probando=true; ST.prueba=null; render();
-  try{
-    const cx=await buscarConexion(B);
-    if(!cx.mia){ ST.prueba={ok:false, motivo:"Este banco no tiene ninguna cuenta conectada en Odoo."}; return; }
-    const linkId=cx.mia.account_online_link_id?cx.mia.account_online_link_id[0]:null;
-    if(!linkId){ ST.prueba={ok:false, motivo:"La cuenta no está asociada a ninguna conexión."}; return; }
-    const foto=async()=>{
-      const l=await rpc("account.online.link","read",[[linkId],["connection_state_details","write_date"]]);
-      const a=await rpc("account.online.account","read",[[cx.mia.id],["last_sync","fetching_status"]]);
-      const n=await rpc("account.bank.statement.line","search_count",[[["journal_id","=",B.diario]]]);
-      const d=((l[0].connection_state_details||{})[String(B.diario)])||{};
-      return {det:JSON.stringify(d), status:d.status||"", trajo:d.nb_fetched_transactions,
-              sync:a[0].last_sync, est:a[0].fetching_status, n:n, lw:l[0].write_date};
-    };
-    const antes=await foto();
-    let falla="";
-    try{ await rpc("account.online.link","action_fetch_transactions",[[linkId]]); }
-    catch(e){ falla=String((e&&e.message)||e).slice(0,200); }
-    let proceso=false, d=antes;
-    for(let i=0;i<10;i++){
-      await new Promise(r=>setTimeout(r,3000));
-      d=await foto();
-      if(d.est==="processing") proceso=true;
-      if(d.n>antes.n || d.sync!==antes.sync || (d.det!==antes.det && d.status)) break;
-    }
-    const nuevos=d.n-antes.n;
-    const contesto = nuevos>0 || d.sync!==antes.sync || (d.status==="success" && d.det!==antes.det);
-    ST.prueba={ ok:contesto, nuevos, status:d.status, trajo:d.trajo, sync:d.sync, proceso, falla,
-                link:linkId, cuenta:cx.mia.account_number };
-  }catch(e){ ST.prueba={ok:false, motivo:(e&&e.message)||String(e)}; }
-  ST.probando=false; render();
-}
-
 async function vigilarBanco(){
   const B=BANCOS[ST.banco]; if(!B||!B.diario) return;
   try{
@@ -954,29 +912,6 @@ async function vigilarBanco(){
     ST.vigila={ultimo, habiles, sinRespaldo, linkId, mudo};
     if(habiles>=2) render();
   }catch(e){ ST.vigila=null; }
-}
-
-/* El veredicto de la prueba, en castellano y con la salida a mano si está trabada. */
-function resultadoPrueba(B){
-  const p=ST.prueba; if(!p) return '';
-  if(p.ok){
-    const q = p.nuevos>0 ? ('trajo <b>'+p.nuevos+' movimiento'+(p.nuevos===1?"":"s")+' nuevo'+(p.nuevos===1?"":"s")+'')
-      : 'contestó, pero <b>no tenía movimientos nuevos</b> para dar';
-    return '<div class="aviso ok" style="margin:10px 0 0">✅ <div><b>La conexión funciona.</b> El banco '+q+'. '+
-      (p.sync?'Tiene movimientos hasta el <b>'+esc(p.sync)+'</b>. ':'')+
-      'Si falta un pago que ya te mandaron, entonces el banco todavía no lo acreditó.</div></div>';
-  }
-  const accion=REVALIDAR[p.link];
-  return '<div class="aviso bad" style="margin:10px 0 0">⛔ <div><b>No se puede entrar al banco.</b> '+
-    (p.motivo? esc(p.motivo)+' '
-      : 'Se le pidió y no contestó: ni trajo movimientos, ni movió la fecha, ni dejó registrado el resultado '+
-        'de la consulta. <b>No es que no haya movimientos: es que no está entrando.</b> ')+
-    (p.falla?'<br><span class="muted">El proveedor respondió: '+esc(p.falla)+'</span>':'')+
-    '<br><br>Lo que lo destraba es volver a poner las claves del home banking, y eso lo tiene que hacer una persona.'+
-    (accion?'<div style="margin-top:10px"><a class="btn" target="_blank" rel="noopener" '+
-      'href="https://drogueriaeyg.odoo.com/web#action='+accion+'">🔑 Poner de nuevo las claves de '+esc(B.nombre)+'</a>'+
-      '<span class="muted" style="margin-left:9px">después de cargarlas, esperá un par de minutos y volvé a probar</span></div>':'')+
-    '</div></div>';
 }
 
 function zonaCarga(){
@@ -2758,23 +2693,39 @@ async function traerDelBanco(){
     const linkId = cx.mia.account_online_link_id ? cx.mia.account_online_link_id[0] : null;
     if(!linkId) throw new Error("la cuenta no tiene conexión asociada");
 
-    const antes=await rpc("account.bank.statement.line","search_count",[[["journal_id","=",B.diario]]]);
-    log("Pidiendo los movimientos nuevos…");
+    /* Foto de antes, para saber después si el banco contestó algo. `detalle` es donde
+       Odoo anota el resultado de la última conversación con el banco: si contestó queda
+       {status:"success", nb_fetched_transactions:N} —con N en cero si no había nada—, y
+       si no contestó queda vacío. Es lo único que distingue «entró y no había nada» de
+       «no está entrando». Como no se limpia solo, lo que vale es si CAMBIA al pedir. */
+    const foto=async()=>{
+      const l=await rpc("account.online.link","read",[[linkId],["state","last_refresh","name","connection_state_details"]]);
+      const a=await rpc("account.online.account","read",[[cx.mia.id],["last_sync","balance"]]);
+      const n=await rpc("account.bank.statement.line","search_count",[[["journal_id","=",B.diario]]]);
+      const d=((l[0].connection_state_details||{})[String(B.diario)])||{};
+      return {lk:l[0], ac:a[0], n:n, det:JSON.stringify(d), status:d.status||""};
+    };
+    const antes=await foto();
+    log("Pidiendo los movimientos al banco…");
     let falla="";
     try{ await rpc("account.online.link","action_fetch_transactions",[[linkId]]); }
     catch(e){ falla=String((e&&e.message)||e); }
-    const despues=await rpc("account.bank.statement.line","search_count",[[["journal_id","=",B.diario]]]);
-    const nuevas=despues-antes;
+    let d=await foto();
+    /* Sólo se espera si el pedido volvió con las manos vacías, y poco: cuando el banco
+       contesta, contesta enseguida. Antes se esperaba siempre y la pantalla se hacía lenta. */
+    for(let i=0; i<4 && d.n===antes.n && d.ac.last_sync===antes.ac.last_sync && d.det===antes.det; i++){
+      await new Promise(r=>setTimeout(r,2000));
+      d=await foto();
+    }
+    const nuevas=d.n-antes.n;
+    const contesto = nuevas>0 || d.ac.last_sync!==antes.ac.last_sync || (d.status && d.det!==antes.det);
     if(falla) log("El banco respondió con un problema: "+falla.slice(0,220),"e");
-    log(nuevas>0?("El banco mandó "+nuevas+" movimientos nuevos"):"El banco no mandó movimientos nuevos", nuevas>0?"ok":"o");
-
-    /* El estado de la conexión: 'conectado' quiere decir que Odoo tiene las credenciales
-       guardadas, NO que la sesión con el banco esté viva. Si hace días que no trae nada,
-       lo que falta es que una persona vuelva a validarse en el home banking. */
-    const lk=await rpc("account.online.link","read",[[linkId],["state","last_refresh","name"]]);
-    const ac=await rpc("account.online.account","read",[[cx.mia.id],["last_sync","balance"]]);
-    ST.conexion={estado:lk[0].state, refresh:lk[0].last_refresh, nombre:lk[0].name,
-                 sync:ac[0].last_sync, saldo:ac[0].balance, nuevas, cuenta:cx.mia.account_number};
+    log(nuevas>0 ? ("El banco mandó "+nuevas+" movimientos nuevos")
+        : contesto ? "El banco contestó: no tenía movimientos nuevos"
+        : "El banco NO contestó: la conexión está trabada", nuevas>0?"ok":(contesto?"o":"e"));
+    ST.conexion={estado:d.lk.state, refresh:d.lk.last_refresh, nombre:d.lk.name,
+                 sync:d.ac.last_sync, saldo:d.ac.balance, nuevas, contesto, trajo:d.trajo,
+                 link:linkId, cuenta:cx.mia.account_number};
 
     /* ---- las líneas sin resolver del diario: eso es lo que hay para trabajar ---- */
     const lin=await rpc("account.bank.statement.line","search_read",
