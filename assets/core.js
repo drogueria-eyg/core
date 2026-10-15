@@ -508,6 +508,18 @@ window.EYG = (function(){
       desc:p=>(p.rol==="admin"||p.rol==="direccion")?"El equipo: métricas resumidas de cada comercial + acceso a su panel individual y al panel del líder.":(p.rol==="finanzas"?"La comisión de cada comercial mes a mes: el detalle del cálculo para entregar junto con el pago, y el corte para liquidar el mes y dejarlo congelado.":(p.rol==="lider"?"Tu panel de líder: el equipo, cumplimiento y alertas.":"Tu sesión de venta: objetivos, comisión, salud y tu cartera a mano.")),
       roles:["comercial","lider","finanzas"], ready:true,
       path:p=>{ if(p.rol==="admin"||p.rol==="direccion"||p.rol==="finanzas") return "comercial/comerciales.html"; if(p.rol==="lider") return "comercial/lider.html"; return `comercial/panel.html${p&&p.comercial_ref?("?c="+encodeURIComponent(p.comercial_ref)):""}`; }},
+    /* RENTABILIDAD COMERCIAL: cuánto deja la fuerza de ventas. Cruza el margen real de los
+       pedidos (que vive en la cabecera de sale.order) con lo que cuesta cada comercial: comisión
+       liquidada + sueldo + cargas + viáticos.
+       OJO con los sueldos: Odoo NO los tiene. El módulo de personal está vacío (0 contratos,
+       0 recibos) y en la contabilidad todo cae en "Sueldos Administrativos" — las cuentas
+       "Sueldos Comercial" y "Cargas Sociales Comercial" tienen cero asientos en 2026. Por eso el
+       básico de cada una se carga en el propio módulo (eyg.costos_comerciales), con FECHA DE
+       VIGENCIA: un aumento no reescribe lo que costó un mes ya informado.
+       Es de Dirección y Administración: tiene sueldos, no lo ve el equipo comercial. */
+    {key:"rentabilidad", dept:"comercial", cat:"Comercial", ico:"📊", titulo:"Rentabilidad comercial",
+      desc:"Qué deja la fuerza de ventas: el margen real de lo que vende cada comercial contra lo que cuesta — comisión, sueldo, cargas y viáticos. Mes a mes, día a día y por período.",
+      roles:["direccion","admin","finanzas"], ready:true, path:()=>"comercial/rentabilidad.html"},
     /* "Cargar venta" (comercial/vender.html) NO va como módulo suelto del menú:
        se entra desde ADENTRO del panel del comercial (botón "Cargar una venta" en panel.html). */
     {key:"cotizador", dept:"comercial", cat:"Comercial", ico:"🧮", titulo:"Cotizador",
