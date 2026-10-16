@@ -76,7 +76,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=115"></script>
+<script src="../assets/core.js?v=117"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const M1=n=>{const a=Math.abs(n||0); const s=n<0?"−":"";
@@ -215,11 +215,14 @@ function filas(){
   const out=[];
   for(const uid of Object.keys(DATOS.porCom)){
     const p=DATOS.porCom[uid];
-    let comi=0, costo={bruto:0,comi:0,sac:0,patronales:0,art:0,otros:0,impuestos:0,vacaciones:0,viaticos:0,total:0}, sinLiq=[];
+    let comi=0, costo={bruto:0,comi:0,sac:0,patronales:0,art:0,otros:0,impuestos:0,vacaciones:0,viaticos:0,total:0}, sinLiq=[], sinSueldo=[];
     for(const mes of DATOS.meses){
       const mm=p.meses[mes]; if(!mm && !sueldoDe(uid,mes)) continue;
       const cm=(COMIS[mes]&&COMIS[mes][uid])?COMIS[mes][uid].comi:null;
       if(cm==null && mm) sinLiq.push(mes);
+      /* vendió en ese mes pero no hay sueldo cargado: su costo va incompleto y hay que
+         decirlo, porque el margen sale mejor de lo que es. */
+      if(mm && mm.v>0 && !sueldoDe(uid,mes)) sinSueldo.push(mes);
       const c=costoDe(uid,mes,cm||0);
       for(const k in costo) costo[k]+=c[k];
       comi+=cm||0;
@@ -227,7 +230,7 @@ function filas(){
     const neto=p.m-costo.total;
     out.push({uid:+uid, nombre:p.nombre, venta:p.v, margen:p.m, pctMargen:p.v?p.m/p.v:0,
       comi, costo, costoTotal:costo.total, neto, pctNeto:p.v?neto/p.v:0,
-      equilibrio: (p.v&&p.m>0)? costo.total/(p.m/p.v) : null, sinLiq});
+      equilibrio: (p.v&&p.m>0)? costo.total/(p.m/p.v) : null, sinLiq, sinSueldo});
   }
   return out.sort((a,b)=>b.margen-a.margen);
 }
@@ -243,6 +246,7 @@ function render(){
     ${periodoHTML()}
     ${!haySueldos?`<div class="aviso"><b>Faltan los sueldos.</b> Odoo no los tiene: el módulo de personal está vacío y en la contabilidad todo va a “Sueldos Administrativos”, sin abrir por persona ni por área — las cuentas “Sueldos Comercial” y “Cargas Sociales Comercial” tienen cero asientos en 2026. Hasta que se carguen, el costo que se ve es sólo la comisión. <button class="btn sec" style="margin-left:6px" onclick="irA('costos')">Cargar sueldos y cargas</button></div>`:""}
     ${sinLiq.length?`<div class="aviso">Hay ${sinLiq.length===1?"un mes sin liquidar":"meses sin liquidar"}: <b>${sinLiq.map(mesLbl).join(", ")}</b>. De esos meses no hay comisión cierta, así que entra en cero y el margen que ves queda <b>mejor de lo que va a ser</b>.</div>`:""}
+    ${faltaHTML(F)}
     ${tortaHTML(T,F)}
     ${kpisHTML(T,F)}
     <h2 class="sec">Por comercial <span class="ayuda">tocá una fila para ver el desglose del costo</span></h2>
@@ -258,6 +262,19 @@ function render(){
   </div>`;
 }
 
+/* EL AVISO QUE FALTABA. Una comercial que vendió en un mes sin sueldo cargado entra con el
+   costo incompleto, y sin esto el número salía mejor de lo que es sin que nada lo dijera. */
+function faltaHTML(F){
+  const falta=F.filter(f=>(f.sinSueldo||[]).length);
+  if(!falta.length) return "";
+  const meses=[...new Set(falta.flatMap(f=>f.sinSueldo))].sort();
+  const det=falta.map(f=>esc(f.nombre.split(" ")[0])+" ("+f.sinSueldo.map(mesLbl).join(", ")+")").join(" · ");
+  return '<div class="aviso" style="border-color:#E8B4AE;background:#FFF7F6">'+
+    '<b>Falta el sueldo de '+(meses.length===1?"un mes":meses.length+" meses")+': '+meses.map(mesLbl).join(", ")+'.</b> '+
+    'Esas personas vendieron pero no tienen sueldo cargado para ese mes, así que su costo entra '+
+    '<b>incompleto</b> y lo que queda se ve mejor de lo que es.<br>'+det+
+    '<button class="btn sec" style="margin:8px 0 0" onclick="irA(\'costos\')">Cargar los que faltan</button></div>';
+}
 function periodoHTML(){
   const b=(k,t)=>`<button class="${ST.preset===k?"on":""}" onclick="setPreset('${k}')">${t}</button>`;
   return `<div class="per">
@@ -320,7 +337,7 @@ function kpisHTML(T,F){
   </div>`;
 }
 function tablaHTML(F,T){
-  const fila=f=>`<tr class="cli" onclick="abrir(${f.uid})"><td class="nm"><b>${esc(f.nombre)}</b>${f.sinLiq.length?` <span class="mut">· ${f.sinLiq.length} mes(es) sin liquidar</span>`:""}</td>
+  const fila=f=>`<tr class="cli" onclick="abrir(${f.uid})"><td class="nm"><b>${esc(f.nombre)}</b>${f.sinLiq.length?` <span class="mut">· ${f.sinLiq.length} mes(es) sin liquidar</span>`:""}${(f.sinSueldo||[]).length?` <span class="mut" style="color:var(--coral)">· sin sueldo en ${f.sinSueldo.map(mesLbl).join(", ")}</span>`:""}</td>
     <td>${M1(f.venta)}</td><td>${M1(f.margen)}</td><td>${P(f.pctMargen)}</td>
     <td>${f.comi?M1(f.comi):"—"}</td><td>${f.costoTotal?M1(f.costoTotal):"—"}</td>
     <td class="${f.neto>=0?"pos":"neg"}"><b>${M1(f.neto)}</b></td><td class="${f.neto>=0?"pos":"neg"}">${P(f.pctNeto)}</td>
