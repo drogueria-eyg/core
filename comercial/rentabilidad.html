@@ -58,7 +58,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=112"></script>
+<script src="../assets/core.js?v=113"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const M1=n=>{const a=Math.abs(n||0); const s=n<0?"−":"";
@@ -101,8 +101,18 @@ function sueldoDe(uid, mes){
    saltaría en junio y diciembre y mentiría el resto del año. */
 function costoDe(uid, mes, comision){
   const c=CFG.cargas||{}, pr=CFG.provisiones||{};
+  const per=(CFG.personas||{})[String(uid)]||{};
   const bruto=sueldoDe(uid,mes);
   const comi=+comision||0;
+  /* MONOTRIBUTISTA: factura. No hay cargas, ni SAC, ni ART, ni seguro de vida — su costo es
+     lo que factura más la comisión y los viáticos. Aplicarle la fórmula de relación de
+     dependencia le sumaría casi un 40% que la empresa no paga, y el margen de su cartera
+     saldría mal. */
+  if(per.regimen==="monotributo"){
+    const v=(+per.viaticos||0);
+    return { regimen:"monotributo", bruto, comi, sac:0, patronales:0, art:0, otros:0,
+             vacaciones:0, viaticos:v, total: bruto+comi+v };
+  }
   const remun = bruto + (c.comisionLlevaCargas!==false ? comi : 0);
   const sac   = remun*(+pr.sac||0);
   const base  = remun + (pr.cargasSobreSac!==false ? sac : 0);
@@ -110,10 +120,9 @@ function costoDe(uid, mes, comision){
   const art   = base*(+c.art||0) + (+c.artFijo||0);
   const otros = (+c.seguroVida||0) + (+c.sindicato||0);
   const vac   = remun*(+pr.vacaciones||0);
-  const viat  = (((CFG.personas||{})[String(uid)]||{}).viaticos)||0;
-  const noRemun = comi && c.comisionLlevaCargas===false ? comi : 0;
-  return { bruto, comi, sac, patronales:patr, art, otros, vacaciones:vac, viaticos:viat,
-           total: bruto+comi+sac+patr+art+otros+vac+viat };
+  const viat  = (+per.viaticos||0);
+  return { regimen:"relacion", bruto, comi, sac, patronales:patr, art, otros, vacaciones:vac,
+           viaticos:viat, total: bruto+comi+sac+patr+art+otros+vac+viat };
 }
 
 EYG.guard(["admin","direccion","finanzas"]).then(async perfil=>{
@@ -265,14 +274,13 @@ function desgloseHTML(f){
     <div style="font-size:13.5px;font-weight:900;margin-bottom:8px">${esc(f.nombre)} · de dónde sale el número</div>
     ${r("Margen bruto de sus ventas",f.margen,"pos")}
     <div style="height:8px"></div>
-    ${r("Sueldo básico (devengado)",c.bruto)}
-    ${r("Comisión",c.comi)}
-    ${r("SAC devengado",c.sac)}
-    ${r("Contribuciones patronales",c.patronales)}
-    ${r("ART",c.art)}
-    ${c.otros?r("Seguro de vida y sindicato",c.otros):""}
-    ${c.vacaciones?r("Vacaciones provisionadas",c.vacaciones):""}
-    ${c.viaticos?r("Viáticos",c.viaticos):""}
+    ${c.regimen==="monotributo"
+      ? r("Honorarios (monotributo)",c.bruto)+r("Comisión",c.comi)+(c.viaticos?r("Viáticos",c.viaticos):"")+
+        '<div class="mut" style="padding:4px 0">Factura: no genera cargas sociales, SAC ni ART.</div>'
+      : r("Sueldo bruto (básico + antigüedad)",c.bruto)+r("Comisión",c.comi)+r("SAC devengado",c.sac)+
+        r("Contribuciones patronales",c.patronales)+r("ART",c.art)+
+        (c.otros?r("Seguro de vida",c.otros):"")+(c.vacaciones?r("Vacaciones provisionadas",c.vacaciones):"")+
+        (c.viaticos?r("Viáticos",c.viaticos):"")}
     <div class="drow t"><span>Costo total</span><b>${M(f.costoTotal)}</b></div>
     <div class="drow t"><span>Queda para la casa</span><b class="${f.neto>=0?"pos":"neg"}">${M(f.neto)} · ${P(f.pctNeto)} de su venta</b></div>
   </div>`;
@@ -359,20 +367,24 @@ function costosHTML(){
     <div class="kd" style="margin:4px 0 14px">Siendo remunerativa debería llevarlas. Destildalo sólo si se paga como no remunerativa.</div>
 
     <table class="rt">
-      <tr><th class="nm">Comercial</th><th>Sueldo básico bruto</th><th>Rige desde</th><th>Viáticos/mes</th><th>Costo en ${mesLbl(mesAct)}</th></tr>
+      <tr><th class="nm">Comercial</th><th>Régimen</th><th>Bruto mensual</th><th>Rige desde</th><th>Viáticos/mes</th><th>Costo en ${mesLbl(mesAct)}</th></tr>
       ${uids.map(uid=>{
         const p=(CFG.personas||{})[uid]||{}, s=(p.sueldos||[]);
         const ult=s.length?s[s.length-1]:{desde:mesAct,bruto:0};
         const cm=(COMIS[mesAct]&&COMIS[mesAct][uid])?COMIS[mesAct][uid].comi:0;
         const co=costoDe(uid,mesAct,cm);
+        const reg=p.regimen||"relacion";
         return `<tr><td class="nm"><b>${esc(DATOS.porCom[uid].nombre)}</b></td>
+          <td><select id="r_${uid}" style="border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit">
+            <option value="relacion"${reg==="relacion"?" selected":""}>Relación de dependencia</option>
+            <option value="monotributo"${reg==="monotributo"?" selected":""}>Monotributo</option></select></td>
           <td><input type="number" step="10000" id="s_${uid}" value="${ult.bruto||0}" style="width:130px;text-align:right;border:1px solid var(--line);border-radius:8px;padding:5px 8px"></td>
           <td><input type="month" id="d_${uid}" value="${ult.desde||mesAct}" style="border:1px solid var(--line);border-radius:8px;padding:5px 8px"></td>
           <td><input type="number" step="10000" id="v_${uid}" value="${p.viaticos||0}" style="width:110px;text-align:right;border:1px solid var(--line);border-radius:8px;padding:5px 8px"></td>
           <td><b>${M(co.total)}</b></td></tr>`;
       }).join("")}
     </table>
-    <div class="mut" style="margin:8px 0 14px"><b>Rige desde</b>: el sueldo se guarda con su fecha. Un aumento cargado hoy no cambia lo que costaron los meses anteriores — se agrega como un valor nuevo y el pasado queda como fue.</div>
+    <div class="mut" style="margin:8px 0 14px"><b>Monotributo</b>: lo que factura. No lleva cargas, ni SAC, ni ART.<br><b>Rige desde</b>: el sueldo se guarda con su fecha. Un aumento cargado hoy no cambia lo que costaron los meses anteriores — se agrega como un valor nuevo y el pasado queda como fue.</div>
     <button class="btn" onclick="guardarCostos()">Guardar</button>
     <button class="btn sec" onclick="render()">Cancelar</button>
   </div>`;
@@ -419,6 +431,7 @@ async function guardarCostos(){
     const bruto=num("s_"+uid,0), desde=(document.getElementById("d_"+uid)||{}).value||ST.hasta, viat=num("v_"+uid,0);
     const p=(nueva.personas[uid]=nueva.personas[uid]||{nombre:DATOS.porCom[uid].nombre,sueldos:[]});
     p.nombre=DATOS.porCom[uid].nombre; p.viaticos=viat;
+    p.regimen=((document.getElementById("r_"+uid)||{}).value)||"relacion";
     p.sueldos=(p.sueldos||[]).filter(s=>s.desde!==desde);
     if(bruto>0) p.sueldos.push({desde,bruto});
     p.sueldos.sort((a,b)=>a.desde<b.desde?-1:1);
