@@ -20,6 +20,24 @@
   .per input[type=month]{border:1px solid var(--line);border-radius:9px;padding:6px 10px;font:inherit;font-size:12.5px}
 
   .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(176px,1fr));gap:12px;margin-bottom:6px}
+  .torta{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px 20px;margin-bottom:14px;
+    display:grid;grid-template-columns:auto 1fr;gap:26px;align-items:center}
+  .torta .donut{position:relative;width:200px;height:200px;flex:none}
+  .torta .donut .mid{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+  .torta .donut .mid b{font-size:33px;font-weight:900;letter-spacing:-1.5px;line-height:1;color:var(--coral)}
+  /* el ancho máximo es el DIÁMETRO DEL HUECO menos un respiro: si el texto lo pasa, se monta
+     sobre el anillo y el número deja de leerse. Hueco = 2×(74−13) = 122px. */
+  .torta .donut .mid span{font-size:10.5px;color:var(--gris2);font-weight:700;margin-top:4px;max-width:104px;line-height:1.25}
+  .torta h3{font-size:13px;font-weight:900;margin:0 0 3px;color:var(--ink)}
+  .torta .sub{font-size:11.5px;color:var(--gris2);margin-bottom:12px}
+  .torta table{width:100%;border-collapse:collapse}
+  .torta td{padding:5px 0;font-size:12.5px;border-bottom:1px dashed var(--line);vertical-align:middle}
+  .torta tr:last-child td{border-bottom:none}
+  .torta td.pt{width:16px} .torta td.n{text-align:right;white-space:nowrap;font-weight:800}
+  .torta td.pc{text-align:right;width:62px;color:var(--gris);white-space:nowrap}
+  .torta i.sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+  .torta tr.q td{border-top:2px solid var(--line);padding-top:9px;font-weight:900}
+  @media(max-width:700px){ .torta{grid-template-columns:1fr} .torta .donut{margin:0 auto} }
   .kpi{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px}
   .kpi .t{font-size:10.5px;text-transform:uppercase;letter-spacing:.7px;color:var(--gris2);font-weight:800}
   .kpi .v{font-size:23px;font-weight:900;color:var(--ink);margin-top:4px;letter-spacing:-.5px}
@@ -58,7 +76,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=114"></script>
+<script src="../assets/core.js?v=115"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const M1=n=>{const a=Math.abs(n||0); const s=n<0?"−":"";
@@ -117,8 +135,8 @@ function costoDe(uid, mes, comision){
     /* La empresa le paga el monotributo, ingresos brutos y SIRCREB: no son cargas sociales
        pero son plata que sale por ella, así que entran al costo. */
     const ap=aportesDe(uid,mes);
-    return { regimen:"monotributo", bruto, comi, sac:0, patronales:0, art:0, otros:ap,
-             vacaciones:0, viaticos:v, total: bruto+comi+ap+v };
+    return { regimen:"monotributo", bruto, comi, sac:0, patronales:0, art:0, otros:0,
+             impuestos:ap, vacaciones:0, viaticos:v, total: bruto+comi+ap+v };
   }
   const remun = bruto + (c.comisionLlevaCargas!==false ? comi : 0);
   const sac   = remun*(+pr.sac||0);
@@ -128,8 +146,8 @@ function costoDe(uid, mes, comision){
   const otros = (+c.seguroVida||0) + (+c.sindicato||0);
   const vac   = remun*(+pr.vacaciones||0);
   const viat  = (+per.viaticos||0);
-  return { regimen:"relacion", bruto, comi, sac, patronales:patr, art, otros, vacaciones:vac,
-           viaticos:viat, total: bruto+comi+sac+patr+art+otros+vac+viat };
+  return { regimen:"relacion", bruto, comi, sac, patronales:patr, art, otros, impuestos:0,
+           vacaciones:vac, viaticos:viat, total: bruto+comi+sac+patr+art+otros+vac+viat };
 }
 
 EYG.guard(["admin","direccion","finanzas"]).then(async perfil=>{
@@ -197,7 +215,7 @@ function filas(){
   const out=[];
   for(const uid of Object.keys(DATOS.porCom)){
     const p=DATOS.porCom[uid];
-    let comi=0, costo={bruto:0,comi:0,sac:0,patronales:0,art:0,otros:0,vacaciones:0,viaticos:0,total:0}, sinLiq=[];
+    let comi=0, costo={bruto:0,comi:0,sac:0,patronales:0,art:0,otros:0,impuestos:0,vacaciones:0,viaticos:0,total:0}, sinLiq=[];
     for(const mes of DATOS.meses){
       const mm=p.meses[mes]; if(!mm && !sueldoDe(uid,mes)) continue;
       const cm=(COMIS[mes]&&COMIS[mes][uid])?COMIS[mes][uid].comi:null;
@@ -225,6 +243,7 @@ function render(){
     ${periodoHTML()}
     ${!haySueldos?`<div class="aviso"><b>Faltan los sueldos.</b> Odoo no los tiene: el módulo de personal está vacío y en la contabilidad todo va a “Sueldos Administrativos”, sin abrir por persona ni por área — las cuentas “Sueldos Comercial” y “Cargas Sociales Comercial” tienen cero asientos en 2026. Hasta que se carguen, el costo que se ve es sólo la comisión. <button class="btn sec" style="margin-left:6px" onclick="irA('costos')">Cargar sueldos y cargas</button></div>`:""}
     ${sinLiq.length?`<div class="aviso">Hay ${sinLiq.length===1?"un mes sin liquidar":"meses sin liquidar"}: <b>${sinLiq.map(mesLbl).join(", ")}</b>. De esos meses no hay comisión cierta, así que entra en cero y el margen que ves queda <b>mejor de lo que va a ser</b>.</div>`:""}
+    ${tortaHTML(T,F)}
     ${kpisHTML(T,F)}
     <h2 class="sec">Por comercial <span class="ayuda">tocá una fila para ver el desglose del costo</span></h2>
     ${tablaHTML(F,T)}
@@ -248,6 +267,47 @@ function periodoHTML(){
     <span class="mut">a</span>
     <input type="month" id="f_hasta" value="${ST.hasta}" onchange="setRango()">
   </div>`;
+}
+/* EN QUÉ SE VA EL MARGEN. Cada porción es plata real sumada de las filas, no un prorrateo:
+   el costo de cada comercial ya viene abierto por concepto desde costoDe(). El número grande
+   del centro es lo que se lleva la fuerza de ventas sobre el margen bruto. */
+function tortaHTML(T,F){
+  const s=k=>F.reduce((a,f)=>a+(f.costo[k]||0),0);
+  const comi=s("comi"), sueldos=s("bruto"), viat=s("viaticos");
+  const cargas=s("sac")+s("patronales")+s("art")+s("vacaciones");
+  /* en relación de dependencia "otros" es el seguro de vida; en monotributo son los impuestos
+     que paga la empresa. Se separan para que la torta no mezcle dos cosas distintas. */
+  const seg=s("otros"), imp=s("impuestos");
+  const queda=T.margen-T.costoTotal;
+  const partes=[
+    {l:"Comisiones",                        v:comi,          c:"#E07A5F"},
+    {l:"Sueldos y honorarios",              v:sueldos,       c:"#C44536"},
+    {l:"Cargas sociales y SAC",             v:cargas+seg,    c:"#E8A87C"},
+    {l:"Monotributo, IIBB y SIRCREB",       v:imp,           c:"#D9B08C"},
+    {l:"Viáticos",                          v:viat,          c:"#B5838D"},
+    {l:"Queda para la casa",                v:Math.max(queda,0), c:"var(--teal)"},
+  ].filter(p=>p.v>0.5);
+  const tot=partes.reduce((a,p)=>a+p.v,0)||1;
+  const R=74, C=2*Math.PI*R;
+  let off=0;
+  const arcos=partes.map(p=>{
+    const len=(p.v/tot)*C;
+    const el='<circle cx="100" cy="100" r="'+R+'" fill="none" stroke="'+p.c+'" stroke-width="26"'+
+      ' stroke-dasharray="'+len.toFixed(2)+' '+(C-len).toFixed(2)+'" stroke-dashoffset="'+(-off).toFixed(2)+'"></circle>';
+    off+=len; return el;
+  }).join("");
+  const pctFuerza=T.margen>0 ? T.costoTotal/T.margen : 0;
+  const fila=p=>'<tr'+(/Queda/.test(p.l)?' class="q"':'')+'><td class="pt"><i class="sw" style="background:'+p.c+'"></i></td>'+
+    '<td>'+p.l+'</td><td class="n">'+M(p.v)+'</td><td class="pc">'+P(p.v/tot)+'</td></tr>';
+  return '<div class="torta">'+
+    '<div class="donut"><svg viewBox="0 0 200 200" style="width:200px;height:200px;transform:rotate(-90deg)">'+arcos+'</svg>'+
+      '<div class="mid"><b>'+P(pctFuerza)+'</b><span>cuesta la fuerza<br>de ventas</span></div></div>'+
+    '<div><h3>En qué se va el margen bruto de '+M(T.margen)+'</h3>'+
+      '<div class="sub" style="margin:0 0 2px;color:var(--coral);font-weight:800">La fuerza de ventas se lleva '+M(T.costoTotal)+', el '+P(pctFuerza)+' del margen.</div>'+
+      '<div class="sub">'+F.length+' comerciales · cada porción es plata real, sumada del desglose de cada una</div>'+
+      '<table>'+partes.map(fila).join("")+'</table>'+
+      '<div class="sub" style="margin:10px 0 0">Sobre la <b>venta</b> de '+M(T.venta)+': la fuerza cuesta '+
+        P(T.venta?T.costoTotal/T.venta:0)+' y queda '+P(T.venta?queda/T.venta:0)+'.</div></div></div>';
 }
 function kpisHTML(T,F){
   const pm=T.venta?T.margen/T.venta:0, pn=T.venta?T.neto/T.venta:0;
@@ -275,6 +335,9 @@ function tablaHTML(F,T){
   <div class="mut" style="margin-top:7px"><b>Equilibrio</b>: cuánto tendría que vender, a su mismo margen, para cubrir lo que cuesta.</div>`;
 }
 function desgloseHTML(f){
+  /* al sumar los meses el régimen no viaja en el acumulado: se lee de la config, que es
+     donde vive. Si cambiara de régimen en el medio del período manda el actual. */
+  if(f) f.costo.regimen=(((CFG.personas||{})[String(f.uid)]||{}).regimen)||"relacion";
   if(!f) return "";
   const c=f.costo, r=(l,v,cl)=>`<div class="drow"><span class="l">${l}</span><b class="${cl||""}">${M(v)}</b></div>`;
   return `<div class="desg">
@@ -282,7 +345,7 @@ function desgloseHTML(f){
     ${r("Margen bruto de sus ventas",f.margen,"pos")}
     <div style="height:8px"></div>
     ${c.regimen==="monotributo"
-      ? r("Honorarios (monotributo)",c.bruto)+r("Comisión",c.comi)+(c.otros?r("Monotributo, ingresos brutos y SIRCREB",c.otros):"")+(c.viaticos?r("Viáticos",c.viaticos):"")+
+      ? r("Honorarios (monotributo)",c.bruto)+r("Comisión",c.comi)+(c.impuestos?r("Monotributo, ingresos brutos y SIRCREB",c.impuestos):"")+(c.viaticos?r("Viáticos",c.viaticos):"")+
         '<div class="mut" style="padding:4px 0">Factura: no genera cargas sociales, SAC ni ART. Los impuestos que le paga la empresa van aparte.</div>'
       : r("Sueldo bruto (básico + antigüedad)",c.bruto)+r("Comisión",c.comi)+r("SAC devengado",c.sac)+
         r("Contribuciones patronales",c.patronales)+r("ART",c.art)+
