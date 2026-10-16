@@ -58,7 +58,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=113"></script>
+<script src="../assets/core.js?v=114"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
 const M1=n=>{const a=Math.abs(n||0); const s=n<0?"−":"";
@@ -90,11 +90,15 @@ let CFG=null, COMIS={}, DATOS=null;
 const ST={ desde:null, hasta:null, preset:"3m", abierta:null, vista:"resumen" };
 
 /* el sueldo que regía en un mes */
-function sueldoDe(uid, mes){
-  const p=(CFG.personas||{})[String(uid)]; if(!p) return 0;
+/* El renglón que regía ese mes. Lleva el bruto y, para la monotributista, los aportes que le
+   paga la empresa — los dos cambian juntos y tienen que viajar juntos. */
+function vigenciaDe(uid, mes){
+  const p=(CFG.personas||{})[String(uid)]; if(!p) return null;
   const l=(p.sueldos||[]).filter(s=>s.desde<=mes).sort((a,b)=>a.desde<b.desde?-1:1);
-  return l.length? (+l[l.length-1].bruto||0) : 0;
+  return l.length? l[l.length-1] : null;
 }
+function sueldoDe(uid, mes){ const v=vigenciaDe(uid,mes); return v? (+v.bruto||0) : 0; }
+function aportesDe(uid, mes){ const v=vigenciaDe(uid,mes); return v? (+v.aportes||0) : 0; }
 /* EL COSTO DE UNA COMERCIAL EN UN MES, devengado.
    Devengado y no "lo que salió del banco": el aguinaldo se gana todos los meses aunque se pague
    en dos, y las cargas de un mes se depositan al siguiente. Si se mirara la caja, el costo
@@ -110,8 +114,11 @@ function costoDe(uid, mes, comision){
      saldría mal. */
   if(per.regimen==="monotributo"){
     const v=(+per.viaticos||0);
-    return { regimen:"monotributo", bruto, comi, sac:0, patronales:0, art:0, otros:0,
-             vacaciones:0, viaticos:v, total: bruto+comi+v };
+    /* La empresa le paga el monotributo, ingresos brutos y SIRCREB: no son cargas sociales
+       pero son plata que sale por ella, así que entran al costo. */
+    const ap=aportesDe(uid,mes);
+    return { regimen:"monotributo", bruto, comi, sac:0, patronales:0, art:0, otros:ap,
+             vacaciones:0, viaticos:v, total: bruto+comi+ap+v };
   }
   const remun = bruto + (c.comisionLlevaCargas!==false ? comi : 0);
   const sac   = remun*(+pr.sac||0);
@@ -275,8 +282,8 @@ function desgloseHTML(f){
     ${r("Margen bruto de sus ventas",f.margen,"pos")}
     <div style="height:8px"></div>
     ${c.regimen==="monotributo"
-      ? r("Honorarios (monotributo)",c.bruto)+r("Comisión",c.comi)+(c.viaticos?r("Viáticos",c.viaticos):"")+
-        '<div class="mut" style="padding:4px 0">Factura: no genera cargas sociales, SAC ni ART.</div>'
+      ? r("Honorarios (monotributo)",c.bruto)+r("Comisión",c.comi)+(c.otros?r("Monotributo, ingresos brutos y SIRCREB",c.otros):"")+(c.viaticos?r("Viáticos",c.viaticos):"")+
+        '<div class="mut" style="padding:4px 0">Factura: no genera cargas sociales, SAC ni ART. Los impuestos que le paga la empresa van aparte.</div>'
       : r("Sueldo bruto (básico + antigüedad)",c.bruto)+r("Comisión",c.comi)+r("SAC devengado",c.sac)+
         r("Contribuciones patronales",c.patronales)+r("ART",c.art)+
         (c.otros?r("Seguro de vida",c.otros):"")+(c.vacaciones?r("Vacaciones provisionadas",c.vacaciones):"")+
@@ -367,7 +374,7 @@ function costosHTML(){
     <div class="kd" style="margin:4px 0 14px">Siendo remunerativa debería llevarlas. Destildalo sólo si se paga como no remunerativa.</div>
 
     <table class="rt">
-      <tr><th class="nm">Comercial</th><th>Régimen</th><th>Bruto mensual</th><th>Rige desde</th><th>Viáticos/mes</th><th>Costo en ${mesLbl(mesAct)}</th></tr>
+      <tr><th class="nm">Comercial</th><th>Régimen</th><th>Bruto mensual</th><th>Impuestos<br><span class="mut">solo monotributo</span></th><th>Rige desde</th><th>Viáticos/mes</th><th>Costo en ${mesLbl(mesAct)}</th></tr>
       ${uids.map(uid=>{
         const p=(CFG.personas||{})[uid]||{}, s=(p.sueldos||[]);
         const ult=s.length?s[s.length-1]:{desde:mesAct,bruto:0};
@@ -379,12 +386,13 @@ function costosHTML(){
             <option value="relacion"${reg==="relacion"?" selected":""}>Relación de dependencia</option>
             <option value="monotributo"${reg==="monotributo"?" selected":""}>Monotributo</option></select></td>
           <td><input type="number" step="10000" id="s_${uid}" value="${ult.bruto||0}" style="width:130px;text-align:right;border:1px solid var(--line);border-radius:8px;padding:5px 8px"></td>
+          <td><input type="number" step="1000" id="a_${uid}" value="${ult.aportes||0}" title="Monotributo + ingresos brutos + SIRCREB que paga la empresa" style="width:110px;text-align:right;border:1px solid var(--line);border-radius:8px;padding:5px 8px"></td>
           <td><input type="month" id="d_${uid}" value="${ult.desde||mesAct}" style="border:1px solid var(--line);border-radius:8px;padding:5px 8px"></td>
           <td><input type="number" step="10000" id="v_${uid}" value="${p.viaticos||0}" style="width:110px;text-align:right;border:1px solid var(--line);border-radius:8px;padding:5px 8px"></td>
           <td><b>${M(co.total)}</b></td></tr>`;
       }).join("")}
     </table>
-    <div class="mut" style="margin:8px 0 14px"><b>Monotributo</b>: lo que factura. No lleva cargas, ni SAC, ni ART.<br><b>Rige desde</b>: el sueldo se guarda con su fecha. Un aumento cargado hoy no cambia lo que costaron los meses anteriores — se agrega como un valor nuevo y el pasado queda como fue.</div>
+    <div class="mut" style="margin:8px 0 14px"><b>Monotributo</b>: lo que factura. No lleva cargas, ni SAC, ni ART, pero sí los <b>impuestos que le paga la empresa</b> (monotributo, ingresos brutos y SIRCREB), que van en la columna de al lado.<br><b>Rige desde</b>: el sueldo se guarda con su fecha. Un aumento cargado hoy no cambia lo que costaron los meses anteriores — se agrega como un valor nuevo y el pasado queda como fue.</div>
     <button class="btn" onclick="guardarCostos()">Guardar</button>
     <button class="btn sec" onclick="render()">Cancelar</button>
   </div>`;
@@ -429,11 +437,12 @@ async function guardarCostos(){
   nueva.personas=nueva.personas||{};
   for(const uid of Object.keys(DATOS.porCom)){
     const bruto=num("s_"+uid,0), desde=(document.getElementById("d_"+uid)||{}).value||ST.hasta, viat=num("v_"+uid,0);
+    const aportes=num("a_"+uid,0);
     const p=(nueva.personas[uid]=nueva.personas[uid]||{nombre:DATOS.porCom[uid].nombre,sueldos:[]});
     p.nombre=DATOS.porCom[uid].nombre; p.viaticos=viat;
     p.regimen=((document.getElementById("r_"+uid)||{}).value)||"relacion";
     p.sueldos=(p.sueldos||[]).filter(s=>s.desde!==desde);
-    if(bruto>0) p.sueldos.push({desde,bruto});
+    if(bruto>0) p.sueldos.push({desde,bruto,aportes});
     p.sueldos.sort((a,b)=>a.desde<b.desde?-1:1);
   }
   try{
