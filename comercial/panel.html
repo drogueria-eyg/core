@@ -1293,7 +1293,7 @@ async function cargar(){
     render();
     if(MODO_LIDER){ ldInit(); ldTeamInit(); }   // gráfico de evolución + rendimiento del equipo (líder que vende)
     ntCargar().then(()=>render()).catch(()=>{});   // anotaciones: llegan y repintan, no bloquean
-    cargarOfertas(ids).then(()=>{ render(); if(MODO_LIDER){ ldRender(); ldTeamRender(); } }).catch(()=>{});
+    cargarOfertas(ids).then(()=>{ registrarVistas().catch(()=>{}); render(); if(MODO_LIDER){ ldRender(); ldTeamRender(); } }).catch(()=>{});
     cargarWA().then(()=>{ render(); if(MODO_LIDER){ ldRender(); ldTeamRender(); } }).catch(()=>{});
   }catch(e){ document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar el panel.</b><br>'+esc(e.message)+'</div>'; }
 }
@@ -3580,6 +3580,21 @@ function rotDia(lista, dia, recordar){
   const sel=lista.filter(o=>estrellas.has(o.id)||elegidas.has(o.id));
   const azO=rotAzar(rotSemilla((COMERCIAL||"")+"|"+dia+"|orden"));
   return { lista:sel.map(o=>({o,k:azO()})).sort((a,b)=>a.k-b.k).map(x=>x.o), estrellas, total };
+}
+/* Qué vio la comercial HOY (para medir si la rotación rinde: lo mostrado contra lo no mostrado,
+   y si la posición importa). Sólo cuenta su propio panel —no cuando el líder o un admin lo
+   abren con ?c=— y se anota una vez por día (tabla eyg_ofertas_vistas de Supabase). */
+async function registrarVistas(){
+  if(!(window.__perfil && window.__perfil.rol==="comercial") || !COMERCIAL) return;
+  const clave="eyg_vistas_"+COMERCIAL+"_"+hoyStr;
+  try{ if(localStorage.getItem(clave)) return; }catch(e){}
+  const R=ofRotacion(OFERTAS.filter(ofVisible));
+  const filas=R.lista.map((o,i)=>({ comercial:COMERCIAL, user_id:ST.userId||null, oferta_id:o.id,
+    producto_id:(o.items&&o.items[0]&&o.items[0].id)||null, titulo:o.titulo||"", posicion:i+1,
+    estrella:R.estrellas.has(o.id), total:R.total }));
+  if(!filas.length) return;
+  const {error}=await EYG.supa().from("eyg_ofertas_vistas").upsert(filas,{onConflict:"dia,comercial,oferta_id",ignoreDuplicates:true});
+  if(!error){ try{ localStorage.setItem(clave,"1"); }catch(e){} }
 }
 // las que más se venden: compradores por semana desde que salió, con evidencia mínima
 function rotEstrellas(lista){

@@ -535,6 +535,8 @@ async function cargar(){
     render();
     refrescarStockOpo();   // calcula en vivo las oportunidades por stock (sin bloquear el render)
     cargarCanales();       // para quién es cada oferta (segunda ola)
+    // la medición de la rotación necesita las ofertas ya leídas: va después de la carga
+    setTimeout(()=>cargarRotacionMedida().catch(e=>console.warn("rotación:",e)),1500);
   }catch(e){ cont.innerHTML='<div class="empty">No pude leer los datos: '+esc(e.message)+'</div>'; }
 }
 
@@ -836,6 +838,132 @@ function kpi(k,label,n,sub,cls){
    Se carga en segunda ola, cuando la pantalla ya se dibujó, para no demorarla. */
 let REND=null, RENDCargando=false, RENDError="", RENDDias=30, RENDAbierto=false;
 
+/* ===================== ¿LA ROTACIÓN RINDE? (19/10/2026) =====================
+   La rotación del panel (15 ofertas por comercial: 5 estrellas + 10 que rotan, orden mezclado)
+   arrancó el 15/10/2026. Esto la mide contra las dos semanas anteriores, con datos reales:
+   · COMPRADORES: pares cliente + producto con pedido confirmado de un producto MIENTRAS estaba
+     en oferta (vigencia de la oferta; las ofertas dadas de baja salen del historial). Se mide por
+     día hábil y por oferta activa, porque cambia la cantidad de ofertas de un período al otro.
+   · COMPARTIDAS: ofertas que las comerciales confirmaron haber mandado (notas [EyGOFENV]).
+   · LO MOSTRADO CONTRA LO NO MOSTRADO (desde que se anotan las vistas): de lo que compraron los
+     clientes de cada comercial, cuánto era de una oferta que esa comercial tenía en su panel ese
+     día, y cuántos compradores junta cada posición (1-5, 6-10, 11-15) y las estrellas.
+   No mira las pausas: una oferta cuenta como activa entre su publicación y su cierre. Con pocos
+   días la comparación es orientativa; para decidir hacen falta 2-3 semanas. */
+const ROT_INICIO="2026-10-15", ROT_ANTES_DIAS=14;
+let ROTM=null, ROTMCargando=false, ROTMError="", ROTMAbierto=false;
+const rotFecha=(s,d)=>{ const x=new Date(s+"T12:00:00"); x.setDate(x.getDate()+d); return x.toISOString().slice(0,10); };
+const rotHabil=d=>{ const w=new Date(d+"T12:00:00").getDay(); return w!==0 && w!==6; };
+function kpiRotacion(){
+  let n="…", sub="midiendo…";
+  if(ROTMError){ n="—"; sub=ROTMError; }
+  else if(ROTM){ const a=ROTM.antes.porOfDia, d=ROTM.desp.porOfDia;
+    n = a>0 ? ((d>=a?"+":"")+Math.round((d/a-1)*100)+"%") : "s/d";
+    sub = "compradores por oferta y día · "+ROTM.desp.habiles+" día"+(ROTM.desp.habiles===1?"":"s")+" hábil"+(ROTM.desp.habiles===1?"":"es")+" con rotación"; }
+  if(ROTM && ROTM.desp.habiles<5){ sub="recién "+ROTM.desp.habiles+" día"+(ROTM.desp.habiles===1?"":"s")+" hábil"+(ROTM.desp.habiles===1?"":"es")+": todavía es pronto para juzgar"; }
+  return '<button class="kpi rend" onclick="abrirRotacionMedida()" title="Antes y después de la rotación de ofertas en el panel de las comerciales.">'+
+    '<span class="l">🔄 ¿La rotación rinde?</span><div class="n">'+n+'</div><div class="s">'+esc(sub)+'</div></button>';
+}
+async function cargarRotacionMedida(){
+  if(ROTMCargando) return; ROTMCargando=true; ROTMError="";
+  try{
+    const hoyS=EYG.argToday(), desde=rotFecha(ROT_INICIO,-ROT_ANTES_DIAS), ayer=rotFecha(hoyS,-1);
+    // 1. ventanas de cada oferta (vigentes + historial), por variante
+    const hist=JSON.parse(await getParam("eyg.ofertas_hist","[]")||"[]")||[];
+    const tsId=id=>{ const m=/of(\d{13})/.exec(id||""); return m?new Date(+m[1]-3*3600e3).toISOString().slice(0,10):""; };
+    const ventanas=[];   // {pv, d, h}
+    const tmpls=[...new Set(SYNC_OF.filter(o=>o.tipo==='p'&&o.target).map(o=>o.target))];
+    const vs=tmpls.length?await EYG.rpc("product.product","search_read",[[["product_tmpl_id","in",tmpls]]],{fields:["id","product_tmpl_id"],limit:0}):[];
+    const vt={}; vs.forEach(v=>(vt[v.product_tmpl_id[0]]=vt[v.product_tmpl_id[0]]||[]).push(v.id));
+    // pausada hoy: no cuenta · reanudada: estuvo pausada hasta ese día (no se guarda cuándo se pausó)
+    SYNC_OF.filter(o=>o.tipo==='p'&&o.target&&!o.pausada).forEach(o=>{ const d0=tsId(o.id)||desde, dr=(o.reanudada||"").slice(0,10);
+      (vt[o.target]||[]).forEach(pv=>ventanas.push({pv, d:(dr>d0?dr:d0), h:(o.hasta||hoyS).slice(0,10)})); });
+    OFERTAS.forEach(o=>(o.items||[]).forEach(i=>i&&i.id&&ventanas.push({pv:i.id, d:(o.desde||o.creada||tsId(o.id)||desde).slice(0,10), h:(o.hasta||hoyS).slice(0,10)})));
+    hist.forEach(o=>(o.items||[]).forEach(i=>i&&i.id&&ventanas.push({pv:i.id, d:(o.desde||tsId(String(o.id).replace("sync:",""))||desde).slice(0,10), h:(o.fin||o.hasta||hoyS).slice(0,10)})));
+    const activa=(pv,dia)=>ventanas.some(w=>w.pv===pv && w.d<=dia && w.h>=dia);
+    const pvs=[...new Set(ventanas.map(w=>w.pv))];
+    // 2. ventas de esos productos, por cliente y día (hora argentina)
+    const g=pvs.length?await EYG.rpc("sale.order.line","read_group",
+      [[["product_id","in",pvs],["state","in",["sale","done"]],["create_date",">=",desde+" 03:00:00"]],["price_subtotal:sum"],["product_id","order_partner_id","create_date:day"]],
+      {lazy:false,context:{tz:"America/Argentina/Buenos_Aires"}}):[];
+    const compras=[];   // {pv, p, dia, m}
+    g.forEach(x=>{ const r=x.__range&&x.__range["create_date:day"]; if(!r||!x.product_id||!x.order_partner_id) return;
+      const dia=new Date(new Date(r.from.replace(" ","T")+"Z").getTime()-3*3600e3).toISOString().slice(0,10);
+      if(dia>ayer) return;   // hoy todavía no terminó
+      if(activa(x.product_id[0],dia)) compras.push({pv:x.product_id[0], p:x.order_partner_id[0], dia, m:x.price_subtotal||0}); });
+    // 3. ofertas compartidas por las comerciales (confirmadas en el panel)
+    const notas=await EYG.rpc("mail.message","search_read",[[["model","=","res.partner"],["body","like","EyGOFENV"],["date",">=",desde+" 03:00:00"]]],{fields:["date"],limit:0});
+    const comp={}; notas.forEach(n=>{ const d=new Date(new Date(n.date.replace(" ","T")+"Z").getTime()-3*3600e3).toISOString().slice(0,10); comp[d]=(comp[d]||0)+1; });
+    // 4. por período
+    const periodo=(d0,d1)=>{ const dias=[]; for(let d=d0; d<=d1; d=rotFecha(d,1)) if(rotHabil(d)) dias.push(d);
+      const set=new Set(dias), cs=compras.filter(c=>set.has(c.dia));
+      const ofDia=dias.reduce((s,d)=>s+new Set(ventanas.filter(w=>w.d<=d&&w.h>=d).map(w=>w.pv)).size,0);
+      const compradores=new Set(cs.map(c=>c.p+"|"+c.pv+"|"+c.dia)).size;
+      return { d0, d1, habiles:dias.length, compradores, plata:cs.reduce((s,c)=>s+c.m,0),
+        porDia:dias.length?compradores/dias.length:0, ofProm:dias.length?ofDia/dias.length:0,
+        porOfDia:ofDia?compradores/ofDia:0, compartidas:dias.reduce((s,d)=>s+(comp[d]||0),0),
+        compPorDia:dias.length?dias.reduce((s,d)=>s+(comp[d]||0),0)/dias.length:0 }; };
+    const antes=periodo(desde, rotFecha(ROT_INICIO,-1)), desp=periodo(ROT_INICIO, ayer);
+    // 5. lo mostrado contra lo no mostrado (desde que se anotan las vistas)
+    const {data:vistas,error:ev}=await EYG.supa().from("eyg_ofertas_vistas").select("dia,comercial,producto_id,posicion,estrella").gte("dia",ROT_INICIO).limit(20000);
+    if(ev) throw new Error(ev.message);
+    let mostrado=null;
+    if(vistas && vistas.length){
+      const vis={}; vistas.forEach(v=>{ vis[v.dia+"|"+v.comercial+"|"+v.producto_id]=v; });
+      const diasVista=new Set(vistas.map(v=>v.dia));
+      const cs=compras.filter(c=>diasVista.has(c.dia));
+      const ps=[...new Set(cs.map(c=>c.p))];
+      const pr=ps.length?await EYG.rpc("res.partner","read",[ps,["user_id","commercial_partner_id"]]):[];
+      const cp=[...new Set(pr.filter(p=>!p.user_id&&p.commercial_partner_id).map(p=>p.commercial_partner_id[0]))];
+      const pc=cp.length?await EYG.rpc("res.partner","read",[cp,["user_id"]]):[]; const pcu={}; pc.forEach(p=>pcu[p.id]=p.user_id&&p.user_id[1]);
+      const com={}; pr.forEach(p=>com[p.id]=(p.user_id&&p.user_id[1])||(p.commercial_partner_id&&pcu[p.commercial_partner_id[0]])||"");
+      const comConVista=new Set(vistas.map(v=>v.dia+"|"+v.comercial));
+      const r={si:0,no:0,pos:{"1-5":0,"6-10":0,"11-15":0},estrella:0,rota:0,dias:diasVista.size};
+      cs.forEach(c=>{ const k=c.dia+"|"+com[c.p]; if(!comConVista.has(k)) return;   // esa comercial no abrió el panel ese día
+        const v=vis[k+"|"+c.pv]; if(!v){ r.no++; return; }
+        r.si++; const b=v.posicion<=5?"1-5":v.posicion<=10?"6-10":"11-15"; r.pos[b]++; if(v.estrella) r.estrella++; else r.rota++; });
+      mostrado=r;
+    }
+    ROTM={antes, desp, mostrado, desde, ayer};
+  }catch(e){ ROTMError="no se pudo medir"; console.error("medición de la rotación:",e); }
+  ROTMCargando=false; render(); if(ROTMAbierto) pintarRotacionMedida();
+}
+window.abrirRotacionMedida=()=>{ ROTMAbierto=true; pintarRotacionMedida(); if(!ROTM&&!ROTMCargando) cargarRotacionMedida(); };
+window.cerrarRotacionMedida=()=>{ ROTMAbierto=false; cerrarModal(); };
+function pintarRotacionMedida(){
+  const R=ROTM;
+  const var_=(a,d)=>a>0?`<span style="font-weight:800;color:${d>=a?"var(--ok)":"var(--bad)"}">${d>=a?"+":""}${Math.round((d/a-1)*100)}%</span>`:"—";
+  const f1=x=>(Math.round(x*10)/10).toLocaleString("es-AR");
+  const fila=(t,a,d,fmt,ayuda)=>`<tr><td style="padding:7px 10px">${t}${ayuda?`<div class="hint2" style="margin:0">${ayuda}</div>`:""}</td><td style="padding:7px 10px;text-align:right">${fmt(a)}</td><td style="padding:7px 10px;text-align:right">${fmt(d)}</td><td style="padding:7px 10px;text-align:right">${ayuda===null?"":var_(a,d)}</td></tr>`;
+  const cuerpo = !R ? '<div class="empty">'+(ROTMError?("No se pudo medir ("+esc(ROTMError)+"). Probá recargar."):"Midiendo antes y después de la rotación…")+'</div>' : (
+    `<div class="hint2" style="margin:0 0 12px">La rotación arrancó el <b>${fmtF(ROT_INICIO)}</b>. Se compara con las 2 semanas anteriores. Con pocos días es orientativo: para decidir, 2-3 semanas.</div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <tr style="text-align:right;color:var(--gris2);font-size:11px;text-transform:uppercase;letter-spacing:.3px"><th style="text-align:left;padding:6px 10px">&nbsp;</th><th style="padding:6px 10px">Antes<br>${fmtF(R.antes.d0)} – ${fmtF(R.antes.d1)}</th><th style="padding:6px 10px">Con rotación<br>${fmtF(R.desp.d0)} – ${fmtF(R.desp.d1)}</th><th style="padding:6px 10px">Cambio</th></tr>
+      ${fila("Días hábiles",R.antes.habiles,R.desp.habiles,x=>x,null)}
+      ${fila("Ofertas activas (promedio)",R.antes.ofProm,R.desp.ofProm,f1,"")}
+      ${fila("<b>Compradores por oferta y por día</b>",R.antes.porOfDia,R.desp.porOfDia,x=>f1(x*100)+"&nbsp;c/100",
+        "clientes que compraron un producto mientras estaba en oferta, cada 100 ofertas-día · la medida justa si cambia la cantidad de ofertas")}
+      ${fila("Compradores por día hábil",R.antes.porDia,R.desp.porDia,f1,"")}
+      ${fila("Facturado en productos en oferta, por día hábil",R.antes.habiles?R.antes.plata/R.antes.habiles:0,R.desp.habiles?R.desp.plata/R.desp.habiles:0,money,"neto")}
+      ${fila("Ofertas compartidas por día",R.antes.compPorDia,R.desp.compPorDia,f1,"confirmadas por las comerciales en el panel")}
+    </table>` +
+    (R.mostrado ? (()=>{ const m=R.mostrado, t=m.si+m.no;
+      return `<h4 style="margin:18px 0 6px">Lo que se mostró contra lo que no</h4>
+      <div class="hint2" style="margin:0 0 8px">Compras de clientes de cada comercial, en días que esa comercial abrió su panel (${m.dias} día${m.dias===1?"":"s"} con datos).</div>
+      <div class="rend-res">
+        <div class="rend-t"><div class="l">De ofertas que tenía a la vista</div><div class="n">${m.si}</div><div class="s">${t?Math.round(100*m.si/t):0}% de ${t}</div></div>
+        <div class="rend-t"><div class="l">De ofertas que no le aparecían</div><div class="n">${m.no}</div><div class="s">${t?Math.round(100*m.no/t):0}%</div></div>
+        <div class="rend-t"><div class="l">Por posición</div><div class="n" style="font-size:15px">${m.pos["1-5"]} · ${m.pos["6-10"]} · ${m.pos["11-15"]}</div><div class="s">puestos 1-5 · 6-10 · 11-15</div></div>
+        <div class="rend-t"><div class="l">Estrellas / rotan</div><div class="n" style="font-size:15px">${m.estrella} / ${m.rota}</div><div class="s">compradores</div></div>
+      </div>`; })()
+    : `<h4 style="margin:18px 0 6px">Lo que se mostró contra lo que no</h4><div class="empty" style="padding:14px">Desde hoy se anota qué ofertas ve cada comercial en su panel. En unos días acá se ve si lo que se muestra vende más que lo que no, y si la posición importa.</div>`)
+  );
+  document.getElementById("modal").innerHTML=
+    '<div class="scrim" onclick="if(event.target===this)cerrarRotacionMedida()"><div class="modal" style="max-width:860px">'+
+    '<div class="mh"><h3>🔄 ¿La rotación rinde?</h3><span style="margin-left:auto"><button class="btn ghost sm" onclick="cerrarRotacionMedida()">Cerrar</button></span></div>'+
+    '<div class="mb">'+cuerpo+'</div></div></div>';
+}
+
 function kpiRendimiento(){
   const n = REND ? (REND.vendidas+"/"+REND.enviadas) : (RENDError?"—":"…");
   const sub= REND ? (REND.enviadas? (Math.round(100*REND.vendidas/REND.enviadas)+"% compró · "+money(REND.facturado))
@@ -1009,6 +1137,7 @@ function render(){
     ${kpi("stock","📦 Oportunidades por stock",stockLoading?"…":stkAll.length,"por vencer, sobrestock","")}
     ${kpi("agotadas","⛔ Ofertas sin stock",agot,agot?"apagadas solas":"todas con stock",agot?"apagado":"bien")}
     ${kpiRendimiento()}
+    ${kpiRotacion()}
   </div>`;
   // ---- el foco de un KPI filtra las secciones ----
   const ver=s=>!FOCO||FOCO===s;
