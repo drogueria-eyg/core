@@ -3503,7 +3503,7 @@ function ofertasHTML(){
       <span title="Incluye las ofertas que ya cerraron: lo vendido este mes no se borra cuando la oferta sale de la lista">🛒 ${ST.ofVendidas||0} vendida${(ST.ofVendidas||0)===1?'':'s'} este mes</span>
     </div>
     ${ofFiltroHTML()}
-    ${ROT.total>OFS.length?`<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.8);margin:-4px 0 12px">Hoy ves ${OFS.length} de ${ROT.total} ofertas: las ${ROT.estrellas.size} que más se venden y una selección que cambia todos los días.</div>`:""}
+    ${ROT.total>OFS.length?`<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.8);margin:-4px 0 12px">Hoy ves ${OFS.length} de ${ROT.total} ofertas: las ${ROT.estrellas.size} que mejor se vendieron siempre y una selección que cambia todos los días.</div>`:""}
     ${OFS.length?`<div class="of-grid">${cards}</div>`:`<div style="font-size:13px;font-weight:700;color:rgba(255,255,255,.85);padding:6px 0 4px">No hay ofertas para ${ST.ofSeg==='inst'?'instituciones':'farmacias'} en este momento.</div>`}
   </div>`;
 }
@@ -3539,7 +3539,8 @@ function ofFiltroHTML(){
    El sorteo usa una semilla de comercial + día: durante el día la selección y el orden no se
    mueven (se puede volver a buscar una oferta), y cambian al día siguiente. El puntaje no se
    toca: cuenta todas las ofertas, se vean o no. Los números se ajustan en ROT_CFG. */
-const ROT_CFG={ total:15, fijas:5, minCompradores:2, novedadDias:3, urgenciaDias:5 };
+// 19/10/2026: Dirección bajó a 10 por día (5 estrellas + 5 que rotan). Antes eran 15 (5 + 10).
+const ROT_CFG={ total:10, fijas:5, minCompradores:2, novedadDias:3, urgenciaDias:5 };
 let OF_AFIN={};   // variante → clientes de la cartera que la compraron en el último año
 let OF_HIST={};   // variante → [{p: cliente, n: veces que lo pidió en 12 m, last: última vez}]
 function rotSemilla(txt){ let h=2166136261; for(const c of String(txt)){ h^=c.charCodeAt(0); h=Math.imul(h,16777619); } return h>>>0; }
@@ -3596,9 +3597,45 @@ async function registrarVistas(){
   const {error}=await EYG.supa().from("eyg_ofertas_vistas").upsert(filas,{onConflict:"dia,comercial,oferta_id",ignoreDuplicates:true});
   if(!error){ try{ localStorage.setItem(clave,"1"); }catch(e){} }
 }
-// las que más se venden: compradores por semana desde que salió, con evidencia mínima
+/* ESTRELLAS = las que mejor funcionaron HISTÓRICAMENTE (19/10/2026). Por producto, se suman TODAS
+   las veces que estuvo en oferta (la vigente y las del historial eyg.ofertas_hist, hasta un año
+   atrás): clientes distintos que lo compraron dentro de cada vigencia ÷ semanas que estuvo en
+   oferta en total. Hace falta evidencia (ROT_CFG.minCompradores). El ranking se calcula UNA VEZ
+   POR DÍA y es el mismo para todas las comerciales (caché compartido "of-ranking-<día>"): las
+   estrellas no cambian en medio del día. Si el ranking no se pudo calcular, se usa lo de la
+   oferta vigente (compradores por semana desde que salió). */
+let OF_RANK=null;   // variante → {ven, sem, r, m}
+async function cargarRanking(){
+  OF_RANK=null;
+  OF_RANK=await EYG.cacheOdoo("of-ranking-"+hoyStr, 86400, async ()=>{
+    const hist=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas_hist"]).catch(()=>"[]")||"[]")||[];
+    const tope=new Date(Date.now()-365*864e5).toISOString().slice(0,10);
+    const ven={};   // pv → [{d,h}]
+    const add=(pv,d,h)=>{ if(!pv) return; d=(d||"").slice(0,10)||tope; h=(h||hoyStr).slice(0,10); if(h<tope) return; if(d<tope) d=tope; if(h>hoyStr) h=hoyStr; if(d>h) return; (ven[pv]=ven[pv]||[]).push({d,h}); };
+    OFERTAS.forEach(o=>(o.items||[]).forEach(i=>i&&add(i.id, ofDesde(o), o.hasta)));
+    hist.forEach(o=>(o.items||[]).forEach(i=>i&&add(i.id, o.desde||o.creada||"", o.fin||o.hasta)));
+    const pvs=Object.keys(ven).map(Number); if(!pvs.length) return {};
+    const desde=Object.values(ven).flat().reduce((m,w)=>w.d<m?w.d:m,hoyStr);
+    const g=await rpc("sale.order.line","read_group",[[["product_id","in",pvs],["state","in",["sale","done"]],["create_date",">=",desde+" 03:00:00"]],
+      ["price_subtotal:sum"],["product_id","order_partner_id","create_date:day"]],{lazy:false,context:{tz:"America/Argentina/Buenos_Aires"}});
+    const out={};
+    pvs.forEach(pv=>{ const ws=ven[pv]; const sem=Math.max(1, ws.reduce((s,w)=>s+((new Date(w.h)-new Date(w.d))/864e5+1),0)/7);
+      out[pv]={ven:0, m:0, sem, r:0, _c:new Set()}; });
+    (g||[]).forEach(x=>{ const r=x.__range&&x.__range["create_date:day"]; if(!r||!x.product_id||!x.order_partner_id) return;
+      const pv=x.product_id[0], o=out[pv]; if(!o) return;
+      const dia=new Date(new Date(r.from.replace(" ","T")+"Z").getTime()-3*3600e3).toISOString().slice(0,10);
+      const w=ven[pv].findIndex(v=>v.d<=dia&&v.h>=dia); if(w<0) return;   // compró fuera de oferta: no cuenta
+      const k=w+"|"+x.order_partner_id[0]; if(!o._c.has(k)){ o._c.add(k); o.ven++; }
+      o.m+=x.price_subtotal||0; });
+    Object.values(out).forEach(o=>{ o.r=o.ven/o.sem; o.m=o.m/o.sem; delete o._c; });
+    return out;
+  }).catch(()=>null);
+}
 function rotEstrellas(lista){
-  const c=lista.map(o=>{ const g=ST.ofertas[o.id]||{}; const sem=Math.max(1,rotDias(o.creada||ofDesde(o))/7);
+  const c=lista.map(o=>{
+    const pv=(o.items||[])[0]&&o.items[0].id, h=OF_RANK&&pv&&OF_RANK[pv];
+    if(h) return {id:o.id, ven:h.ven, r:h.r, m:h.m};
+    const g=ST.ofertas[o.id]||{}; const sem=Math.max(1,rotDias(o.creada||ofDesde(o))/7);
     return {id:o.id, ven:g.gVen||0, r:(g.gVen||0)/sem, m:(g.gMonto||0)/sem}; })
     .filter(x=>x.ven>=ROT_CFG.minCompradores).sort((a,b)=>(b.r-a.r)||(b.m-a.m));
   return new Set(c.slice(0,ROT_CFG.fijas).map(x=>x.id));
@@ -3841,6 +3878,7 @@ async function cargarOfertas(ids){
     }catch(e){}
     try{ await marcarDestinos(OFERTAS, todasSync); }catch(e){}
     try{ await cargarAfinidad(ids); }catch(e){}   // para la rotación: qué compra esta cartera
+    try{ await cargarRanking(); }catch(e){}       // estrellas: las que mejor funcionaron históricamente (una vez por día)
     try{ await cargarEnviados(); }catch(e){}      // para no repetirle una oferta a la misma farmacia
     placasPrecargar();   // en segundo plano: para compartir la imagen en el mismo toque
 
