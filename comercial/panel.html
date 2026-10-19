@@ -278,7 +278,9 @@
   .of-sug-r>a:first-child{color:#fff;font-weight:700;cursor:pointer;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-decoration:none}
   .of-sug-r>a:first-child:hover{text-decoration:underline}
   .of-sug-d{color:rgba(255,255,255,.65);font-size:11px;white-space:nowrap}
-  .of-sug-wa{text-decoration:none;font-size:13px}
+  .of-sug-m{border:0;border-radius:7px;background:rgba(255,255,255,.16);color:#fff;font-weight:800;font-size:10.5px;padding:3px 7px;cursor:pointer;white-space:nowrap;font-family:inherit}
+  .of-sug-m:hover{background:rgba(255,255,255,.28)}
+  .of-sug-ya{font-size:10.5px;color:rgba(255,255,255,.6);margin-top:4px}
   .of-placa{display:block;align-self:center;width:96px;height:128px;object-fit:cover;border-radius:9px;margin:0 auto 10px;cursor:zoom-in;box-shadow:0 3px 12px rgba(0,0,0,.3);background:#fff}
   .placa-ov{position:fixed;inset:0;z-index:10050;background:rgba(5,30,28,.82);display:flex;align-items:center;justify-content:center;padding:18px;cursor:zoom-out}
   .placa-ov img{max-width:min(520px,100%);max-height:92vh;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.5)}
@@ -3611,6 +3613,28 @@ async function cargarAfinidad(ids){
      público (una oferta de farmacias no se le sugiere a una institución).
    Tocar el nombre abre su ficha; el globito abre su WhatsApp. */
 const SUG_MAX=3, SUG_MIN_DIAS=14;
+/* NO REPETIR (19/10/2026): a quien ya recibió ESA oferta en los últimos SUG_NO_REPETIR días —por
+   el bot, por una campaña o por cualquier comercial— no se la vuelve a sugerir. En la prueba de
+   octubre repetirle a la misma farmacia no rindió más (1% contra 2% de la primera vez).
+   Fuente: tabla eyg_ofertas_envios de Supabase (una fila por farmacia + producto + día). */
+const SUG_NO_REPETIR=30;
+let OF_ENVIADO={};   // variante → {cliente: último día que se le mandó}
+async function cargarEnviados(){
+  OF_ENVIADO={};
+  const pv=[...new Set(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i&&i.id)).filter(Boolean))];
+  if(!pv.length) return;
+  const desde=new Date(Date.now()-SUG_NO_REPETIR*864e5).toISOString().slice(0,10);
+  // PostgREST corta en 1000 filas: se pide por páginas
+  for(let a=0;a<20000;a+=1000){
+    const {data,error}=await EYG.supa().from("eyg_ofertas_envios").select("partner_id,producto_id,dia,estado")
+      .in("producto_id",pv).gte("dia",desde).range(a,a+999);
+    if(error||!data) break;
+    data.forEach(r=>{ if(r.estado==="error") return;   // no le llegó: se puede volver a mandar
+      const m=OF_ENVIADO[r.producto_id]||(OF_ENVIADO[r.producto_id]={}); if(!m[r.partner_id]||r.dia>m[r.partner_id]) m[r.partner_id]=r.dia; });
+    if(data.length<1000) break;
+  }
+}
+function ofYaRecibio(o,cid){ return (o.items||[]).some(i=>i&&OF_ENVIADO[i.id]&&OF_ENVIADO[i.id][cid]); }
 function ofSugeridos(o){
   const pv=(o.items||[]).map(i=>i&&i.id).filter(Boolean); if(!pv.length) return [];
   const ya=new Set(((ST.ofertas[o.id]||{}).cli)||[]);
@@ -3618,20 +3642,64 @@ function ofSugeridos(o){
   pv.forEach(p=>(OF_HIST[p]||[]).forEach(h=>{ const a=porCli[h.p]||(porCli[h.p]={p:h.p,n:0,last:""}); a.n+=h.n; if(h.last>a.last) a.last=h.last; }));
   const seg=c=>{ const r=EYG.rubroDe(c); return (r==="INSTITUCIONES"||r==="SAMCO")?"inst":"farm"; };
   return Object.values(porCli).map(a=>{
-    const c=(ST.contactos||[]).find(x=>x.id===a.p); if(!c || ya.has(a.p)) return null;
+    const c=(ST.contactos||[]).find(x=>x.id===a.p); if(!c || ya.has(a.p) || ofYaRecibio(o,a.p)) return null;
     if(o._dest==="farm"||o._dest==="inst"){ if(seg(c)!==o._dest) return null; }
     const dias=Math.floor(rotDias(a.last)); if(dias<SUG_MIN_DIAS) return null;
     const ritmo=Math.min(180,Math.max(15,365/Math.max(1,a.n)));
     return {c, dias, n:a.n, atraso:dias/ritmo};
   }).filter(Boolean).sort((x,y)=>(y.atraso-x.atraso)||(y.n-x.n)).slice(0,SUG_MAX);
 }
+// cuántos de SU cartera ya la recibieron (para que sepa por qué no aparecen)
+function ofYaRecibieronTxt(o){
+  const ids=new Set((ST.contactos||[]).map(c=>c.id)); const vistos=new Set();
+  (o.items||[]).forEach(i=>Object.keys((i&&OF_ENVIADO[i.id])||{}).forEach(p=>{ if(ids.has(+p)) vistos.add(+p); }));
+  return vistos.size?`<div class="of-sug-ya">✓ ${vistos.size} de tu cartera ya la ${vistos.size===1?"recibió":"recibieron"} (no se les repite)</div>`:"";
+}
+/* Mandarle la oferta a UN cliente: con placa, el menú de compartir del celular (elige a ese
+   cliente); sin placa, se abre su chat con el texto ya escrito. Después se pregunta si se la
+   mandó: si dice que sí, queda registrado para no repetírsela y suma como oferta enviada. */
+window.ofMandarA=(oid,cid)=>{
+  const o=OFERTAS.find(x=>x.id===oid), c=(ST.contactos||[]).find(x=>x.id===cid); if(!o||!c) return;
+  const f=PLACA_FILE[oid];
+  if(o.placa && f && navigator.canShare && navigator.canShare({files:[f]})){
+    navigator.share({files:[f]}).then(()=>ofConfirmarCliente(oid,cid)).catch(err=>{ if(err&&err.name==="AbortError") return; toast("No se pudo abrir el menú de compartir"); });
+    return;
+  }
+  const n=waN(c.mobile||c.phone||"");
+  if(n) window.open("https://wa.me/"+n+"?text="+encodeURIComponent(ofertaMsg(o)),"_blank");
+  else if(o.placa){ window.open(o.placa,"_blank"); toast("Ese cliente no tiene celular cargado: guardá la placa y mandásela"); }
+  ofConfirmarCliente(oid,cid);
+};
+function ofConfirmarCliente(oid,cid){
+  const o=OFERTAS.find(x=>x.id===oid), c=(ST.contactos||[]).find(x=>x.id===cid); if(!o||!c) return;
+  const tit=o.titulo||ofItems(o)||"la oferta", nom=(EYG.fantasia&&EYG.fantasia(c))||c.name||"";
+  let el=document.getElementById("waconfirm");
+  if(!el){ el=document.createElement("div"); el.id="waconfirm"; el.className="waconfirm"; document.body.appendChild(el); }
+  el.innerHTML=`<div class="wcbox"><div class="wct">📤 ¿Le mandaste <b>${esc(tit)}</b> a <b>${esc(nom)}</b>?</div>
+    <div class="wcsub">Si confirmás, suma como oferta enviada y no se le vuelve a sugerir por ${SUG_NO_REPETIR} días.</div>
+    <div class="wcb"><button class="no" onclick="cerrarWAConfirm()">No</button><button class="si" onclick="ofRegistrarCliente('${oid.replace(/'/g,"")}',${cid})">Sí, se la mandé ✓</button></div></div>`;
+  requestAnimationFrame(()=>el.classList.add("on"));
+}
+window.ofRegistrarCliente=async(oid,cid)=>{
+  const o=OFERTAS.find(x=>x.id===oid), c=(ST.contactos||[]).find(x=>x.id===cid); if(!o||!c){ cerrarWAConfirm(); return; }
+  const filas=(o.items||[]).filter(i=>i&&i.id).map(i=>({ partner_id:cid, farmacia:(EYG.fantasia&&EYG.fantasia(c))||c.name||"",
+    producto_id:i.id, producto:o.titulo||i.nombre||"", precio:o.precio||null, origen:"panel", comercial:COMERCIAL||null, placa:o.placa||null }));
+  try{
+    const {error}=await EYG.supa().from("eyg_ofertas_envios").upsert(filas,{onConflict:"partner_id,producto,dia",ignoreDuplicates:true});
+    if(error) throw error;
+    const hoyD=hoyStr; filas.forEach(r=>{ (OF_ENVIADO[r.producto_id]=OF_ENVIADO[r.producto_id]||{})[cid]=hoyD; });
+  }catch(e){ toast("No pude registrar el envío: "+(e.message||e)); }
+  await registrarEnvioOferta(oid);   // lo de siempre: suma como oferta enviada (puntaje)
+  const box=document.querySelector("#ofertasBox .accin"); if(box) box.innerHTML=ofertasHTML();
+};
 function ofSugHTML(o){
   const l=ofSugeridos(o); if(!l.length) return "";
   const nom=c=>EYG.fantasia&&EYG.fantasia(c) || c.name || "";
   return `<div class="of-sug"><div class="of-sug-t">👥 Para ofrecérsela</div>${l.map(x=>{
     const n=waN(x.c.mobile||x.c.phone||"");
-    return `<div class="of-sug-r"><a onclick="abrir(${x.c.id})" title="Lo pidió ${x.n} ${x.n===1?"vez":"veces"} en el año · abrir la ficha">${esc(nom(x.c))}</a><span class="of-sug-d">hace ${x.dias} d</span>${n?`<a class="of-sug-wa" href="https://wa.me/${n}" target="_blank" rel="noopener" title="Abrir su WhatsApp">💬</a>`:""}</div>`;
-  }).join("")}</div>`;
+    const oid=(o.id||"").replace(/'/g,"");
+    return `<div class="of-sug-r"><a onclick="abrir(${x.c.id})" title="Lo pidió ${x.n} ${x.n===1?"vez":"veces"} en el año · abrir la ficha">${esc(nom(x.c))}</a><span class="of-sug-d">hace ${x.dias} d</span>${(n||o.placa)?`<button class="of-sug-m" onclick="ofMandarA('${oid}',${x.c.id})" title="Mandarle la oferta">📤 Mandar</button>`:""}</div>`;
+  }).join("")}${ofYaRecibieronTxt(o)}</div>`;
 }
 
 async function marcarDestinos(list, reglas){
@@ -3758,6 +3826,7 @@ async function cargarOfertas(ids){
     }catch(e){}
     try{ await marcarDestinos(OFERTAS, todasSync); }catch(e){}
     try{ await cargarAfinidad(ids); }catch(e){}   // para la rotación: qué compra esta cartera
+    try{ await cargarEnviados(); }catch(e){}      // para no repetirle una oferta a la misma farmacia
     placasPrecargar();   // en segundo plano: para compartir la imagen en el mismo toque
 
     // ---- lo que puntúa: vigentes + vencidas + dadas de baja (historial), sin repetir ----
