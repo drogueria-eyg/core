@@ -1718,29 +1718,149 @@ window.EYGHome = (function(){
   async function cargarClientes(){
     const desde60=addD(HOY,-60);
     /* El margen ya no se consulta acá: tiene tarjeta propia con el anillo. */
-    const [tot, nuevos, act60] = await Promise.all([
-      rpc("res.partner","search_count",[domSocios([["customer_rank",">",0]])]),
-      rpc("res.partner","search_count",[domSocios([["customer_rank",">",0],["create_date",">=",MES_INI]])]),
+    /* Ids y no sólo cuentas: tocar un renglón abre QUIÉNES son (cliLista). */
+    const [cartIds, nuevosIds, act60] = await Promise.all([
+      rpc("res.partner","search",[domSocios([["customer_rank",">",0]])]),
+      rpc("res.partner","search",[domSocios([["customer_rank",">",0],["create_date",">=",MES_INI]])]),
       rpc("sale.order","read_group",[domVentas([["date_order",">=",uDesde(desde60)]]),["amount_untaxed:sum"],["partner_id"]],Object.assign({lazy:false,limit:6000},CTX)),
     ]);
-    const activos=act60.filter(g=>g.partner_id).length;
-    const dormidos=Math.max(0,tot-activos);
+    const act=new Map(act60.filter(g=>g.partner_id).map(g=>[g.partner_id[0],{amt:g.amount_untaxed||0, ped:g.__count||0}]));
+    const tot=cartIds.length, nuevos=nuevosIds.length, activos=act.size;
+    /* Dormidos = los de la cartera que NO compraron. Antes era tot−activos, y
+       daba de menos: hay pedidos a contactos que no están en la cartera (un
+       contacto hijo, una ficha archivada) — el 20/10 eran 4 (478 vs 482). */
+    const dormIds=cartIds.filter(id=>!act.has(id));
+    const dormidos=dormIds.length;
     const cobertura=tot?activos/tot:0;
     SALUD.cli={tot, activos}; pintarSalud();
     await LISTO1;   // "compraron hoy" sale de los pedidos que carga la ola 1
-    const compraronHoy=new Set(ORD8.filter(o=>o.date===HOY).map(o=>o.cli)).size;
+    const compraronHoy=hoyPorCliente().size;
+    CLI={cartIds, nuevosIds, dormIds, act};
 
+    const tap=(k,tit)=>`role="button" tabindex="0" title="${tit}" onclick="EYGHome.verClientes('${k}')"
+        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();EYGHome.verClientes('${k}')}"`;
     put("dz-cli",`
       <div class="cx-h"><h2>👥 Clientes</h2><span class="hint">${V.propio?"tu cartera":"cartera total"}</span></div>
-      <div class="big-l">Activos · compraron en 60 días</div>
-      <div class="big-n" data-to="${activos}" data-fmt="ent">0</div>
+      <div class="tapz" ${tap("activos","Ver quiénes compraron en los últimos 60 días")}>
+        <div class="big-l">Activos · compraron en 60 días <i class="chev">›</i></div>
+        <div class="big-n" data-to="${activos}" data-fmt="ent">0</div>
+      </div>
       <div class="pbar" title="${Math.round(cobertura*100)}% de la cartera"><i style="width:${(cobertura*100).toFixed(1)}%"></i></div>
       <div style="margin-top:12px">
-        <div class="lv"><span class="n">🗂️ Cartera total</span><span class="v">${ent(tot)}</span></div>
-        <div class="lv"><span class="n">🆕 Nuevos este mes</span><span class="v ${nuevos?"ok":""}">${ent(nuevos)}</span></div>
-        <div class="lv"><span class="n">😴 Sin comprar hace +60 días</span><span class="v ${dormidos?"warn":""}">${ent(dormidos)}</span></div>
-        <div class="lv"><span class="n">🛒 Compraron hoy</span><span class="v">${ORD8_OK?ent(compraronHoy):"—"}</span></div>
+        <div class="lv tap" ${tap("cartera","Ver la cartera completa")}><span class="n">🗂️ Cartera total</span><span class="v">${ent(tot)}<i class="chev">›</i></span></div>
+        <div class="lv tap" ${tap("nuevos","Ver los clientes dados de alta este mes")}><span class="n">🆕 Nuevos este mes</span><span class="v ${nuevos?"ok":""}">${ent(nuevos)}<i class="chev">›</i></span></div>
+        <div class="lv tap" ${tap("dormidos","Ver quiénes no compran hace más de 60 días")}><span class="n">😴 Sin comprar hace +60 días</span><span class="v ${dormidos?"warn":""}">${ent(dormidos)}<i class="chev">›</i></span></div>
+        <div class="lv tap" ${tap("hoy","Ver quiénes compraron hoy")}><span class="n">🛒 Compraron hoy</span><span class="v">${ORD8_OK?ent(compraronHoy):"—"}<i class="chev">›</i></span></div>
       </div>`);
+  }
+
+  /* ---------- Clientes: quiénes son ----------
+     La tarjeta trae sólo ids; nombre, localidad, comercial y última compra se
+     piden recién al abrir la ventana (2 consultas, ~2 s) y se reusan 5 minutos.
+     "Compraron hoy" se arma de ORD8 en el momento: está al minuto. */
+  let CLI=null, CLI_DAT=null, CLI_K="activos", CLI_Q="";
+  function hoyPorCliente(){
+    const m=new Map();
+    for(const o of ORD8){ if(o.date!==HOY) continue;
+      const k=o.pid||o.cli, r=m.get(k)||{amt:0, ped:0, vend:new Set()};
+      r.amt+=o.amt; r.ped++; if(o.vend) r.vend.add(o.vend); m.set(k,r); }
+    return m;
+  }
+  const CLI_TABS=[
+    {k:"activos",  ico:"🟢", t:"Activos · compraron en 60 días", ord:"por lo que compraron en 60 días"},
+    {k:"cartera",  ico:"🗂️", t:"Cartera total",                  ord:"por nombre"},
+    {k:"nuevos",   ico:"🆕", t:"Nuevos este mes",                ord:"del alta más reciente a la más vieja"},
+    {k:"dormidos", ico:"😴", t:"Sin comprar hace +60 días",      ord:"del que dejó de comprar más recién al más viejo"},
+    {k:"hoy",      ico:"🛒", t:"Compraron hoy",                  ord:"por lo que compraron hoy"},
+  ];
+  async function cliDatos(){
+    if(CLI_DAT && Date.now()-CLI_DAT.at<300000) return CLI_DAT;
+    const ids=new Set([...CLI.cartIds, ...CLI.act.keys(), ...ORD8.map(o=>o.pid).filter(Boolean)]);
+    const [ps, ult] = await Promise.all([
+      rpc("res.partner","search_read",[[["id","in",[...ids]],["active","in",[true,false]]]],
+        Object.assign({fields:["id","display_name","city","user_id","create_date"],limit:0},CTX)),
+      rpc("sale.order","read_group",[domVentas(),["date_order:max"],["partner_id"]],Object.assign({lazy:false,limit:0},CTX)),
+    ]);
+    const P=new Map(ps.map(p=>[p.id,{n:p.display_name||"(sin nombre)", loc:p.city||"", com:p.user_id?p.user_id[1]:"",
+      alta:p.create_date?EYG.argParts(p.create_date).date:""}]));
+    const U=new Map(ult.filter(g=>g.partner_id&&g.date_order).map(g=>[g.partner_id[0],EYG.argParts(g.date_order).date]));
+    return CLI_DAT={P, U, at:Date.now()};
+  }
+  function verClientes(k){
+    if(!CLI) return;
+    CLI_K=k; CLI_Q="";
+    let sc=document.getElementById("cli-scrim");
+    if(!sc){
+      sc=document.createElement("div"); sc.id="cli-scrim"; sc.className="cli-scrim";
+      sc.addEventListener("click",e=>{ if(e.target===sc) cliCerrar(); });
+      document.body.appendChild(sc);
+      document.addEventListener("keydown",cliTecla);
+    }
+    document.body.style.overflow="hidden";
+    sc.innerHTML=`<div class="cli-modal" role="dialog" aria-modal="true" aria-labelledby="cli-tit">
+      <div class="cli-top"><div><h3 id="cli-tit"></h3><div class="cli-sub" id="cli-sub"></div></div>
+        <button class="mini-x" onclick="EYGHome.cliCerrar()" title="Cerrar" aria-label="Cerrar">✕</button></div>
+      <div class="cli-tabs" id="cli-tabs"></div>
+      <input class="cli-q" id="cli-q" type="search" placeholder="Buscar cliente, localidad o comercial…" autocomplete="off">
+      <div class="cli-list" id="cli-list"><div class="cli-vacio">Leyendo los clientes…</div></div>
+    </div>`;
+    const q=document.getElementById("cli-q");
+    q.addEventListener("input",()=>{ CLI_Q=q.value; cliPintar(); });
+    cliPintar();
+    cliDatos().then(cliPintar).catch(e=>{
+      const l=document.getElementById("cli-list");
+      if(l) l.innerHTML=`<div class="cli-vacio bad">No pude leer los clientes (${esc(e.message)}). Probá de nuevo en un rato.</div>`;
+    });
+  }
+  function cliTab(k){ CLI_K=k; const l=document.getElementById("cli-list"); if(l) l.scrollTop=0; cliPintar(); }
+  function cliTecla(e){ if(e.key==="Escape" && document.getElementById("cli-scrim")) cliCerrar(); }
+  function cliCerrar(){
+    const sc=document.getElementById("cli-scrim"); if(sc) sc.remove();
+    document.removeEventListener("keydown",cliTecla);
+    document.body.style.overflow="";
+  }
+  function cliPintar(){
+    const tab=CLI_TABS.find(t=>t.k===CLI_K)||CLI_TABS[0];
+    const hoy=hoyPorCliente();
+    const listas={activos:[...CLI.act.keys()], cartera:CLI.cartIds, nuevos:CLI.nuevosIds, dormidos:CLI.dormIds, hoy:[...hoy.keys()]};
+    const tit=document.getElementById("cli-tit"), tabs=document.getElementById("cli-tabs");
+    if(!tit) return;
+    tit.textContent=tab.ico+" "+tab.t;
+    tabs.innerHTML=CLI_TABS.map(t=>`<button class="${t.k===CLI_K?"on":""}" onclick="EYGHome.cliTab('${t.k}')">${t.ico} ${esc(t.t.split(" · ")[0])} <b>${ent(listas[t.k].length)}</b></button>`).join("");
+    const D=CLI_DAT, sub=document.getElementById("cli-sub"), list=document.getElementById("cli-list");
+    if(!D){ sub.textContent=ent(listas[CLI_K].length)+" clientes"; return; }
+    const hace=d=>{ const n=Math.round((dObj(HOY)-dObj(d))/864e5); return n<=0?"hoy":n===1?"ayer":"hace "+ent(n)+" días"; };
+    const fch=d=>d.slice(8,10)+"/"+d.slice(5,7)+"/"+d.slice(0,4);
+    let rows=listas[CLI_K].map(id=>{
+      const p=D.P.get(id)||{n:typeof id==="string"?id:"Cliente #"+id, loc:"", com:"", alta:""};
+      const a=CLI.act.get(id), h=hoy.get(id), u=D.U.get(id)||"";
+      return {id, p, a, h, u};
+    });
+    const ord={
+      activos:(x,y)=>(y.a?y.a.amt:0)-(x.a?x.a.amt:0),
+      cartera:(x,y)=>x.p.n.localeCompare(y.p.n,"es"),
+      nuevos:(x,y)=>y.p.alta.localeCompare(x.p.alta),
+      dormidos:(x,y)=>y.u.localeCompare(x.u)||x.p.n.localeCompare(y.p.n,"es"),
+      hoy:(x,y)=>y.h.amt-x.h.amt,
+    }[CLI_K];
+    rows.sort(ord);
+    const total=rows.length;
+    const nrm=s=>String(s).normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().trim();
+    const q=nrm(CLI_Q);
+    if(q) rows=rows.filter(r=>nrm([r.p.n,r.p.loc,r.p.com].join(" ")).includes(q));
+    sub.textContent=(q?ent(rows.length)+" de "+ent(total):ent(total))+" clientes · ordenados "+tab.ord;
+    const der=r=>{
+      if(CLI_K==="activos") return `<b>${M(r.a.amt)}</b><span>${ent(r.a.ped)} ${r.a.ped===1?"pedido":"pedidos"} en 60 días</span>`;
+      if(CLI_K==="hoy") return `<b>${M(r.h.amt)}</b><span>${ent(r.h.ped)} ${r.h.ped===1?"pedido":"pedidos"}${r.h.vend.size?" · "+esc([...r.h.vend].join(", ")):""}</span>`;
+      if(CLI_K==="nuevos") return `<b>Alta ${r.p.alta?fch(r.p.alta):"—"}</b><span>${r.u?"ya compró · "+hace(r.u):"todavía no compró"}</span>`;
+      if(!r.u) return `<b class="${CLI_K==="dormidos"?"warn":""}">Nunca compró</b><span>${r.p.alta?"alta "+fch(r.p.alta):""}</span>`;
+      return `<b class="${CLI_K==="dormidos"?"warn":r.a?"ok":""}">${hace(r.u)}</b><span>última compra ${fch(r.u)}</span>`;
+    };
+    list.innerHTML=rows.length?rows.map(r=>`<div class="cli-row">
+        <div class="cli-l"><div class="cli-n">${esc(r.p.n)}</div>
+          <div class="cli-m">${[r.p.loc&&"📍 "+esc(r.p.loc), r.p.com&&"👤 "+esc(r.p.com)].filter(Boolean).join(" · ")||"—"}</div></div>
+        <div class="cli-r">${der(r)}</div></div>`).join("")
+      : `<div class="cli-vacio">${q?"Ningún cliente coincide con la búsqueda.":"No hay clientes en esta lista."}</div>`;
   }
 
   /* ======================= OLA 3 · stock, tops, novedades ======================= */
@@ -1978,5 +2098,5 @@ window.EYGHome = (function(){
       :`<div class="nodata">Todavía no hay pedidos registrados.</div>`}`);
   }
 
-  return { main, init, ver, verModo, verMargen, verSeg, saludIr, saludToggle, refrescar };
+  return { main, init, ver, verModo, verMargen, verSeg, saludIr, saludToggle, refrescar, verClientes, cliTab, cliCerrar };
 })();
