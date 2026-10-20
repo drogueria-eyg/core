@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=117"></script>
+<script src="../assets/core.js?v=118"></script>
 <script src="../assets/ofertas-canal.js?v=20261014"></script>
 <style>
   :root{
@@ -267,9 +267,46 @@
             transform:none;z-index:200;display:flex;flex-direction:column}
   .cart.max .ch{flex:none}
   .cart.max .citems{flex:1 1 auto;min-height:0;max-height:none;overflow-y:auto;
-    -webkit-overflow-scrolling:touch;overscroll-behavior:contain;
-    display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:0;align-content:start}
-  .cart.max .citem{border-right:1px solid var(--line)}
+    -webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+  /* Ampliado = UNA LÍNEA POR PRODUCTO (pedido de los comerciales, 20/10/2026). Antes eran
+     tarjetas de a 3 por fila y se confundía qué cantidad y qué precio eran de cada
+     producto. Ahora cada renglón es una fila horizontal y las columnas (cantidad, IVA,
+     precio, subtotal) tienen ancho fijo, así quedan alineadas de arriba a abajo y se
+     leen como una planilla. El encabezado acompaña al desplazarse. */
+  .ci-head{display:none}
+  .cart.max .ci-head{display:flex;gap:18px;align-items:center;position:sticky;top:0;z-index:2;background:#F4F9F8;
+    border-bottom:1px solid var(--line);padding:7px 18px;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--gris)}
+  .cart.max .citem{align-items:center;gap:18px;padding:8px 18px}
+  .cart.max .ci-main{display:grid;grid-template-columns:minmax(0,1fr) 170px;column-gap:18px;align-items:center}
+  .cart.max .ci-main.t2{grid-template-columns:minmax(0,1fr) 170px 150px}
+  .cart.max .ci-main > *{grid-column:1}
+  .cart.max .ci-main > .ministep{grid-column:2;grid-row:1 / span 6;margin-top:0}
+  .cart.max .ci-main > .descstep{grid-column:3;grid-row:1 / span 6;margin-top:0}
+  .cart.max .ci-r{display:grid;grid-template-columns:92px 150px 140px;column-gap:12px;align-items:center;text-align:right}
+  .cart.max .ci-r .ci-iva{grid-column:1;justify-self:center;margin-bottom:0}
+  .cart.max .ci-r .ci-u{grid-column:2} .cart.max .ci-r .ci-sub{grid-column:3}
+  .cart.max .ci-r .ci-u{font-size:13px;color:var(--ink)}
+  .cart.max .ci-r .ci-sub{margin-top:0}
+  .cart.max .ci-head .ci-main > span:nth-child(2), .cart.max .ci-head .ci-main > span:nth-child(3){grid-row:auto}
+  .cart.max .ci-head .ci-main > span:nth-child(2){grid-column:2}
+  .cart.max .ci-head .ci-main > span:nth-child(3){grid-column:3}
+  .cart.max .ci-head .ci-r span:first-child{text-align:center}
+  /* Tablet vertical: columnas más angostas para que al nombre le quede lugar. */
+  @media(max-width:1000px){
+    .cart.max .citem,.cart.max .ci-head{gap:10px;padding-left:12px;padding-right:12px}
+    .cart.max .ci-main{grid-template-columns:minmax(0,1fr) 150px;column-gap:10px}
+    .cart.max .ci-main.t2{grid-template-columns:minmax(0,1fr) 150px 128px}
+    .cart.max .ci-r{grid-template-columns:62px 112px 118px;column-gap:8px}
+    .cart.max .ci-r .ci-u{font-size:12px}
+    .cart.max .ci-r .ci-sub{font-size:14px}
+  }
+  /* En el celular no entra en una línea: vuelve a la tarjeta apilada de siempre. */
+  @media(max-width:700px){
+    .cart.max .ci-head{display:none}
+    .cart.max .ci-main,.cart.max .ci-main.t2{display:block}
+    .cart.max .ci-main > .ministep,.cart.max .ci-main > .descstep{margin-top:7px}
+    .cart.max .ci-r{display:block}
+  }
   .cart.max .cfoot{flex:none;border-top:1px solid var(--line);background:var(--surface)}
   body.cartmax-on{overflow:hidden}   /* nada se mueve por detrás del panel */
   .citems{overflow:auto;flex:1;min-height:60px}
@@ -373,9 +410,7 @@
 
 <script>
 const rpc = EYG.rpc;
-// Precio EXACTO en el panel: muestra centavos cuando los hay (ej. $285,06); enteros quedan limpios ($310).
-// El EYG.money global redondea a pesos enteros; acá lo pisamos solo para la vista de venta (que cotiza).
-const money = n => { n=Math.round((+n||0)*100)/100; return "$"+n.toLocaleString("es-AR",{minimumFractionDigits:Number.isInteger(n)?0:2, maximumFractionDigits:2}); };
+const money = n => EYG.money(n);   // siempre con centavos, al centavo de Odoo
 const esc = EYG.esc;
 const ES = {lang:"es_AR"};
 const PPAL_TAG = "[ENTREGA-PPAL]"; // marca reversible (chatter) de la dirección de entrega principal
@@ -1177,7 +1212,7 @@ async function cargarOfertas(){
   if(synTmpls.length){
     try{
       const tps=await rpc("product.template","read",[synTmpls,["list_price","categ_id"]],{context:{lang:"es_AR"}});
-      tps.forEach(t=>{ if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) ST.ofertaPvp[t.id]=Math.round(t.list_price||0); });
+      tps.forEach(t=>{ if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) ST.ofertaPvp[t.id]=t.list_price||0; });
     }catch(e){}
   }
   try{ await ofertasDelCliente(); }catch(e){}
@@ -1940,16 +1975,19 @@ function renderCart(){
   const clave = pid => nombreDe(pid).replace(/^\[[^\]]*\]\s*/,"").trim().toLowerCase()
                        .normalize("NFD").replace(/[\u0300-\u036f]/g,"");
   pids.sort((a,b)=>clave(a).localeCompare(clave(b),"es"));
-  items.innerHTML = pids.map(pid=>{
+  // Encabezado de columnas: solo se ve en el pedido ampliado (una línea por producto).
+  const head=`<div class="ci-head"><div class="ci-main${esTier2()?" t2":""}" style="flex:1;min-width:0"><span>Producto</span><span>Cantidad</span>${esTier2()?"<span>Descuento</span>":""}</div>
+    <div class="ci-r"><span>IVA</span><span>Precio</span><span>Subtotal</span></div></div>`;
+  items.innerHTML = head + pids.map(pid=>{
     const q=ST.want[pid]; const l=ST.lines[pid];
     const nombre = nombreDe(pid);
     const base = (ST.baseUnit[pid]!=null) ? ST.baseUnit[pid] : (l?l.price_unit:ST.precios[pid]);
     const desc = esTier2() ? (ST.desc[pid]||0) : 0;
     const unit = (base!=null) ? base*(1-desc/100) : (l?l.price_unit:ST.precios[pid]);
-    const sub = (unit!=null && q) ? unit*q : (l?l.subtotal:null);
+    const sub = (unit!=null && q) ? EYG.r2(unit*q) : (l?l.subtotal:null);   // al centavo, como el renglón de Odoo
     const nx=proxTramo(pid,q);
     return `<div class="citem">
-      <div style="min-width:0;flex:1">
+      <div class="ci-main${esTier2()?" t2":""}" style="min-width:0;flex:1">
         <div class="ci-nm">${esc(nombre)}</div>
         ${desc>0?`<div style="margin-top:3px"><span class="ci-disc">−${desc}% desc.</span></div>`:""}
         ${nx?`<div class="nextd" style="margin-top:5px;display:inline-block">${txtTramo(pid,nx)}</div>`:""}

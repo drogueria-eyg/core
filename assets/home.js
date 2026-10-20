@@ -41,7 +41,7 @@ window.EYGHome = (function(){
     n=n||0; const a=Math.abs(n);
     if(a>=1e6){ const v=n/1e6; return "$"+(a>=1e8?Math.round(v).toLocaleString("es-AR"):v.toFixed(1).replace(".",","))+"M"; }
     if(a>=1e4) return "$"+Math.round(n/1e3).toLocaleString("es-AR")+"k";
-    return "$"+Math.round(n).toLocaleString("es-AR");
+    return EYG.money(n);
   }
   const ent = n => Math.round(n||0).toLocaleString("es-AR");
   const pct = n => (n>0?"+":"")+Math.round(n)+"%";

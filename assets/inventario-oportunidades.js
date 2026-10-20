@@ -119,11 +119,11 @@ window.EYGOpo = (function(){
     return cands.map(r=>{
       const base = baseByTmpl[r.tmpl]!=null ? baseByTmpl[r.tmpl] : r.pvp;
       const costo = r.costoU>0 ? r.costoU : (r.sp>0 ? r.sp : r.cu);
-      const piso = Math.round(costo*1.05);
+      const piso = EYG.r2(costo*1.05);
       let sug;
-      if(r.liquidar){ sug = Math.round(costo*(1+MLIQ)); }
-      else { const d=(DESCX[r.motivo]!=null?DESCX[r.motivo]:DESC[r.motivo]); sug=Math.round(base*(1-d)); if(sug<piso) sug=piso; }
-      const margenAbs = Math.round(sug - costo), margenPct = (sug>0 && costo>0) ? Math.round((sug-costo)/sug*100) : null;
+      if(r.liquidar){ sug = EYG.r2(costo*(1+MLIQ)); }
+      else { const d=(DESCX[r.motivo]!=null?DESCX[r.motivo]:DESC[r.motivo]); sug=EYG.r2(base*(1-d)); if(sug<piso) sug=piso; }
+      const margenAbs = EYG.r2(sug - costo), margenPct = (sug>0 && costo>0) ? Math.round((sug-costo)/sug*100) : null;
       const gm = r.gMeses!=null&&r.gMeses<900 ? r.gMeses : null;
       const motTxt = r.motivo==="vence" ? `Vence en ${r.min}m y al ritmo del producto no llega a venderse`
         : r.motivo==="muerto" ? `Sin ventas en los últimos 12 meses (todo el producto)`
@@ -132,7 +132,7 @@ window.EYGOpo = (function(){
         : `Sobrestock: ${gm!=null?gm+" meses de stock":"alto"}`;
       return { id:r.id, tmpl:r.tmpl, sku:r.code, nombre:cleanName(r.name), cat:r.fam,
         stock:r.qty, unid:r.unid||r.qty, meses:gm, min:r.min, valor:Math.round(r.val), recuperable:r.recuperable,
-        motivo:r.motivo, liquidar:!!r.liquidar, motivoTxt:motTxt, precio:Math.round(base), costoU:Math.round(costo),
+        motivo:r.motivo, liquidar:!!r.liquidar, motivoTxt:motTxt, precio:base, costoU:EYG.r2(costo),
         desc: base>0?Math.round((1-sug/base)*100)/100:0, sugPrecio:sug, margenAbs, margenPct };
     }).filter(r=> r.precio>r.costoU*1.25 && r.precio<r.costoU*6).slice(0,MAX); // margen para un descuento real (sino la "oferta casi al costo" no descuenta nada)
   }
@@ -192,7 +192,7 @@ window.EYGOpo = (function(){
     const rows=allIds.map(id=>{ const m=M[id]||{}, vp=vencP[id]||{};
       const val=Math.round(QV[id]||0), qty=Math.round(QQ[id]||0), ventaU=Math.round(V[id]||0), venta3=Math.round(V3[id]||0), meses=ventaU>0?qty/(ventaU/12):999;
       const net=(m.x_costo_motor||0)>0?m.x_costo_motor:(m.standard_price||0);
-      const costoU=Math.round(net*(1+(vendeExento(m)?(m.x_iva_compra||0):0)));
+      const costoU=EYG.r2(net*(1+(vendeExento(m)?(m.x_iva_compra||0):0)));
       return {id, tmpl:m.product_tmpl_id?m.product_tmpl_id[0]:null, activo:m.active!==false, xop:!!m.x_oportunidad, xarch:!!m.x_oportunidad_archivada,
         code:m.default_code||"", name:(m.name||""), categ:m.categ_id?m.categ_id[1]:"", fam:familia(m.categ_id),
         marca:(Array.isArray(m.x_studio_many2one_field_6o_1if0l6ud2)?(m.x_studio_many2one_field_6o_1if0l6ud2[1]||""):""),

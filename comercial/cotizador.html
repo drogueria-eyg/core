@@ -113,6 +113,17 @@
   .btn{font-family:inherit;font-size:14px;font-weight:800;border:0;border-radius:10px;padding:12px 16px;cursor:pointer;background:var(--teal);color:#fff}
   .btn:hover{filter:brightness(1.06)}
   .btn.wa{background:var(--wa,#25D366)}
+  .btn.pdf{background:var(--teal-deep)}
+  .pdff{display:flex;flex-direction:column;gap:5px;margin-bottom:11px}
+  .pdff label{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--gris);font-weight:800}
+  .pdff input,.pdff textarea{font-family:inherit;font-size:14px;color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:var(--surface);width:100%;box-sizing:border-box}
+  .pdff input:focus,.pdff textarea:focus{outline:none;border-color:var(--teal)}
+  .pdff .ay{font-size:11.5px;color:var(--gris)}
+  .pdfsug{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+  .pdfsug button{font-family:inherit;text-align:left;font-size:12.5px;border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:6px 9px;cursor:pointer;color:var(--ink)}
+  .pdfsug button:hover{border-color:var(--teal);background:#F7FBFA}
+  .pdf2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  @media(max-width:520px){ .pdf2{grid-template-columns:1fr} }
   .btn.gh{background:var(--surface);color:var(--ink);border:1px solid var(--line)}
   .btn.gh:hover{border-color:var(--teal)}
   .btn:disabled{opacity:.45;cursor:not-allowed;filter:none}
@@ -154,7 +165,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=117"></script>
+<script src="../assets/core.js?v=118"></script>
 <script>
 /* ============================================================
    COTIZADOR — precios sueltos y cotizaciones, SIN cliente
@@ -190,7 +201,7 @@ let PERFIL=null, USERID=null, COMERCIAL="";
 const ST={ listas:[], lista:null, modo:"cotizacion", conIva:false, conEscalera:false, escAbierta:null,
            lotes:{}, _lotesDone:null, lotAbierto:null, conVto:false,
            q:"", res:[], buscando:false, items:[], precios:{}, tiers:{}, pvp:{}, taxes:{}, taxmap:null,
-           cartera:null, fuera:[], qCli:"", guardado:null };
+           cartera:null, fuera:[], qCli:"", guardado:null, pdf:null };
 
 /* ---------------- arranque ---------------- */
 EYG.guard(["comercial","lider","admin","direccion"]).then(async perfil=>{
@@ -268,7 +279,7 @@ async function cargarPrecios(prods){
     let arr=src.filter(i=>i.compute_price==="fixed"&&i.fixed_price>0)
       .map(i=>({q:i.min_quantity||1,p:i.fixed_price})).sort((a,b)=>a.q-b.q);
     // Quirk EyG: el 1er tramo (min≤1) que repite el precio del 2do es el "general" oculto → se fusiona.
-    if(arr.length>=2 && arr[0].q<=1 && Math.round(arr[0].p)===Math.round(arr[1].p)){ arr=arr.slice(1); arr[0]={...arr[0],q:1}; }
+    if(arr.length>=2 && arr[0].q<=1 && EYG.r2(arr[0].p)===EYG.r2(arr[1].p)){ arr=arr.slice(1); arr[0]={...arr[0],q:1}; }
     if(arr.length && arr[0].q<1) arr[0]={...arr[0],q:1};
     ST.tiers[p.id]=arr;
     ST.precios[p.id]= arr.length? arr[0].p : (p.list_price>1?p.list_price:null);
@@ -389,14 +400,14 @@ function setCant(id,v){ const it=ST.items.find(x=>x.id===id); if(!it) return;
 function chgCant(id,d){ const it=ST.items.find(x=>x.id===id); if(!it) return;
   it.cant=Math.max(1,(it.cant||1)+d); guardar(); render(); }
 function limpiar(){ if(!ST.items.length) return;
-  if(!confirm("¿Vaciar la cotización?")) return; ST.items=[]; guardar(); render(); }
+  if(!confirm("¿Vaciar la cotización?")) return; ST.items=[]; ST.pdf=null; guardar(); render(); }
 // El código entre corchetes al principio del nombre es ruido para el cliente.
 function limpiaNom(n){ return String(n||"").replace(/^\[[^\]]*\]\s*/,"").trim(); }
 
 /* La cotización sobrevive a recargas y a cambiar de módulo: es un borrador de
    trabajo del comercial, no un dato del sistema, así que vive en el navegador. */
 const LSKEY="eyg_cotizador";
-function guardar(){ try{ localStorage.setItem(LSKEY, JSON.stringify({items:ST.items, lista:ST.lista, modo:ST.modo, conIva:ST.conIva, conEscalera:ST.conEscalera, conVto:ST.conVto, guardado:ST.guardado})); }catch(e){} }
+function guardar(){ try{ localStorage.setItem(LSKEY, JSON.stringify({items:ST.items, lista:ST.lista, modo:ST.modo, conIva:ST.conIva, conEscalera:ST.conEscalera, conVto:ST.conVto, guardado:ST.guardado, pdf:ST.pdf})); }catch(e){} }
 function restaurar(){
   try{ const o=JSON.parse(localStorage.getItem(LSKEY)||"{}");
     if(Array.isArray(o.items)) ST.items=o.items;
@@ -404,6 +415,7 @@ function restaurar(){
     if(o.modo) ST.modo=o.modo;
     ST.conIva=!!o.conIva; ST.conEscalera=!!o.conEscalera; ST.conVto=!!o.conVto;
     if(o.guardado && o.guardado.id) ST.guardado=o.guardado;   // el presupuesto ya creado sobrevive a la recarga
+    if(o.pdf && typeof o.pdf==="object") ST.pdf=o.pdf;          // destinatario, referencia, etc. del último PDF
   }catch(e){}
 }
 
@@ -435,7 +447,7 @@ function render(){
         <span style="color:var(--gris);font-size:12px">Cotizás sin cliente; si te lo aceptan, lo guardás como presupuesto</span>
         <a href="panel.html${PERFIL&&PERFIL.rol!=="comercial"&&COMERCIAL?("?c="+encodeURIComponent(COMERCIAL)):""}" class="chip" style="text-decoration:none">← Volver al panel</a>
       </span></h2>
-    <div class="nota">Armá una cotización o pasá precios sueltos <b>sin elegir cliente</b>. Los precios salen de la tarifa de Odoo, igual que en Cargar venta. Cuando esté listo, <b>copialo y pegalo en WhatsApp</b> — y si el cliente te lo acepta, <b>guardalo como presupuesto</b> y seguí la venta sin volver a cargar nada.</div>
+    <div class="nota">Armá una cotización o pasá precios sueltos <b>sin elegir cliente</b>. Los precios salen de la tarifa de Odoo, igual que en Cargar venta. Cuando esté listo, <b>copialo y pegalo en WhatsApp</b> o <b>bajalo en PDF</b> para mandarlo por mail — y si el cliente te lo acepta, <b>guardalo como presupuesto</b> y seguí la venta sin volver a cargar nada.</div>
     ${bannerHTML()}
     <div class="ctrl">
       <div class="fld"><span class="lb">Lista de precios</span>
@@ -541,13 +553,13 @@ function pintarItems(){
   if(!c||!t) return;
   if(!ST.items.length){
     c.innerHTML='<div class="vacio">Todavía no sumaste nada.<br><span style="font-size:12px">Buscá a la izquierda y tocá ＋ Sumar.</span></div>';
-    t.innerHTML=`<div class="btns"><button class="btn wa" disabled>📋 Copiar para WhatsApp</button></div>`;
+    t.innerHTML=`<div class="btns"><button class="btn wa" disabled>📋 Copiar para WhatsApp</button><button class="btn pdf" disabled>📄 Descargar PDF</button></div>`;
     return;
   }
   const precios=ST.modo==="precios";
   c.innerHTML=ST.items.map(it=>{
     const u=unitDe(it);
-    const sub=(u!=null)? u*it.cant : null;
+    const sub=subDe(it);
     const nx= precios? null : proxTramo(it.id,it.cant);
     const v=ivaDe(it.taxes_id);
     return `<div class="it">
@@ -577,6 +589,7 @@ function pintarItems(){
     t.innerHTML=`<div class="tr"><span>${ST.items.length} producto${ST.items.length===1?"":"s"}</span><b>${ST.conIva?"precios con IVA":"precios netos"}</b></div>
       <div class="btns">
         <button class="btn wa" onclick="copiar('precios')">📋 Copiar para WhatsApp</button>
+        <button class="btn pdf" onclick="abrirPdf()" title="Baja la lista de precios en PDF, con membrete de EyG, para mandar por mail">📄 Descargar PDF</button>
         <button class="btn gh" onclick="verTexto()">👁 Ver cómo queda</button>
         <div style="font-size:11.5px;color:var(--gris);text-align:center">Para guardarlo como presupuesto, pasá a <b>Cotización</b>.</div>
       </div>
@@ -590,6 +603,7 @@ function pintarItems(){
     <div class="tr big"><span>Total</span><span>${money(r.total)}</span></div>
     <div class="btns">
       <button class="btn wa" onclick="copiar('cot')">📋 Copiar para WhatsApp</button>
+      <button class="btn pdf" onclick="abrirPdf()" title="Baja el presupuesto en PDF, con membrete de EyG, para mandar por mail">📄 Descargar PDF</button>
       ${btnGuardarHTML()}
       <button class="btn gh" onclick="copiar('detalle')">📋 Copiar con detalle (cant. × precio)</button>
       <button class="btn gh" onclick="verTexto()">👁 Ver cómo queda</button>
@@ -601,13 +615,21 @@ function pintarItems(){
    a cada producto (hay exentos y con 21% en el mismo pedido). El interruptor
    “con IVA” cambia cómo se MUESTRA el unitario, no cómo se calcula el total. */
 function totales(){
-  let neto=0, iva=0;
+  const ls=[];
   ST.items.forEach(it=>{
     const tr=tramoDe(it.id,it.cant); const base=tr?tr.p:ST.precios[it.id];
     if(base==null) return;
-    const n=base*it.cant; neto+=n; iva+=n*tasaDe(it);
+    ls.push({neto:base*it.cant, tasa:tasaDe(it)});
   });
-  return {neto, iva, total:neto+iva};
+  return EYG.totalesOdoo(ls);   // mismo redondeo que Odoo: el total da igual al del presupuesto
+}
+/* Subtotal de UN renglón como lo guarda Odoo: precio × cantidad, al centavo.
+   Con “Mostrar con IVA”, el IVA del renglón también al centavo. */
+function subDe(it){
+  const tr=tramoDe(it.id, cantDe(it)); const base = tr? tr.p : ST.precios[it.id];
+  if(base==null) return null;
+  const neto=EYG.r2(base*it.cant);
+  return ST.conIva ? EYG.r2(neto*(1+tasaDe(it))) : neto;
 }
 
 /* ---------------- texto para WhatsApp ---------------- */
@@ -626,7 +648,7 @@ function textoDe(tipo){
   const r=totales();
   let t=`*Droguería EyG · Cotización*\n\n`;
   ST.items.forEach(it=>{
-    const u=unitDe(it); const sub=(u!=null)?u*it.cant:null;
+    const u=unitDe(it); const sub=subDe(it);
     const dp=descAplicado(it);
     const marca = dp>0 ? ` (−${dp}%)` : "";   // que el cliente vea que le hicimos precio
     t += (tipo==="detalle")
@@ -679,6 +701,238 @@ function verTexto(){
   const p=document.getElementById("prev"); if(!p) return;
   const txt=textoDe(ST.modo==="precios"?"precios":"cot");
   p.innerHTML = txt? `<div class="prev">${esc(txt)}</div>` : "";
+}
+
+/* ============================================================
+   PRESUPUESTO EN PDF  (pedido de los comerciales de Instituciones, 20/10/2026)
+   ============================================================
+   Las instituciones piden la cotización por MAIL y con membrete. El PDF se arma
+   acá mismo, en el navegador (jsPDF): no toca Odoo, no crea ni numera nada.
+   - Sin cliente va dirigido “A quien corresponda”: la mayoría de los pedidos
+     llegan de Compras o Farmacia sin un contacto cargado.
+   - Los importes son los de la pantalla y los de Odoo, AL CENTAVO: precio
+     unitario neto, subtotal del renglón al centavo y el IVA por alícuota
+     redondeado una vez (EYG.totalesOdoo). En “Cotización” el PDF SIEMPRE
+     discrimina neto + IVA, como el presupuesto de Odoo, aunque la pantalla esté
+     “con IVA”: así el total es el mismo que después se factura.
+   - Las librerías se bajan recién al tocar el botón (no pesan en la carga). */
+const PDF_LIBS=["https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",
+                "https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"];
+let _pdfLibs=null, _empresa=null;
+function cargarLibsPdf(){
+  if(_pdfLibs) return _pdfLibs;
+  const una=src=>new Promise((ok,mal)=>{ const s=document.createElement("script"); s.src=src; s.onload=ok;
+    s.onerror=()=>mal(new Error("no se pudo bajar la librería de PDF (¿sin internet?)")); document.head.appendChild(s); });
+  // En orden: autotable se engancha a jsPDF, que tiene que estar cargado antes.
+  _pdfLibs=(async()=>{ for(const s of PDF_LIBS) await una(s); })().catch(e=>{ _pdfLibs=null; throw e; });
+  return _pdfLibs;
+}
+/* Membrete: datos y logo de la empresa tal como están en Odoo (res.company). */
+async function empresaPdf(){
+  if(_empresa) return _empresa;
+  const E={nombre:"Droguería EyG S.R.L.", cuit:"30716356988", iva:"IVA Responsable Inscripto",
+           dir:"Av. San Martín 3035", ciudad:"Rosario, Santa Fe", logo:null};
+  try{
+    const [c]=await EYG.rpc("res.company","read",[[1],["name","vat","street","city","state_id","logo","l10n_ar_afip_responsibility_type_id"]],{context:ES});
+    if(c){
+      E.nombre=c.name||E.nombre; E.cuit=c.vat||E.cuit; E.dir=c.street||E.dir;
+      if(c.city) E.ciudad=c.city+(c.state_id?", "+String(c.state_id[1]).replace(/\s*\(.*\)\s*$/,""):"");
+      if(c.l10n_ar_afip_responsibility_type_id) E.iva=c.l10n_ar_afip_responsibility_type_id[1];
+      if(c.logo) E.logo="data:image/png;base64,"+c.logo;
+    }
+  }catch(e){}
+  return (_empresa=E);
+}
+const fmtCuit=c=>{ const d=String(c||"").replace(/\D/g,""); return d.length===11? d.slice(0,2)+"-"+d.slice(2,10)+"-"+d.slice(10) : String(c||""); };
+/* Las fuentes estándar del PDF no traen guiones largos, comillas tipográficas ni
+   emojis: se pasan a su equivalente simple para que no salgan como basura. */
+const pt=s=>String(s==null?"":s).replace(/[−–—]/g,"-").replace(/[“”«»]/g,'"').replace(/[‘’]/g,"'")
+  .replace(/…/g,"...").replace(/[^\x20-\x7E\xA0-\xFF\n]/g,"").replace(/[ \t]+\n/g,"\n").trim();
+const pctTxt=t=>String(Math.round(t*10000)/100).replace(".",",")+"%";
+
+function abrirPdf(){
+  if(!ST.items.length) return toast("No hay nada para pasar a PDF");
+  const p=ST.pdf||{};
+  // Si la cotización ya se guardó como presupuesto de un cliente, se propone ese cliente.
+  const dest = p.dest!=null ? p.dest : ((ST.guardado&&ST.guardado.cliente)||"");
+  modal(`<h3>📄 ${ST.modo==="precios"?"Lista de precios":"Presupuesto"} en PDF</h3>
+    <p>Se baja un PDF con el membrete de EyG, listo para adjuntar a un mail. Si no hay un cliente, va dirigido <b>“A quien corresponda”</b>.</p>
+    <div class="pdff"><label for="pdfDest">Destinatario</label>
+      <input id="pdfDest" placeholder="A quien corresponda" value="${esc(dest)}" autocomplete="off">
+      <div class="pdfsug" id="pdfSug"></div>
+      <span class="ay">Escribí el nombre de la institución o elegí un cliente de tu cartera. Vacío = “A quien corresponda”.</span></div>
+    <div class="pdf2">
+      <div class="pdff"><label for="pdfAt">Atención (opcional)</label><input id="pdfAt" placeholder="Ej: Servicio de Farmacia" value="${esc(p.at||"")}"></div>
+      <div class="pdff"><label for="pdfRef">Referencia (opcional)</label><input id="pdfRef" placeholder="Ej: Pedido de cotización N° 123" value="${esc(p.ref||"")}"></div>
+    </div>
+    <div class="pdff"><label for="pdfVal">Mantenimiento de oferta, en días (opcional)</label>
+      <input id="pdfVal" type="number" min="1" step="1" inputmode="numeric" placeholder="Vacío = no se menciona" value="${esc(p.val||"")}"></div>
+    <div class="pdff"><label for="pdfObs">Observaciones (opcional)</label>
+      <textarea id="pdfObs" rows="2" placeholder="Ej: plazo de entrega, forma de pago">${esc(p.obs||"")}</textarea></div>
+    <div class="mb"><button class="btn gh" onclick="cerrarModal()">Cancelar</button>
+      <button class="btn" id="pdfGo" onclick="descargarPdf()">📄 Descargar PDF</button></div>`);
+  const i=document.getElementById("pdfDest");
+  if(i){ i.oninput=()=>sugerirDest(i.value); i.focus(); i.select(); }
+  if(USERID) cargarCartera();   // en segundo plano, para sugerir clientes mientras escribe
+}
+function sugerirDest(v){
+  const el=document.getElementById("pdfSug"); if(!el) return;
+  const q=(v||"").toLowerCase().trim();
+  if(q.length<2 || !ST.cartera){ el.innerHTML=""; return; }
+  ST._sug=ST.cartera.filter(c=>EYG.buscaOk(c,q) && (c.name||"").toLowerCase()!==q).slice(0,5);
+  el.innerHTML=ST._sug.map((c,i)=>`<button type="button" onclick="elegirDest(${i})">${esc(c.name)}${c.city?` <span style="color:var(--gris)">· ${esc(c.city)}</span>`:""}</button>`).join("");
+}
+function elegirDest(i){
+  const c=(ST._sug||[])[i], inp=document.getElementById("pdfDest");
+  if(c && inp) inp.value=c.name||"";
+  const el=document.getElementById("pdfSug"); if(el) el.innerHTML="";
+}
+async function descargarPdf(){
+  const val=id=>((document.getElementById(id)||{}).value||"").trim();
+  ST.pdf={dest:val("pdfDest"), at:val("pdfAt"), ref:val("pdfRef"), val:val("pdfVal"), obs:val("pdfObs")};
+  guardar();
+  const b=document.getElementById("pdfGo"); if(b){ b.disabled=true; b.textContent="Armando el PDF…"; }
+  try{
+    await cargarLibsPdf();
+    const doc=armarPdf(await empresaPdf(), ST.pdf);
+    doc.save(nombrePdf(ST.pdf));
+    cerrarModal(); toast("✓ PDF descargado — adjuntalo al mail");
+  }catch(e){
+    if(b){ b.disabled=false; b.textContent="📄 Descargar PDF"; }
+    toast("No pude armar el PDF: "+(e.message||e));
+  }
+}
+function nombrePdf(o){
+  const tipo = ST.modo==="precios" ? "Lista de precios" : "Presupuesto";
+  const dest = (o.dest||"A quien corresponda").replace(/[\\/:*?"<>|]+/g," ").replace(/\s+/g," ").trim().slice(0,60);
+  return `${tipo} EyG - ${dest} - ${EYG.argToday()}.pdf`;
+}
+
+function armarPdf(E, o){
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF({unit:"mm", format:"a4", compress:true});   // comprimido: va adjunto a un mail
+  const W=210, H=297, M=16, AN=W-2*M, PIE=20;
+  const TEAL=[4,135,130], DEEP=[4,99,95], INK=[14,31,29], GRIS=[95,113,110], LINEA=[214,228,225];
+  const precios = ST.modo==="precios";
+  const hoy=EYG.argToday(), fecha=hoy.slice(8,10)+"/"+hoy.slice(5,7)+"/"+hoy.slice(0,4);
+  const conIvaPdf = precios && ST.conIva;          // en “Cotización” el PDF va siempre neto + IVA
+  let y=14;
+  const salto=h=>{ if(y+h > H-PIE){ doc.addPage(); y=18; } };
+
+  /* --- membrete --- */
+  let alto=0;
+  if(E.logo){ try{ const pr=doc.getImageProperties(E.logo); let h=17, w=h*pr.width/pr.height; if(w>58){ w=58; h=w*pr.height/pr.width; }
+    doc.addImage(E.logo,"PNG",M,y,w,h,"logo","FAST"); alto=h; }catch(e){} }
+  if(!alto){ doc.setFont("helvetica","bold"); doc.setFontSize(19); doc.setTextColor(...DEEP); doc.text(pt("Droguería EyG"),M,y+9); alto=11; }
+  doc.setFont("helvetica","bold"); doc.setFontSize(17); doc.setTextColor(...TEAL);
+  doc.text(precios?"LISTA DE PRECIOS":"PRESUPUESTO", W-M, y+6, {align:"right"});
+  doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(...GRIS);
+  doc.text("Fecha: "+fecha, W-M, y+11.5, {align:"right"});
+  if(COMERCIAL) doc.text(pt("Comercial: "+COMERCIAL), W-M, y+16, {align:"right"});
+  if(PERFIL && PERFIL.email) doc.text(pt(PERFIL.email), W-M, y+20.5, {align:"right"});
+  y += Math.max(alto, 21) + 4;
+  doc.setFontSize(8.3); doc.setTextColor(...GRIS);
+  doc.text(pt(`${E.nombre}  ·  CUIT ${fmtCuit(E.cuit)}  ·  ${E.iva}`), M, y);
+  doc.text(pt(`${E.dir}  ·  ${E.ciudad}  ·  ventas@drogueriaeyg.com.ar`), M, y+4);
+  y+=7.5; doc.setDrawColor(...TEAL); doc.setLineWidth(0.6); doc.line(M,y,W-M,y); y+=8;
+
+  /* --- destinatario --- */
+  const kv=(k,v)=>{ doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...INK); doc.text(k,M,y);
+    doc.setFont("helvetica","normal"); const ls=doc.splitTextToSize(pt(v), AN-26); doc.text(ls,M+26,y); y+=ls.length*4.6+1.2; };
+  kv("Señores:", o.dest||"A quien corresponda");
+  if(o.at)  kv("Atención:", o.at);
+  if(o.ref) kv("Referencia:", o.ref);
+  y+=3;
+  doc.setFont("helvetica","normal"); doc.setFontSize(10); doc.setTextColor(...INK);
+  doc.text("De nuestra consideración:", M, y); y+=6;
+  const intro = precios
+    ? "Les hacemos llegar los precios vigentes de los productos que se detallan a continuación."
+    : "Tenemos el agrado de hacerles llegar nuestra cotización por los productos que se detallan a continuación.";
+  doc.text(doc.splitTextToSize(intro, AN), M, y, {maxWidth:AN, align:"justify"});
+  y+=doc.splitTextToSize(intro, AN).length*4.8+3;
+
+  /* --- renglones --- */
+  const netoDe=x=>x.p, conIva=(x,it)=>x.p*(1+tasaDe(it));
+  const ivaCol=it=>{ const v=ivaDe(it.taxes_id); if(!v) return "-";
+    const p=v.label.replace(/^IVA\s*/,""); return v.incluido ? p+" incl." : (v.exento ? "Exento" : p); };
+  const extra=(it, unitario)=>{
+    let s="";
+    if(ST.conVto){ const ls=lotesDe(it.id); if(ls.length && ls[0].exp) s+="\nVto. "+fmtVto(ls[0].exp); }
+    if(ST.conEscalera){ const t=ST.tiers[it.id]||[];
+      if(t.length>=2) s+="\nPor volumen: "+t.map(x=>"desde "+nf(x.q)+" u "+money(unitario(x,it))).join("  ·  "); }
+    return s;
+  };
+  let sinPrecio=0, head, body, cols;
+  if(precios){
+    head=[["#","Código","Producto","IVA", conIvaPdf?"Precio c/IVA":"Precio neto"]];
+    body=ST.items.map((it,i)=>{ const tr=tramoDe(it.id,1); const base=tr?tr.p:ST.precios[it.id];
+      if(base==null) sinPrecio++;
+      const u = base==null ? null : (conIvaPdf ? base*(1+tasaDe(it)) : base);
+      return [i+1, it.code||"", pt(it.name+extra(it, conIvaPdf?conIva:netoDe)), ivaCol(it), u==null?"a confirmar":money(u)]; });
+    cols={0:{halign:"center",cellWidth:8},1:{cellWidth:20},3:{halign:"center",cellWidth:18},4:{halign:"right",cellWidth:30}};
+  }else{
+    head=[["#","Código","Producto","Cant.","Precio unit.","IVA","Subtotal"]];
+    body=ST.items.map((it,i)=>{ const tr=tramoDe(it.id,it.cant); const base=tr?tr.p:ST.precios[it.id];
+      if(base==null) sinPrecio++;
+      return [i+1, it.code||"", pt(it.name+extra(it, netoDe)), nf(it.cant),
+        base==null?"a confirmar":money(base), ivaCol(it), base==null?"-":money(EYG.r2(base*it.cant))]; });
+    cols={0:{halign:"center",cellWidth:8},1:{cellWidth:18},3:{halign:"right",cellWidth:13},4:{halign:"right",cellWidth:25},5:{halign:"center",cellWidth:16},6:{halign:"right",cellWidth:27}};
+  }
+  doc.autoTable({ startY:y, head, body, margin:{left:M,right:M,bottom:PIE+2,top:18},
+    styles:{font:"helvetica", fontSize:8.6, cellPadding:2.1, textColor:INK, lineColor:LINEA, lineWidth:0.1, valign:"top", overflow:"linebreak"},
+    headStyles:{fillColor:TEAL, textColor:255, fontStyle:"bold", fontSize:8.2},
+    alternateRowStyles:{fillColor:[244,249,248]},
+    columnStyles:cols });
+  y=doc.lastAutoTable.finalY+5;
+
+  /* --- totales (igual que Odoo) --- */
+  if(!precios){
+    const r=totales();
+    const filas=[["Subtotal neto", money(r.neto)]];
+    r.ivas.forEach(x=>filas.push(["IVA "+pctTxt(x.tasa), money(x.iva)]));
+    if(!r.ivas.length) filas.push(["IVA", "Exento"]);
+    salto(filas.length*6+12);
+    const x0=W-M-78;
+    doc.setFontSize(9.5);
+    filas.forEach(([k,v])=>{ doc.setFont("helvetica","normal"); doc.setTextColor(...GRIS); doc.text(k,x0+3,y+4);
+      doc.setTextColor(...INK); doc.text(v,W-M-3,y+4,{align:"right"}); y+=6; });
+    doc.setFillColor(...TEAL); doc.rect(x0,y,78,9,"F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(11.5); doc.setTextColor(255,255,255);
+    doc.text("TOTAL",x0+3,y+6.2); doc.text(money(r.total),W-M-3,y+6.2,{align:"right"});
+    y+=15;
+  }
+
+  /* --- condiciones y cierre (texto justificado) --- */
+  const parrafo=(txt, tam, color)=>{ doc.setFont("helvetica","normal"); doc.setFontSize(tam); doc.setTextColor(...color);
+    const ls=doc.splitTextToSize(pt(txt), AN); salto(ls.length*tam*0.42+3);
+    doc.text(ls, M, y, {maxWidth:AN, align:"justify"}); y+=ls.length*tam*0.42+2.5; };
+  let cond = precios
+    ? `Precios expresados en pesos argentinos, ${conIvaPdf?"con IVA incluido":"netos (sin IVA)"}, por unidad.`
+    : "Precios unitarios expresados en pesos argentinos, netos de IVA; el IVA se discrimina en el total.";
+  cond += " Sujetos a disponibilidad de stock al momento de la confirmación del pedido.";
+  const dias=parseInt(o.val,10);
+  if(dias>0) cond += ` Mantenimiento de oferta: ${dias} día${dias===1?"":"s"} a partir de la fecha de emisión.`;
+  if(sinPrecio) cond += ` Los productos indicados "a confirmar" no tienen precio en la lista vigente.`;
+  parrafo(cond, 8.6, GRIS);
+  if(o.obs) parrafo("Observaciones: "+o.obs, 9, INK);
+  y+=3;
+  parrafo("Quedamos a su disposición ante cualquier consulta. Saludamos a ustedes muy atentamente.", 10, INK);
+  salto(16); y+=5;
+  doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...INK);
+  doc.text(pt(COMERCIAL||"Droguería EyG"), M, y);
+  doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(...GRIS);
+  doc.text(pt([E.nombre, PERFIL&&PERFIL.email].filter(Boolean).join("  ·  ")), M, y+4.5);
+
+  /* --- pie de página en todas las hojas --- */
+  const n=doc.getNumberOfPages();
+  for(let i=1;i<=n;i++){
+    doc.setPage(i);
+    doc.setDrawColor(...LINEA); doc.setLineWidth(0.3); doc.line(M,H-14,W-M,H-14);
+    doc.setFont("helvetica","normal"); doc.setFontSize(7.8); doc.setTextColor(...GRIS);
+    doc.text(pt("Droguería EyG  ·  El respaldo detrás de la salud"), M, H-9.5);
+    doc.text(`Página ${i} de ${n}`, W-M, H-9.5, {align:"right"});
+  }
+  return doc;
 }
 /* ============================================================
    GUARDAR COMO PRESUPUESTO  (cotización → borrador en Odoo → venta)
@@ -895,8 +1149,9 @@ async function entregaDe(pid){
   }catch(e){ return null; }
 }
 
-/* Lo cotizado vs lo que puso Odoo, renglón por renglón. Tolerancia de $1 y
-   0,5% (redondeos). Lo que suele aparecer acá son los éticos: su precio en la
+/* Lo cotizado vs lo que puso Odoo, renglón por renglón, AL CENTAVO: cualquier
+   diferencia se muestra (antes se toleraban $1 y 0,5%, y eso escondía
+   diferencias de centavos que el cliente sí ve en la factura). Lo que suele aparecer acá son los éticos: su precio en la
    tarifa es un PORCENTAJE, no un importe fijo, y el cotizador muestra el PVP
    como referencia — el precio bueno es el de Odoo. */
 function compararPrecios(lineas){
@@ -908,7 +1163,7 @@ function compararPrecios(lineas){
     const odoo=(l.price_unit||0)*(1-((l.discount||0)/100));
     if(cot==null){ out.push({name:it.name, cot:null, odoo, dif:null}); return; }
     const d=odoo-cot;
-    if(Math.abs(d)>1 && Math.abs(d)/Math.max(1,cot)>0.005) out.push({name:it.name, cot, odoo, dif:d});
+    if(Math.abs(d)>=0.005) out.push({name:it.name, cot, odoo, dif:d});
   });
   return out;
 }

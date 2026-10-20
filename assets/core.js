@@ -140,7 +140,25 @@ window.EYG = (function(){
                             ["product_id.categ_id","child_of",CAT_OCULTAS]];
   const TRI_COLOR = "#8E5FBF";
 
-  const money = n => "$"+Math.round(n||0).toLocaleString("es-AR");
+  /* PLATA: SIEMPRE con centavos y al centavo de Odoo (regla del 20/10/2026, pedido
+     de los comerciales de Instituciones: "$1.234" no es "$1.233,57").
+     r2 redondea como Odoo (al centavo, mitad hacia arriba). El toPrecision limpia
+     el ruido del punto flotante: 10172,9 × 3 × 0,25 da 7629,674999… en JS y Odoo
+     lo guarda 7629,68 — sin esto mostraríamos 7629,67. */
+  const r2 = n => { n=+n||0; const s=n<0?-1:1; return s*Math.round(+(Math.abs(n)*100).toPrecision(15))/100; };
+  const money = n => "$"+r2(n).toLocaleString("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2});
+  /* Totales de un pedido IGUAL que Odoo (EyG usa "round_globally", verificado
+     contra 600 pedidos el 20/10/2026): cada renglón neto = precio × cant al
+     centavo; el IVA se calcula UNA vez por alícuota sobre la suma de los netos de
+     esa alícuota, y recién ahí se redondea. Sumar el IVA renglón por renglón
+     erra por centavos. lineas = [{neto, tasa}] con tasa en fracción (0,21). */
+  const totalesOdoo = lineas => {
+    let neto=0; const porTasa={};
+    (lineas||[]).forEach(l=>{ const n=r2(l.neto); neto+=n; const t=+l.tasa||0; if(t>0) porTasa[t]=(porTasa[t]||0)+n; });
+    const ivas=Object.keys(porTasa).map(t=>({tasa:+t, base:r2(porTasa[t]), iva:r2(porTasa[t]*(+t))})).sort((a,b)=>b.tasa-a.tasa);
+    neto=r2(neto); const iva=r2(ivas.reduce((s,x)=>s+x.iva,0));
+    return {neto, iva, total:r2(neto+iva), ivas};
+  };
   const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   const hace = d => { const t=new Date(); t.setDate(t.getDate()-d); return t.toISOString().slice(0,10); };
 
@@ -2492,7 +2510,7 @@ window.EYG = (function(){
     return m>0 && Math.abs(m-c)<0.01;
   }
 
-  return { supa, rpc, rpcHead, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, money, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
+  return { supa, rpc, rpcHead, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, r2, money, totalesOdoo, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde, minimoDeVenta, semanasDelMes, semanasDetalle, perfilDe, paqueteRige, reglasDe, moraIndice, moraResta,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,

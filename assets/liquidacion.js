@@ -286,7 +286,7 @@ function nivelDe(g,perfil,cfg,mes){
   const rValor=g.objetivoCobro>0?Math.min(g.cobradoMes/g.objetivoCobro,1):0;
   const rPed=g.promPed>0?Math.min(g.actPed/g.promPed,1):0, rCli=g.promCli>0?Math.min(g.actCli/g.promCli,1):0;
   const rAct=(rPed+rCli)/2;
-  const M=n=>"$"+Math.round(n||0).toLocaleString("es-AR");
+  const M=n=>EYG.money(n);
   const items=[
     {ic:"💰",lab:"Cobro vs objetivo de cobranza",max:sp.valor,pts:sp.valor*rValor,det:"cobró "+M(g.cobradoMes)+" de "+M(g.objetivoCobro)+" ("+Math.round(rValor*100)+"%)"},
     {ic:"📞",lab:"Actividad (pedidos y clientes)",max:sp.activ,pts:sp.activ*rAct,det:g.actPed+" pedidos (su promedio "+g.promPed+") y "+g.actCli+" clientes (promedio "+g.promCli+") = "+Math.round(rAct*100)+"%"},
@@ -314,7 +314,7 @@ function nivelDe(g,perfil,cfg,mes){
      · la vara de facturación pasa a ser el MÍNIMO DE VENTA del mes, no su propia mediana
    Antes de paqueteDesde se calcula con las reglas viejas, tal como las vieron las comerciales. */
 function saludDe(g,neto,baseline,prop,cfg,mes,minimo){
-  const M=n=>"$"+Math.round(n||0).toLocaleString("es-AR");
+  const M=n=>EYG.money(n);
   const nuevo=EYG.paqueteRige(mes,cfg);
   const venc=g.porCobrar>0?g.vencido/g.porCobrar:0;
   if(!nuevo){
@@ -444,8 +444,8 @@ async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
 }
 
 /* ===== VISTA: el desglose que se le entrega a cada comercial ===== */
-const M=n=>"$"+Math.round(n||0).toLocaleString("es-AR");
-const M2=n=>"$"+(Math.round((n||0)*100)/100).toLocaleString("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2});
+const M=n=>EYG.money(n);
+const M2=n=>EYG.money(n);
 const PC=n=>(n*100).toFixed(2).replace(".",",")+"%";
 const P1=n=>n.toFixed(1).replace(".",",");
 const esc=s=>String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");

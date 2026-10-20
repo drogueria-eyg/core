@@ -269,14 +269,14 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=117"></script>
-<script src="../assets/inventario-oportunidades.js?v=20251005b"></script>
+<script src="../assets/core.js?v=118"></script>
+<script src="../assets/inventario-oportunidades.js?v=20261020b"></script>
 <script src="../assets/ofertas-canal.js?v=20261014"></script>
 <script>
 /* ============ EyG Core · Inventario · Oportunidades y Ofertas ============ */
 const LANG={context:{lang:"es_AR"}};
 const LISTA=3;
-const money=n=>"$"+Math.round(n||0).toLocaleString("es-AR");
+const money=n=>EYG.money(n);
 const esc=s=>EYG.esc(s);
 const hoy=()=>new Date().toISOString().slice(0,10);
 function masDias(n){ const d=new Date(); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
@@ -486,12 +486,12 @@ async function cargar(){
     if(prodOf.length){
       try{
         const its=await EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",prodOf.map(o=>o.target)],["min_quantity","=",1]]],{fields:["product_tmpl_id","fixed_price"], limit:5000});
-        const byT={}; its.forEach(i=>{ byT[i.product_tmpl_id[0]]=Math.round(i.fixed_price); });
+        const byT={}; its.forEach(i=>{ byT[i.product_tmpl_id[0]]=i.fixed_price; });
         // éticos: PVP (list_price) para mostrar el descuento contra el PVP, no contra la escalera
         // + stock real (qty_available) para marcar "Agotada" cuando el producto quedó en cero
         // default_code = el código: hace falta para poder BUSCAR el descuento por SKU
         const tps=await EYG.rpc("product.template","read",[prodOf.map(o=>o.target),["list_price","categ_id","qty_available","default_code"]],LANG);
-        const pvpT={}, catT={}, skuT={}; tps.forEach(t=>{ STOCK_T[t.id]=t.qty_available||0; catT[t.id]=(t.categ_id&&t.categ_id[1])||""; skuT[t.id]=t.default_code||""; if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) pvpT[t.id]=Math.round(t.list_price||0); });
+        const pvpT={}, catT={}, skuT={}; tps.forEach(t=>{ STOCK_T[t.id]=t.qty_available||0; catT[t.id]=(t.categ_id&&t.categ_id[1])||""; skuT[t.id]=t.default_code||""; if(/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||"")) pvpT[t.id]=t.list_price||0; });
         prodOf.forEach(o=>{ o._precio=byT[o.target]; o._pvp=pvpT[o.target]||0; o._cat=catT[o.target]||""; o._sku=skuT[o.target]||""; });
       }catch(e){}
     }
@@ -1465,7 +1465,7 @@ const rgPct=x=>Math.round((x||0)*1000)/10;
 function rgUserRules(){ return SYNC_OF.filter(o=>o._origen!=='oportunidades'); }
 function rgEstado(o){ if(o.pausada) return {t:"Pausada",c:"pau"}; if(o.hasta && o.hasta<hoy()) return {t:"Vencida",c:"ven"}; return {t:"Activa",c:"act"}; }
 function rgDesc(o){
-  const v=o.modo==='pct'?(rgPct(o.valor)+"%"):("$"+Math.round(o.valor||0));
+  const v=o.modo==='pct'?(rgPct(o.valor)+"%"):EYG.money(o.valor||0);
   const t=o.modo==='pct'?("−"+v):(o.modo==='monto'?("−"+v):("precio fijo "+v));
   const como=(o.reemplaza||o.modo==='precio')?"reemplaza (precio único desde 1)":"pisa la escalera";
   return `${t} · ${como}`;
@@ -1583,7 +1583,7 @@ function rgTramo(l){
 }
 function rgSugerido(l){
   const base=rgTramo(l), d=(rgDraft.desc||0)/100;
-  return base>0 ? Math.round(base*(1-d)) : 0;
+  return base>0 ? EYG.r2(base*(1-d)) : 0;
 }
 function rgTotales(){
   const ls=rgLineas();
@@ -1859,7 +1859,7 @@ async function rgCargarRent(tmplId){
     ]);
     const th=(pv&&pv[0])||{};
     if(rgDraft) rgDraft._cat=(th.categ_id&&th.categ_id[1])||"";   // para el badge de categoría
-    if(/[EÉ]TICO/i.test((th.categ_id&&th.categ_id[1])||"")) rgPvp=Math.round(th.list_price||0);
+    if(/[EÉ]TICO/i.test((th.categ_id&&th.categ_id[1])||"")) rgPvp=th.list_price||0;
     if(rgDraft) rgDraft._pvp=rgPvp;   // ético: el descuento se calcula sobre el PVP (mecánica propia)
     const vid=th.id;
     let costo=0; rgCostoFuente=""; rgPiso=0; rgCatId=(th.categ_id&&th.categ_id[0])||0;
@@ -2077,9 +2077,9 @@ window.rgGuardar=async()=>{
   // ÉTICOS · ESCALERA (pisa): se deja como %/monto y el motor lo aplica a cada tramo (como el resto).
   if(rule.tipo==='p' && d._pvp>0 && (rule.reemplaza || rule.modo==='precio')){
     const pvp=d._pvp; let precio;
-    if(rule.modo==='pct') precio=Math.round(pvp*(1-rule.valor));
-    else if(rule.modo==='monto') precio=Math.round(pvp-rule.valor);
-    else precio=Math.round(rule.valor);
+    if(rule.modo==='pct') precio=EYG.r2(pvp*(1-rule.valor));
+    else if(rule.modo==='monto') precio=EYG.r2(pvp-rule.valor);
+    else precio=EYG.r2(rule.valor);
     if(!(precio>0)){ toast("Ese descuento deja el precio en cero o menos"); return; }
     rule.modo='precio'; rule.valor=precio; rule.reemplaza=true;
   }
