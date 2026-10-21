@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=118"></script>
+<script src="../assets/core.js?v=119"></script>
 <script src="../assets/ofertas-canal.js?v=20261014"></script>
 <style>
   :root{
@@ -793,15 +793,19 @@ function venderURL(qs){ const c=(window.__perfil&&window.__perfil.rol!=='comerci
 const money=n=>EYG.money(n);
 const esc=s=>(s||"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
 async function rpc(model,method,args,kwargs={},intentos=3){
+  // Reintenta SÓLO lo que falló en el camino (red, 429, 502-504) y nunca un corte
+  // por tiempo ni un error de Odoo: la regla vive en EYG.rpcReintentable (core.js).
   let ultimo;
   for(let i=0;i<intentos;i++){
+    let llego=false;
     try{
       const head=await EYG.rpcHead();  // manda quién es, para que Odoo firme la nota con su nombre
       const r=await EYG.gate(()=>fetch(RPC,{method:"POST",headers:head,body:JSON.stringify({model,method,args,kwargs})}));
+      llego=r.status<502;
       const j=await r.json();
-      if(!j.ok){ ultimo=new Error(j.error||"Error Odoo"); if(i<intentos-1 && /http2|connection|SendRequest|timeout|EOF|reset/i.test(j.error||"")){ await new Promise(s=>setTimeout(s,500*(i+1))); continue; } throw ultimo; }
+      if(!j.ok) throw new Error(j.error||"Error Odoo");
       return j.result;
-    }catch(e){ ultimo=e; if(i<intentos-1){ await new Promise(s=>setTimeout(s,500*(i+1))); continue; } throw ultimo; }
+    }catch(e){ ultimo=e; if(i<intentos-1 && EYG.rpcReintentable && EYG.rpcReintentable(method,e&&e.message,llego)){ await new Promise(s=>setTimeout(s,500*(i+1))); continue; } throw ultimo; }
   }
   throw ultimo;
 }
@@ -4747,7 +4751,7 @@ async function botonChats(perfil){
     }catch(e){ /* se queda como estaba */ }
   }
   refrescar();
-  setInterval(refrescar,60000);
+  setInterval(()=>{ if(!document.hidden) refrescar(); },60000);   // pestaña oculta: no consultar
 }
 
 EYG.guard(["comercial","lider","admin","direccion"]).then(async perfil=>{

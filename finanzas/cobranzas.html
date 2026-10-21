@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=118"></script>
+<script src="../assets/core.js?v=119"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
@@ -321,17 +321,21 @@ const telLink=(m,p)=>{let d=soloDig(m||p);if(d.length<6)return"";if(!d.startsWit
 const esc=s=>(s||"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
 // rpc con reintento (Odoo.sh a veces rechaza el pico de consultas concurrentes)
 async function rpc(model,method,args,kwargs={}){
-  let last;
+  // Reintenta SÓLO lo que falló en el camino (red, 429, 502-504) y nunca un corte
+  // por tiempo ni un error de Odoo: la regla vive en EYG.rpcReintentable (core.js).
+  let ultimo;
   for(let i=0;i<3;i++){
+    let llego=false;
     try{
       const head=await EYG.rpcHead();  // manda quién es, para que Odoo firme la nota con su nombre
       const r=await EYG.gate(()=>fetch(RPC,{method:"POST",headers:head,body:JSON.stringify({model,method,args,kwargs})}));
+      llego=r.status<502;
       const j=await r.json();
-      if(!j.ok)throw new Error(j.error||"Error Odoo");
+      if(!j.ok) throw new Error(j.error||"Error Odoo");
       return j.result;
-    }catch(e){ last=e; if(i<2) await new Promise(r=>setTimeout(r,600*(i+1))); }
+    }catch(e){ ultimo=e; if(i<3-1 && EYG.rpcReintentable && EYG.rpcReintentable(method,e&&e.message,llego)){ await new Promise(s=>setTimeout(s,500*(i+1))); continue; } throw ultimo; }
   }
-  throw last;
+  throw ultimo;
 }
 
 // Tramos de mora (por vencimiento vencido más viejo, sobre la deuda REAL)
@@ -715,7 +719,11 @@ async function cargar(silent){
         nota:NOTAS[p.id]||null
       };
     });
-    try{ await cargarBloqueos(); }catch(e){ console.warn("No pude cargar bloqueos", e); }
+    // [BLOQUEO] es un body-like SIN cota (recorre todo mail.message): en las recargas
+    // silenciosas sólo se relee si el probe vio una marca nueva o pasaron 10 min.
+    if(!silent || _bloqForzar || Date.now()-_bloqAt > 600000){
+      try{ await cargarBloqueos(); _bloqAt=Date.now(); _bloqForzar=false; }catch(e){ console.warn("No pude cargar bloqueos", e); }
+    }
     await cargarPagos();
     const _sy = silent ? window.scrollY : 0;
     render();
@@ -1800,7 +1808,7 @@ function exportarExcel(){
 // El recálculo PESADO (cargar) corre SOLO si hubo un cambio real — o cada ~55s de red de seguridad
 // (para pagos/facturas nuevas en Odoo que no dejan marca). Candado _busy = nunca se solapan.
 function drawerAbierto(){ const d=document.getElementById("drawer"); return !!(d && d.classList.contains("on")); }
-let _sig=null, _busy=false, _ticking=false, _ultimoFull=0;
+let _sig=null, _busy=false, _ticking=false, _ultimoFull=0, _bloqAt=0, _bloqForzar=false;
 async function refrescoFull(){
   if(_busy) return; _busy=true;
   try{ await cargar(true); _ultimoFull=Date.now(); } finally{ _busy=false; }
@@ -1819,16 +1827,21 @@ async function tick(){
       sig = r.length ? r[0].id : 0;
     }catch(e){ return; }                     // si el probe falla, no pasa nada (reintenta)
     if(_sig===null){ _sig=sig; return; }     // baseline en el 1er chequeo
-    if(sig!==_sig){ _sig=sig; await refrescoFull(); }              // alguien marcó/cambió algo
-    else if(Date.now()-_ultimoFull > 55000){ await refrescoFull(); } // red de seguridad
+    if(sig!==_sig){ _sig=sig; _bloqForzar=true; await refrescoFull(); }              // alguien marcó/cambió algo
+    else if(Date.now()-_ultimoFull > 300000){ await refrescoFull(); } // red de seguridad (5 min)
   } finally{ _ticking=false; }
 }
 // Probe cada 20s (antes 3s): el `body like` sobre mail.message no usa índice
 // (full-scan de la tabla más grande de Odoo). A 3s eran ~20 escaneos/min por
 // pestaña; a 20s son ~3/min. La red de seguridad de 55s y el refresco on-focus
 // cubren la latencia. Ver cache de uid en la edge function odoo-rpc.
-function autoRefrescar(){ setInterval(tick, 20000); }
-document.addEventListener("visibilitychange",()=>{ if(!document.hidden && !drawerAbierto()) refrescoFull(); });
+// 21/10/2026: probe a 60 s y red de seguridad a 5 min (antes 20 s y 55 s). Con la red
+// de 55 s cada pestaña recargaba TODO (8 consultas, 2 recorriendo mail.message) una
+// vez por minuto hubiera o no cambios: ~660 consultas/h por pestaña, la mayor carga
+// periódica del Core sobre Odoo. Las marcas de otros se siguen viendo en ≤1 min.
+function autoRefrescar(){ setInterval(tick, 60000); }
+// Al volver a la pestaña: recarga sólo si los datos tienen más de 2 min (antes, siempre).
+document.addEventListener("visibilitychange",()=>{ if(!document.hidden && !drawerAbierto() && Date.now()-_ultimoFull > 120000) refrescoFull(); });
 /* ═══ Botón flotante: el asistente ══════════════════════════════════════════
    Cobranzas no tiene clientes asignados, así que NO ve conversaciones de nadie
    —el servidor se lo niega, no esta página—. El módulo le sirve para

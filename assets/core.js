@@ -61,13 +61,41 @@ window.EYG = (function(){
     return h;
   }
 
+  /* ---- CUÁNDO SE REINTENTA (21/10/2026) ----------------------------------
+     Antes se reintentaba TODO error hasta 4 veces. Eso multiplicaba la carga de
+     Odoo justo cuando estaba más lento: el recálculo completo del motor de
+     precios (run 1213) tarda 1-3 min, el conector corta a los 40 s, y el Core lo
+     mandaba de nuevo → hasta 4 recálculos completos A LA VEZ peleándose por los
+     mismos precios. Lo mismo con un error de Odoo (un UserError no se arregla
+     reintentando) y con las escrituras (un create repetido duplica).
+     Regla: sólo se reintenta lo que falló EN EL CAMINO (red, 429, 502-504,
+     http2) — nunca un corte por tiempo ni un error de Odoo — y sólo las
+     LECTURAS; una escritura se reintenta una vez únicamente si ni llegó. */
+  const RPC_LECTURA = /^(search_read|read|search|search_count|read_group|name_search|fields_get|get_param|default_get|web_search_read|web_read|search_fetch|check_access_rights|get_field_translations|compute_all)$/;
+  function rpcReintentable(method, msg, llego){
+    const m = String(msg||"");
+    if(/abort|tiempo|timeout|timed out/i.test(m)) return false;              // tardó: repetirlo sólo suma carga
+    const enElCamino = /Failed to fetch|NetworkError|Load failed|http2|connection error|SendRequest|EOF|reset|ECONN|429|502|503|504|RateLimit|Too Many|Unexpected token|JSON/i.test(m);
+    if(!enElCamino) return false;                                            // error de Odoo: no se arregla solo
+    if(RPC_LECTURA.test(method||"")) return true;
+    return !llego && method !== "run";                                       // escritura: sólo si ni salió
+  }
+
   async function rpc(model,method,args=[],kwargs={}){
     const head = await rpcHead();
-    for(let i=0;i<4;i++){ try{
-      const r = await gate(()=>fetch(RPC_URL,{method:"POST",headers:head,body:JSON.stringify({model,method,args,kwargs})}));
-      const j = await r.json(); if(j.error) throw new Error(typeof j.error==="string"?j.error:JSON.stringify(j.error));
-      return j.result ?? j;
-    }catch(e){ if(i===3) throw e; await new Promise(res=>setTimeout(res,900*(i+1))); } }
+    const max = RPC_LECTURA.test(method) ? 4 : 2;
+    for(let i=0;i<max;i++){
+      let llego = false;
+      try{
+        const r = await gate(()=>fetch(RPC_URL,{method:"POST",headers:head,body:JSON.stringify({model,method,args,kwargs})}));
+        llego = r.status < 502;   // respondió el conector (aunque sea con error); 502-504 = no llegó
+        const j = await r.json(); if(j.error) throw new Error(typeof j.error==="string"?j.error:JSON.stringify(j.error));
+        return j.result ?? j;
+      }catch(e){
+        if(i===max-1 || !rpcReintentable(method, e && e.message, llego)) throw e;
+        await new Promise(res=>setTimeout(res,900*(i+1)));
+      }
+    }
   }
 
   /* ---- helpers ---- */
@@ -1526,6 +1554,37 @@ window.EYG = (function(){
     try{ await supa().from("eyg_cache").delete().eq("clave",clave); }catch(e){}
   }
 
+  /* ---- RECÁLCULO COMPLETO DEL MOTOR DE PRECIOS (21/10/2026) ----
+     Antes, "Guardar y recalcular" corría la acción 1213 (el motor, ~4.200
+     productos, 1-3 minutos) DENTRO de la conexión del navegador: ocupaba uno de
+     los pocos workers web de Odoo todo ese rato, el conector cortaba a los 40 s
+     y el Core reintentaba → varios recálculos completos a la vez. Era la causa
+     principal de que Odoo y el Core se trabaran cuando alguien guardaba precios.
+     Ahora se le pide a la tarea programada del motor (cron 92) que corra YA: lo
+     hace en el proceso de tareas de Odoo, una sola vez aunque lo pidan varios
+     (Odoo nunca corre dos veces la misma tarea en paralelo), y esta función
+     espera a que termine mirando el parámetro que el motor escribe al final.
+     El MOTOR NO SE TOCA: es el mismo código, corrido por su propia tarea.
+     El recálculo de UN producto (eyg_solo_producto) sigue como antes: es rápido. */
+  const MOTOR_CRON = 92;
+  async function recalcularPreciosTodo(onEstado, opts){
+    const leer = async ()=>{ const r = await rpc("ir.config_parameter","search_read",[[["key","=","eyg.precios.sync"]]],{fields:["write_date"]}); return (r&&r[0]&&r[0].write_date)||""; };
+    const esperar = !(opts && opts.esperar === false);
+    const antes = esperar ? await leer() : "";
+    const ahoraUTC = new Date().toISOString().slice(0,19).replace("T"," ");
+    await rpc("ir.cron.trigger","create",[{cron_id:MOTOR_CRON, call_at:ahoraUTC}]);
+    if(!esperar) return null;
+    const t0 = Date.now();
+    // El motor deja eyg.precios.sync al terminar; su fecha cambia cuando corrió de nuevo.
+    while(Date.now()-t0 < 10*60000){
+      await new Promise(r=>setTimeout(r,15000));
+      if(onEstado) try{ onEstado(Math.round((Date.now()-t0)/1000)); }catch(e){}
+      let w=""; try{ w = await leer(); }catch(e){ continue; }
+      if(w && w !== antes) return true;
+    }
+    return false;   // sigue en cola: se aplica solo cuando le toque
+  }
+
   /* ---- Presencia (heartbeat en el Core) ----
      Cada comercial registra SU PROPIA franja de conexión del día en el parámetro
      tabla `eyg_presencia` de Supabase (solo él escribe su fila → sin carreras).
@@ -1603,7 +1662,10 @@ window.EYG = (function(){
     const hoy=argToday();
     const dom=[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["full_reconcile_id","=",false],["amount_residual","!=",0]];
     const [lines,msgs]=await Promise.all([
-      rpc("account.move.line","search_read",[dom,["partner_id","amount_residual","date_maturity","move_type"]],{limit:0}),
+      // Toda la cuenta corriente abierta de la empresa (~1.800 renglones, ~1,6 s). Es la
+      // misma para todos: el panel de cada comercial, Vender y Contactos la pedían cada uno
+      // por su lado (Contactos cada 3 min). Ahora se comparte con 3 min de vigencia.
+      cacheOdoo("cc-abierta", 180, ()=>rpc("account.move.line","search_read",[dom,["partner_id","amount_residual","date_maturity","move_type"]],{limit:0})),
       // ESTE es el barrido caro: sin cota de fecha, LIKE sobre 822k filas. Se
       // comparte entre todos los paneles y se refresca cada 5 minutos. Lo
       // invalidan marcarRiesgo/sacarRiesgo y la boveda de Cobranzas, asi que
@@ -2510,7 +2572,7 @@ window.EYG = (function(){
     return m>0 && Math.abs(m-c)<0.01;
   }
 
-  return { supa, rpc, rpcHead, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, r2, money, totalesOdoo, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
+  return { supa, rpc, rpcHead, rpcReintentable, recalcularPreciosTodo, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, r2, money, totalesOdoo, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde, minimoDeVenta, semanasDelMes, semanasDetalle, perfilDe, paqueteRige, reglasDe, moraIndice, moraResta,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
