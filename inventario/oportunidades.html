@@ -1805,12 +1805,37 @@ async function rgCargarDatosCombo(){
   render();
 }
 /* el próximo código libre: CB0001, CB0002… (cuenta también los archivados, para no repetir) */
-async function rgProximoCodigo(){
+/* EL CODIGO QUE SE SUGIERE NO PUEDE ESTAR USADO.
+   Miraba SOLO los productos de Odoo con codigo CB, y desde que el combo es una RECETA ya no
+   hay producto: siempre proponia el mismo numero y el guardado lo rechazaba por repetido.
+   Paso el 21/10/2026: alguien cargo un combo entero y lo perdio.
+   Ahora mira las DOS fuentes —los productos (quedan los combos viejos archivados) y las
+   recetas de eyg.ofertas— y avanza hasta uno libre. */
+async function rgCodigosUsados(){
+  const usados=new Set();
   try{
     const r=await EYG.rpc("product.product","search_read",[[["default_code","=like",COMBO_PREFIJO+"%"]],["default_code"]],
       {limit:1000,context:{lang:"es_AR",active_test:false}});
+    r.forEach(p=>usados.add(String(p.default_code||"").trim().toUpperCase()));
+  }catch(e){}
+  try{
+    const arr=JSON.parse(await getParam("eyg.ofertas","[]")||"[]")||[];
+    arr.forEach(o=>{ if(o && o.codigo) usados.add(String(o.codigo).trim().toUpperCase()); });
+  }catch(e){}
+  (OFERTAS||[]).forEach(o=>{ if(o && o.codigo) usados.add(String(o.codigo).trim().toUpperCase()); });
+  return usados;
+}
+async function rgProximoCodigo(){
+  try{
+    const usados=await rgCodigosUsados();
     let max=0;
-    r.forEach(p=>{ const m=/^CB(\d+)$/.exec(String(p.default_code||"").trim().toUpperCase()); if(m) max=Math.max(max,parseInt(m[1],10)); });
+    // el numero se saca con una clase [0-9] y no con un escape: los escapes se pierden
+    usados.forEach(c=>{ if(c.slice(0,2)!==COMBO_PREFIJO) return; const resto=c.slice(2);
+      if(/^[0-9]+$/.test(resto)) max=Math.max(max,parseInt(resto,10)); });
+    for(let i=max+1;i<10000;i++){
+      const c=COMBO_PREFIJO+String(i).padStart(4,"0");
+      if(!usados.has(c)) return c;
+    }
     return COMBO_PREFIJO+String(max+1).padStart(4,"0");
   }catch(e){ return COMBO_PREFIJO+"0001"; }
 }
@@ -2207,7 +2232,14 @@ window.rgGuardarCombo=async()=>{
     const ya=await EYG.rpc("product.product","search_count",[[["default_code","=",codigo]]],{context:{lang:"es_AR",active_test:false}});
     if(ya){ toast("El código "+codigo+" ya está usado por un producto del catálogo"); if(btn){btn.disabled=false;btn.textContent="Guardar el combo";} return; }
     const otro=OFERTAS.find(o=>o.tipo==="combo" && o.codigo===codigo && o.id!==d.id);
-    if(otro){ toast("Ya hay otro combo con el código "+codigo); if(btn){btn.disabled=false;btn.textContent="Guardar el combo";} return; }
+    if(otro){
+      // no se deja a la persona en un callejon: se le propone uno libre y queda cargado
+      const libre=await rgProximoCodigo().catch(()=>"");
+      if(libre){ d.codigo=libre; const inp=document.getElementById("rg-cod"); if(inp) inp.value=libre; }
+      toast("El código "+codigo+" ya lo usa «"+(otro.titulo||"otro combo")+"»"+(libre?(". Te puse el "+libre+": revisalo y guardá."):""));
+      if(btn){btn.disabled=false;btn.textContent="Guardar el combo";}
+      return;
+    }
 
     /* LA RECETA. Cada renglón guarda LO QUE SE VA A ESCRIBIR en el pedido, ya resuelto, para
        que Cargar venta no tenga que recalcular nada ni pueda dar otro número:
