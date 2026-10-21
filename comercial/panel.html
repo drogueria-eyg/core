@@ -3498,16 +3498,18 @@ function ofStat(o){ const g=ST.ofertas[o.id]||{}; const env=g.gEnv||0, ven=g.gVe
 const MOTOR_MAX=20;
 let MOTOR_OF=[];
 function ofPorId(id){ return OFERTAS.find(x=>x.id===id) || MOTOR_OF.find(x=>x.id===id); }
-function ofRotables(){ return OFERTAS.filter(o=>ofVisible(o) && o.tipo!=="combo"); }
+// las de la capa del Motor CON PLACA son ofertas de verdad (las armó Dirección con su imagen):
+// entran a la rotación del día como cualquier otra. Las que no tienen placa quedan en "Ver todas".
+function ofRotables(){ return OFERTAS.filter(o=>ofVisible(o) && o.tipo!=="combo").concat(MOTOR_OF.filter(o=>o.placa && ofVisible(o))); }
 function ofCombosVis(){ return OFERTAS.filter(o=>ofVisible(o) && o.tipo==="combo"); }
-function ofCatalogo(){ return [...ofCombosVis(), ...ofRotables(), ...MOTOR_OF.filter(ofVisible)]; }
+function ofCatalogo(){ return [...ofCombosVis(), ...ofRotables(), ...MOTOR_OF.filter(o=>!o.placa && ofVisible(o))]; }
 function ofTipoTxt(o){ return o.tipo==="combo"?"🎁 Combo":o._motor?"💲 Precio especial":"🏷️ Oferta"; }
 const ofNorm=t=>String(t||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
 function ofMatch(o,q){ const h=ofNorm([o.titulo, ofItems(o), (o.lineas||[]).map(l=>l.nombre).join(" "), o.codigo||""].join(" "));
   return ofNorm(q).split(/\s+/).filter(Boolean).every(w=>h.includes(w)); }
 async function cargarMotorOfertas(){
   MOTOR_OF=[];
-  const base=await EYG.cacheOdoo("of-motor-"+hoyStr, 86400, async ()=>{
+  const base=await EYG.cacheOdoo("of-motor2-"+hoyStr, 86400, async ()=>{
     const flat=String(await rpc("ir.config_parameter","get_param",["eyg.precios_fijos_flat"])||"").split("\n").filter(Boolean).map(l=>l.split("~"));
     const act=flat.filter(x=>/^\d+$/.test(x[0]) && x[7]!=="1" && !(x[6]&&x[6]<hoyStr));
     const tm=[...new Set(act.map(x=>+x[0]))]; if(!tm.length) return [];
@@ -3528,10 +3530,15 @@ async function cargarMotorOfertas(){
       const desc=pvp>p1?1-p1/pvp:0, ln=linea[t.id];
       out.push({tmpl:t.id, pv:v.id, nombre:t.name, p1, esc:e.map(x=>({q:Math.round(x.q),p:x.p})), pvp, hasta:(ln&&ln[6])||"",
         sc:(0.2+desc)*Math.log2(2+(comp[v.id]||0))*((ln&&ln[6])?1.3:1)}); });
-    return out.sort((a,b)=>b.sc-a.sc).slice(0,MOTOR_MAX*2);   // de más: después se sacan las que ya son oferta
+    return out.sort((a,b)=>b.sc-a.sc);   // TODAS las elegibles: las que tienen placa entran siempre, el resto por puntaje
   }).catch(()=>[]);
   const yaOf=new Set(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i&&i.id)));
-  MOTOR_OF=(base||[]).filter(m=>!yaOf.has(m.pv)).slice(0,MOTOR_MAX).map(m=>({ id:"motor:"+m.tmpl, tipo:"motor", _motor:true,
+  // placas de la capa: se leen siempre frescas (no van en el caché del día), así una placa recién subida aparece al recargar
+  let placas={}; try{ placas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.capa_placas"])||"{}")||{}; }catch(e){}
+  const libres=(base||[]).filter(m=>!yaOf.has(m.pv));
+  const conPlaca=libres.filter(m=>placas[String(m.tmpl)]), sinPlaca=libres.filter(m=>!placas[String(m.tmpl)]);
+  const elegidas=conPlaca.concat(sinPlaca.slice(0,Math.max(0,MOTOR_MAX-conPlaca.length)));
+  MOTOR_OF=elegidas.map(m=>({ id:"motor:"+m.tmpl, tipo:"motor", _motor:true, placa:placas[String(m.tmpl)]||"",
     titulo:m.nombre, items:[{id:m.pv, nombre:m.nombre}], precio:m.p1, precioAntes:m.pvp>m.p1?m.pvp:0, hasta:m.hasta||"", _esc:m.esc }));
 }
 function ofCardHTML(o, hot){
@@ -4014,7 +4021,7 @@ async function cargarOfertas(ids){
     try{ await marcarDestinos(OFERTAS, todasSync); }catch(e){}
     try{ await cargarAfinidad(ids); }catch(e){}   // para la rotación: qué compra esta cartera
     try{ await cargarRanking(); }catch(e){}       // estrellas: las que mejor funcionaron históricamente (una vez por día)
-    try{ await cargarMotorOfertas(); if(MOTOR_OF.length) await marcarDestinos(MOTOR_OF, []); }catch(e){}   // precios especiales del Motor
+    try{ await cargarMotorOfertas(); if(MOTOR_OF.length) await marcarDestinos(MOTOR_OF, []); placasPrecargar(); }catch(e){}   // precios especiales del Motor
     try{ await cargarEnviados(); }catch(e){}      // para no repetirle una oferta a la misma farmacia
     placasPrecargar();   // en segundo plano: para compartir la imagen en el mismo toque
 
@@ -4571,7 +4578,7 @@ async function registrarEnvio(id, tipo){
    Ctrl+V y se abre WhatsApp. Las ofertas sin placa siguen mandando el texto, como siempre. */
 const PLACA_FILE={};
 async function placasPrecargar(){
-  for(const o of OFERTAS){
+  for(const o of OFERTAS.concat(MOTOR_OF)){
     if(!o.placa || PLACA_FILE[o.id]) continue;
     try{
       const b=await (await fetch(o.placa)).blob();

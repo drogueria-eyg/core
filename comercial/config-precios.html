@@ -34,6 +34,8 @@
   .badge.inh{background:#eef2f1;color:var(--gris)} .badge.no{background:#f6eceb;color:#9a4b48}
   .sum{font-size:11.5px;color:var(--gris);flex-basis:100%;margin-left:2px}
   .btn-mini{background:#fff;border:1px solid var(--line);border-radius:8px;padding:5px 11px;font-size:12px;font-weight:700;color:var(--teal-deep);cursor:pointer;font-family:inherit}
+  .capa-placa{display:inline-flex;align-items:center;gap:6px}
+  .capa-placa img{width:36px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--line);cursor:zoom-in;background:#fff}
   .btn-mini:hover{border-color:var(--teal-med)}
   .btn-mini.del{color:#b0322f}
   .btn-mini.cons{color:#fff;background:var(--teal);border-color:var(--teal);font-weight:800}
@@ -164,6 +166,13 @@ let ESCALA={}, escFiltro="todos", editEsc=null, editLab=null;   // clasificació
 let ET={on:false, bands:[], descmax:12, minstep:0, open:false}, ETCRON={num:15, type:"minutes"};
 // Precios de venta FIJOS temporales (manuales, pisan al motor). Guardados en eyg.precios_fijos_flat.
 let FIJOS=[], _fijoSel=null, _fijoTimer=null, _fijoIdx=null;
+/* PLACAS DE LA CAPA (22/10/2026): la imagen de la oferta que las comerciales comparten desde su
+   panel, igual que en Oportunidades y Ofertas. Se guarda APARTE de la capa, en el parámetro
+   eyg.capa_placas = {"<plantilla>": "<enlace>"}: el formato de la capa lo lee el motor y no se
+   toca. La imagen va al depósito público "ofertas-placas" de Supabase. Guardar o quitar una placa
+   no recalcula precios ni hace falta "Guardar y sincronizar". Sólo líneas de un producto: una
+   placa no puede ser la misma para todo un laboratorio. */
+let CAPA_PLACAS={};
 // La capa se puede aplicar a un PRODUCTO o a un LABORATORIO entero ("lab").
 // Laboratorio = la Marca de la ficha (modelo x_marcas, clave 'M<id>') o, en éticos, la
 // categoría del laboratorio (clave 'C<id>'). Por laboratorio sólo tiene sentido la ESCALERA:
@@ -225,6 +234,7 @@ async function cargar(){
     const _dm=parseFloat(etDm); ET.descmax = isNaN(_dm)?0:Math.round(_dm*1000)/10;   // 0 = sin tope global (manda el piso)
     const etMs=await rpc("ir.config_parameter","get_param",["eyg.eticos_min_step"]);
     const _ms=parseFloat(etMs); ET.minstep = isNaN(_ms)?0:Math.round(_ms*1000)/10;   // descuento minimo por escalon (0 = off)
+    try{ CAPA_PLACAS=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.capa_placas"])||"{}")||{}; }catch(e){ CAPA_PLACAS={}; }
     // precios de venta fijos temporales (manuales)
     const rawFijos=await rpc("ir.config_parameter","get_param",["eyg.precios_fijos_flat"]);
     FIJOS=String(rawFijos||"").split("\n").map(l=>l.trim()).filter(Boolean).map(l=>{
@@ -547,6 +557,42 @@ function capaAlertaFila(f){
     ? `<div class="ofalerta costo">⛔ hoy publica ${EYG.money(x.precio)} y el costo es ${EYG.money(x.costo)} · margen ${x.margen.toFixed(1)}%</div>`
     : `<div class="ofalerta piso">⚠ hoy publica ${EYG.money(x.precio)} y quedó bajo el piso de su categoría (${EYG.money(x.piso)}) · margen ${x.margen.toFixed(1)}%</div>`;
 }
+function capaPlacaHTML(tmpl){
+  const u=CAPA_PLACAS[String(tmpl)];
+  return u
+    ? `<span class="capa-placa"><img src="${esc(u)}" alt="Placa" loading="lazy" title="Ver la placa" onclick="window.open('${esc(u)}','_blank')">
+        <button class="btn-mini" onclick="capaPlacaElegir(${tmpl})">🖼️ Cambiar placa</button><button class="btn-mini" onclick="capaPlacaQuitar(${tmpl})">Quitar placa</button></span>`
+    : `<button class="btn-mini" onclick="capaPlacaElegir(${tmpl})" title="La imagen que comparten las comerciales desde su panel">🖼️ Subir placa</button>`;
+}
+window.capaPlacaElegir=tmpl=>{
+  const inp=document.createElement("input"); inp.type="file"; inp.accept="image/jpeg,image/png,image/webp";
+  inp.onchange=()=>{ const f=inp.files&&inp.files[0]; if(f) capaPlacaSubir(tmpl,f); }; inp.click();
+};
+async function capaPlacaSubir(tmpl,file){
+  if(!/^image\/(jpeg|png|webp)$/.test(file.type)){ toast("La placa tiene que ser JPG, PNG o WEBP"); return; }
+  if(file.size>5*1024*1024){ toast("La imagen pesa más de 5 MB"); return; }
+  toast("Subiendo la placa…");
+  try{
+    const ext=file.type==="image/png"?"png":file.type==="image/webp"?"webp":"jpg";
+    const ruta="capa-"+tmpl+"-"+Date.now()+"."+ext;   // archivo nuevo cada vez: nadie ve una versión vieja en caché
+    const sb=EYG.supa().storage.from("ofertas-placas");
+    const {error}=await sb.upload(ruta,file,{contentType:file.type,upsert:false,cacheControl:"31536000"});
+    if(error) throw error;
+    await capaPlacaGuardar(tmpl, sb.getPublicUrl(ruta).data.publicUrl);
+    toast("Placa guardada ✓ Ya la ven las comerciales.");
+  }catch(e){ toast("No pude subir la placa: "+(e.message||e)); }
+}
+window.capaPlacaQuitar=async tmpl=>{
+  if(!confirm("¿Quitar la placa de este producto? Las comerciales vuelven a compartir sólo el texto.")) return;
+  try{ await capaPlacaGuardar(tmpl,null); toast("Placa quitada"); }catch(e){ toast("Error: "+(e.message||e)); }
+};
+// se relee el parámetro antes de escribir: así no se pisa una placa subida desde otra pantalla
+async function capaPlacaGuardar(tmpl,url){
+  let m={}; try{ m=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.capa_placas"])||"{}")||{}; }catch(e){ m={}; }
+  if(url) m[String(tmpl)]=url; else delete m[String(tmpl)];
+  await rpc("ir.config_parameter","set_param",["eyg.capa_placas",JSON.stringify(m)]);
+  CAPA_PLACAS=m; render();
+}
 function renderFijos(){
   const hoy=hoyStr();
   const editando=(_fijoIdx!=null);
@@ -566,6 +612,7 @@ function renderFijos(){
         <div class="ofdet">${_fijoDet(f)} · ${venc}</div>${capaAlertaFila(f)}</div>
       ${marca}
       ${est}
+      ${esLab?"":capaPlacaHTML(f.tmpl)}
       <button class="btn-mini" onclick="fijoEditar(${i})">Editar</button>
       <button class="btn-mini" onclick="fijoPausar(${i})">${f.pausado?'Reanudar':'Pausar'}</button>
       <button class="btn-mini del" onclick="fijoQuitar(${i})">Quitar</button>
