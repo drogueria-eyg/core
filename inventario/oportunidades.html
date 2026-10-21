@@ -208,6 +208,8 @@
   .cbt td.l{text-align:left}
   .cbt input{width:78px;border:1px solid var(--line);border-radius:7px;padding:5px 7px;font-family:inherit;font-size:12.5px;text-align:right}
   .cbt input.q{width:64px}
+  .cbt input.pc{width:72px;text-align:right}
+  .cbt .caro input.pc{color:var(--bad);font-weight:700}
   .cbt .nom{font-weight:700;line-height:1.25}
   .cbt .sku{font-size:10.5px;color:var(--gris2);font-weight:600}
   .cbt .del{cursor:pointer;color:var(--gris2);font-weight:800;padding:0 4px}
@@ -1641,13 +1643,20 @@ function rgComboFormHTML(){
     const mrg = p>0 ? Math.round((1-costo/p)*100) : null;
     const cls = mrg==null?"":(mrg<0?"neg":mrg<15?"low":"ok");
     const caro = (tramo>0 && p>tramo);
-    const off = (tramo>0 && p<tramo) ? ("−"+Math.round((1-p/tramo)*100)+"%") : (caro?"más caro":"—");
+    /* El % y el precio son DOS FORMAS DE ESCRIBIR LO MISMO: se puede cargar cualquiera de los
+       dos y el otro se acomoda. El % se mide contra el precio de lista del tramo que le toca a
+       esa cantidad (no contra el PVP), que es con lo que de verdad compara la farmacia.
+       Si el renglón sale más caro que la lista el % queda negativo, y se muestra en rojo: es
+       información, no un error — hay combos que suben un renglón para bajar otros. */
+    const offNum = (tramo>0 && p>0) ? Math.round((1-p/tramo)*1000)/10 : null;
     return `<tr>
       <td class="l"><div class="nom">${esc(l.nombre||"")}</div><div class="sku">${esc(l.sku||"")} · stock ${l.stock!=null?l.stock:"…"}${l.exento===false?" · vende con IVA":""}</div></td>
       <td><input class="q" type="number" min="1" step="1" value="${q||""}" onchange="rgSetQty(${l.id},this.value)"></td>
       <td>${tramo?money(tramo):"…"}</td>
       <td><input type="number" min="0" step="0.01" value="${p||""}" onchange="rgSetPrecio(${l.id},this.value)"></td>
-      <td class="${caro?"caro":""}">${off}</td>
+      <td class="${caro?"caro":""}">${tramo>0
+        ? `<input class="q pc" type="number" step="0.1" value="${offNum!=null?offNum:""}" onchange="rgSetDescLinea(${l.id},this.value)" title="Descuento sobre el precio de lista de este renglón">`
+        : "—"}</td>
       <td>${sub?money(sub):"—"}</td>
       <td class="mrg ${cls}">${mrg==null?"—":(mrg+"%")}</td>
       <td><span class="del" onclick="rgQuitarItem(${l.id})">✕</span></td>
@@ -1657,7 +1666,7 @@ function rgComboFormHTML(){
   const ahorro = T.lista>0 ? Math.round((1-T.combo/T.lista)*100) : 0;
   const mrgT = T.combo>0 ? Math.round((1-T.costo/T.combo)*100) : null;
   const tabla = ls.length ? `<table class="cbt">
-      <tr><th class="l">Producto</th><th>Cant.</th><th>Precio de lista</th><th>Precio del combo</th><th>Dif.</th><th>Subtotal</th><th>Margen</th><th></th></tr>
+      <tr><th class="l">Producto</th><th>Cant.</th><th>Precio de lista</th><th>Precio del combo</th><th>% desc.</th><th>Subtotal</th><th>Margen</th><th></th></tr>
       ${filas}</table>
     <div class="cbtot">
       <div class="b"><span class="k">Precio del combo</span><span class="v">${money(T.combo)}</span></div>
@@ -1717,6 +1726,18 @@ window.rgSetQty=(id,v)=>{
 window.rgSetPrecio=(id,v)=>{
   const l=rgLineas().find(x=>x.id===id); if(!l) return;
   l.precio=Math.round((parseFloat(v)||0)*100)/100; l.manual=true;   // lo puso a mano: el descuento general no lo pisa solo
+  render();
+};
+/* Cargar el % de UN renglón. Es la operación inversa de rgSetPrecio: el precio sale del
+   tramo que le toca a esa cantidad. Queda "a mano", así que el descuento general ya no lo
+   pisa — igual que si se hubiera escrito el precio. */
+window.rgSetDescLinea=(id,v)=>{
+  const l=rgLineas().find(x=>x.id===id); if(!l) return;
+  const tramo=rgTramo(l);
+  if(!(tramo>0)){ toast("Este producto todavía no tiene precio de lista: cargá el precio a mano"); return; }
+  const d=parseFloat(v);
+  if(!isFinite(d) || d>=100){ toast("El descuento tiene que ser menor a 100%"); render(); return; }
+  l.precio=EYG.r2(tramo*(1-d/100)); l.manual=true;
   render();
 };
 window.rgDescGlobal=v=>{
