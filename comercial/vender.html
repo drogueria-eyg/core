@@ -1968,8 +1968,11 @@ async function syncCombos(){
     const c=comboDef(cod); if(!c) continue;
     const veces=ST.combos[cod];
     const antes=new Set(await idsDe());
-    const cmds=[[0,0,{display_type:"line_note", name:c.titulo+(veces>1?("  x"+veces):"")+(c.nota?("  ·  "+c.nota):"")}]];
-    c.lineas.forEach(l=>cmds.push([0,0,{product_id:l.id, product_uom_qty:(l.qty||1)*veces}]));
+    const cmds=[];
+    for(let k=1;k<=veces;k++){
+      cmds.push([0,0,{display_type:"line_note", name:c.titulo+(veces>1?("  ·  combo "+k+" de "+veces):"")+(c.nota?("  ·  "+c.nota):"")}]);
+      c.lineas.forEach(l=>cmds.push([0,0,{product_id:l.id, product_uom_qty:(l.qty||1)}]));
+    }
     await rpc("sale.order","write",[[ST.order.id],{order_line:cmds}],{context:ES});
     /* LOS RENGLONES NUEVOS SON LOS QUE NO ESTABAN. No alcanza con buscar por producto: si la
        comercial ya habia cargado suelto un producto que tambien esta en el combo, le estariamos
@@ -1993,6 +1996,14 @@ async function syncCombos(){
       await rpc("sale.order.line","write",[[l.id],{discount:d, name:primera+String.fromCharCode(10)+COMBO_MARCA+cod}],{context:ES});
     }
     ST.comboLines[cod]={veces, ids:nuevos};
+    /* CONTROL AL CENTAVO: lo que quedo en el pedido contra lo que promete el combo. Si no
+       cierra se avisa — lo que mostramos y lo que se factura tienen que ser el mismo numero. */
+    try{
+      const ver=await rpc("sale.order.line","read",[nuevos,["display_type","price_subtotal"]],{context:ES});
+      const dio=EYG.r2(ver.filter(x=>!x.display_type).reduce((a,x)=>a+(x.price_subtotal||0),0));
+      const debe=EYG.r2(EYG.r2(c.precio)*veces);
+      if(Math.abs(dio-debe)>0.009) toast("Ojo: el pedido dio "+money(dio)+" y el combo "+money(debe));
+    }catch(e){}
   }
 }
 
@@ -2049,8 +2060,8 @@ async function refrescarLineas(){
     ls.forEach(l=>{
       const cod = l.display_type ? _nota(l) : comboDeLinea(l.name);
       if(cod){ (ST.comboLines[cod]=ST.comboLines[cod]||{veces:0, ids:[]}).ids.push(l.id);
-        const def=comboDef(cod); const base=def&&(def.lineas.find(x=>x.id===(l.product_id&&l.product_id[0]))||{}).qty;
-        if(base>0) _cbQ[cod]=Math.max(_cbQ[cod]||0, Math.round(l.product_uom_qty/base));
+        // cada combo cargado deja SU nota: contarlas es contar los combos
+        if(l.display_type==="line_note") _cbQ[cod]=(_cbQ[cod]||0)+1;
       }
     });
     Object.keys(ST.comboLines).forEach(cod=>{ ST.comboLines[cod].veces=_cbQ[cod]||1; });
@@ -2155,10 +2166,9 @@ function renderCart(){
   // los combos se muestran como UNA cosa, no como sus renglones sueltos
   const cbHTML = cbs.map(cod=>{
     const c=comboDef(cod), v=ST.combos[cod];
-    /* el precio por combo, no el total: el total del pedido lo dice Odoo abajo, y con
-       varios combos puede diferir unos centavos del producto precio x veces (el descuento
-       se guarda con 4 decimales). Mostrar dos numeros que no coinciden es peor que uno. */
-    const tit=c?c.titulo:cod, pr=c?c.precio:null;
+    // el total del combo. Coincide al centavo con el pedido porque cada combo va como su
+    // propio bloque, con sus cantidades: lo que se muestra es lo que se factura.
+    const tit=c?c.titulo:cod, pr=c?EYG.r2(c.precio*v):null;
     const det=c?c.lineas.map(l=>(l.qty*v)+" × "+String(l.nombre||"").split(" (")[0].replace(/^\[[^\]]*\]\s*/,"")).join(" · "):"";
     return `<div class="citem cb">
       <div class="ci-main" style="min-width:0;flex:1">
@@ -2171,7 +2181,7 @@ function renderCart(){
           <button class="del" onclick="quitarCombo('${esc(cod)}')" title="Quitar">🗑</button>
         </div>
       </div>
-      <div class="ci-r"><div class="ci-sub">${pr!=null?money(pr):"…"}</div>${v>1?'<div class="ci-u">c/u</div>':""}</div>
+      <div class="ci-r"><div class="ci-sub">${pr!=null?money(pr):"…"}</div></div>
     </div>`;
   }).join("");
   if(!pids.length && !cbs.length){ items.innerHTML='<div class="cart-empty">Todavía no cargaste productos.<br>Tocá ＋ en el catálogo.</div>'; foot.innerHTML=""; return; }
