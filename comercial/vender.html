@@ -137,6 +137,20 @@
   .fams{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}
   .fam{font-size:12.5px;font-weight:700;border:1.5px solid var(--line);background:var(--surface);color:var(--gris);border-radius:22px;padding:6px 13px;cursor:pointer;white-space:nowrap}
   .fam.on{background:var(--teal);border-color:var(--teal);color:#fff}
+  .card.combo{border:1.5px solid #0AA89F;background:linear-gradient(180deg,#F2FBFA,#fff);padding:12px;border-radius:14px;display:flex;flex-direction:column;gap:6px}
+  .card.combo.on{box-shadow:0 0 0 2px #0AA89F inset}
+  .card.combo .cb-tag{font-size:10.5px;font-weight:800;letter-spacing:.5px;color:#048782}
+  .card.combo .cb-nom{font-weight:800;font-size:15px;line-height:1.25}
+  .card.combo .cb-det{font-size:12px;color:#5a6b69;line-height:1.35}
+  .card.combo .cb-nota{font-size:11.5px;color:#8a7a3f}
+  .card.combo .cb-pie{display:flex;justify-content:space-between;align-items:flex-end;gap:8px;margin-top:2px}
+  .card.combo .cb-pr{font-weight:800;font-size:18px}
+  .card.combo .cb-ah{font-size:11.5px;color:#0E5C46;font-weight:700}
+  .card.combo .cb-st{font-size:11.5px;color:#5a6b69;text-align:right}
+  .card.combo .cb-add{width:100%}
+  .cb-n{min-width:26px;text-align:center;font-weight:800}
+  .citem.cb{background:#F2FBFA;border-left:3px solid #0AA89F}
+  .fam.cb{border-color:#0AA89F;color:#048782}
   .fam.of{color:var(--coral);border-color:#f3c9c3}
   .fam.of.on{background:var(--coral);border-color:var(--coral);color:#fff}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(174px,1fr));gap:10px;padding:12px}
@@ -455,6 +469,9 @@ let ST = {
   // catálogo
   fam:"HOSPITALARIOS", qProd:"", prods:[], precios:{}, tiers:{}, imgs:{}, catCache:{}, prodCache:{}, taxCache:{}, ofertaPids:new Set(), ofertaTmpls:new Set(), ofertaInfo:{}, ofertaRule:{}, _ofLoaded:false, cargandoCat:false,
   fisico:{}, comprometido:{}, _compTs:0,   // stock físico y comprometido (confirmado sin entregar) por producto → disponible
+  combos:{},                  // codigo de combo -> cuantas veces va en este pedido
+  comboLines:{},              // codigo -> {veces, ids:[renglones de Odoo]} (incluye la nota)
+  combosDef:[],               // los combos activos (receta) que se pueden cargar
   cartOpen:false, cartMax:false,   // cartMax = el pedido ampliado a toda la pantalla
   vista:(function(){ try{ return localStorage.getItem("eyg_vender_vista")||"filas"; }catch(e){ return "filas"; } })(),  // "filas" | "grilla"
 };
@@ -1181,6 +1198,7 @@ async function entrarVenta(){
   if(esTier2()) cargarMaxDescT2();   // tope de descuento comercial según el piso de margen
   cargarFiscal();           // ¿se le puede facturar a este cliente? (cartel en el encabezado, no frena nada)
   cargarOfertas();          // en paralelo: marca los productos en oferta (no bloquea el catálogo)
+  cargarCombos();           // y los combos armados en Oportunidades, para la pestaña 🎁
   ocCargar().then(()=>{ if(ST.view==="venta") renderCart(); });   // OC ya adjuntas (al reanudar)
   await cargarCatalogo();
 }
@@ -1311,6 +1329,13 @@ async function buscarProductosOdoo(q){
 async function cargarCatalogo(){
   const token=(ST._catToken=(ST._catToken||0)+1);
   desconectarIO();
+  // Los combos no son una categoría de Odoo: son recetas del Core, se dibujan aparte.
+  if(ST.fam==="COMBOS" && !(ST.qProd||"").trim()){
+    const gw=document.getElementById("gridWrap");
+    if(gw && !document.getElementById("grid")) gw.innerHTML='<div id="grid" class="grid"></div>';
+    if(!(ST.combosDef||[]).length) await cargarCombos();
+    renderCombos(); return;
+  }
   cargarComprometido();   // refresca (throttle 45s) el comprometido para el disponible; no bloquea el render
   const q=(ST.qProd||"").trim();
   const key = q ? null : ST.fam;                  // solo cacheamos las familias (no las búsquedas)
@@ -1828,6 +1853,149 @@ function marcarDirty(){ ST.dirty=true; renderCartBadge(); syncSoon(); }
 let _syncT=null;
 function syncSoon(){ clearTimeout(_syncT); _syncT=setTimeout(syncOrder, 600); }
 
+/* ===================== COMBOS EN CARGAR VENTA =====================
+   La comercial toca el combo UNA vez, como un producto más. Por detrás el Core carga sus
+   renglones: una NOTA con el nombre del combo y debajo un renglón por producto.
+
+   POR QUÉ N RENGLONES Y NO UN PRODUCTO "COMBO": la farmacia pide ver cuánto paga por cada
+   artículo para saber cuánto ahorra en cada uno, y un kit factura en un renglón único que
+   Odoo 17 no sabe desglosar. Con renglones reales la factura sale desglosada y la entrega
+   sale con los productos, sin explotar nada.
+
+   EL PRECIO LO PONE ODOO. No se escribe el precio unitario: se deja que Odoo arme el renglón
+   con la lista del cliente —que en los éticos pone el PVP y en el resto la escalera— y recién
+   ahí se le escribe el DESCUENTO para que el precio final sea el del combo. Así el combo no
+   pelea con el motor de precios: si mañana cambia una escalera, el renglón igual cierra en el
+   precio del folleto. Verificado contra Odoo con el combo CB0003.
+
+   CÓMO SE RECONOCEN AL VOLVER. El renglón lleva en su descripción una segunda línea
+   "Combo <código>". Con eso, al reabrir un presupuesto, se sabe qué renglones son de un combo
+   (no se tocan como productos sueltos, ni los borra el barrido de bajas, ni les pasa por
+   encima el descuento comercial del tier 2). Además le dice a la farmacia a qué combo
+   pertenece cada renglón. */
+const COMBO_MARCA = "Combo ";            // va en la 2ª línea de la descripción del renglón
+const comboDeLinea = nom => { const m=/\bCombo\s+(CB\d{4})\b/.exec(String(nom||"")); return m?m[1]:null; };
+
+async function cargarCombos(){
+  ST.combosDef=[];
+  const hoy=EYG.argToday();
+  try{
+    const raw=await rpc("ir.config_parameter","get_param",["eyg.ofertas"]);
+    const todos=(JSON.parse(raw||"[]")||[]).filter(o=>o && o.tipo==="combo" && o.receta
+      && !o.pausada && (!o.hasta || o.hasta>=hoy) && (o.lineas||[]).length);
+    if(!todos.length){ return; }
+    // stock de los componentes: para decir cuántos se pueden armar HOY
+    const pids=[...new Set(todos.flatMap(c=>c.lineas.map(l=>l.id)))];
+    let disp={};
+    try{
+      const ps=await rpc("product.product","read",[pids,["qty_available"]],{context:ES});
+      ps.forEach(p=>disp[p.id]=p.qty_available||0);
+    }catch(e){}
+    todos.forEach(c=>{
+      let arm=null;
+      c.lineas.forEach(l=>{ const d=Math.floor((disp[l.id]!=null?disp[l.id]:0)/(l.qty||1)); arm=(arm==null)?d:Math.min(arm,d); });
+      c.armables=(arm==null?0:Math.max(0,arm));
+    });
+    ST.combosDef=todos;
+  }catch(e){ ST.combosDef=[]; }
+}
+const comboDef = cod => (ST.combosDef||[]).find(c=>c.codigo===cod);
+
+function addCombo(cod){
+  const c=comboDef(cod); if(!c) return;
+  const ya=(ST.combos[cod]||0);
+  if(c.armables!=null && ya+1>c.armables){ toast("Con el stock de hoy se arman "+c.armables); return; }
+  ST.combos[cod]=ya+1;
+  toast("🎁 "+c.titulo+(ST.combos[cod]>1?("  ×"+ST.combos[cod]):""));
+  renderGrid(); marcarDirty(); renderCart();
+}
+function chgCombo(cod,d){
+  const n=(ST.combos[cod]||0)+d;
+  if(n<=0) delete ST.combos[cod]; else { const c=comboDef(cod); if(c && c.armables!=null && n>c.armables){ toast("Con el stock de hoy se arman "+c.armables); return; } ST.combos[cod]=n; }
+  renderGrid(); marcarDirty(); renderCart();
+}
+function quitarCombo(cod){ delete ST.combos[cod]; renderGrid(); marcarDirty(); renderCart(); }
+
+/* La tarjeta del combo en el catálogo: lo que la comercial toca. */
+function cardCombo(c){
+  const n=ST.combos[c.codigo]||0;
+  const ahorro=(c.precioAntes>c.precio)?Math.round((1-c.precio/c.precioAntes)*100):0;
+  const det=c.lineas.map(l=>l.qty+" × "+String(l.nombre||"").split(" (")[0].replace(/^\[[^\]]*\]\s*/,"")).join(" · ");
+  return `<div class="card combo${n?" on":""}">
+    <div class="cb-tag">🎁 COMBO · ${esc(c.codigo)}</div>
+    <div class="cb-nom">${esc(c.titulo)}</div>
+    <div class="cb-det">${esc(det)}</div>
+    ${c.nota?`<div class="cb-nota">${esc(c.nota)}</div>`:""}
+    <div class="cb-pie">
+      <div><div class="cb-pr">${money(c.precio)}</div>${ahorro>0?`<div class="cb-ah">−${ahorro}% contra comprarlo suelto</div>`:""}</div>
+      <div class="cb-st">${c.armables>0?("se arman "+c.armables):"<b>sin stock</b>"}</div>
+    </div>
+    ${c.armables>0 ? (n
+      ? `<div class="ministep cb-step"><button onclick="chgCombo('${esc(c.codigo)}',-1)">−</button><span class="cb-n">${n}</span><button onclick="chgCombo('${esc(c.codigo)}',1)">＋</button><button class="del" onclick="quitarCombo('${esc(c.codigo)}')" title="Quitar">🗑</button></div>`
+      : `<button class="btn grn cb-add" onclick="addCombo('${esc(c.codigo)}')">＋ Agregar el combo</button>`)
+      : ""}
+  </div>`;
+}
+function renderCombos(){
+  const g=document.getElementById("grid"); if(!g) return;
+  const cs=ST.combosDef||[];
+  g.className="grid cards";
+  g.innerHTML = cs.length
+    ? cs.map(cardCombo).join("")
+    : '<div class="vacio">No hay combos activos. Se arman en <b>Oportunidades y Ofertas</b>.</div>';
+}
+
+/* ---- el pedido: los renglones del combo en Odoo ----
+   Se rehacen enteros cada vez que cambia la cantidad de combos: es poco y evita cualquier
+   deriva entre lo que muestra el carrito y lo que tiene el pedido. */
+async function syncCombos(){
+  if(!ST.order) return;
+  ST.comboLines=ST.comboLines||{};
+  const quiero=Object.keys(ST.combos).filter(c=>ST.combos[c]>0);
+  const hay=Object.keys(ST.comboLines);
+  const cambia = quiero.length!==hay.length || quiero.some(c=>!ST.comboLines[c] || ST.comboLines[c].veces!==ST.combos[c]);
+  if(!cambia) return;
+  // 1) fuera los renglones de los combos que ya no estan o que cambiaron de cantidad
+  const borrar=[];
+  Object.keys(ST.comboLines).forEach(cod=>{
+    if(!quiero.includes(cod) || ST.comboLines[cod].veces!==ST.combos[cod]){ borrar.push(...ST.comboLines[cod].ids); delete ST.comboLines[cod]; }
+  });
+  if(borrar.length) await rpc("sale.order","write",[[ST.order.id],{order_line:borrar.map(id=>[2,id])}],{context:ES});
+  // 2) y se agregan los que faltan
+  const idsDe = async()=> (await rpc("sale.order","read",[[ST.order.id],["order_line"]],{context:ES}))[0].order_line||[];
+  for(const cod of quiero){
+    if(ST.comboLines[cod]) continue;
+    const c=comboDef(cod); if(!c) continue;
+    const veces=ST.combos[cod];
+    const antes=new Set(await idsDe());
+    const cmds=[[0,0,{display_type:"line_note", name:c.titulo+(veces>1?("  x"+veces):"")+(c.nota?("  ·  "+c.nota):"")}]];
+    c.lineas.forEach(l=>cmds.push([0,0,{product_id:l.id, product_uom_qty:(l.qty||1)*veces}]));
+    await rpc("sale.order","write",[[ST.order.id],{order_line:cmds}],{context:ES});
+    /* LOS RENGLONES NUEVOS SON LOS QUE NO ESTABAN. No alcanza con buscar por producto: si la
+       comercial ya habia cargado suelto un producto que tambien esta en el combo, le estariamos
+       pisando el precio a ESE renglon. Se identifican por diferencia de ids. */
+    const nuevos=(await idsDe()).filter(id=>!antes.has(id));
+    const ls=await rpc("sale.order.line","read",[nuevos,["display_type","name","product_id","price_unit"]],{context:ES});
+    const porPid={}; c.lineas.forEach(l=>porPid[l.id]=l);
+    for(const l of ls){
+      if(l.display_type) continue;
+      const def=porPid[l.product_id&&l.product_id[0]]; if(!def) continue;
+      /* EL DESCUENTO SE SACA DEL PRECIO POR UNIDAD, y Odoo guarda el campo con 4 DECIMALES
+         (verificado: escribir 70,00001 queda en 70, y el escalón siguiente mueve el subtotal
+         6 centavos). O sea que el % no tiene resolución para clavar un total arbitrario.
+         Por eso lo que el combo promete es EL DESCUENTO, no el total: con 1 combo el pedido
+         da exacto el precio del folleto, y con varios el total es el que sale de aplicar ese
+         mismo % — como cualquier otra venta de Odoo. Dos combos del folleto dan $96.164,42 en
+         vez de $96.164,40: dos centavos de redondeo, no un precio distinto. */
+      const base=l.price_unit||0;
+      const d=(base>0 && def.precio<base) ? Math.round((1-def.precio/base)*100*1e4)/1e4 : 0;
+      const primera = String(l.name||"").split(String.fromCharCode(10))[0];
+      await rpc("sale.order.line","write",[[l.id],{discount:d, name:primera+String.fromCharCode(10)+COMBO_MARCA+cod}],{context:ES});
+    }
+    ST.comboLines[cod]={veces, ids:nuevos};
+  }
+}
+
 async function syncOrder(){
   if(!ST.order) return;
   if(ST.syncing){ syncSoon(); return; }
@@ -1853,6 +2021,8 @@ async function syncOrder(){
       await refrescarLineas();
     }
     await aplicarDescuentos();   // tier 2: baja el precio unitario según el descuento comercial
+    await syncCombos();          // y los renglones de los combos, con su propio descuento
+    await refrescarLineas();
   }catch(e){ toast("No pude guardar en Odoo"); ST.dirty=true; }
   ST.syncing=false;
   renderCart();
@@ -1866,8 +2036,26 @@ async function refrescarLineas(){
   const ids=o.order_line||[];
   ST.lines={};
   if(ids.length){
-    const ls=await rpc("sale.order.line","read",[ids],{fields:["id","product_id","product_uom_qty","price_unit","discount","price_subtotal","name","tax_id"],context:ES});
-    ls.forEach(l=>{ if(!l.product_id) return; const pid=l.product_id[0];
+    const ls=await rpc("sale.order.line","read",[ids],{fields:["id","product_id","product_uom_qty","price_unit","discount","price_subtotal","name","tax_id","display_type"],context:ES});
+    /* LOS RENGLONES DE COMBO SE APARTAN. Si entraran a ST.lines pasarían tres cosas malas: el
+       barrido de bajas los borraría (no están en ST.want), el carrito los mostraría como
+       productos sueltos, y el descuento comercial del tier 2 les pisaría el precio. Se
+       reconocen por la marca "Combo CB####" en la 2ª línea de su descripción, que es la misma
+       que lee la farmacia en la factura. */
+    ST.comboLines={}; const _cbQ={};
+    const _nota=l=>{ if(l.display_type!=="line_note") return null;
+      const t=String(l.name||"").trim();
+      const c=(ST.combosDef||[]).find(x=>t.indexOf(x.titulo)===0); return c?c.codigo:null; };
+    ls.forEach(l=>{
+      const cod = l.display_type ? _nota(l) : comboDeLinea(l.name);
+      if(cod){ (ST.comboLines[cod]=ST.comboLines[cod]||{veces:0, ids:[]}).ids.push(l.id);
+        const def=comboDef(cod); const base=def&&(def.lineas.find(x=>x.id===(l.product_id&&l.product_id[0]))||{}).qty;
+        if(base>0) _cbQ[cod]=Math.max(_cbQ[cod]||0, Math.round(l.product_uom_qty/base));
+      }
+    });
+    Object.keys(ST.comboLines).forEach(cod=>{ ST.comboLines[cod].veces=_cbQ[cod]||1; });
+    ST.combos={}; Object.keys(ST.comboLines).forEach(cod=>{ ST.combos[cod]=ST.comboLines[cod].veces; });
+    ls.forEach(l=>{ if(!l.product_id || l.display_type || comboDeLinea(l.name)) return; const pid=l.product_id[0];
       ST.lines[pid]={ pid, lineId:l.id, qty:l.product_uom_qty, price_unit:l.price_unit, discount:l.discount||0,
         subtotal:l.price_subtotal, name:l.product_id[1], taxIds:l.tax_id||[] }; });
   }
@@ -1908,7 +2096,7 @@ function vVenta(){
             <button class="vbtn ${ST.vista==='grilla'?'on':''}" data-v="grilla" onclick="setVista('grilla')" title="Vista en grilla">▦</button>
           </div>
         </div>
-        <div class="fams">${FAMILIAS.map(f=>`<button class="fam ${ST.fam===f.k&&!ST.qProd?"on":""}" data-fam="${f.k}" onclick="setFam('${f.k}')">${esc(f.label)}</button>`).join("")}<button class="fam of ${ST.fam==='OFERTAS'&&!ST.qProd?'on':''}" data-fam="OFERTAS" onclick="setFam('OFERTAS')">🏷️ Ofertas</button><button class="fam" onclick="dejarPendiente()" style="margin-left:auto;border-color:#E0B84A;color:#8a6a1f;background:#FBF4E3" title="Cargar un producto sin stock como pendiente de reposición">📋 Falta sin stock</button></div>
+        <div class="fams">${FAMILIAS.map(f=>`<button class="fam ${ST.fam===f.k&&!ST.qProd?"on":""}" data-fam="${f.k}" onclick="setFam('${f.k}')">${esc(f.label)}</button>`).join("")}<button class="fam of ${ST.fam==='OFERTAS'&&!ST.qProd?'on':''}" data-fam="OFERTAS" onclick="setFam('OFERTAS')">🏷️ Ofertas</button><button class="fam cb ${ST.fam==='COMBOS'&&!ST.qProd?'on':''}" data-fam="COMBOS" onclick="setFam('COMBOS')">🎁 Combos${(ST.combosDef||[]).length?(" ("+ST.combosDef.length+")"):""}</button><button class="fam" onclick="dejarPendiente()" style="margin-left:auto;border-color:#E0B84A;color:#8a6a1f;background:#FBF4E3" title="Cargar un producto sin stock como pendiente de reposición">📋 Falta sin stock</button></div>
       </div>
       <div id="gridWrap"></div>
     </div>
@@ -1963,7 +2151,31 @@ function renderCart(){
   renderCartBadge();
   const items=document.getElementById("cartItems"), foot=document.getElementById("cartFoot"); if(!items||!foot) return;
   const pids=Object.keys(ST.want).filter(pid=>ST.want[pid]>0);
-  if(!pids.length){ items.innerHTML='<div class="cart-empty">Todavía no cargaste productos.<br>Tocá ＋ en el catálogo.</div>'; foot.innerHTML=""; return; }
+  const cbs=Object.keys(ST.combos||{}).filter(c=>ST.combos[c]>0);
+  // los combos se muestran como UNA cosa, no como sus renglones sueltos
+  const cbHTML = cbs.map(cod=>{
+    const c=comboDef(cod), v=ST.combos[cod];
+    /* el precio por combo, no el total: el total del pedido lo dice Odoo abajo, y con
+       varios combos puede diferir unos centavos del producto precio x veces (el descuento
+       se guarda con 4 decimales). Mostrar dos numeros que no coinciden es peor que uno. */
+    const tit=c?c.titulo:cod, pr=c?c.precio:null;
+    const det=c?c.lineas.map(l=>(l.qty*v)+" × "+String(l.nombre||"").split(" (")[0].replace(/^\[[^\]]*\]\s*/,"")).join(" · "):"";
+    return `<div class="citem cb">
+      <div class="ci-main" style="min-width:0;flex:1">
+        <div class="ci-nm">🎁 ${esc(tit)}${v>1?(" ×"+v):""}</div>
+        <div class="cajanota">${esc(det)}</div>
+        <div class="ministep">
+          <button onclick="chgCombo('${esc(cod)}',-1)">−</button>
+          <span class="cb-n">${v}</span>
+          <button onclick="chgCombo('${esc(cod)}',1)">＋</button>
+          <button class="del" onclick="quitarCombo('${esc(cod)}')" title="Quitar">🗑</button>
+        </div>
+      </div>
+      <div class="ci-r"><div class="ci-sub">${pr!=null?money(pr):"…"}</div>${v>1?'<div class="ci-u">c/u</div>':""}</div>
+    </div>`;
+  }).join("");
+  if(!pids.length && !cbs.length){ items.innerHTML='<div class="cart-empty">Todavía no cargaste productos.<br>Tocá ＋ en el catálogo.</div>'; foot.innerHTML=""; return; }
+  if(!pids.length){ items.innerHTML=cbHTML; foot.innerHTML=_cartFoot(); return; }
   // ORDEN ALFABÉTICO. Venían por número de producto, que para la comercial es azar:
   // en un pedido de 60+ renglones encontrar uno para corregirle la cantidad era a ojo.
   // Se ordena por el nombre visible, sin el código entre corchetes y sin acentos.
@@ -2008,7 +2220,11 @@ function renderCart(){
       </div>
     </div>`;
   }).join("");
-  foot.innerHTML=`
+  items.innerHTML = cbHTML + items.innerHTML;
+  foot.innerHTML=_cartFoot();
+}
+function _cartFoot(){
+  return `
     <div class="row"><span>Neto (sin IVA)</span><b>${money(ST.amount.untaxed)}</b></div>
     <div class="row tot"><span>Total</span><span>${money(ST.amount.total)}</span></div>
     ${ocHTML()}
