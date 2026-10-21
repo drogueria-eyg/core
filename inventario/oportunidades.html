@@ -1597,8 +1597,20 @@ function rgTramo(l){
   const t=(l.tramos||[]).filter(x=>x.q<=(l.qty||1));
   return t.length ? t[t.length-1].p : (((l.tramos||[])[0]||{}).p || 0);
 }
+/* CONTRA QUÉ SE DESCUENTA. Dos bases, y la diferencia no es menor:
+     'lista' = el precio del TRAMO que le toca a esa cantidad. Es lo que la farmacia pagaría
+               igual comprando suelto, o sea el ahorro de verdad.
+     'pvp'   = el precio de venta al público de Alfabeta. Es la base con la que se arman los
+               folletos, y —verificado— es la que EyG ya usa para facturar los éticos: en 10
+               de 10 renglones emitidos el precio unitario era el PVP y el % iba en la columna.
+   La base cambia lo que se PROPONE y el % que se muestra. El ahorro real y los avisos de
+   abajo siguen midiéndose contra la escalera, que es la comparación honesta. */
+function rgBase(l){
+  const pvp=l.pvp||0;
+  return (rgDraft && rgDraft.descBase==='pvp' && pvp>0) ? pvp : rgTramo(l);
+}
 function rgSugerido(l){
-  const base=rgTramo(l), d=(rgDraft.desc||0)/100;
+  const base=rgBase(l), d=(rgDraft.desc||0)/100;
   return base>0 ? EYG.r2(base*(1-d)) : 0;
 }
 function rgTotales(){
@@ -1648,14 +1660,15 @@ function rgComboFormHTML(){
        esa cantidad (no contra el PVP), que es con lo que de verdad compara la farmacia.
        Si el renglón sale más caro que la lista el % queda negativo, y se muestra en rojo: es
        información, no un error — hay combos que suben un renglón para bajar otros. */
-    const offNum = (tramo>0 && p>0) ? Math.round((1-p/tramo)*1000)/10 : null;
+    const base = rgBase(l);
+    const offNum = (base>0 && p>0) ? Math.round((1-p/base)*1000)/10 : null;
     return `<tr>
       <td class="l"><div class="nom">${esc(l.nombre||"")}</div><div class="sku">${esc(l.sku||"")} · stock ${l.stock!=null?l.stock:"…"}${l.exento===false?" · vende con IVA":""}</div></td>
       <td><input class="q" type="number" min="1" step="1" value="${q||""}" onchange="rgSetQty(${l.id},this.value)"></td>
-      <td>${tramo?money(tramo):"…"}</td>
+      <td>${base?money(base):"…"}${(rgDraft.descBase==='pvp'&&!(l.pvp>0))?'<div class="sku">sin PVP: va por lista</div>':""}</td>
       <td><input type="number" min="0" step="0.01" value="${p||""}" onchange="rgSetPrecio(${l.id},this.value)"></td>
-      <td class="${caro?"caro":""}">${tramo>0
-        ? `<input class="q pc" type="number" step="0.1" value="${offNum!=null?offNum:""}" onchange="rgSetDescLinea(${l.id},this.value)" title="Descuento sobre el precio de lista de este renglón">`
+      <td class="${caro?"caro":""}">${base>0
+        ? `<input class="q pc" type="number" step="0.1" value="${offNum!=null?offNum:""}" onchange="rgSetDescLinea(${l.id},this.value)" title="Descuento sobre ${rgDraft.descBase==='pvp'?'el PVP':'el precio de lista'} de este renglón">`
         : "—"}</td>
       <td>${sub?money(sub):"—"}</td>
       <td class="mrg ${cls}">${mrg==null?"—":(mrg+"%")}</td>
@@ -1666,7 +1679,7 @@ function rgComboFormHTML(){
   const ahorro = T.lista>0 ? Math.round((1-T.combo/T.lista)*100) : 0;
   const mrgT = T.combo>0 ? Math.round((1-T.costo/T.combo)*100) : null;
   const tabla = ls.length ? `<table class="cbt">
-      <tr><th class="l">Producto</th><th>Cant.</th><th>Precio de lista</th><th>Precio del combo</th><th>% desc.</th><th>Subtotal</th><th>Margen</th><th></th></tr>
+      <tr><th class="l">Producto</th><th>Cant.</th><th>${rgDraft.descBase==='pvp'?"PVP":"Precio de lista"}</th><th>Precio del combo</th><th>% desc.</th><th>Subtotal</th><th>Margen</th><th></th></tr>
       ${filas}</table>
     <div class="cbtot">
       <div class="b"><span class="k">Precio del combo</span><span class="v">${money(T.combo)}</span></div>
@@ -1680,7 +1693,7 @@ function rgComboFormHTML(){
     <div class="grid4" style="margin-bottom:10px">
       <div class="fld2" style="grid-column:span 2"><label>Nombre del combo</label><input type="text" id="rg-tit" value="${esc(d.titulo||"")}" placeholder="Ej: Combo analgésicos" oninput="rgDraft.titulo=this.value"></div>
       <div class="fld2"><label>Código</label><input type="text" id="rg-cod" value="${esc(d.codigo||"")}" placeholder="CB0001" oninput="rgDraft.codigo=this.value.toUpperCase()"><div class="hint2">se propone solo</div></div>
-      <div class="fld2"><label>Descuento general</label><div class="inpu"><input type="number" id="rg-desc" min="0" max="95" step="1" value="${d.desc||""}" onchange="rgDescGlobal(this.value)"><span class="suf">%</span></div><div class="hint2">sobre el precio de lista</div></div>
+      <div class="fld2"><label>Descuento general</label><div class="inpu"><input type="number" id="rg-desc" min="0" max="95" step="1" value="${d.desc||""}" onchange="rgDescGlobal(this.value)"><span class="suf">%</span></div><select id="rg-cbase" style="margin-top:5px;width:100%" onchange="rgSetDescBase(this.value)"><option value="lista" ${d.descBase!=="pvp"?"selected":""}>sobre el precio de lista</option><option value="pvp" ${d.descBase==="pvp"?"selected":""}>sobre el PVP (Alfabeta)</option></select><div class="hint2">${d.descBase==="pvp"?"como los folletos y como se facturan los éticos":"lo que la farmacia pagaría comprando suelto"}</div></div>
     </div>
     <div class="fld2" style="margin-bottom:6px"><label>Productos del combo</label>
       <input type="text" id="rg-cbusq" placeholder="Buscar por nombre o SKU…" value="${esc(rgBusqQ)}" oninput="rgBuscar(this.value)" autocomplete="off">${results}
@@ -1733,12 +1746,20 @@ window.rgSetPrecio=(id,v)=>{
    pisa — igual que si se hubiera escrito el precio. */
 window.rgSetDescLinea=(id,v)=>{
   const l=rgLineas().find(x=>x.id===id); if(!l) return;
-  const tramo=rgTramo(l);
-  if(!(tramo>0)){ toast("Este producto todavía no tiene precio de lista: cargá el precio a mano"); return; }
+  const base=rgBase(l);
+  if(!(base>0)){ toast("Este producto todavía no tiene precio de referencia: cargá el precio a mano"); return; }
   const d=parseFloat(v);
   if(!isFinite(d) || d>=100){ toast("El descuento tiene que ser menor a 100%"); render(); return; }
-  l.precio=EYG.r2(tramo*(1-d/100)); l.manual=true;
+  l.precio=EYG.r2(base*(1-d/100)); l.manual=true;
   render();
+};
+/* Cambiar la base reescribe lo propuesto, igual que mover el descuento general. */
+window.rgSetDescBase=v=>{
+  if(!rgDraft) return;
+  rgDraft.descBase = (v==='pvp') ? 'pvp' : 'lista';
+  const sinPvp=rgLineas().filter(l=>!(l.pvp>0));
+  if(rgDraft.descBase==='pvp' && sinPvp.length) toast(sinPvp.length+" producto(s) sin PVP: esos siguen por precio de lista");
+  rgDescGlobal(rgDraft.desc||0);
 };
 window.rgDescGlobal=v=>{
   rgDraft.desc=Math.min(95, Math.max(0, Math.round(parseFloat(v)||0)));
@@ -1752,7 +1773,7 @@ async function rgCargarDatosCombo(){
   if(!ids.length){ render(); return; }
   try{
     const [prods, tasas] = await Promise.all([
-      EYG.rpc("product.product","read",[ids,["default_code","name","product_tmpl_id","x_costo_motor","x_iva_compra","taxes_id","qty_available"]],LANG),
+      EYG.rpc("product.product","read",[ids,["default_code","name","product_tmpl_id","x_costo_motor","x_iva_compra","taxes_id","qty_available","list_price"]],LANG),
       EYG.tasasVenta()
     ]);
     const tmpls=[...new Set(prods.map(p=>p.product_tmpl_id[0]))];
@@ -1773,6 +1794,7 @@ async function rgCargarDatosCombo(){
       l.nombre=p.name||l.nombre; l.sku=p.default_code||"";
       l.tmpl=p.product_tmpl_id[0];
       l.stock=Math.floor(p.qty_available||0);
+      l.pvp=p.list_price||0;        // PVP de Alfabeta: con esto se puede descontar sobre el PVP
       l.taxes=p.taxes_id||[];
       l.exento=EYG.vendeExento(p.taxes_id, tasas);
       l.costoEf=EYG.costoEfectivo(p.x_costo_motor||0, p.x_iva_compra||0, p.taxes_id, tasas);
@@ -2220,6 +2242,7 @@ window.rgGuardarCombo=async()=>{
     const armables=parseInt(rgArmables(),10)||0;
     const clean={
       id:d.id, tipo:"combo", receta:true, titulo, codigo, pausada:!!d.pausada,
+      descBase:(d.descBase==="pvp"?"pvp":"lista"),   // con que base se diseño, para reabrirlo igual
       /* items VACÍO a propósito: no hay un producto "combo" en Odoo. El panel de las
          comerciales cuenta las ofertas vendidas por los productos de items, y poner acá los
          componentes contaría como "se llevó el combo" a quien compró uno solo de ellos
