@@ -456,11 +456,20 @@ window.EYGHome = (function(){
     if(z) z.scrollIntoView({behavior:"smooth", block:"center"});
   }
 
-  async function sumaVentas(desde, hasta){
-    const d=domVentas([["date_order",">=",uDesde(desde)]]);
-    if(hasta) d.push(["date_order","<=",uHasta(hasta)]);
-    const g=await rpc("sale.order","read_group",[d,["amount_untaxed:sum"],[]],Object.assign({lazy:false},CTX));
-    return {m:(g[0]&&g[0].amount_untaxed)||0, n:(g[0]&&g[0].__count)||0};
+  /* Las 10 sumas de la ola 1 salen de UNA consulta (21/10/2026): ventas agrupadas por
+     día (en hora AR, por el tz de CTX) desde la ventana más vieja, y cada período se
+     suma de ahí. Antes eran 10 consultas cada 3 min por Inicio abierto. Verificado
+     contra las 10 consultas sueltas: idéntico al centavo, en pesos y en cantidad,
+     para toda la droguería y para un comercial. Devuelve también las filas por día
+     (mismo formato que el read_group de siempre) para el ritmo del mes. */
+  async function ventasPorDia(desde){
+    const filas=await rpc("sale.order","read_group",[domVentas([["date_order",">=",uDesde(desde)]]),["amount_untaxed:sum"],["date_order:day"]],Object.assign({lazy:false},CTX));
+    const dia={};
+    for(const r of filas){ const rg=r.__range&&r.__range["date_order:day"];
+      const k=String(rg?rg.from:(r["date_order:day"]||"")).slice(0,10); if(!k) continue;
+      const o=dia[k]||(dia[k]={m:0,n:0}); o.m+=r.amount_untaxed||0; o.n+=r.__count||0; r._dia=k; }
+    const suma=(d,h)=>{ let m=0,n=0; for(const k in dia){ if(k>=d && (!h||k<=h)){ m+=dia[k].m; n+=dia[k].n; } } return {m,n}; };
+    return {filas, suma};
   }
 
   /* ======================= ESQUELETO ======================= */
@@ -579,21 +588,12 @@ window.EYGHome = (function(){
       if(mAntFin>=MES_INI) mAntFin=addD(MES_INI,-1);         // meses cortos (31 de marzo → 28 de febrero)
       const semAntIni=addD(SEM_INI,-7), semAntFin=addD(SEM_INI,-7+dow(HOY));
 
-      const [ord, sem, semAnt, d7, d14, d30, d60, mes, mesAnt, pedDia, mesAntTot, ano, FAC, FACMG] = await Promise.all([
+      /* La ventana más vieja que hace falta (el 1/1, o 60 días atrás en enero-febrero). */
+      const vDesde=[ANO_INI, addD(HOY,-60), semAntIni, addM(MES_INI,-1)].sort()[0];
+      const [ord, VD, FAC, FACMG] = await Promise.all([
         rpc("sale.order","search_read",[domVentas([["date_order",">=",uDesde(addD(HOY,-7))]]),
             ["name","partner_id","date_order","amount_untaxed","user_id","website_id","origin","create_uid"]],Object.assign({limit:0,order:"date_order desc"},CTX)),
-        sumaVentas(SEM_INI), sumaVentas(semAntIni,semAntFin),
-        sumaVentas(addD(HOY,-7), addD(HOY,-1)),    // 7 días completos, hasta ayer
-        sumaVentas(addD(HOY,-14), addD(HOY,-8)),   // los 7 anteriores
-        sumaVentas(addD(HOY,-30), addD(HOY,-1)),   // 30 días completos, hasta ayer
-        sumaVentas(addD(HOY,-60), addD(HOY,-31)),  // los 30 anteriores
-        sumaVentas(MES_INI),  sumaVentas(mAntIni,mAntFin),
-        /* Pedidos del mes DÍA POR DÍA: el ritmo necesita saber qué días hubo
-           actividad, no sólo el total. Una consulta agrupada, sale barata. */
-        rpc("sale.order","read_group",[domVentas([["date_order",">=",uDesde(MES_INI)]]),["amount_untaxed:sum"],["date_order:day"]],
-            Object.assign({lazy:false},CTX)),
-        sumaVentas(addM(MES_INI,-1), addD(MES_INI,-1)),   // el mes pasado completo, para comparar el cierre
-        sumaVentas(ANO_INI),
+        ventasPorDia(vDesde),
         /* Facturado, para contrastar contra los pedidos en cada tarjeta.
            Pedidos y facturas NUNCA van a coincidir: el pedido se confirma un día
            y se factura otro. Si esto falla no debe tumbar los KPIs de venta. */
@@ -602,6 +602,17 @@ window.EYGHome = (function(){
            en los refrescos de cada 60s (se recalcula sólo al tocar ↻). */
         V.margen ? (MG || margenResumen()) : Promise.resolve({ok:false}),
       ]);
+      const S=VD.suma;
+      const sem=S(SEM_INI), semAnt=S(semAntIni,semAntFin),
+            d7=S(addD(HOY,-7), addD(HOY,-1)),    // 7 días completos, hasta ayer
+            d14=S(addD(HOY,-14), addD(HOY,-8)),  // los 7 anteriores
+            d30=S(addD(HOY,-30), addD(HOY,-1)),  // 30 días completos, hasta ayer
+            d60=S(addD(HOY,-60), addD(HOY,-31)), // los 30 anteriores
+            mes=S(MES_INI), mesAnt=S(mAntIni,mAntFin),
+            mesAntTot=S(addM(MES_INI,-1), addD(MES_INI,-1)),   // el mes pasado completo, para comparar el cierre
+            ano=S(ANO_INI);
+      /* Pedidos del mes DÍA POR DÍA (el ritmo necesita saber qué días hubo actividad). */
+      const pedDia=VD.filas.filter(r=>r._dia && r._dia>=MES_INI);
       if(V.margen) MG=FACMG;
       /* Lo que el corazón necesita de esta ola. VENTANAS COMPLETAS, no "lo que
          va del mes": el 2 de octubre el mes lleva dos días y compararlos contra

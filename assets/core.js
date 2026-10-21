@@ -22,16 +22,21 @@ window.EYG = (function(){
      módulo (panel/precios/cobranzas/egresos) vía EYG.gate. Solo limita el fetch;
      los reintentos con backoff sueltan el turno mientras esperan. */
   const RPC_MAX = 4;
+  /* `peso` (21/10/2026): un LOTE de N consultas ocupa min(N,4) turnos, porque del
+     otro lado el conector las corre de a 4 a la vez. Así una pestaña nunca tiene
+     más de 4 consultas en Odoo al mismo tiempo, vengan sueltas o en lote. */
   let _rpcActive = 0; const _rpcQ = [];
-  function _rpcRun(fn){
-    return Promise.resolve().then(fn).finally(()=>{
-      _rpcActive--;
-      if(_rpcQ.length){ _rpcActive++; _rpcQ.shift()(); }
-    });
+  function _rpcNext(){
+    while(_rpcQ.length && (_rpcActive===0 || _rpcActive + _rpcQ[0].w <= RPC_MAX)){
+      const x = _rpcQ.shift(); _rpcActive += x.w; x.go();
+    }
   }
-  function gate(fn){
-    if(_rpcActive < RPC_MAX){ _rpcActive++; return _rpcRun(fn); }
-    return new Promise(res=>_rpcQ.push(()=>res(_rpcRun(fn))));
+  function gate(fn, peso){
+    const w = Math.max(1, Math.min(RPC_MAX, (peso|0) || 1));
+    return new Promise((res,rej)=>{
+      _rpcQ.push({ w, go:()=>{ Promise.resolve().then(fn).then(res,rej).finally(()=>{ _rpcActive -= w; _rpcNext(); }); } });
+      _rpcNext();
+    });
   }
 
   /* ---- Quién está escribiendo (para que Odoo lo firme con su nombre) ----
@@ -81,21 +86,80 @@ window.EYG = (function(){
     return !llego && method !== "run";                                       // escritura: sólo si ni salió
   }
 
-  async function rpc(model,method,args=[],kwargs={}){
+  const _maxIntentos = method => RPC_LECTURA.test(method) ? 4 : 2;
+  const _espera = i => new Promise(res=>setTimeout(res,900*(i+1)));
+
+  /* Una consulta sola, con su política de reintentos. `desde` = intentos ya gastados. */
+  async function _rpcUna(it, desde){
     const head = await rpcHead();
-    const max = RPC_LECTURA.test(method) ? 4 : 2;
-    for(let i=0;i<max;i++){
+    const max = _maxIntentos(it.method);
+    for(let i=desde||0;i<max;i++){
       let llego = false;
       try{
-        const r = await gate(()=>fetch(RPC_URL,{method:"POST",headers:head,body:JSON.stringify({model,method,args,kwargs})}));
+        const r = await gate(()=>fetch(RPC_URL,{method:"POST",headers:head,body:JSON.stringify({model:it.model,method:it.method,args:it.args,kwargs:it.kwargs})}));
         llego = r.status < 502;   // respondió el conector (aunque sea con error); 502-504 = no llegó
         const j = await r.json(); if(j.error) throw new Error(typeof j.error==="string"?j.error:JSON.stringify(j.error));
-        return j.result ?? j;
+        return j.result;
       }catch(e){
-        if(i===max-1 || !rpcReintentable(method, e && e.message, llego)) throw e;
-        await new Promise(res=>setTimeout(res,900*(i+1)));
+        if(i===max-1 || !rpcReintentable(it.method, e && e.message, llego)) throw e;
+        await _espera(i);
       }
     }
+  }
+
+  /* ---- LOTES (21/10/2026) ---------------------------------------------------
+     Cada viaje al conector cuesta lo mismo pida una cosa o diez. Las pantallas
+     piden de a muchas juntas (Promise.all): el Panel ~60 al abrir, el Líder ~120.
+     Ahora las que se piden en el mismo instante viajan JUNTAS (hasta 10 por
+     viaje): medido, 14 consultas sueltas = 2,8-3,2 s; en un lote = 1,4 s, y
+     Supabase cuenta 1 llamada en vez de 14. Cada consulta del lote anda o falla
+     por su cuenta, con los mismos reintentos que si hubiera ido sola. */
+  const LOTE_MAX = 10;
+  let _lote = [], _loteT = null;
+  function _encolar(it){
+    return new Promise((res,rej)=>{
+      it.res = res; it.rej = rej; _lote.push(it);
+      if(!_loteT) _loteT = setTimeout(_despachar, 0);
+    });
+  }
+  function _despachar(){
+    _loteT = null; const todos = _lote; _lote = [];
+    for(let i=0;i<todos.length;i+=LOTE_MAX) _enviarLote(todos.slice(i,i+LOTE_MAX));
+  }
+  function _fallo(it, err, llego){
+    if(_maxIntentos(it.method) > 1 && rpcReintentable(it.method, err && err.message, llego))
+      _espera(0).then(()=>_rpcUna(it, 1)).then(it.res, it.rej);
+    else it.rej(err);
+  }
+  async function _enviarLote(items){
+    if(items.length === 1){ const it = items[0]; _rpcUna(it, 0).then(it.res, it.rej); return; }
+    let llego = false, j = null, err = null;
+    try{
+      const head = await rpcHead();
+      const body = JSON.stringify({ batch: items.map(x=>({model:x.model, method:x.method, args:x.args, kwargs:x.kwargs})) });
+      const r = await gate(()=>fetch(RPC_URL,{method:"POST",headers:head,body}), items.length);
+      llego = r.status < 502;
+      j = await r.json();
+    }catch(e){ err = e; }
+    if(j && j.ok && Array.isArray(j.results) && j.results.length === items.length){
+      j.results.forEach((x,i)=>{ if(x && x.ok) items[i].res(x.result); else _fallo(items[i], new Error((x && x.error) || "Error de Odoo"), true); });
+      return;
+    }
+    // Falló el viaje entero (red, sesión vencida…): cada una sigue su regla de reintento.
+    const e2 = err || new Error((j && (typeof j.error==="string" ? j.error : JSON.stringify(j.error))) || "Error del conector");
+    for(const it of items) _fallo(it, e2, llego);
+  }
+
+  /* Devuelve el resultado TAL CUAL lo da Odoo (null incluido). Es lo que usan los
+     wrappers propios de cada módulo (panel, precios, control, cobranzas, egresos). */
+  function rpcExacto(model,method,args=[],kwargs={}){
+    return _encolar({model, method, args, kwargs});
+  }
+  /* EYG.rpc de siempre: si Odoo devuelve null/undefined entrega {ok:true,result},
+     igual que antes, para no cambiarle nada a quien ya lo usa. */
+  async function rpc(model,method,args=[],kwargs={}){
+    const r = await rpcExacto(model,method,args,kwargs);
+    return r ?? {ok:true, result:r};
   }
 
   /* ---- helpers ---- */
@@ -989,7 +1053,28 @@ window.EYG = (function(){
   async function comsLeer(){
     try{ return JSON.parse(await rpc("ir.config_parameter","get_param",[COM_KEY])||"[]")||[]; }catch(e){ return []; }
   }
-  async function comsGuardar(arr){ return rpc("ir.config_parameter","set_param",[COM_KEY, JSON.stringify(arr)]); }
+  /* ARCHIVO (21/10/2026): este parámetro se lee entero en CADA pantalla (campanita)
+     y llegó a 177 KB con 175 novedades, 108 ya vencidas que nadie ve. Al guardar, las
+     vencidas hace más de 7 días pasan a eyg.comunicaciones_archivo: no se borra nada,
+     y el módulo Comunicaciones las sigue mostrando en «Enviadas» (reporte de lectura).
+     Si no se puede escribir el archivo, no se saca nada. */
+  const COM_ARCH_KEY = "eyg.comunicaciones_archivo";
+  async function comsLeerArchivo(){
+    try{ return JSON.parse(await rpc("ir.config_parameter","get_param",[COM_ARCH_KEY])||"[]")||[]; }catch(e){ return []; }
+  }
+  async function comsGuardar(arr){
+    const lim = new Date(Date.now()-7*864e5).toISOString().slice(0,10);
+    const viejas = (arr||[]).filter(x=>x && x.hasta && String(x.hasta).slice(0,10) < lim);
+    if(viejas.length){
+      try{
+        const arch = await comsLeerArchivo(); const ya = new Set(arch.map(x=>x.id));
+        for(const v of viejas) if(!ya.has(v.id)) arch.push(v);
+        await rpc("ir.config_parameter","set_param",[COM_ARCH_KEY, JSON.stringify(arch)]);
+        arr = arr.filter(x=>!viejas.includes(x));
+      }catch(e){ /* sin archivo no se saca nada */ }
+    }
+    return rpc("ir.config_parameter","set_param",[COM_KEY, JSON.stringify(arr)]);
+  }
 
   /* Padrón del Core (para el selector de destinatarios y el denominador de lectura).
      Viene de la función SECURITY DEFINER list_core_roster: sólo responde a un usuario
@@ -2572,7 +2657,7 @@ window.EYG = (function(){
     return m>0 && Math.abs(m-c)<0.01;
   }
 
-  return { supa, rpc, rpcHead, rpcReintentable, recalcularPreciosTodo, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, r2, money, totalesOdoo, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
+  return { supa, rpc, rpcExacto, rpcHead, rpcReintentable, recalcularPreciosTodo, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, r2, money, totalesOdoo, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde, minimoDeVenta, semanasDelMes, semanasDetalle, perfilDe, paqueteRige, reglasDe, moraIndice, moraResta,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
@@ -2588,7 +2673,7 @@ window.EYG = (function(){
     zonasLeer, zonasGuardar, zonaDe, zonaPermite, conquistarTomar, conquistarLiberar, conquistarContacto,
     orgCargar, orgDescendientes, orgAncestros, notificarLideresDe,
     gerencia, esGerencia, fuerzaVentas, lideresDe, aCargoDe, jefesConEquipoPropio, domVendedor, VENDEDOR_GENERICO, nombreOrg,
-    COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
+    COM_KEY, COM_DEPTS, comDeptDeRol, comsLeer, comsLeerArchivo, comsGuardar, rosterCore, comsParaMi, comLeida, comMarcarLeido,
     wasParaComercial, comVistoWA, comMarcarVistoWA, waMarker,
     bellComunicaciones, comToggleBell, comMarcarYRepintar, comMarcarTodas, comVerWA,
     comArchivada, comSetArchivo, comAbrirNota, comAbrirGestor, comCerrarOverlay,
