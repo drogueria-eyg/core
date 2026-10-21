@@ -1559,20 +1559,34 @@ function rgFormHTML(){
    EL DESCUENTO se mide contra el precio de lista DEL TRAMO QUE CORRESPONDE A LA CANTIDAD, no
    contra el de una unidad suelta: así el % que se muestra es el descuento REAL contra lo que la
    farmacia pagaría igual comprando esa cantidad. */
-/* INTERRUPTOR — en false el armador de combos no se ofrece (Dirección, 21/9/2026).
-   POR QUÉ SE APAGÓ: el combo como KIT factura UNA sola línea con el precio total, y en la
-   factura no se puede desglosar — no hay opción nativa en Odoo 17, lo verifiqué: no existe
-   ningún campo de kit ni de lista de materiales en el renglón del pedido ni en el de la
-   factura. Los componentes sólo aparecen en el remito. Germán necesita que el cliente vea
-   cuánto pagó por cada producto, así que el kit no sirve para eso.
-   CÓMO RETOMARLO: poner true acá vuelve a habilitar el armador tal cual está (crea el kit).
-   Pero si lo que hace falta es la factura desglosada, el camino es otro: que el combo sea una
-   DEFINICIÓN y que Cargar venta la vuelque como N renglones (uno por producto, con su
-   cantidad y su precio del combo). Eso factura desglosado y además resuelve el IVA mezclado,
-   porque cada renglón lleva su propio impuesto. Todo el armador se reusa: lo único que cambia
-   es el guardado. Ver la memoria eyg-combos-kits. */
-const COMBOS_ACTIVOS = false;
-const COMBO_CAT = 447;        // ALL / COMBOS
+/* ===== EL COMBO ES UNA RECETA, NO UN PRODUCTO (21/10/2026) =====
+   Primera versión (18/9): el combo se creaba en Odoo como producto con KIT fantasma. Se apagó
+   el 21/9 porque el kit factura UN solo renglón con el total y la farmacia necesita ver cuánto
+   pagó por CADA producto, para saber cuánto ahorra en cada uno. En Odoo 17 eso no tiene
+   arreglo: verificado, no hay un solo campo de kit/lista de materiales en el renglón del
+   pedido ni en el de la factura, y product.combo (el modelo que sí desglosa) es de Odoo 18.
+
+   AHORA el combo es una DEFINICIÓN que vive en el parámetro eyg.combos, y Cargar venta la
+   vuelca como N renglones: uno por producto, con su cantidad, el PRECIO DE LISTA del tramo en
+   el precio unitario y el descuento del combo en la COLUMNA DESCUENTO. Así la factura sale
+   desglosada y el cliente lee, producto por producto, lo que le hubiera costado suelto, el %
+   que se le descontó y el subtotal.
+   Verificado contra Odoo antes de escribir esto: el % por renglón viaja del pedido a la
+   factura AFIP (12 de 12 renglones emitidos, la cuenta cierra al centavo) y la plantilla
+   impresa muestra la columna sola en cuanto algún renglón tiene descuento
+   (t-set="display_discount" t-value="any(l.discount for l in o.invoice_line_ids)").
+   No es una excepción de la casa: así se factura hoy todo lo ético (VALMAX −73%,
+   LEVOTIROXINA −38%). La regla "el descuento va al precio unitario, nunca a la columna" es
+   sólo del descuento comercial del tier 2, y eso no se toca.
+
+   LO QUE SE GANA: la factura desglosada y el IVA mezclado deja de ser un problema (cada
+   renglón lleva su propio impuesto).
+   LO QUE SE RESIGNA: el combo no es un producto, así que no tiene stock propio en Odoo ni
+   puede publicarse como un ítem de la tienda. Cuántos se pueden armar se sigue calculando
+   acá, con el stock de los componentes.
+   Ver la memoria eyg-combos-kits. */
+const COMBOS_ACTIVOS = true;
+const COMBO_CAT = 447;        // ALL / COMBOS — queda parada: ya no se crean productos ahí
 const COMBO_PREFIJO = "CB";   // los códigos van CB0001, CB0002…
 
 function rgLineas(){ return (rgDraft && rgDraft.lineas) || []; }
@@ -1604,8 +1618,11 @@ function rgArmables(){
 }
 function rgAvisosHTML(){
   const ls=rgLineas(), av=[];
+  /* El IVA mezclado YA NO ES UN PROBLEMA: el combo se vuelca como N renglones y cada uno
+     lleva su propio impuesto. Se avisa igual, porque cambia lo que ve la farmacia en la
+     factura (dos bases distintas), pero no frena nada. */
   const imp=[...new Set(ls.filter(l=>l.exento!=null).map(l=>l.exento?"exento":"iva"))];
-  if(imp.length>1) av.push(["mal","El combo mezcla productos <b>exentos</b> con productos <b>al 21%</b>. Un kit factura con un solo impuesto, así que saldría mal: hay que separarlo en dos combos."]);
+  if(imp.length>1) av.push(["warn","El combo mezcla productos <b>exentos</b> con productos <b>al 21%</b>. Se puede: cada renglón va con su propio impuesto, pero la factura va a mostrar <b>dos bases</b> distintas."]);
   ls.forEach(l=>{
     const p=l.precio||0, c=l.costoEf||0, t=rgTramo(l);
     if(p>0 && c>0 && p<c) av.push(["mal","<b>"+esc(l.nombre||"")+"</b> queda por <b>debajo del costo</b>: "+money(p)+" contra "+money(c)+"."]);
@@ -1664,15 +1681,30 @@ function rgComboFormHTML(){
       <div class="fld2"><label>Vigencia hasta</label><input type="date" id="rg-hasta" value="${esc(d.hasta||"")}"><div class="hint2">vacío = sin vencimiento</div></div>
       <div class="fld2" style="grid-column:span 3"><label>Nota (opcional)</label><input type="text" id="rg-nota" value="${esc(d.nota||"")}" placeholder="Condiciones, aclaraciones…" oninput="rgDraft.nota=this.value"></div>
     </div>
-    <div class="acts2"><button class="cancel" onclick="rgDraft=null;render()">Cancelar</button><button class="ok" onclick="rgGuardarCombo()">${d._tmplOdoo?"Guardar cambios":"Crear el combo en Odoo"}</button></div>`;
+    <div class="acts2"><button class="cancel" onclick="rgDraft=null;render()">Cancelar</button><button class="ok" onclick="rgGuardarCombo()">${d._edit?"Guardar cambios":"Guardar el combo"}</button></div>`;
 }
 window.rgSetClase=async c=>{ if(!rgDraft) return; rgDraft.clase=c;
   if(c==='combo'){ rgDraft.lineas=rgDraft.lineas||[]; rgDraft.tipo='combo'; if(!rgDraft.codigo){ rgDraft.codigo=await rgProximoCodigo(); } }
   else { rgDraft.tipo=null; rgDraft.target=null; rgDraft.targetName=""; }
   rgBusq=[];rgBusqQ=""; render(); };
-window.rgAddCombo=(id,sku,nombre)=>{
+/* OJO — PLANTILLA vs VARIANTE. El buscador de esta pantalla devuelve ids de
+   product.TEMPLATE (los necesita así el camino de los descuentos, que trabaja por
+   plantilla). Los renglones del combo, en cambio, son VARIANTES: product.product es lo que
+   lee rgCargarDatosCombo (costo, stock, impuestos) y lo que después va al pedido.
+   Los dos modelos tienen numeración propia, así que un id de plantilla leído como variante
+   devuelve OTRO PRODUCTO: la plantilla 40872 es la Bioxilina Plus Dúo y la variante 40872 es
+   un Disarval D. El combo mostraba un nombre y cargaba los números de otra cosa.
+   Por eso acá se resuelve la variante ANTES de agregar el renglón, y de ahí en adelante
+   l.id es SIEMPRE una variante. (Al editar un combo guardado ya viene resuelta.) */
+window.rgAddCombo=async(id,sku,nombre)=>{
   if(!rgDraft.lineas) rgDraft.lineas=[];
-  if(!rgDraft.lineas.some(l=>l.id===id)) rgDraft.lineas.push({id,sku,nombre,qty:1,precio:0,tramos:[],stock:null,costoEf:0,exento:null,manual:false});
+  let vid=id, tmpl=id;
+  try{
+    const t=await EYG.rpc("product.template","read",[[id],["product_variant_id"]],LANG);
+    const v=t&&t[0]&&t[0].product_variant_id&&t[0].product_variant_id[0];
+    if(v) vid=v; else { toast("No pude resolver el producto "+(sku||id)); return; }
+  }catch(e){ toast("No pude resolver el producto: "+e.message); return; }
+  if(!rgDraft.lineas.some(l=>l.id===vid)) rgDraft.lineas.push({id:vid,tmpl,sku,nombre,qty:1,precio:0,tramos:[],stock:null,costoEf:0,exento:null,manual:false});
   rgBusq=[];rgBusqQ=""; render(); rgCargarDatosCombo();
 };
 window.rgQuitarItem=id=>{ rgDraft.lineas=rgLineas().filter(l=>l.id!==id); render(); };
@@ -1772,7 +1804,6 @@ window.rgEditarCombo=id=>{ const o=OFERTAS.find(x=>x.id===id); if(!o) return; CO
   // los combos nuevos guardan sus renglones; los viejos (sin cantidades) se abren con cantidad 1
   rgDraft.lineas = (o.lineas && o.lineas.length) ? o.lineas.map(l=>({...l, qty:l.qty||1, manual:true, tramos:[], stock:null, costoEf:0, exento:null}))
                  : (o.items||[]).map(i=>({id:i.id, sku:i.sku, nombre:i.nombre, qty:1, precio:0, manual:false, tramos:[], stock:null, costoEf:0, exento:null}));
-  rgDraft._tmplOdoo = o.tmpl||0;
   rgBusq=[];rgBusqQ=""; render(); rgAsomar(); rgCargarDatosCombo(); };
 window.rgBuscar=EYG.debounce(async q=>{
   q=(q||"").trim(); rgBusqQ=q;
@@ -2122,46 +2153,47 @@ window.rgGuardarCombo=async()=>{
   if(!ls.length){ toast("Elegí al menos un producto"); return; }
   const T=rgTotales();
   if(!T.listo){ toast("Cada producto necesita cantidad y precio"); return; }
-  const imp=[...new Set(ls.filter(l=>l.exento!=null).map(l=>l.exento?1:0))];
-  if(imp.length>1){ toast("No se puede: el combo mezcla exentos con productos al 21%. Un kit factura con un solo impuesto."); return; }
+  // el IVA mezclado ya no frena nada: cada renglón va a la factura con su propio impuesto
   const bajoCosto=ls.filter(l=>(l.precio||0)>0 && (l.costoEf||0)>0 && l.precio<l.costoEf);
   if(bajoCosto.length && !confirm("Hay "+bajoCosto.length+" producto(s) por debajo del costo:\n\n"+bajoCosto.map(l=>"· "+l.nombre+": "+money(l.precio)+" contra "+money(l.costoEf)+" de costo").join("\n")+"\n\n¿Lo creás igual?")) return;
-  const btn=document.querySelector(".acts2 .ok"); if(btn){ btn.disabled=true; btn.textContent="Creando en Odoo…"; }
+  const btn=document.querySelector(".acts2 .ok"); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
   try{
-    // el código no se puede repetir (mira también los archivados)
-    const dom=[["default_code","=",codigo]];
-    const ya=await EYG.rpc("product.product","search_read",[dom,["product_tmpl_id"]],{limit:5,context:{lang:"es_AR",active_test:false}});
-    const choca=ya.filter(p=>!d._tmplOdoo || p.product_tmpl_id[0]!==d._tmplOdoo);
-    if(choca.length){ toast("El código "+codigo+" ya está usado por otro producto"); if(btn){btn.disabled=false;btn.textContent="Crear el combo en Odoo";} return; }
-    const vals={
-      name:titulo, default_code:codigo, categ_id:COMBO_CAT, type:"product",
-      sale_ok:true, purchase_ok:false, invoice_policy:"order",
-      list_price:Math.round(T.combo*100)/100,
-      standard_price:Math.round(T.costo*100)/100,
-      taxes_id:[[6,0,(ls[0].taxes||[])]],
-      // el nombre corto (sin el paréntesis del Maestro): esta descripción se copia al renglón del pedido
-      description_sale:"Contiene: "+ls.map(l=>l.qty+" × "+String(l.nombre||"").split(" (")[0]).join(" · ")
-    };
-    let tmpl=d._tmplOdoo||0;
-    if(tmpl) await EYG.rpc("product.template","write",[[tmpl],vals],LANG);
-    else tmpl=await EYG.rpc("product.template","create",[vals],LANG);
-    // el KIT: se rehace entero (así editar el combo es siempre lo mismo)
-    const boms=await EYG.rpc("mrp.bom","search",[[["product_tmpl_id","=",tmpl]]],{});
-    if(boms && boms.length) await EYG.rpc("mrp.bom","unlink",[boms],{});
-    await EYG.rpc("mrp.bom","create",[{
-      product_tmpl_id:tmpl, product_qty:1, type:"phantom",
-      bom_line_ids: ls.map(l=>[0,0,{product_id:l.id, product_qty:l.qty}])
-    }],LANG);
-    // la variante del combo: es la que se vende y la que va en la tarjeta
-    const vs=await EYG.rpc("product.product","search_read",[[["product_tmpl_id","=",tmpl]],["id"]],{limit:1,context:{lang:"es_AR"}});
-    const varId=(vs[0]||{}).id;
+    /* El código identifica al combo, no a un producto: no se crea nada en Odoo. Igual se
+       chequea que no choque con un código del catálogo, para que nadie lo confunda al
+       buscar, y que no haya dos combos con el mismo. */
+    const ya=await EYG.rpc("product.product","search_count",[[["default_code","=",codigo]]],{context:{lang:"es_AR",active_test:false}});
+    if(ya){ toast("El código "+codigo+" ya está usado por un producto del catálogo"); if(btn){btn.disabled=false;btn.textContent="Guardar el combo";} return; }
+    const otro=OFERTAS.find(o=>o.tipo==="combo" && o.codigo===codigo && o.id!==d.id);
+    if(otro){ toast("Ya hay otro combo con el código "+codigo); if(btn){btn.disabled=false;btn.textContent="Guardar el combo";} return; }
+
+    /* LA RECETA. Cada renglón guarda LO QUE SE VA A ESCRIBIR en el pedido, ya resuelto, para
+       que Cargar venta no tenga que recalcular nada ni pueda dar otro número:
+         lista = precio de lista del TRAMO que corresponde a esa cantidad (va al precio unitario)
+         precio = lo que se cobra en el combo
+         desc = el % que se escribe en la COLUMNA DESCUENTO  ->  la factura muestra el ahorro
+       Si un renglón quedara más caro que la lista no hay descuento que mostrar: va el precio
+       tal cual y la columna en cero (un descuento negativo en una factura no se puede leer). */
+    const lineas = ls.map(l=>{
+      const lista=EYG.r2(rgTramo(l)), precio=EYG.r2(l.precio||0);
+      const hayDesc = lista>0 && precio>0 && precio<lista;
+      return { id:l.id, sku:l.sku, nombre:l.nombre, qty:l.qty,
+               lista, precio,
+               desc: hayDesc ? Math.round((1-precio/lista)*10000)/100 : 0,
+               pu:   hayDesc ? lista : precio };
+    });
     const armables=parseInt(rgArmables(),10)||0;
     const clean={
-      id:d.id, tipo:"combo", titulo, codigo, tmpl, producto:varId,
-      items:[{id:varId, sku:codigo, nombre:titulo}],
-      lineas: ls.map(l=>({id:l.id, sku:l.sku, nombre:l.nombre, qty:l.qty, precio:l.precio})),
-      precio: Math.round(T.combo*100)/100,
-      precioAntes: Math.round(T.lista*100)/100,
+      id:d.id, tipo:"combo", receta:true, titulo, codigo,
+      /* items VACÍO a propósito: no hay un producto "combo" en Odoo. El panel de las
+         comerciales cuenta las ofertas vendidas por los productos de items, y poner acá los
+         componentes contaría como "se llevó el combo" a quien compró uno solo de ellos
+         —puntaje inflado, y el puntaje multiplica la comisión—. La tarjeta sale informativa
+         hasta que el panel sepa contar un combo (hay que exigir TODOS los componentes).
+         Ver la memoria eyg-puntaje-ofertas-historial. */
+      items:[],
+      lineas,
+      precio: EYG.r2(T.combo),
+      precioAntes: EYG.r2(T.lista),
       desc: d.desc||0,
       stock: armables,
       hasta:((document.getElementById("rg-hasta")||{}).value||""),
@@ -2172,11 +2204,11 @@ window.rgGuardarCombo=async()=>{
     if(i>=0) OFERTAS[i]=clean; else OFERTAS.push(clean);
     await setParam("eyg.ofertas", JSON.stringify(OFERTAS.filter(o=>o.tipo).map(o=>{const c={...o};delete c._venc;delete c._cat;delete c._agotada;return c;})));
     rgDraft=null;
-    toast("Combo "+codigo+" creado en Odoo ✓ — se arman "+armables+" con el stock de hoy", true);
+    toast("Combo "+codigo+" guardado ✓ — se arman "+armables+" con el stock de hoy", true);
     render();
   }catch(e){
-    if(btn){btn.disabled=false;btn.textContent="Crear el combo en Odoo";}
-    toast("Error creando el combo: "+e.message);
+    if(btn){btn.disabled=false;btn.textContent="Guardar el combo";}
+    toast("Error guardando el combo: "+e.message);
   }
 };
 /* Pausar / reanudar: la pantalla cambia AL INSTANTE y el guardado sigue por detrás (guardar,
