@@ -502,7 +502,11 @@ async function cargar(){
        número con el que el motor calcula el precio (ver el calculador del editor). */
     try{
       const tIds=[...new Set(SYNC_OF.filter(o=>o.tipo===`p`&&o.target).map(o=>o.target))];
-      const vIds=[...new Set(OFERTAS.flatMap(o=>((o&&o.items)||[]).map(it=>it&&it.id)).filter(Boolean))];
+      /* Los combos-receta no tienen items (no hay un producto "combo" en Odoo): sus productos
+         estan en lineas. Sin esto no se cargaba el costo de los componentes y el margen del
+         combo salia "s/d". */
+      const vIds=[...new Set(OFERTAS.flatMap(o=>[].concat(((o&&o.items)||[]).map(it=>it&&it.id),
+                                                          ((o&&o.lineas)||[]).map(l=>l&&l.id))).filter(Boolean))];
       if(tIds.length){
         const rows=await EYG.rpc("product.product","search_read",[[["product_tmpl_id","in",tIds]],["product_tmpl_id","x_costo_motor","x_iva_compra","taxes_id","categ_id"]],{limit:5000,context:{lang:"es_AR"}});
         for(const r of rows){ const c=costoEfectivo(r); if(c>0) COSTO_T[r.product_tmpl_id[0]]=c; }
@@ -760,7 +764,16 @@ function mrgRegla(o){
 }
 /* oferta o combo del panel (OFERTAS): el costo del combo es la suma de sus productos */
 function mrgOferta(o){
-  const its=(o.items||[]); if(!its.length||!(o.precio>0)) return null;
+  if(!(o.precio>0)) return null;
+  /* COMBO-RECETA: el costo es la suma de sus renglones por su cantidad. Antes se miraba solo
+     items —que en una receta esta vacio a proposito— y el margen quedaba en "s/d". */
+  const lin=(o.lineas||[]);
+  if(lin.length){
+    let c=0;
+    for(const l of lin){ const x=COSTO_V[l.id]||0; if(!x) return null; c+=x*(l.qty||1); }
+    return mrgDe(o.precio,c);
+  }
+  const its=(o.items||[]); if(!its.length) return null;
   let c=0; for(const it of its){ const x=COSTO_V[it.id]||0; if(!x) return null; c+=x; }
   return mrgDe(o.precio,c);
 }
