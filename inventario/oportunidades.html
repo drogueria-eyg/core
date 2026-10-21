@@ -1238,9 +1238,9 @@ function filaOf(cls,nom,sub,chips,cols,acts,side){
 const celdaVacia=()=>`<div class="fnum"></div>`;
 const SVG_PAUSA=`<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>`;
 const SVG_PLAY=`<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>`;
-function botonPausa(o){
+function botonPausa(o, fn){
   const g=RG_GUARDANDO.has(o.id), p=!!o.pausada;
-  return `<div class="ppwrap"><button class="pp${p?" pausada":""}${g?" guardando":""}" ${g?"disabled":""} onclick="rgPausar('${esc(o.id)}')" title="${p?"Pausada: tocá para reanudarla":"Activa: tocá para pausarla"}" aria-label="${p?"Reanudar":"Pausar"}">${p?SVG_PLAY:SVG_PAUSA}</button><span class="pp-lbl">${g?"guardando…":p?"reanudar":"pausar"}</span></div>`;
+  return `<div class="ppwrap"><button class="pp${p?" pausada":""}${g?" guardando":""}" ${g?"disabled":""} onclick="${fn||"rgPausar"}('${esc(o.id)}')" title="${p?"Pausada: tocá para reanudarla":"Activa: tocá para pausarla"}" aria-label="${p?"Reanudar":"Pausar"}">${p?SVG_PLAY:SVG_PAUSA}</button><span class="pp-lbl">${g?"guardando…":p?"reanudar":"pausar"}</span></div>`;
 }
 function fila(cls,nom,meta,cols,acts,placa){
   return `<div class="fila ${cls}${placa?" conplaca":""}"><div class="fmain"><div class="fnom">${nom}</div><div class="fmeta">${meta}</div></div>
@@ -1295,6 +1295,7 @@ function filaOferta(o){
   const n=lin.length||its.length;
   const chips=[
     ag?`<span class="chip c-bad">⛔ agotada</span>`:"", o._venc?`<span class="chip c-gris">vencida</span>`:"",
+    o.pausada?`<span class="chip c-warn">⏸ pausada</span>`:"",
     m!=null&&m<0?`<span class="chip c-bad">pierde plata</span>`:"",
     chipCanal(o),
     esCombo(o)?`<span class="chip c-teal">🎁 combo · ${n} prod.${o.codigo?" · "+esc(o.codigo):""}</span>`:`<span class="chip c-teal">🏷️ oferta</span>`].filter(Boolean).join("");
@@ -1307,9 +1308,8 @@ function filaOferta(o){
   // en los combos nuevos se listan los renglones con su cantidad; en los viejos, los productos sueltos
   const detalle = lin.length ? lin.map(l=>l.qty+" × "+l.nombre).join(" · ") : its.map(i=>i.nombre).join(" + ");
   const sub=(esCombo(o)?"":catBadge(o._cat))+(n?`<span>${esc(detalle)}</span>`:"");
-  // estas tarjetas no se pausan: se deja el lugar vacío para que la placa quede alineada
-  return filaOf((m!=null&&m<0?" mala":"")+(ag||o._venc?" gris":""), nom, sub, chips, cols, acts,
-    `<div class="ppwrap"></div><div class="fplaca">${placaThumb("of",o)}</div>`);
+  return filaOf((m!=null&&m<0?" mala":"")+(ag||o._venc||o.pausada?" gris":""), nom, sub, chips, cols, acts,
+    botonPausa(o,"rgPausarCombo")+`<div class="fplaca">${placaThumb("of",o)}</div>`);
 }
 
 function ofertarDesdeStock(pid){
@@ -2173,17 +2173,32 @@ window.rgGuardarCombo=async()=>{
          desc = el % que se escribe en la COLUMNA DESCUENTO  ->  la factura muestra el ahorro
        Si un renglón quedara más caro que la lista no hay descuento que mostrar: va el precio
        tal cual y la columna en cero (un descuento negativo en una factura no se puede leer). */
+    /* EL % VA CON 6 DECIMALES, no con 2. Odoo calcula el subtotal como
+       precio_unitario × cantidad × (1 − desc/100) y recién ahí redondea, así que los
+       centavos que se pierden al redondear el porcentaje se multiplican por la cantidad:
+       con 2 decimales, este mismo combo daba $48.083,76 en vez de los $48.082,20 del
+       folleto. Medido: con 2 decimales fallan 5 de 6 casos (hasta $2,67 de error), con 4
+       falla 1, con 6 cierran todos al centavo. No es raro para la casa — las facturas de
+       éticos ya salen con descuentos tipo 86,7931%. */
     const lineas = ls.map(l=>{
       const lista=EYG.r2(rgTramo(l)), precio=EYG.r2(l.precio||0);
       const hayDesc = lista>0 && precio>0 && precio<lista;
       return { id:l.id, sku:l.sku, nombre:l.nombre, qty:l.qty,
                lista, precio,
-               desc: hayDesc ? Math.round((1-precio/lista)*10000)/100 : 0,
+               desc: hayDesc ? Math.round((1-precio/lista)*100*1e6)/1e6 : 0,
                pu:   hayDesc ? lista : precio };
     });
+    /* Control antes de guardar: lo que va a cobrar Odoo tiene que dar EXACTAMENTE el total
+       que muestra la pantalla. Si no cierra, no se guarda: un combo que no coincide con el
+       folleto lo descubre la farmacia, no nosotros. */
+    const totalOdoo = EYG.r2(lineas.reduce((a,l)=>a+EYG.r2(l.pu*l.qty*(1-l.desc/100)),0));
+    if(Math.abs(totalOdoo-EYG.r2(T.combo))>0.009){
+      toast("No guardo: la suma de los renglones da "+money(totalOdoo)+" y el combo "+money(T.combo));
+      if(btn){btn.disabled=false;btn.textContent="Guardar el combo";} return;
+    }
     const armables=parseInt(rgArmables(),10)||0;
     const clean={
-      id:d.id, tipo:"combo", receta:true, titulo, codigo,
+      id:d.id, tipo:"combo", receta:true, titulo, codigo, pausada:!!d.pausada,
       /* items VACÍO a propósito: no hay un producto "combo" en Odoo. El panel de las
          comerciales cuenta las ofertas vendidas por los productos de items, y poner acá los
          componentes contaría como "se llevó el combo" a quien compró uno solo de ellos
@@ -2225,6 +2240,18 @@ window.rgPausar=id=>{
   if(!rgDraft) render();
   toast(o.pausada?"⏸ Pausada: ya no la ven las comerciales":"▶ Reanudada: ya la ven las comerciales");
   _rgCola=_rgCola.then(()=>rgSave(o.tipo==='p'?o.target:null))
+    .catch(e=>{ o.pausada=!o.pausada; toast("No se pudo guardar: "+(e&&e.message||e)); })
+    .finally(()=>{ RG_GUARDANDO.delete(id); if(!rgDraft) render(); });
+};
+/* Pausar un COMBO. Un combo pausado no desaparece de acá —se ve gris, con su chip— pero
+   deja de salir en la tarjeta de las comerciales, en el Inicio y en la tienda. Sirve para
+   dejarlo armado y revisado antes de soltarlo. */
+window.rgPausarCombo=id=>{
+  const o=OFERTAS.find(x=>x.id===id); if(!o || RG_GUARDANDO.has(id)) return;
+  o.pausada=!o.pausada; RG_GUARDANDO.add(id);
+  if(!rgDraft) render();
+  toast(o.pausada?"⏸ Pausado: ya no lo ven las comerciales":"▶ Reanudado: ya lo ven las comerciales");
+  _rgCola=_rgCola.then(()=>setParam("eyg.ofertas", JSON.stringify(OFERTAS.filter(x=>x.tipo).map(x=>{const c={...x};delete c._venc;delete c._cat;delete c._agotada;return c;}))))
     .catch(e=>{ o.pausada=!o.pausada; toast("No se pudo guardar: "+(e&&e.message||e)); })
     .finally(()=>{ RG_GUARDANDO.delete(id); if(!rgDraft) render(); });
 };

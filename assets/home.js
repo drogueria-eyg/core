@@ -2049,7 +2049,7 @@ window.EYGHome = (function(){
     let ofertas=[], opos=0;
     try{ ofertas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas"])||"[]"); }catch(e){}
     try{ opos=await rpc("product.product","search_count",[[["x_oportunidad","=",true],["x_oportunidad_archivada","=",false]]]); }catch(e){}
-    let act=(ofertas||[]).filter(o=>!o.hasta||o.hasta>=HOY);
+    let act=(ofertas||[]).filter(o=>!o.pausada && (!o.hasta||o.hasta>=HOY));
     // las agotadas (sin stock) se apagaron solas del panel: no cuentan como vigentes, avisan aparte
     let agot=[];
     try{ const sm=await EYG.ofStockMap(act.flatMap(o=>(o.items||[]).map(i=>i&&i.id)));

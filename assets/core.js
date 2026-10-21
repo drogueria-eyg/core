@@ -883,7 +883,7 @@ window.EYG = (function(){
     let ofertas=[];
     try{ const raw = await rpc("ir.config_parameter","get_param",["eyg.ofertas"]); ofertas = JSON.parse(raw||"[]"); }catch(e){ return; }
     const hoy = new Date().toISOString().slice(0,10);
-    let act = ofertas.filter(o=>o && o.id && (!o.hasta || o.hasta>=hoy));
+    let act = ofertas.filter(o=>o && o.id && !o.pausada && (!o.hasta || o.hasta>=hoy));
     // sin stock = no se ofrece: la oferta se apaga sola (queda gris en Oportunidades y Ofertas)
     const sm = await ofStockMap(act.flatMap(o=>((o.items)||[]).map(i=>i&&i.id)));
     if(sm) act = act.filter(o=>!ofAgotada(o,sm));
