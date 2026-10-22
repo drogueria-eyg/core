@@ -10,8 +10,8 @@
    vencimiento, sin pausas) y la capa no se registraba.
 
    QUÉ CUENTA COMO VENTA DE UNA OFERTA (exacto, sin estimar):
-   · COMBO: cada nota de combo que Cargar venta escribe en el pedido (el título del combo) es UN
-     combo vendido; sus renglones son los que siguen a la nota. Se cuenta haya o no vigencia.
+   · COMBO: los renglones que Cargar venta marca con el código del combo ("Combo CB0008" al final
+     del texto del renglón). Combos vendidos = unidades del primer producto ÷ las de la receta.
    · OFERTA DE UN PRODUCTO (Oportunidades, panel o capa): renglón de pedido CONFIRMADO de ese
      producto, el día (hora argentina) en que la oferta estaba vigente, en un pedido con la lista
      de precios donde la oferta rige (capa lista 1 → Farmacias; Oportunidades → lista 1 y las
@@ -66,47 +66,38 @@
     let lineas=[];
     for(const ch of trozos(pvs,600)){
       const ls=await rpc("sale.order.line","search_read",[[["product_id","in",ch],...dom0]],
-        {fields:["order_id","order_partner_id","product_id","product_uom_qty","price_unit","discount","price_subtotal","sequence"],limit:0});
+        {fields:["order_id","order_partner_id","product_id","product_uom_qty","price_unit","discount","price_subtotal","name"],limit:0});
       lineas=lineas.concat(ls||[]);
     }
-    // notas de combo de esos pedidos y de cualquier otro del período (un combo puede ser lo único del pedido)
-    const notas=await rpc("sale.order.line","search_read",[[["display_type","=","line_note"],...dom0]],{fields:["order_id","name","sequence"],limit:0});
-    const ords=[...new Set(lineas.map(l=>l.order_id[0]).concat((notas||[]).map(n=>n.order_id[0])))];
+    /* COMBOS: Cargar venta marca CADA renglón del combo con su código al final del texto del renglón
+       ("… Combo CB0008", en una línea aparte). Esa marca es la que vale: la nota aparte que escribe
+       antes no queda en el pedido. Se buscan también los renglones marcados de productos que no
+       estaban en la lista. */
+    const COMBO_RE=/\bCombo\s+(CB\d{4})\b/;
+    const ya=new Set(lineas.map(l=>l.id));
+    const marcados=await rpc("sale.order.line","search_read",[[["name","ilike","Combo CB"],...dom0]],
+      {fields:["order_id","order_partner_id","product_id","product_uom_qty","price_unit","discount","price_subtotal","name"],limit:0});
+    (marcados||[]).forEach(l=>{ if(!ya.has(l.id)){ ya.add(l.id); lineas.push(l); } });
+    const ords=[...new Set(lineas.map(l=>l.order_id[0]))];
     const cab={};
     for(const ch of trozos(ords,800)){
       const os=await rpc("sale.order","read",[ch,["date_order","pricelist_id","partner_id","name"]]);
       (os||[]).forEach(o=>cab[o.id]={dia:diaAR(o.date_order), lista:o.pricelist_id&&o.pricelist_id[0], cli:o.partner_id&&o.partner_id[0], cliN:o.partner_id&&o.partner_id[1], nom:o.name});
     }
-    // ---- combos: nota + los renglones que la siguen ----
+    const ag=new Map(of.map(o=>[o.key,{o, ped:new Set(), cli:new Map(), un:0, plata:0, combos:0, renglones:0, _ref:{}}]));
+    const comboCod={}; combos.forEach(o=>{ if(o.cod) comboCod[o.cod]=o; });
     const enCombo=new Set();
-    const ag=new Map(of.map(o=>[o.key,{o, ped:new Set(), cli:new Map(), un:0, plata:0, combos:0, renglones:0}]));
-    const titCombo=combos.map(o=>({o, t:norm(o.t)})).filter(x=>x.t).sort((a,b)=>b.t.length-a.t.length);
-    const notasDe={}; (notas||[]).forEach(n=>(notasDe[n.order_id[0]]=notasDe[n.order_id[0]]||[]).push(n));
-    if(Object.keys(notasDe).length){
-      const otrosIds=Object.keys(notasDe).map(Number);
-      let todas=[];
-      for(const ch of trozos(otrosIds,300)){
-        const ls=await rpc("sale.order.line","search_read",[[["order_id","in",ch]]],
-          {fields:["order_id","product_id","product_uom_qty","price_subtotal","sequence","display_type","name"],limit:0});
-        todas=todas.concat(ls||[]);
-      }
-      const porOrden={}; todas.forEach(l=>(porOrden[l.order_id[0]]=porOrden[l.order_id[0]]||[]).push(l));
-      Object.entries(porOrden).forEach(([oid,ls])=>{
-        const c=cab[oid]; if(!c) return;
-        ls.sort((a,b)=>(a.sequence-b.sequence)||(a.id-b.id));
-        for(let i=0;i<ls.length;i++){
-          const l=ls[i]; if(l.display_type!=="line_note") continue;
-          const t=norm(l.name), m=titCombo.find(x=>t.indexOf(x.t)===0); if(!m) continue;
-          const g=ag.get(m.o.key); g.combos++; g.ped.add(+oid); g.cli.set(c.cli,c.cliN);
-          // sus renglones: los productos del combo que siguen a la nota, hasta la próxima nota/sección
-          let k=i+1, faltan=m.o._pv.size;
-          while(k<ls.length && faltan>0 && !ls[k].display_type){
-            const x=ls[k]; if(x.product_id && m.o._pv.has(x.product_id[0])){ enCombo.add(x.id); g.un+=x.product_uom_qty||0; g.plata+=x.price_subtotal||0; g.renglones++; faltan--; }
-            k++;
-          }
-        }
-      });
-    }
+    lineas.forEach(l=>{
+      const m=COMBO_RE.exec(String(l.name||"")); if(!m) return;
+      enCombo.add(l.id);   // un renglón de combo nunca cuenta como oferta suelta
+      const o=comboCod[m[1]], c=cab[l.order_id[0]]; if(!o||!c||c.dia<desde||c.dia>hasta) return;
+      const g=ag.get(o.key);
+      g.ped.add(l.order_id[0]); g.cli.set(c.cli,c.cliN); g.un+=l.product_uom_qty||0; g.plata+=l.price_subtotal||0; g.renglones++;
+      // cuántos combos: las unidades del PRIMER producto de la receta ÷ lo que lleva un combo
+      if(l.product_id && o.pv && l.product_id[0]===o.pv[0]) g._ref[l.order_id[0]]=(g._ref[l.order_id[0]]||0)+(l.product_uom_qty||0);
+    });
+    ag.forEach(g=>{ if(g.o.f!=="combo") return; const q0=(g.o.q&&g.o.q[0])||1;
+      g.combos=Object.values(g._ref).reduce((s,u)=>s+Math.round(u/q0),0); });
     // ---- ofertas de un producto ----
     lineas.forEach(l=>{
       if(enCombo.has(l.id)) return;
