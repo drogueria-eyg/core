@@ -119,6 +119,7 @@
   .fplaca img{object-fit:cover;border:1px solid var(--line);box-shadow:0 2px 8px rgba(0,0,0,.12);cursor:zoom-in;background:#fff}
   .fplaca .sinplaca{border:1.5px dashed #C5D3D1;background:#F4F8F7;color:var(--gris2);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;text-align:center;line-height:1.15;cursor:pointer;padding:0;font-family:inherit}
   .fplaca .sinplaca:hover{border-color:var(--teal);color:var(--teal-deep);background:var(--agua)}
+  .ppcol{display:flex;flex-direction:column;align-items:center;gap:4px}.pp.btn-dest{width:32px;height:32px;font-size:14px;filter:grayscale(1);opacity:.5}.pp.btn-dest:hover{opacity:.85}.pp.btn-dest.on{filter:none;opacity:1;background:#FFF4E0;border-color:#E8B35A}
   .fplaca .sinplaca svg{width:22px;height:22px;opacity:.75}
   .placa-ov{position:fixed;inset:0;z-index:10050;background:rgba(5,30,28,.82);display:flex;align-items:center;justify-content:center;padding:18px;cursor:zoom-out}
   .placa-ov img{max-width:min(520px,100%);max-height:92vh;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.5)}
@@ -544,10 +545,30 @@ async function cargar(){
     render();
     refrescarStockOpo();   // calcula en vivo las oportunidades por stock (sin bloquear el render)
     cargarCanales();       // para quién es cada oferta (segunda ola)
+    destacadasLeer().then(()=>{ if(!rgDraft) render(); });
     // la medición de la rotación necesita las ofertas ya leídas: va después de la carga
     setTimeout(()=>cargarRotacionMedida().catch(e=>console.warn("rotación:",e)),1500);
   }catch(e){ cont.innerHTML='<div class="empty">No pude leer los datos: '+esc(e.message)+'</div>'; }
 }
+
+
+/* 📌 DESTACAR (22/10/2026): una oferta destacada se muestra SIEMPRE en el panel de las comerciales,
+   en su fila arriba ("📌 Destacadas"), fuera de la rotación del día. Un solo parámetro para
+   Oportunidades y la capa del Motor: eyg.ofertas_destacadas = [ids como los conoce el panel]
+   ("sync:<id>", "<id>" de eyg.ofertas, "motor:<plantilla>"). Se relee antes de escribir. */
+let OF_DESTACADAS=new Set();
+async function destacadasLeer(){ try{ OF_DESTACADAS=new Set(JSON.parse(await getParam("eyg.ofertas_destacadas","[]")||"[]")||[]); }catch(e){ OF_DESTACADAS=new Set(); } }
+window.destacarToggle=async(pid)=>{
+  await destacadasLeer();
+  const on=!OF_DESTACADAS.has(pid);
+  if(on) OF_DESTACADAS.add(pid); else OF_DESTACADAS.delete(pid);
+  try{ await setParam("eyg.ofertas_destacadas", JSON.stringify([...OF_DESTACADAS])); toast(on?"📌 Destacada: las comerciales la ven siempre":"Ya no está destacada"); }
+  catch(e){ toast("No pude guardar: "+(e.message||e)); }
+  render();
+};
+// va en la columna de la pausa (no en la fila de botones: ahí empujaba "Eliminar" a otra línea)
+function destacarBtn(pid){ const on=OF_DESTACADAS.has(pid);
+  return `<div class="ppwrap"><button class="pp btn-dest${on?" on":""}" onclick="destacarToggle('${pid}')" title="${on?"Destacada: se muestra siempre en el panel de las comerciales. Tocá para sacarla":"Mostrarla siempre en el panel de las comerciales"}" aria-label="${on?"Quitar destacada":"Destacar"}">📌</button><span class="pp-lbl">${on?"destacada":"destacar"}</span></div>`; }
 
 /* ===================== PLACAS DE LAS OFERTAS =====================
    La placa es la imagen de la oferta que las comerciales comparten desde su WhatsApp (panel del
@@ -1324,7 +1345,7 @@ function filaOferta(o){
   const detalle = lin.length ? lin.map(l=>l.qty+" × "+l.nombre).join(" · ") : its.map(i=>i.nombre).join(" + ");
   const sub=(esCombo(o)?"":catBadge(o._cat))+(n?`<span>${esc(detalle)}</span>`:"");
   return filaOf((m!=null&&m<0?" mala":"")+(ag||o._venc||o.pausada?" gris":""), nom, sub, chips, cols, acts,
-    botonPausa(o,"rgPausarCombo")+`<div class="fplaca">${placaThumb("of",o)}</div>`);
+    `<div class="ppcol">${botonPausa(o,"rgPausarCombo")}${esCombo(o)?"":destacarBtn(o.id)}</div>`+`<div class="fplaca">${placaThumb("of",o)}</div>`);
 }
 
 function ofertarDesdeStock(pid){
@@ -1509,7 +1530,7 @@ function filaRegla(o){
     +`<button class="btn warn sm" onclick="rgEliminar('${esc(o.id)}')">Eliminar</button>`;
   const sub=(o.tipo==='p'?catBadge(o._cat)+(o._sku?`<span>${esc(o._sku)}</span>`:""):"")+ofAlertaFila(o);
   return filaOf((m!=null&&m<0?" mala":"")+((ag||st.c!=='act')?" gris":""), esc(o.targetName||("#"+o.target)), sub, chips, cols, acts,
-    botonPausa(o)+`<div class="fplaca">${placaThumb("rg",o)}</div>`);
+    `<div class="ppcol">${botonPausa(o)}${destacarBtn("sync:"+o.id)}</div>`+`<div class="fplaca">${placaThumb("rg",o)}</div>`);
 }
 
 /* Línea de aviso de la fila: lo que esa oferta está publicando HOY contra el costo de hoy.

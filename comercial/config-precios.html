@@ -35,6 +35,7 @@
   .sum{font-size:11.5px;color:var(--gris);flex-basis:100%;margin-left:2px}
   .btn-mini{background:#fff;border:1px solid var(--line);border-radius:8px;padding:5px 11px;font-size:12px;font-weight:700;color:var(--teal-deep);cursor:pointer;font-family:inherit}
   .capa-placa{display:inline-flex;align-items:center;gap:6px}
+  .btn-dest.on{background:#FFF4E0;color:#9A6B12;border-color:#E8B35A}
   .capa-placa img{width:36px;height:48px;object-fit:cover;border-radius:6px;border:1px solid var(--line);cursor:zoom-in;background:#fff}
   .btn-mini:hover{border-color:var(--teal-med)}
   .btn-mini.del{color:#b0322f}
@@ -173,6 +174,23 @@ let FIJOS=[], _fijoSel=null, _fijoTimer=null, _fijoIdx=null;
    no recalcula precios ni hace falta "Guardar y sincronizar". Sólo líneas de un producto: una
    placa no puede ser la misma para todo un laboratorio. */
 let CAPA_PLACAS={};
+/* 📌 DESTACAR (22/10/2026): una oferta destacada se muestra SIEMPRE en el panel de las comerciales,
+   en su fila arriba ("📌 Destacadas"), fuera de la rotación del día. Un solo parámetro para
+   Oportunidades y la capa del Motor: eyg.ofertas_destacadas = [ids como los conoce el panel]
+   ("sync:<id>", "<id>" de eyg.ofertas, "motor:<plantilla>"). Se relee antes de escribir. */
+let OF_DESTACADAS=new Set();
+async function destacadasLeer(){ try{ OF_DESTACADAS=new Set(JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas_destacadas"])||"[]")||[]); }catch(e){ OF_DESTACADAS=new Set(); } }
+window.destacarToggle=async(pid)=>{
+  await destacadasLeer();
+  const on=!OF_DESTACADAS.has(pid);
+  if(on) OF_DESTACADAS.add(pid); else OF_DESTACADAS.delete(pid);
+  try{ await rpc("ir.config_parameter","set_param",["eyg.ofertas_destacadas", JSON.stringify([...OF_DESTACADAS])]); toast(on?"📌 Destacada: las comerciales la ven siempre":"Ya no está destacada"); }
+  catch(e){ toast("No pude guardar: "+(e.message||e)); }
+  render();
+};
+function destacarBtn(pid){ const on=OF_DESTACADAS.has(pid);
+  return `<button class="${on?"btn-mini":"btn-mini"} btn-dest${on?" on":""}" onclick="destacarToggle('${pid}')" title="${on?"Destacada: se muestra siempre en el panel de las comerciales. Tocá para sacarla":"Mostrarla siempre en el panel de las comerciales"}">📌 ${on?"Destacada":"Destacar"}</button>`; }
+
 // La capa se puede aplicar a un PRODUCTO o a un LABORATORIO entero ("lab").
 // Laboratorio = la Marca de la ficha (modelo x_marcas, clave 'M<id>') o, en éticos, la
 // categoría del laboratorio (clave 'C<id>'). Por laboratorio sólo tiene sentido la ESCALERA:
@@ -235,6 +253,7 @@ async function cargar(){
     const etMs=await rpc("ir.config_parameter","get_param",["eyg.eticos_min_step"]);
     const _ms=parseFloat(etMs); ET.minstep = isNaN(_ms)?0:Math.round(_ms*1000)/10;   // descuento minimo por escalon (0 = off)
     try{ CAPA_PLACAS=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.capa_placas"])||"{}")||{}; }catch(e){ CAPA_PLACAS={}; }
+    await destacadasLeer();
     // precios de venta fijos temporales (manuales)
     const rawFijos=await rpc("ir.config_parameter","get_param",["eyg.precios_fijos_flat"]);
     FIJOS=String(rawFijos||"").split("\n").map(l=>l.trim()).filter(Boolean).map(l=>{
@@ -613,6 +632,7 @@ function renderFijos(){
       ${marca}
       ${est}
       ${esLab?"":capaPlacaHTML(f.tmpl)}
+      ${esLab?"":destacarBtn("motor:"+f.tmpl)}
       <button class="btn-mini" onclick="fijoEditar(${i})">Editar</button>
       <button class="btn-mini" onclick="fijoPausar(${i})">${f.pausado?'Reanudar':'Pausar'}</button>
       <button class="btn-mini del" onclick="fijoQuitar(${i})">Quitar</button>

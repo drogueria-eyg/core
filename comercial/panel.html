@@ -3496,11 +3496,22 @@ function ofStat(o){ const g=ST.ofertas[o.id]||{}; const env=g.gEnv||0, ven=g.gVe
    tengan ya una oferta en Oportunidades, y por puntaje = (0,2 + descuento sobre el PVP) ×
    log2(2 + clientes que lo compraron en 90 días) × 1,3 si la línea tiene fecha de fin (promo). */
 const MOTOR_MAX=20;
-let MOTOR_OF=[];
-function ofPorId(id){ return OFERTAS.find(x=>x.id===id) || MOTOR_OF.find(x=>x.id===id); }
+let MOTOR_OF=[];     // los de la capa que se MUESTRAN (con placa, destacados y los mejores hasta MOTOR_MAX)
+let MOTOR_ALL=[];    // TODAS las líneas de producto activas de la capa: el buscador las encuentra todas
+/* DESTACADAS (22/10/2026): Dirección marca una oferta con 📌 en Oportunidades o en la capa del
+   Motor de precios y se muestra SIEMPRE, en su fila arriba (pedido de Germán: Frevia e Insulina
+   Apidra). Parámetro eyg.ofertas_destacadas = [ids del panel]: "sync:<id>" / "<id>" (Oportunidades)
+   y "motor:<plantilla>" (capa). Se lee fresco al abrir el panel. */
+let DESTACADAS=new Set();
+function ofPorId(id){ return OFERTAS.find(x=>x.id===id) || MOTOR_ALL.find(x=>x.id===id); }
 // las de la capa del Motor CON PLACA son ofertas de verdad (las armó Dirección con su imagen):
 // entran a la rotación del día como cualquier otra. Las que no tienen placa quedan en "Ver todas".
-function ofRotables(){ return OFERTAS.filter(o=>ofVisible(o) && o.tipo!=="combo").concat(MOTOR_OF.filter(o=>o.placa && ofVisible(o))); }
+function ofRotables(){ return OFERTAS.filter(o=>ofVisible(o) && o.tipo!=="combo" && !DESTACADAS.has(o.id)).concat(MOTOR_OF.filter(o=>o.placa && ofVisible(o) && !DESTACADAS.has(o.id))); }
+function ofDestacadas(){ return OFERTAS.filter(o=>o.tipo!=="combo" && DESTACADAS.has(o.id) && ofVisible(o))
+  .concat(MOTOR_ALL.filter(o=>DESTACADAS.has(o.id) && ofVisible(o) && o._stock>0)); }
+// TODO lo que existe, sin filtro de rubro ni de imagen: es lo que recorre el buscador
+function ofBuscable(){ const ya=new Set(OFERTAS.map(o=>o.id));
+  return OFERTAS.filter(o=>o.tipo==="combo").concat(OFERTAS.filter(o=>o.tipo!=="combo"), MOTOR_ALL.filter(o=>!ya.has(o.id))); }
 function ofCombosVis(){ return OFERTAS.filter(o=>ofVisible(o) && o.tipo==="combo"); }
 function ofCatalogo(){ return [...ofCombosVis(), ...ofRotables(), ...MOTOR_OF.filter(o=>!o.placa && ofVisible(o))]; }
 function ofTipoTxt(o){ return o.tipo==="combo"?"🎁 Combo":o._motor?"💲 Precio especial":"🏷️ Oferta"; }
@@ -3508,8 +3519,9 @@ const ofNorm=t=>String(t||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").to
 function ofMatch(o,q){ const h=ofNorm([o.titulo, ofItems(o), (o.lineas||[]).map(l=>l.nombre).join(" "), o.codigo||""].join(" "));
   return ofNorm(q).split(/\s+/).filter(Boolean).every(w=>h.includes(w)); }
 async function cargarMotorOfertas(){
-  MOTOR_OF=[];
-  const base=await EYG.cacheOdoo("of-motor2-"+hoyStr, 86400, async ()=>{
+  MOTOR_OF=[]; MOTOR_ALL=[];
+  // TODAS las líneas de producto activas de la capa (sin filtrar stock ni costo): una vez por día, para todas
+  const base=await EYG.cacheOdoo("of-motor3-"+hoyStr, 86400, async ()=>{
     const flat=String(await rpc("ir.config_parameter","get_param",["eyg.precios_fijos_flat"])||"").split("\n").filter(Boolean).map(l=>l.split("~"));
     const act=flat.filter(x=>/^\d+$/.test(x[0]) && x[7]!=="1" && !(x[6]&&x[6]<hoyStr));
     const tm=[...new Set(act.map(x=>+x[0]))]; if(!tm.length) return [];
@@ -3524,22 +3536,28 @@ async function cargarMotorOfertas(){
     const esc={}; its.forEach(i=>(esc[i.product_tmpl_id[0]]=esc[i.product_tmpl_id[0]]||[]).push({q:i.min_quantity||1,p:i.fixed_price}));
     const vt={}; vars.forEach(v=>{ if(!vt[v.product_tmpl_id[0]]) vt[v.product_tmpl_id[0]]=v; });
     const out=[];
-    tps.forEach(t=>{ const v=vt[t.id], e=(esc[t.id]||[]).sort((a,b)=>a.q-b.q); if(!v||!e.length||!(t.qty_available>0)) return;
-      const p1=e[0].p, costo=(v.x_costo_motor||0)*(1+(v.x_iva_compra||0)); if(costo>0 && p1<costo) return;
+    tps.forEach(t=>{ const v=vt[t.id], e=(esc[t.id]||[]).sort((a,b)=>a.q-b.q); if(!v||!e.length) return;
+      const p1=e[0].p, costo=(v.x_costo_motor||0)*(1+(v.x_iva_compra||0));
       const etico=/[EÉ]TICO/i.test((t.categ_id&&t.categ_id[1])||""), pvp=etico?(t.list_price||0):0;
       const desc=pvp>p1?1-p1/pvp:0, ln=linea[t.id];
       out.push({tmpl:t.id, pv:v.id, nombre:t.name, p1, esc:e.map(x=>({q:Math.round(x.q),p:x.p})), pvp, hasta:(ln&&ln[6])||"",
+        stock:t.qty_available||0, bajo:(costo>0&&p1<costo),
         sc:(0.2+desc)*Math.log2(2+(comp[v.id]||0))*((ln&&ln[6])?1.3:1)}); });
-    return out.sort((a,b)=>b.sc-a.sc);   // TODAS las elegibles: las que tienen placa entran siempre, el resto por puntaje
+    return out.sort((a,b)=>b.sc-a.sc);
   }).catch(()=>[]);
+  // placas y destacadas: siempre frescas (no van en el caché del día)
+  let placas={}, dest=[];
+  try{ placas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.capa_placas"])||"{}")||{}; }catch(e){}
+  try{ dest=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas_destacadas"])||"[]")||[]; }catch(e){}
+  DESTACADAS=new Set(dest);
   const yaOf=new Set(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i&&i.id)));
-  // placas de la capa: se leen siempre frescas (no van en el caché del día), así una placa recién subida aparece al recargar
-  let placas={}; try{ placas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.capa_placas"])||"{}")||{}; }catch(e){}
-  const libres=(base||[]).filter(m=>!yaOf.has(m.pv));
-  const conPlaca=libres.filter(m=>placas[String(m.tmpl)]), sinPlaca=libres.filter(m=>!placas[String(m.tmpl)]);
-  const elegidas=conPlaca.concat(sinPlaca.slice(0,Math.max(0,MOTOR_MAX-conPlaca.length)));
-  MOTOR_OF=elegidas.map(m=>({ id:"motor:"+m.tmpl, tipo:"motor", _motor:true, placa:placas[String(m.tmpl)]||"",
-    titulo:m.nombre, items:[{id:m.pv, nombre:m.nombre}], precio:m.p1, precioAntes:m.pvp>m.p1?m.pvp:0, hasta:m.hasta||"", _esc:m.esc }));
+  MOTOR_ALL=(base||[]).filter(m=>!yaOf.has(m.pv)).map(m=>({ id:"motor:"+m.tmpl, tipo:"motor", _motor:true, placa:placas[String(m.tmpl)]||"",
+    titulo:m.nombre, items:[{id:m.pv, nombre:m.nombre}], precio:m.p1, precioAntes:m.pvp>m.p1?m.pvp:0, hasta:m.hasta||"", _esc:m.esc,
+    _stock:m.stock, _bajo:m.bajo, _sc:m.sc }));
+  // lo que se MUESTRA: con stock y sin vender bajo costo; con placa siempre, el resto por puntaje hasta MOTOR_MAX
+  const ok=MOTOR_ALL.filter(m=>m._stock>0 && !m._bajo);
+  const conPlaca=ok.filter(m=>m.placa), sinPlaca=ok.filter(m=>!m.placa);
+  MOTOR_OF=conPlaca.concat(sinPlaca.slice(0,Math.max(0,MOTOR_MAX-conPlaca.length)));
 }
 function ofCardHTML(o, hot){
     const st=ST.ofertas[o.id]; const col=st?st.colocados:null;
@@ -3588,7 +3606,7 @@ function ofFilaHTML(o){
   const ico=o.placa?`<img src="${esc(o.placa)}" alt="" loading="lazy" onclick="ofVerPlaca('${id}')">`:`<span>${o.tipo==="combo"?"🎁":o._motor?"💲":"🏷️"}</span>`;
   const esc2=(o._esc&&o._esc.length>1)?`<div class="ofc-esc">${o._esc.slice(1).map(t=>"desde "+t.q+": "+money(t.p)).join(" · ")}</div>`:"";
   return `<div class="ofc-fila"><div class="ofc-ico">${ico}</div>
-    <div class="ofc-main"><div class="ofc-tit">${esc(tit)}</div><div class="ofc-sub">${ofTipoTxt(o)} · ${vig}${ofDestTxt(o)?" · "+ofDestTxt(o).replace(/<[^>]+>/g,""):""}</div>${esc2}</div>
+    <div class="ofc-main"><div class="ofc-tit">${esc(tit)}</div><div class="ofc-sub">${DESTACADAS.has(o.id)?"📌 ":""}${ofTipoTxt(o)}${(o._motor&&!(o._stock>0))?' · <b style="color:#b0322f">sin stock</b>':""} · ${vig}${ofDestTxt(o)?" · "+ofDestTxt(o).replace(/<[^>]+>/g,""):""}</div>${esc2}</div>
     <div class="ofc-precio">${o.precioAntes>o.precio?`<span class="ofc-old">${money(o.precioAntes)}</span>`:""}<b>${money(o.precio)}</b>${off?`<span class="ofc-off">−${off}%</span>`:""}</div>
     <a class="ofc-wa" href="https://api.whatsapp.com/send?text=${encodeURIComponent(ofertaMsg(o))}" target="_blank" rel="noopener" onclick="${o.placa?`return ofCompartirPlaca(event,'${id}')`:`confirmarCompartir('${id}')`}">Compartir</a></div>`;
 }
@@ -3596,16 +3614,17 @@ function ofertasHTML(){
   if(!OFERTAS.length && !MOTOR_OF.length) return "";
   const q=(ST.ofQ||"").trim();
   const ROT=ofRotacion(ofRotables());
-  const combos=ofCombosVis(), cat=ofCatalogo();
-  const buscador=`<div class="of-buscar"><input id="ofQ" type="search" placeholder="🔎 Buscar entre las ${cat.length} ofertas, combos y precios especiales…" value="${esc(q)}" oninput="ofBuscar(this.value)" autocomplete="off"></div>`;
+  const combos=ofCombosVis(), cat=ofCatalogo(), dest=ofDestacadas(), todo=ofBuscable();
+  const buscador=`<div class="of-buscar"><input id="ofQ" type="search" placeholder="🔎 Buscar entre las ${todo.length} ofertas, combos y precios especiales…" value="${esc(q)}" oninput="ofBuscar(this.value)" autocomplete="off"></div>`;
   let cuerpo;
   if(q){
-    const r=cat.filter(o=>ofMatch(o,q));
+    const r=todo.filter(o=>ofMatch(o,q));
     cuerpo=r.length ? `<div class="of-nres">${r.length} resultado${r.length===1?"":"s"}</div><div class="ofc-lista">${r.slice(0,40).map(ofFilaHTML).join("")}</div>`
                     : `<div class="of-nres">No encontré "${esc(q)}" entre las ofertas, combos y precios especiales.</div>`;
   }else{
-    const verTodas=`<button class="of-card of-mas" onclick="ofVerTodas()"><span class="of-mas-ico">＋</span><span class="of-mas-t">Ver todas</span><span class="of-mas-n">${cat.length} ofertas, combos y precios especiales</span></button>`;
+    const verTodas=`<button class="of-card of-mas" onclick="ofVerTodas()"><span class="of-mas-ico">＋</span><span class="of-mas-t">Ver todas</span><span class="of-mas-n">${todo.length} ofertas, combos y precios especiales</span></button>`;
     cuerpo=(combos.length?`<div class="of-subt">🎁 Combos</div><div class="of-grid">${combos.map(o=>ofCardHTML(o,false)).join("")}</div>`:"")
+      +(dest.length?`<div class="of-subt">📌 Destacadas</div><div class="of-grid">${dest.map(o=>ofCardHTML(o,false)).join("")}</div>`:"")
       +`<div class="of-subt">🏷️ Ofertas del día</div>`
       +(ROT.total>ROT.lista.length?`<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.8);margin:-2px 0 10px">Hoy ves ${ROT.lista.length} de ${ROT.total}: las ${ROT.estrellas.size} que mejor se vendieron siempre y una selección que cambia todos los días.</div>`:"")
       +`<div class="of-grid">${ROT.lista.map(o=>ofCardHTML(o,ROT.estrellas.has(o.id))).join("")}${verTodas}</div>`;
@@ -3634,7 +3653,8 @@ window.ofTodasBuscar=v=>{ OFC.q=v; ofPintarTodas(true); };
 function ofPintarTodas(soloLista){
   const cat=ofCatalogo();
   const n=k=>cat.filter(o=>k==="todas"||(k==="combo"&&o.tipo==="combo")||(k==="motor"&&o._motor)||(k==="oferta"&&o.tipo!=="combo"&&!o._motor)).length;
-  const lista=cat.filter(o=>(OFC.tipo==="todas"||(OFC.tipo==="combo"&&o.tipo==="combo")||(OFC.tipo==="motor"&&o._motor)||(OFC.tipo==="oferta"&&o.tipo!=="combo"&&!o._motor)) && (!OFC.q.trim()||ofMatch(o,OFC.q)));
+  const base=OFC.q.trim()?ofBuscable():cat.concat(ofDestacadas().filter(o=>!cat.includes(o)));
+  const lista=base.filter(o=>(OFC.tipo==="todas"||(OFC.tipo==="combo"&&o.tipo==="combo")||(OFC.tipo==="motor"&&o._motor)||(OFC.tipo==="oferta"&&o.tipo!=="combo"&&!o._motor)) && (!OFC.q.trim()||ofMatch(o,OFC.q)));
   const filas=lista.length?lista.map(ofFilaHTML).join(""):`<div class="of-nres" style="color:var(--gris)">Nada con ese filtro.</div>`;
   let el=document.getElementById("ofTodas");
   if(soloLista && el){ el.querySelector(".ofc-lista").innerHTML=filas; el.querySelectorAll(".ofc-chip").forEach(b=>b.classList.toggle("on",b.dataset.t===OFC.tipo)); return; }
@@ -3685,24 +3705,36 @@ let OF_HIST={};   // variante → [{p: cliente, n: veces que lo pidió en 12 m, 
 function rotSemilla(txt){ let h=2166136261; for(const c of String(txt)){ h^=c.charCodeAt(0); h=Math.imul(h,16777619); } return h>>>0; }
 function rotAzar(seed){ let a=seed||1; return ()=>{ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
 function rotDias(fecha){ if(!fecha) return 999; const t=Date.parse(String(fecha).replace(" ","T")); return isNaN(t)?999:(Date.now()-t)/864e5; }
-function ofRotacion(lista){ return rotDia(lista, hoyStr, true); }
+/* PRIORIDAD A LAS QUE TIENEN PLACA (22/10/2026): las 10 del día salen de las que tienen imagen;
+   las que no tienen sólo completan si faltan. Las estrellas se eligen entre las que tienen placa. */
+function ofRotacion(lista){
+  const cp=lista.filter(o=>o.placa), sp=lista.filter(o=>!o.placa);
+  if(!cp.length || !sp.length || cp.length>=ROT_CFG.total){ const r=rotDia(cp.length?cp:lista, hoyStr, true); r.total=lista.length; return r; }
+  const A=rotDia(cp, hoyStr, true);                       // entran todas las que tienen placa
+  const faltan=ROT_CFG.total-A.lista.length;
+  const B=rotDia(sp, hoyStr, true, faltan, 0);            // y se completa con las que no
+  const sel=A.lista.concat(B.lista.slice(0,faltan));
+  const az=rotAzar(rotSemilla((COMERCIAL||"")+"|"+hoyStr+"|orden2"));
+  return { lista:sel.map(o=>({o,k:az()})).sort((a,b)=>a.k-b.k).map(x=>x.o), estrellas:A.estrellas, total:lista.length };
+}
 // la selección de un día; con "recordar", lo que salió AYER en la rotación pesa un tercio hoy
 // (sin eso se repetían 11 de 15 de un día al otro; con esto rota de verdad)
-function rotDia(lista, dia, recordar){
+function rotDia(lista, dia, recordar, nMax, nFijas){
+  const NT=(nMax==null?ROT_CFG.total:nMax), NF=(nFijas==null?ROT_CFG.fijas:nFijas);
   const total=lista.length;
-  if(total<=ROT_CFG.total){
+  if(total<=NT){
     // entran todas: igual se mezcla el orden
     const az=rotAzar(rotSemilla((COMERCIAL||"")+"|"+dia+"|orden"));
     const l=lista.map(o=>({o,k:az()})).sort((a,b)=>a.k-b.k).map(x=>x.o);
-    return { lista:l, estrellas:rotEstrellas(lista), total };
+    return { lista:l, estrellas:rotEstrellas(lista,NF), total };
   }
-  const estrellas=rotEstrellas(lista);
+  const estrellas=rotEstrellas(lista,NF);
   const az=rotAzar(rotSemilla((COMERCIAL||"")+"|"+dia));
   let ayer=new Set();
   if(recordar){ const d=new Date(dia+"T12:00:00"); d.setDate(d.getDate()-1);
-    const prev=rotDia(lista, d.toISOString().slice(0,10), false); prev.lista.forEach(o=>{ if(!prev.estrellas.has(o.id)) ayer.add(o.id); }); }
+    const prev=rotDia(lista, d.toISOString().slice(0,10), false, NT, NF); prev.lista.forEach(o=>{ if(!prev.estrellas.has(o.id)) ayer.add(o.id); }); }
   const resto=lista.filter(o=>!estrellas.has(o.id));
-  const lugares=ROT_CFG.total-estrellas.size;
+  const lugares=NT-estrellas.size;
   // novedades primero (las más nuevas), mientras haya lugar
   const nuevas=resto.filter(o=>Math.min(rotDias(o.creada||ofDesde(o)), rotDias(o.reanudada))<=ROT_CFG.novedadDias)
     .sort((a,b)=>Math.min(rotDias(a.creada||ofDesde(a)),rotDias(a.reanudada))-Math.min(rotDias(b.creada||ofDesde(b)),rotDias(b.reanudada)))
@@ -3770,14 +3802,14 @@ async function cargarRanking(){
     return out;
   }).catch(()=>null);
 }
-function rotEstrellas(lista){
+function rotEstrellas(lista, nFijas){
   const c=lista.map(o=>{
     const pv=(o.items||[])[0]&&o.items[0].id, h=OF_RANK&&pv&&OF_RANK[pv];
     if(h) return {id:o.id, ven:h.ven, r:h.r, m:h.m};
     const g=ST.ofertas[o.id]||{}; const sem=Math.max(1,rotDias(o.creada||ofDesde(o))/7);
     return {id:o.id, ven:g.gVen||0, r:(g.gVen||0)/sem, m:(g.gMonto||0)/sem}; })
     .filter(x=>x.ven>=ROT_CFG.minCompradores).sort((a,b)=>(b.r-a.r)||(b.m-a.m));
-  return new Set(c.slice(0,ROT_CFG.fijas).map(x=>x.id));
+  return new Set(c.slice(0,(nFijas==null?ROT_CFG.fijas:nFijas)).map(x=>x.id));
 }
 // afinidad: qué productos en oferta ya compran los clientes de esta cartera (una consulta, en caché)
 async function cargarAfinidad(ids){
@@ -4021,7 +4053,7 @@ async function cargarOfertas(ids){
     try{ await marcarDestinos(OFERTAS, todasSync); }catch(e){}
     try{ await cargarAfinidad(ids); }catch(e){}   // para la rotación: qué compra esta cartera
     try{ await cargarRanking(); }catch(e){}       // estrellas: las que mejor funcionaron históricamente (una vez por día)
-    try{ await cargarMotorOfertas(); if(MOTOR_OF.length) await marcarDestinos(MOTOR_OF, []); placasPrecargar(); }catch(e){}   // precios especiales del Motor
+    try{ await cargarMotorOfertas(); if(MOTOR_ALL.length) await marcarDestinos(MOTOR_ALL, []); placasPrecargar(); }catch(e){}   // precios especiales del Motor
     try{ await cargarEnviados(); }catch(e){}      // para no repetirle una oferta a la misma farmacia
     placasPrecargar();   // en segundo plano: para compartir la imagen en el mismo toque
 
@@ -4578,7 +4610,7 @@ async function registrarEnvio(id, tipo){
    Ctrl+V y se abre WhatsApp. Las ofertas sin placa siguen mandando el texto, como siempre. */
 const PLACA_FILE={};
 async function placasPrecargar(){
-  for(const o of OFERTAS.concat(MOTOR_OF)){
+  for(const o of OFERTAS.concat(MOTOR_OF, ofDestacadas())){
     if(!o.placa || PLACA_FILE[o.id]) continue;
     try{
       const b=await (await fetch(o.placa)).blob();
