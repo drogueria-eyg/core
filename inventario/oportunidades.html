@@ -275,6 +275,7 @@
 <script src="../assets/core.js?v=120"></script>
 <script src="../assets/inventario-oportunidades.js?v=20261020b"></script>
 <script src="../assets/ofertas-canal.js?v=20261014"></script>
+<script src="../assets/ofertas-rend.js?v=20261022"></script>
 <script>
 /* ============ EyG Core · Inventario · Oportunidades y Ofertas ============ */
 const LANG={context:{lang:"es_AR"}};
@@ -1003,29 +1004,37 @@ function pintarRotacionMedida(){
     '<div class="mb">'+cuerpo+'</div></div></div>';
 }
 
+/* 🎯 OFERTAS QUE SE COMPRAN (22/10/2026): TODAS las ofertas —Oportunidades, combos y la capa
+   temporal del Motor— con lo que se vendió de cada una mientras estuvo vigente. La cuenta vive
+   en assets/ofertas-rend.js (la misma que usa Inicio). Abajo, aparte, lo mandado por WhatsApp
+   y quién compró después (tabla eyg_ofertas_envios). */
+let RENDFuente="", RENDSoloVenta=true, RENDQ="";
 function kpiRendimiento(){
-  const n = REND ? (REND.vendidas+"/"+REND.enviadas) : (RENDError?"—":"…");
-  const sub= REND ? (REND.enviadas? (Math.round(100*REND.vendidas/REND.enviadas)+"% compró · "+money(REND.facturado))
-                                  : "todavía no se mandó ninguna")
-                  : (RENDError || "midiendo…");
-  return '<button class="kpi rend" onclick="abrirRendimiento()" title="Tocá para ver el detalle: qué se mandó, a quién llegó y quién compró.">'+
+  const M=REND&&REND.m;
+  const n = M ? money(M.tot.facturado) : (RENDError?"—":"…");
+  const sub= M ? (M.tot.conVenta+" de "+M.tot.ofertas+" ofertas vendieron · "+M.tot.clientes+" cliente"+(M.tot.clientes===1?"":"s")+" · "+RENDDias+" días")
+               : (RENDError || "midiendo…");
+  return '<button class="kpi rend" onclick="abrirRendimiento()" title="Lo que se vendió de todas las ofertas (Oportunidades, combos y capa del Motor) mientras estaban vigentes. Tocá para ver el detalle.">'+
     '<span class="l">🎯 Ofertas que se compran</span><div class="n">'+n+'</div><div class="s">'+esc(sub)+'</div></button>';
 }
-
 async function cargarRendimiento(dias){
   if(RENDCargando) return;
   RENDCargando=true; RENDError="";
   try{
-    const desde=new Date(Date.now()-(dias||RENDDias)*86400000).toISOString().slice(0,10);
-    const {data,error}=await EYG.supa().from("eyg_ofertas_envios")
-      .select("enviado_el,dia,partner_id,farmacia,producto_id,producto,precio,origen,comercial,estado")
-      .gte("dia",desde).order("enviado_el",{ascending:false}).limit(5000);
-    if(error) throw new Error(error.message);
-    REND=await cruzarConVentas(data||[],desde);
-    REND.desde=desde;
+    const d=dias||RENDDias, hasta=EYG.argToday();
+    const desde=new Date(new Date(hasta+"T12:00:00Z").getTime()-(d-1)*864e5).toISOString().slice(0,10);
+    const m=await EYGOfRend.medir({desde,hasta});
+    let env=null;
+    try{
+      const {data,error}=await EYG.supa().from("eyg_ofertas_envios")
+        .select("enviado_el,dia,partner_id,farmacia,producto_id,producto,precio,origen,comercial,estado")
+        .gte("dia",desde).order("enviado_el",{ascending:false}).limit(5000);
+      if(error) throw new Error(error.message);
+      env=await cruzarConVentas(data||[],desde);
+    }catch(e){ console.warn("envíos:",e); }
+    REND={m, env, desde, hasta};
   }catch(e){
-    RENDError="no se pudo leer el registro";
-    console.error("rendimiento de ofertas:",e);
+    RENDError="no se pudo medir"; console.error("rendimiento de ofertas:",e);
   }
   RENDCargando=false;
   render();
@@ -1088,58 +1097,87 @@ window.abrirRendimiento=()=>{ RENDAbierto=true; pintarRendimiento(); if(!REND&&!
 window.cerrarRendimiento=()=>{ RENDAbierto=false; cerrarModal(); };
 window.rendPeriodo=d=>{ RENDDias=+d; REND=null; pintarRendimiento(); cargarRendimiento(+d); };
 
+window.rendFiltro=(k,v)=>{ if(k==="f") RENDFuente=v; if(k==="v") RENDSoloVenta=!!v; if(k==="q") RENDQ=v||"";
+  const b=document.getElementById("rendLista"); if(b) b.innerHTML=rendListaHTML(); };
+const REND_CHIP={op:'<span class="chip c-teal">🏷️ Oportunidades</span>', panel:'<span class="chip c-teal">🏷️ Panel</span>',
+  combo:'<span class="chip c-oro">🎁 Combo</span>', capa:'<span class="chip c-gris">💵 Capa del Motor</span>'};
+function rendListaHTML(){
+  const M=REND.m, q=norm(RENDQ).trim();
+  const fs=M.ofertas.filter(f=>(!RENDFuente || (RENDFuente==="op"?(f.fuente==="op"||f.fuente==="panel"):f.fuente===RENDFuente))
+    && (!RENDSoloVenta || f.pedidos) && (!q || norm(f.titulo+" "+f.codigo).indexOf(q)>=0));
+  if(!fs.length) return '<div class="empty" style="padding:16px">'+(RENDSoloVenta?"Ninguna con este filtro vendió en el período.":"No hay ofertas con ese filtro.")+'</div>';
+  const MAX=300;
+  return '<table class="rend-tabla"><thead><tr><th>Oferta</th><th class="num">Días vigente</th><th class="num">Clientes</th><th class="num">Pedidos</th><th class="num">Unidades</th><th class="num">Facturado</th></tr></thead><tbody>'+
+    fs.slice(0,MAX).map(f=>'<tr class="'+(f.pedidos?"":"cero")+'">'+
+      '<td><b>'+esc(String(f.titulo).slice(0,70))+'</b>'+
+        '<div class="rend-quien">'+(REND_CHIP[f.fuente]||"")+(f.codigo?' <span class="chip c-gris">'+esc(f.codigo)+'</span>':"")+
+        ' '+esc(f.listas.join(" · "))+(f.vigenteHoy?"":" · ya no está vigente")+'</div>'+
+        (f.combos?'<div class="rend-quien"><b>'+f.combos+' combo'+(f.combos===1?"":"s")+' vendido'+(f.combos===1?"":"s")+'</b></div>':"")+
+        (f.quien.length?'<div class="rend-quien">Compraron: '+esc(f.quien.slice(0,6).join(" · "))+(f.quien.length>6?(" y "+(f.quien.length-6)+" más"):"")+'</div>':"")+'</td>'+
+      '<td class="num">'+(f.dias||"—")+'</td>'+
+      '<td class="num"><b>'+(f.clientes||"—")+'</b></td>'+
+      '<td class="num">'+(f.pedidos||"—")+'</td>'+
+      '<td class="num">'+(f.unidades?nfmt(Math.round(f.unidades)):"—")+'</td>'+
+      '<td class="num">'+(f.facturado?money(f.facturado):"—")+'</td></tr>').join("")+
+    '</tbody></table>'+(fs.length>MAX?'<div class="hint2">Se muestran las primeras '+MAX+' de '+fs.length+'. Usá el buscador.</div>':"");
+}
+function rendEnviosHTML(R){
+  if(!R) return '<div class="empty" style="padding:14px">No se pudo leer el registro de envíos.</div>';
+  if(!R.enviadas) return '<div class="empty" style="padding:14px">No se mandó ninguna oferta por WhatsApp en este período.</div>';
+  const sin=R.enviadas-(R.entregadas+R.rebotadas);
+  return '<div class="rend-res">'+
+    '<div class="rend-t"><div class="l">Enviadas</div><div class="n">'+R.enviadas+'</div><div class="s">a '+R.farmacias+' cliente'+(R.farmacias===1?"":"s")+'</div></div>'+
+    '<div class="rend-t"><div class="l">Llegaron</div><div class="n">'+((R.entregadas+R.rebotadas)?R.entregadas:"sin dato")+'</div><div class="s">'+
+      ((R.entregadas+R.rebotadas)?([R.rebotadas?(R.rebotadas+" rebotaron"):"", sin?(sin+" sin acuse"):""].filter(Boolean).join(" · ")||"todas con acuse"):"sin acuse de Meta")+'</div></div>'+
+    '<div class="rend-t"><div class="l">La abrieron</div><div class="n">'+(R.leidas||(R.entregadas?"0":"sin dato"))+'</div><div class="s">'+(R.entregadas?(Math.round(100*R.leidas/Math.max(R.entregadas,1))+'% de las que llegaron'):'')+'</div></div>'+
+    '<div class="rend-t"><div class="l">Compraron</div><div class="n">'+R.vendidas+'</div><div class="s">'+Math.round(100*R.vendidas/R.enviadas)+'% de las enviadas · '+Math.round(R.unidades)+' u.</div></div>'+
+    '<div class="rend-t"><div class="l">Facturado</div><div class="n">'+money(R.facturado)+'</div><div class="s">neto, sin IVA</div></div>'+
+  '</div>'+
+  '<table class="rend-tabla"><thead><tr><th>Oferta enviada</th><th class="num">Enviadas</th><th class="num">Compraron</th><th class="num">Facturado</th></tr></thead><tbody>'+
+  R.porOferta.map(g=>'<tr class="'+(g.ven?"":"cero")+'"><td><b>'+esc(String(g.producto).split("—")[0].trim().slice(0,60))+'</b>'+
+    (g.quien.length?('<div class="rend-quien">Compraron: '+esc(g.quien.slice(0,6).join(" · "))+(g.quien.length>6?(" y "+(g.quien.length-6)+" más"):"")+'</div>'):"")+'</td>'+
+    '<td class="num">'+g.env+'</td><td class="num"><b>'+g.ven+'</b> <span style="color:var(--gris2)">('+Math.round(100*g.ven/g.env)+'%)</span></td>'+
+    '<td class="num">'+(g.plata?money(g.plata):"—")+'</td></tr>').join("")+'</tbody></table>'+
+  '<div class="hint" style="margin-top:10px">Comprada = el cliente confirmó un pedido con ese producto después de recibirla (también si salió a una dirección de entrega suya).</div>';
+}
 function pintarRendimiento(){
   const R=REND;
-  const cuerpo = !R
-    ? '<div class="empty">'+(RENDError?("No se pudo leer el registro de envíos ("+esc(RENDError)+"). Probá recargar la pantalla."):"Midiendo qué se vendió de lo que mandamos…")+'</div>'
-    : !R.enviadas
-      ? '<div class="empty">No se mandó ninguna oferta en este período.</div>'
-      : (
-    '<div class="rend-res">'+
-      '<div class="rend-t"><div class="l">Enviadas</div><div class="n">'+R.enviadas+'</div>'+
-        '<div class="s">a '+R.farmacias+' farmacia'+(R.farmacias===1?"":"s")+'</div></div>'+
-      /* Sin acuse no se inventa un número: "enviada" no es "llegó", y un cero
-         ahí se leería como que no llegó ninguna. */
-      '<div class="rend-t"><div class="l">Llegaron</div><div class="n">'+((R.entregadas+R.rebotadas)?R.entregadas:"sin dato")+'</div>'+
-        '<div class="s">'+((R.entregadas+R.rebotadas)
-          ? (function(){
-              /* No decir "todas" si de algunas no tenemos el acuse: el envío
-                 queda registrado igual, pero Meta no siempre devuelve estado. */
-              const sin=R.enviadas-(R.entregadas+R.rebotadas), p=[];
-              if(R.rebotadas) p.push(R.rebotadas+" rebotaron: ese número no recibe WhatsApp");
-              if(sin) p.push(sin+" sin acuse registrado");
-              return p.length?p.join(" · "):"todas con acuse de WhatsApp";
-            })()
-          : "estos envíos quedaron registrados sin el acuse de Meta")+'</div></div>'+
-      /* La abrieron: es el dato que separa 'no les llegó' de 'no les
-         interesó'. Meta lo marca como 'read'. */
-      '<div class="rend-t"><div class="l">La abrieron</div><div class="n">'+(R.leidas||(R.entregadas?"0":"sin dato"))+'</div>'+
-        '<div class="s">'+(R.entregadas?(Math.round(100*R.leidas/Math.max(R.entregadas,1))+'% de las que llegaron'):'Meta avisa cuando la abren')+'</div></div>'+
-      '<div class="rend-t"><div class="l">Compraron</div><div class="n">'+R.vendidas+'</div>'+
-        '<div class="s">'+(R.enviadas?Math.round(100*R.vendidas/R.enviadas):0)+'% de las enviadas · '+Math.round(R.unidades)+' unidades</div></div>'+
-      '<div class="rend-t"><div class="l">Facturado</div><div class="n">'+money(R.facturado)+'</div>'+
-        '<div class="s">neto, sin IVA</div></div>'+
-    '</div>'+
-    '<table class="rend-tabla"><thead><tr><th>Oferta</th><th class="num">Enviadas</th><th class="num">Compraron</th><th class="num">Unidades</th><th class="num">Facturado</th></tr></thead><tbody>'+
-    R.porOferta.map(g=>
-      '<tr class="'+(g.ven?"":"cero")+'">'+
-      '<td><b>'+esc(String(g.producto).split("—")[0].trim().slice(0,56))+'</b>'+
-        '<div class="rend-bar"><i style="width:'+(g.env?Math.round(100*g.ven/g.env):0)+'%"></i></div>'+
-        (g.quien.length?('<div class="rend-quien">Compraron: '+esc(g.quien.slice(0,6).join(" · "))+(g.quien.length>6?(" y "+(g.quien.length-6)+" más"):"")+'</div>'):"")+
-        '<div class="rend-quien">'+(g.desde===g.hasta?("enviada el "+fmtF(g.desde)):("del "+fmtF(g.desde)+" al "+fmtF(g.hasta)))+'</div></td>'+
-      '<td class="num">'+g.env+'</td>'+
-      '<td class="num"><b>'+g.ven+'</b> <span style="color:var(--gris2)">('+(g.env?Math.round(100*g.ven/g.env):0)+'%)</span></td>'+
-      '<td class="num">'+(g.un?Math.round(g.un):"—")+'</td>'+
-      '<td class="num">'+(g.plata?money(g.plata):"—")+'</td></tr>').join("")+
-    '</tbody></table>'+
-    '<div class="hint" style="margin-top:12px">Cuenta como comprada cuando la farmacia confirmó un pedido con ese producto después de recibir la oferta. Un presupuesto no cuenta. Si el pedido salió a una dirección de entrega, igual se le imputa a la farmacia.</div>');
-
+  let cuerpo;
+  if(!R) cuerpo='<div class="empty">'+(RENDError?("No se pudo medir ("+esc(RENDError)+"). Probá recargar la pantalla."):"Midiendo lo que se vendió de cada oferta…")+'</div>';
+  else {
+    const M=R.m, T=M.tot, F=M.porFuente;
+    const tF=(k,ic,nom)=>{ const x=F[k]; return '<div class="rend-t" onclick="rendFiltro(\'f\',RENDFuente===\''+k+'\'?\'\':\''+k+'\');pintarRendimiento()" style="cursor:pointer'+(RENDFuente===k?";border-color:var(--teal);box-shadow:0 0 0 2px var(--agua)":"")+'" title="Tocá para ver sólo éstas">'+
+      '<div class="l">'+ic+' '+nom+'</div><div class="n">'+money(x?x.facturado:0)+'</div>'+
+      '<div class="s">'+(x?(x.conVenta+" de "+x.n+" vendieron · "+x.clientes+" cliente"+(x.clientes===1?"":"s")):"ninguna en el período")+'</div></div>'; };
+    cuerpo=
+      '<div class="rend-res">'+
+        '<div class="rend-t"><div class="l">Facturado en ofertas</div><div class="n">'+money(T.facturado)+'</div><div class="s">neto, sin IVA</div></div>'+
+        '<div class="rend-t"><div class="l">Clientes que compraron</div><div class="n">'+T.clientes+'</div><div class="s">distintos</div></div>'+
+        '<div class="rend-t"><div class="l">Pedidos</div><div class="n">'+T.pedidos+'</div><div class="s">'+nfmt(Math.round(T.unidades))+' unidades</div></div>'+
+        '<div class="rend-t"><div class="l">Ofertas que vendieron</div><div class="n">'+T.conVenta+'<span style="font-size:15px;color:var(--gris2)"> / '+T.ofertas+'</span></div><div class="s">'+(T.ofertas?Math.round(100*T.conVenta/T.ofertas):0)+'% de las vigentes</div></div>'+
+        '<div class="rend-t"><div class="l">Combos vendidos</div><div class="n">'+T.combos+'</div><div class="s">cargados como combo</div></div>'+
+      '</div>'+
+      '<div class="rend-res" style="grid-template-columns:repeat(3,minmax(0,1fr))">'+tF("op","🏷️","Oportunidades")+tF("combo","🎁","Combos")+tF("capa","💵","Capa del Motor")+'</div>'+
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:4px 0 10px">'+
+        '<input type="search" placeholder="Buscar una oferta…" value="'+esc(RENDQ)+'" oninput="rendFiltro(\'q\',this.value)" style="flex:1;min-width:200px;font-size:13px;padding:7px 10px;border-radius:8px;border:1px solid var(--line);font-family:inherit">'+
+        '<label style="font-size:12.5px;display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" '+(RENDSoloVenta?"checked":"")+' onchange="rendFiltro(\'v\',this.checked)"> sólo las que vendieron</label>'+
+        (RENDFuente?'<button class="btn ghost sm" onclick="rendFiltro(\'f\',\'\');pintarRendimiento()">Ver todas las fuentes</button>':"")+
+      '</div>'+
+      '<div id="rendLista">'+rendListaHTML()+'</div>'+
+      '<div class="hint" style="margin-top:12px">Cuenta lo vendido en <b>pedidos confirmados</b> (un presupuesto no cuenta), neto sin IVA. '+
+        '<b>Oferta de un producto</b>: el renglón de ese producto en un pedido del día en que la oferta estaba vigente y con la lista de precios donde rige (la capa de la lista 1 sólo cuenta en Farmacias). Si el producto está en Oportunidades y en la capa a la vez, se le anota a Oportunidades, que es la que manda en el precio. '+
+        '<b>Combo</b>: cada combo cargado en Cargar venta; sus productos no se cuentan sueltos.</div>'+
+      (M.inicio>R.desde?'<div class="hint" style="margin-top:6px">⚠️ '+esc(M.nota)+'</div>':"")+
+      '<h4 style="margin:22px 0 4px">📤 Enviadas por WhatsApp</h4>'+
+      '<div class="hint2" style="margin:0 0 10px">De las ofertas que se mandaron (bot, campañas y comerciales desde su panel), cuántos clientes compraron después.</div>'+
+      rendEnviosHTML(R.env);
+  }
   document.getElementById("modal").innerHTML=
-    '<div class="scrim" onclick="if(event.target===this)cerrarRendimiento()"><div class="modal" style="max-width:1000px">'+
+    '<div class="scrim" onclick="if(event.target===this)cerrarRendimiento()"><div class="modal" style="max-width:1080px">'+
     '<div class="mh"><h3>🎯 Ofertas que se compran</h3>'+
       '<span style="margin-left:auto;display:flex;gap:8px;align-items:center">'+
       '<select onchange="rendPeriodo(this.value)" style="font-size:12px;padding:5px 8px;border-radius:8px;border:1px solid var(--line);font-family:inherit">'+
-      [[7,"últimos 7 días"],[30,"últimos 30 días"],[90,"últimos 90 días"],[365,"último año"]]
+      [[1,"hoy"],[7,"últimos 7 días"],[30,"últimos 30 días"],[90,"últimos 90 días"],[365,"último año"]]
         .map(x=>'<option value="'+x[0]+'"'+(RENDDias===x[0]?" selected":"")+'>'+x[1]+'</option>').join("")+
       '</select>'+
       '<button class="btn ghost sm" onclick="cerrarRendimiento()">Cerrar</button></span></div>'+
