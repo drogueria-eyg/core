@@ -937,13 +937,21 @@ window.EYG = (function(){
       return m;
     }catch(e){ return null; }
   }
-  /* Agotada = algun producto de la oferta sin stock (un combo no se entrega si le falta una parte). */
+  /* Agotada = algun producto de la oferta sin stock (un combo no se entrega si le falta una parte).
+     COMBOS-RECETA (24/10/2026): sus productos van en "lineas" (items vacío a propósito), y antes
+     nunca daban agotados. Ahora: agotado si a algún renglón no le alcanza el stock para UN combo
+     (stock < cantidad del renglón). Para eso el mapa de stock tiene que traer esas variantes:
+     armarlo con ofPids(lista). */
   function ofAgotada(o,map){
     if(!map) return false;
     const its=((o&&o.items)||[]).filter(i=>i&&i.id);
-    if(!its.length) return false;
-    return its.some(i=>(map[i.id]||0)<=0);
+    const lin=((o&&o.lineas)||[]).filter(l=>l&&l.id);
+    if(!its.length && !lin.length) return false;
+    if(its.some(i=>(map[i.id]||0)<=0)) return true;
+    return lin.some(l=>(map[l.id]||0) < (+l.qty||1));
   }
+  // todas las variantes de una lista de ofertas: productos sueltos y renglones de los combos
+  function ofPids(lista){ return (lista||[]).flatMap(o=>[].concat(((o&&o.items)||[]).map(i=>i&&i.id), ((o&&o.lineas)||[]).map(l=>l&&l.id))).filter(Boolean); }
 
   /* ---- Tarjeta "Combos y ofertas de la semana" (compartida: panel comercial + lider) ----
      Lee las ofertas activas del parametro eyg.ofertas (las carga el modulo Oportunidades). */
@@ -977,7 +985,7 @@ window.EYG = (function(){
     const hoy = new Date().toISOString().slice(0,10);
     let act = ofertas.filter(o=>o && o.id && !o.pausada && (!o.hasta || o.hasta>=hoy));
     // sin stock = no se ofrece: la oferta se apaga sola (queda gris en Oportunidades y Ofertas)
-    const sm = await ofStockMap(act.flatMap(o=>((o.items)||[]).map(i=>i&&i.id)));
+    const sm = await ofStockMap(ofPids(act));
     if(sm) act = act.filter(o=>!ofAgotada(o,sm));
     if(!act.length){ el.innerHTML=""; return; }
     // Rendimiento GLOBAL por oferta (todos los comerciales), igual criterio que el panel del comercial.
@@ -2657,7 +2665,7 @@ window.EYG = (function(){
     return m>0 && Math.abs(m-c)<0.01;
   }
 
-  return { supa, rpc, rpcExacto, rpcHead, rpcReintentable, recalcularPreciosTodo, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, r2, money, totalesOdoo, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
+  return { supa, rpc, rpcExacto, rpcHead, rpcReintentable, recalcularPreciosTodo, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, r2, money, totalesOdoo, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, ofPids, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde, minimoDeVenta, semanasDelMes, semanasDetalle, perfilDe, paqueteRige, reglasDe, moraIndice, moraResta,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,

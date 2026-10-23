@@ -2022,7 +2022,7 @@ window.EYGHome = (function(){
     let act=(ofertas||[]).filter(o=>!o.pausada && (!o.hasta||o.hasta>=HOY));
     // las agotadas (sin stock) se apagaron solas del panel: no cuentan como vigentes, avisan aparte
     let agot=[];
-    try{ const sm=await EYG.ofStockMap(act.flatMap(o=>(o.items||[]).map(i=>i&&i.id)));
+    try{ const sm=await EYG.ofStockMap(EYG.ofPids(act));
       if(sm){ agot=act.filter(o=>EYG.ofAgotada(o,sm)); act=act.filter(o=>!EYG.ofAgotada(o,sm)); } }catch(e){}
 
     const it=[];
