@@ -3520,10 +3520,14 @@ function ofMatch(o,q){ const h=ofNorm([o.titulo, ofItems(o), (o.lineas||[]).map(
   return ofNorm(q).split(/\s+/).filter(Boolean).every(w=>h.includes(w)); }
 async function cargarMotorOfertas(){
   MOTOR_OF=[]; MOTOR_ALL=[];
-  // TODAS las líneas de producto activas de la capa (sin filtrar stock ni costo): una vez por día, para todas
-  const base=await EYG.cacheOdoo("of-motor3-"+hoyStr, 86400, async ()=>{
-    const flat=String(await rpc("ir.config_parameter","get_param",["eyg.precios_fijos_flat"])||"").split("\n").filter(Boolean).map(l=>l.split("~"));
-    const act=flat.filter(x=>/^\d+$/.test(x[0]) && x[7]!=="1" && !(x[6]&&x[6]<hoyStr));
+  // TODAS las líneas de producto activas de la capa (sin filtrar stock ni costo), en un caché compartido.
+  /* LA CLAVE DEL CACHÉ LLEVA QUÉ LÍNEAS ESTÁN ACTIVAS (24/10/2026): antes era una por día, y si se
+     armaba con una línea pausada (a mano o por el control de placas), esa línea no volvía a aparecer
+     hasta el día siguiente aunque se reactivara. Ahora pausar o reactivar cambia la clave y se rehace. */
+  const flat=String(await rpc("ir.config_parameter","get_param",["eyg.precios_fijos_flat"])||"").split("\n").filter(Boolean).map(l=>l.split("~"));
+  const act=flat.filter(x=>/^\d+$/.test(x[0]) && x[7]!=="1" && !(x[6]&&x[6]<hoyStr));
+  let firmaAct=0; for(const ch of act.map(x=>x[0]).sort().join(",")) firmaAct=(firmaAct*31+ch.charCodeAt(0))>>>0;   // huella corta de qué está activo
+  const base=await EYG.cacheOdoo("of-motor4-"+hoyStr+"-"+firmaAct, 86400, async ()=>{
     const tm=[...new Set(act.map(x=>+x[0]))]; if(!tm.length) return [];
     const linea={}; act.forEach(x=>linea[+x[0]]=x);
     const [tps,its,vars]=await Promise.all([
