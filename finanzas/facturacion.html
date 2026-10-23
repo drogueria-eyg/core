@@ -32,6 +32,11 @@
 
   .wip{background:#FBF3D9;border:1px solid #EAD9A0;color:#8A6D1A;border-radius:10px;padding:10px 14px;font-size:12.5px;line-height:1.55;margin-bottom:16px;display:flex;gap:9px;align-items:flex-start}
   .wip b{color:#6B5410}
+  /* Cartel de la foto local: mismo vocabulario que el aviso del remito (teal y
+     filete a la izquierda), no un elemento nuevo. */
+  .refresco{background:#E9F3F1;border:1px solid #048782;border-left:5px solid #048782;color:#0E1F1D;border-radius:10px;padding:9px 14px;font-size:12.5px;line-height:1.5;margin-bottom:12px;display:flex;gap:9px;align-items:flex-start}
+  .refresco.malo{background:#FDECEC;border-color:#C0392B;border-left-color:#C0392B;color:#7B241C}
+  .refresco a{color:#048782;font-weight:600;text-decoration:underline}
 
   .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;border-bottom:1px solid var(--line)}
   .tab{font-family:inherit;font-size:13.5px;font-weight:700;color:var(--gris);background:none;border:0;border-bottom:2.5px solid transparent;padding:9px 13px 11px;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap}
@@ -285,7 +290,7 @@ let PEND=[];           // lo mismo, MENOS lo archivado: es lo que ve toda la pan
 let ARCH={};           // pedido_id -> fila de facturacion_archivado
 let ARCHIVADOS=[];     // los pedidos apartados, para su pestaña
 let AVISOS={};         // res_id -> [notas de las comerciales]
-let EMITIDO=[];        // facturas y notas de crédito del mes
+let EMITIDO=null;      // filas del mes: null = todavía no se bajaron (ver cargarEmitido)
 let PORDIA=[];         // facturado por día del mes
 let ATRAS=null;        // backlog viejo (se carga recién al abrir la pestaña)
 let KPI={};
@@ -331,8 +336,13 @@ const limpiar=h=>String(h||"").replace(/<br\s*\/?>/gi,"\n").replace(/<\/p>/gi,"\
 function toast(msg){let t=document.getElementById("toast");if(!t){t=document.createElement("div");t.id="toast";t.className="toast";document.body.appendChild(t);}t.textContent=msg;t.classList.add("on");clearTimeout(toast._t);toast._t=setTimeout(()=>t.classList.remove("on"),3400);}
 
 /* ══════════════ CARGA ══════════════ */
+/* Sin "invoice_count": no se usaba en ninguna parte y es el ÚNICO campo no
+   almacenado de la lista — Odoo lo calcula fila por fila recorriendo renglones →
+   facturas. Medido el 23/10/2026: pedirlo costaba 280 ms de los 1.228 de esta
+   consulta. Si alguna vez hace falta saber si el pedido tiene factura, está
+   "invoice_status" (almacenado) y la pestaña Emitido con su "invoice_origin". */
 const PF=["name","date_order","partner_id","user_id","amount_total","amount_untaxed",
-          "amount_to_invoice","type_id","state","invoice_status","delivery_status","invoice_count","client_order_ref",
+          "amount_to_invoice","type_id","state","invoice_status","delivery_status","client_order_ref",
           "margin","margin_percent"];
 const MF=["name","invoice_date","partner_id","amount_total","amount_untaxed","state","move_type","journal_id","invoice_origin","invoice_user_id","access_token"];
 
@@ -428,7 +438,7 @@ async function emisorRemito(){
    solo: puede estar a mitad de una edición de renglones.
 
    ⚠️ Al publicar un cambio de este módulo, subir MODULO_VER. */
-/*VER*/const MODULO_VER="2026-10-05-r8";
+/*VER*/const MODULO_VER="2026-10-23-r9";
 let _verNueva=false;
 
 async function mirarVersion(){
@@ -660,31 +670,170 @@ function domAtrasados(){
           ["date_order","<",hace(DIAS_DEMORA)+" 00:00:00"]];
 }
 
+/* Comprobantes del mes. El talonario de Redondeo queda afuera por EYG.VENTA_REAL
+   (lo usa Fede para acomodar clientes y no es una venta). */
+function domMes(){
+  const iniMes=EYG.argToday().slice(0,8)+"01";
+  return [["move_type","in",["out_invoice","out_refund"]],["invoice_date",">=",iniMes],EYG.VENTA_REAL];
+}
+/* El mes POR DÍA, con read_group. El panel y Mi día sólo necesitan los totales:
+   bajar las 1.166 filas del mes costaba 1,2 s y 423 kB, y el resumen cuesta
+   0,73 s y 6 kB. Cotejado el 23/10/2026 contra el cálculo fila por fila:
+   idéntico día por día y al centavo (neto del mes $272.405.101,60, 1.128
+   facturas, 37 notas de crédito). Las filas una por una se bajan recién al abrir
+   la pestaña Emitido, que es la única que las muestra. */
+function pedirResumenMes(){
+  return EYG.rpc("account.move","read_group",
+    [domMes().concat([["state","=","posted"]]),["amount_untaxed:sum","amount_total:sum"],["invoice_date:day","move_type"]],
+    {lazy:false,context:{lang:"es_AR"}});
+}
+function pedirBorradores(){
+  return EYG.rpc("account.move","search_count",[[["move_type","in",["out_invoice","out_refund"]],["state","=","draft"]]]);
+}
+
+/* ══════════════ FOTO LOCAL ══════════════
+   Aun con una sola ola, la primera pantalla tarda lo que tarde Odoo (~1,3 s) y
+   hasta entonces no hay nada que mirar. Así que al terminar cada carga se guarda
+   una FOTO de lo que quedó en pantalla en el navegador de Vanesa (localStorage:
+   nunca sale de su máquina, no va a Supabase ni a Odoo) y al entrar se dibuja en
+   el acto, con un cartel que avisa que es lo último visto y que se está
+   actualizando. Cuando llega Odoo, se reemplaza sola.
+
+   Por qué es seguro: la foto es para MIRAR. Las tres acciones que escriben
+   vuelven a leer Odoo antes de tocar nada —facturar relee el pedido y se niega
+   si ya está facturado (ver ejecutar()), ajustar a lo entregado relee los
+   renglones, y el detalle se baja al abrirlo—, así que una foto vencida no puede
+   hacer que se emita algo de más. Igual la foto se tira si tiene más de
+   FOTO_HORAS, si es de otra persona o si el módulo cambió de versión. */
+const FOTO_CLAVE="eyg.facturacion.foto", FOTO_HORAS=14;
+let FRESCO=false;        // lo que se ve vino de Odoo en esta visita
+let FALLO="";            // último error de actualización, con la foto en pantalla
+let FOTO_PINTADA=false, FOTO_TS="";
+const quienSoy=()=>(PERFIL&&(PERFIL.email||PERFIL.nombre))||"";
+
+function guardarFoto(){
+  try{
+    localStorage.setItem(FOTO_CLAVE, JSON.stringify({
+      ver:MODULO_VER, ts:new Date().toISOString(), quien:quienSoy(),
+      fuente:FUENTE, pordia:PORDIA, avisos:AVISOS, cortos:CORTOS, arch:ARCH,
+      kpi:{viejos:KPI.viejos, draftInv:KPI.draftInv}
+    }));
+  }catch(e){ /* sin lugar en el navegador: se dibuja cuando llegue Odoo, nada más */ }
+}
+function pintarFoto(){
+  try{
+    const f=JSON.parse(localStorage.getItem(FOTO_CLAVE)||"null");
+    if(!f || f.ver!==MODULO_VER || !Array.isArray(f.fuente) || !f.fuente.length) return false;
+    if(f.quien && quienSoy() && f.quien!==quienSoy()) return false;
+    if(!f.ts || !(Date.now()-new Date(f.ts).getTime() < FOTO_HORAS*36e5)) return false;
+    FUENTE=f.fuente; PORDIA=f.pordia||[]; AVISOS=f.avisos||{}; CORTOS=f.cortos||{}; ARCH=f.arch||{};
+    KPI.viejos=(f.kpi||{}).viejos; KPI.draftInv=(f.kpi||{}).draftInv;
+    FOTO_TS=f.ts; FOTO_PINTADA=true;
+    reagrupar();
+    calcularKpis();
+    render();
+    return true;
+  }catch(e){ return false; }
+}
+function haceTexto(iso){
+  const ms=Date.now()-new Date(iso).getTime();
+  if(!isFinite(ms)||ms<0) return "";
+  const m=Math.round(ms/60000);
+  if(m<1) return "hace instantes";
+  if(m<60) return "hace "+m+(m===1?" minuto":" minutos");
+  const h=Math.round(m/60);
+  if(h<24) return "hace "+h+(h===1?" hora":" horas");
+  const d=Math.round(h/24);
+  return "hace "+d+(d===1?" día":" días");
+}
+/* Sólo se ve mientras lo de la pantalla es la foto: cuando llega Odoo desaparece. */
+function cartelFoto(){
+  if(!FOTO_PINTADA || (FRESCO && !FALLO)) return "";
+  const cuando=FOTO_TS?haceTexto(FOTO_TS):"";
+  if(FALLO) return '<div class="refresco malo">⚠️ <div><b>No pude actualizar con Odoo.</b> Esto es lo último que viste'+
+    (cuando?" ("+esc(cuando)+")":"")+', puede estar vencido — no factures sin actualizar. '+esc(FALLO)+
+    ' <a href="#" onclick="reintentar();return false">Reintentar</a></div></div>';
+  return '<div class="refresco">⏳ <div>Esto es <b>lo último que viste</b>'+(cuando?" ("+esc(cuando)+")":"")+
+    '. Estoy trayendo los datos de Odoo…</div></div>';
+}
+function reintentar(){ FALLO=""; render(); cargar(); }
+
+/* ══════════════ UNA SOLA OLA ══════════════
+   Medido el 23/10/2026 (ver [[eyg-core-velocidad-conector]]): cada viaje al
+   conector cuesta ~0,8 s pase lo que pase, y esta carga hacía CINCO viajes
+   ENCADENADOS —pedidos, archivados, avisos, notas del Core, cortos—: casi 4 s
+   mirando "Cargando facturación…". Seis consultas EN PARALELO cuestan lo mismo
+   que cuatro (1,3 s), así que ahora va TODO en una sola tanda.
+   Para poder juntarlas hubo que sacarle a dos la dependencia del paso anterior:
+     · los CORTOS se piden por "order_id.…" (dominio con punto) en vez de por la
+       lista de ids — cotejado: exactamente los mismos renglones;
+     · los AVISOS se piden por ventana de fecha y se filtran acá.
+
+   Y son CUATRO consultas de Odoo, no seis: el conector abre 4 turnos contra Odoo
+   ([[eyg-odoo-max-workers]]) y con 6 en la misma ola dos hacen cola. Medido el
+   23/10/2026, cinco vueltas: ola de 4 = 0,98 a 1,15 s, estable; con las seis
+   adentro apareció una vuelta de 3,4 s esperando turno. Los dos contadores que
+   sobraban sólo pintan una pastilla y se fueron a contadores(), atrás.
+   Las dos consultas de Supabase (archivados y notas del Core) sí entran en la
+   ola: no pasan por Odoo y no gastan turno. */
 async function cargar(){
   const app=document.getElementById("app");
   try{
-    const hoy=EYG.argToday(), iniMes=hoy.slice(0,8)+"01";
-    const [pend, viejos, emit, draftInv] = await Promise.all([
+    const hoy=EYG.argToday();
+    const [pend, resumen, msgs, lineas, arch, notas] = await Promise.all([
       EYG.rpc("sale.order","search_read",[domTrabajo()],
         {fields:PF,context:{lang:"es_AR"},limit:0,order:"date_order desc"}),
-      EYG.rpc("sale.order","search_count",[domAtrasados()]),
-      EYG.rpc("account.move","search_read",[[["move_type","in",["out_invoice","out_refund"]],["invoice_date",">=",iniMes],EYG.VENTA_REAL]],
-        {fields:MF,context:{lang:"es_AR"},limit:0,order:"invoice_date desc, id desc"}),
-      EYG.rpc("account.move","search_count",[[["move_type","in",["out_invoice","out_refund"]],["state","=","draft"]]])
+      pedirResumenMes(),
+      pedirAvisosOdoo(),
+      pedirLineasCortas().catch(e=>{ console.warn("No pude mirar lo entregado",e); return []; }),
+      pedirArchivados(),
+      pedirNotasCore()
     ]);
 
-    FUENTE=pend; EMITIDO=emit;
-    KPI.viejos=viejos; KPI.draftInv=draftInv;
-    await cargarArchivados();
+    FUENTE=pend;
+    ponerArchivados(arch);
     reagrupar();
-    await cargarAvisos();
-    await cargarCortos();
-    recalcularDias();
+    ponerAvisos(msgs, notas);
+    ponerCortos(lineas);
+    diasDeResumen(resumen);
     calcularKpis(hoy);
+    FRESCO=true; FALLO="";
     render();
+    guardarFoto();
+    contadores();          // los dos números de pastilla, sin hacer esperar a nadie
   }catch(e){
+    /* Si ya hay una foto en pantalla no la borro: queda lo último que vio, con el
+       cartel diciendo que no se pudo actualizar y por qué. */
+    if(FOTO_PINTADA){ FALLO=e.message||String(e); render(); return; }
     app.innerHTML='<div class="errbox"><b>No pude cargar la facturación.</b><br>'+esc(e.message||e)+'</div>';
   }
+}
+
+/* Atrasados y facturas en borrador: dos números que sólo pintan una pastilla en
+   su pestaña. Van DESPUÉS de dibujar, en su propia tanda, para no gastar dos de
+   los cuatro turnos de la ola principal. Si fallan, la pastilla se queda con el
+   número de la foto o sin número: no es información con la que se decida nada. */
+async function contadores(){
+  try{
+    const [viejos,draftInv]=await Promise.all([
+      EYG.rpc("sale.order","search_count",[domAtrasados()]),
+      pedirBorradores()
+    ]);
+    KPI.viejos=viejos; KPI.draftInv=draftInv;
+    render();
+    guardarFoto();
+  }catch(e){ console.warn("No pude contar atrasados/borradores",e); }
+}
+
+/* Las filas del mes, una por una: sólo las usa la pestaña Emitido, así que se
+   bajan recién cuando se abre (igual que el backlog de Atrasados). */
+async function cargarEmitido(){
+  EMITIDO="cargando"; render();
+  try{
+    EMITIDO=await EYG.rpc("account.move","search_read",[domMes()],
+      {fields:MF,context:{lang:"es_AR"},limit:0,order:"invoice_date desc, id desc"});
+  }catch(e){ EMITIDO={error:e.message||String(e)}; }
+  render();
 }
 
 /* ══════════════ ENTREGADO DE MENOS ══════════════
@@ -703,24 +852,37 @@ async function cargar(){
    corregir el borrador, no emitir una nota de crédito después. */
 let CORTOS={};   // id de pedido -> {lineas, unidades, monto}
 
-async function cargarCortos(){
+/* Las líneas se piden por el PEDIDO (dominio con punto), no por la lista de ids:
+   así no hay que esperar a que lleguen los pedidos y la consulta entra en la
+   misma ola. Verificado el 23/10/2026: devuelve exactamente los mismos 183
+   renglones que pidiéndolas por ids. Los tres campos del punto están almacenados
+   en sale.order (state, invoice_status, date_order), que es lo que hace que el
+   filtro funcione de verdad — ver [[odoo-order-campos-no-almacenados]]. */
+function pedirLineasCortas(){
+  return EYG.rpc("sale.order.line","search_read",
+    [[["order_id.state","in",["sale","done"]],["order_id.invoice_status","in",A_FACTURAR],
+      ["order_id.date_order",">=",hace(DIAS_DEMORA)+" 00:00:00"],["display_type","=",false]]],
+    {fields:["order_id","product_uom_qty","qty_delivered","price_unit","discount","product_id"],
+     context:{lang:"es_AR"},limit:0});
+}
+function ponerCortos(lins){
   CORTOS={};
-  const ids=PEND.filter(porFacturar).map(o=>o.id);
-  if(!ids.length) return;
-  try{
-    const lins=await EYG.rpc("sale.order.line","search_read",
-      [[["order_id","in",ids],["display_type","=",false]]],
-      {fields:["order_id","product_uom_qty","qty_delivered","price_unit","discount","product_id"],context:{lang:"es_AR"},limit:0});
-    lins.forEach(l=>{
-      const falta=(l.product_uom_qty||0)-(l.qty_delivered||0);
-      if(falta<=0.001) return;
-      const k=l.order_id[0];
-      const c=CORTOS[k]=CORTOS[k]||{lineas:0,unidades:0,monto:0,detalle:[]};
-      c.lineas++; c.unidades+=falta;
-      c.monto+=falta*(l.price_unit||0)*(1-(l.discount||0)/100);
-      c.detalle.push({prod:l.product_id?l.product_id[1]:"—", pedido:l.product_uom_qty, entregado:l.qty_delivered, falta});
-    });
-  }catch(e){ console.warn("No pude mirar lo entregado",e); }
+  const falta=new Set(PEND.filter(porFacturar).map(o=>o.id));
+  (lins||[]).forEach(l=>{
+    const k=l.order_id&&l.order_id[0];
+    if(!falta.has(k)) return;              // sólo los pedidos de la cola de esta pantalla
+    const corta=(l.product_uom_qty||0)-(l.qty_delivered||0);
+    if(corta<=0.001) return;
+    const c=CORTOS[k]=CORTOS[k]||{lineas:0,unidades:0,monto:0,detalle:[]};
+    c.lineas++; c.unidades+=corta;
+    c.monto+=corta*(l.price_unit||0)*(1-(l.discount||0)/100);
+    c.detalle.push({prod:l.product_id?l.product_id[1]:"—", pedido:l.product_uom_qty, entregado:l.qty_delivered, falta:corta});
+  });
+}
+/* Para después de ajustar un pedido a lo entregado: un viaje y vuelve a armar. */
+async function cargarCortos(){
+  try{ ponerCortos(await pedirLineasCortas()); }
+  catch(e){ console.warn("No pude mirar lo entregado",e); }
 }
 const corto=o=>CORTOS[o.id]||null;
 
@@ -771,13 +933,16 @@ async function ajustarAEntregado(oid){
    apartado vive en Supabase, así que es reversible y no ensucia la contabilidad.
    Al archivar salen de PEND, y con eso desaparecen solos de la cola, de los avisos,
    de las tarjetas de Mi día y de Atrasados: todo el módulo mira PEND. */
-async function cargarArchivados(){
-  ARCH={};
+async function pedirArchivados(){
   try{
     const {data,error}=await EYG.supa().from("facturacion_archivado").select("*").limit(1000);
     if(error) throw error;
-    (data||[]).forEach(r=>{ ARCH[r.pedido_id]=r; });
-  }catch(e){ /* si no se puede leer, no se archiva nada: la cola queda como antes */ }
+    return data||[];
+  }catch(e){ return []; }   /* si no se puede leer, no se archiva nada: la cola queda como antes */
+}
+function ponerArchivados(filas){
+  ARCH={};
+  (filas||[]).forEach(r=>{ ARCH[r.pedido_id]=r; });
 }
 function reagrupar(){
   PEND=FUENTE.filter(o=>!ARCH[o.id]);
@@ -859,14 +1024,26 @@ function vistaArchivados(){
    Una nota se considera "resuelta" sola cuando el pedido se factura: por eso
    sólo se leen las de los pedidos de esta lista, y desaparecen sin que nadie
    tenga que marcarlas como leídas. */
-async function cargarAvisos(){
-  AVISOS={};
-  const ids=PEND.map(o=>o.id);
-  if(!ids.length) return;
-  const msgs=await EYG.rpc("mail.message","search_read",
-    [[["model","=","sale.order"],["res_id","in",ids],["message_type","=","comment"]]],
+/* Los mensajes se piden por VENTANA DE FECHA, no por la lista de ids: así no hay
+   que esperar a que lleguen los pedidos y la consulta entra en la misma ola. La
+   ventana es DIAS_DEMORA + 15 días de colchón, y alcanza porque un pedido de la
+   ventana no puede tener notas más viejas que el pedido mismo. Medido el
+   23/10/2026: por fecha 1,03 s y 129 kB (634 mensajes, de los que quedan los 24
+   de esta cola) contra 0,71 s pidiéndolos por ids — pero pedirlos por ids
+   costaba una ola entera de 0,8 s, así que por fecha sale más barato.
+   Esta consulta NO se silencia a propósito: si falla, la carga falla. De los
+   avisos sale el semáforo rojo de "pidió frenar", y es mejor no mostrar nada que
+   mostrar la cola sin los frenos. */
+function pedirAvisosOdoo(){
+  return EYG.rpc("mail.message","search_read",
+    [[["model","=","sale.order"],["message_type","=","comment"],["date",">=",hace(DIAS_DEMORA+15)+" 00:00:00"]]],
     {fields:["res_id","date","body","author_id"],limit:0,order:"date desc"});
-  msgs.forEach(m=>{
+}
+function ponerAvisos(msgs, notas){
+  AVISOS={};
+  const enLista=new Set(PEND.map(o=>o.id));
+  (msgs||[]).forEach(m=>{
+    if(!enLista.has(m.res_id)) return;
     const txt=limpiar(m.body);
     if(!txt) return;
     (AVISOS[m.res_id]=AVISOS[m.res_id]||[]).push({
@@ -874,7 +1051,7 @@ async function cargarAvisos(){
       oc:RE_OC.test(txt), freno:RE_FRENO.test(txt)
     });
   });
-  await cargarNotasCore(ids);
+  ponerNotasCore(notas, enLista);
 }
 
 /* Las notas que las comerciales dejan desde el Core ("Para facturación", el 🧾 del
@@ -883,22 +1060,24 @@ async function cargarAvisos(){
    siguen leyendo: están las históricas y alguna las escribe allá todavía.
    No se filtra por pedido en la consulta: son pocas y así se detecta la que quedó
    colgada de un pedido que no está en esta lista. */
-async function cargarNotasCore(ids){
-  const enLista=new Set(ids);
+async function pedirNotasCore(){
   try{
     const {data,error}=await EYG.supa().from("comercial_nota")
       .select("id,texto,creada_ts,comercial,pedido_id,pedido_nombre")
       .eq("tipo","facturacion").eq("estado","abierta").limit(1000);
     if(error) throw error;
-    (data||[]).forEach(n=>{
-      const txt=String(n.texto||"").trim();
-      if(!txt || !n.pedido_id || !enLista.has(n.pedido_id)) return;
-      (AVISOS[n.pedido_id]=AVISOS[n.pedido_id]||[]).unshift({
-        id:"core-"+n.id, notaId:n.id, core:true, txt, fecha:fechaAR(n.creada_ts),
-        autor:n.comercial||"—", oc:RE_OC.test(txt), freno:RE_FRENO.test(txt)
-      });
+    return data||[];
+  }catch(e){ return []; }   /* si Supabase no contesta, quedan las de Odoo: la cola no se cae */
+}
+function ponerNotasCore(notas, enLista){
+  (notas||[]).forEach(n=>{
+    const txt=String(n.texto||"").trim();
+    if(!txt || !n.pedido_id || !enLista.has(n.pedido_id)) return;
+    (AVISOS[n.pedido_id]=AVISOS[n.pedido_id]||[]).unshift({
+      id:"core-"+n.id, notaId:n.id, core:true, txt, fecha:fechaAR(n.creada_ts),
+      autor:n.comercial||"—", oc:RE_OC.test(txt), freno:RE_FRENO.test(txt)
     });
-  }catch(e){ /* si Supabase no contesta, quedan las notas de Odoo: la cola no se cae */ }
+  });
 }
 
 /* Cerrar una nota del Core la saca de la pantalla de Vanesa Y le avisa a la comercial
@@ -939,13 +1118,20 @@ async function notaListo(pedidoId, notaId){
 /* Facturado por día del mes: se arma sumando los comprobantes emitidos, no con
    un read_group, porque el groupby por día devuelve la fecha ya formateada
    según el idioma y no se puede ordenar de forma confiable. */
-function recalcularDias(){
+/* Arma PORDIA con lo que devuelve pedirResumenMes(). Odoo agrupa por día y por
+   tipo de comprobante, y en cada grupo manda __count y las sumas; la fecha ISO
+   del grupo sale de __range (el título del grupo viene en castellano,
+   "01 oct. 2026", y no sirve para comparar). Da exactamente lo mismo que
+   recorrer fila por fila: cotejado el 23/10/2026, día por día y al centavo. */
+function diasDeResumen(grupos){
   const dias={};
-  EMITIDO.filter(m=>m.state==="posted").forEach(m=>{
-    const k=soloFecha(m.invoice_date); if(!k) return;
-    dias[k]=dias[k]||{fecha:k,neto:0,total:0,facts:0,nc:0,ncMonto:0};
-    if(m.move_type==="out_refund"){ dias[k].nc++; dias[k].ncMonto+=m.amount_total||0; dias[k].neto-=m.amount_untaxed||0; dias[k].total-=m.amount_total||0; }
-    else { dias[k].facts++; dias[k].neto+=m.amount_untaxed||0; dias[k].total+=m.amount_total||0; }
+  (grupos||[]).forEach(g=>{
+    const r=g.__range && g.__range["invoice_date:day"];
+    const k=r && r.from; if(!k) return;
+    const d=dias[k]=dias[k]||{fecha:k,neto:0,total:0,facts:0,nc:0,ncMonto:0};
+    const n=g.amount_untaxed||0, t=g.amount_total||0, c=g.__count||0;
+    if(g.move_type==="out_refund"){ d.nc+=c; d.ncMonto+=t; d.neto-=n; d.total-=t; }
+    else { d.facts+=c; d.neto+=n; d.total+=t; }
   });
   PORDIA=Object.values(dias).sort((a,b)=>a.fecha.localeCompare(b.fecha));
 }
@@ -1192,11 +1378,14 @@ function render(){
   else if(VISTA==="atrasados") cuerpo=vistaAtrasados();
   else if(VISTA==="archivados") cuerpo=vistaArchivados();
   document.getElementById("app").innerHTML=`
+    ${cartelFoto()}
     <div class="wip">⚠️ <div><b>Módulo nuevo, en pruebas.</b> Lee los pedidos y las facturas de Odoo en vivo. Los botones <b>Confirmar</b> y <b>Facturar</b> escriben de verdad en Odoo — antes de usarlos en el día a día conviene probar uno acompañada.</div></div>
     ${cajaBusqueda()}
     <div class="tabs">${tabs}</div>${cuerpo}`;
 }
-function irA(v){ VISTA=v; ABIERTO=null; BUSCA={q:"",cargando:false,res:null,err:""}; render(); if(v==="atrasados"&&ATRAS===null) cargarAtrasados(); }
+function irA(v){ VISTA=v; ABIERTO=null; BUSCA={q:"",cargando:false,res:null,err:""}; render();
+  if(v==="atrasados"&&ATRAS===null) cargarAtrasados();
+  if(v==="emitido"&&EMITIDO===null) cargarEmitido(); }
 function filtrar(campo,val){ FILTRO[campo]=val; if(VISTA!=="cola") VISTA="cola"; render(); }
 /* Salto desde un KPI a la cola ya filtrada. Va con rango explícito porque
    varios de esos números (frenados, con aviso) cuentan TODO lo pendiente, y si
@@ -1367,32 +1556,42 @@ async function abrir(id){
   ABIERTO=id; render();
   if(!DET[id]){
     try{
-      const [lineas,msgs,adj,ord,pick]=await Promise.all([
+      /* Desplegar un pedido era lo más caro de la pantalla: SEIS viajes, cinco
+         en una ola —con cuatro turnos, uno hacía cola— y las facturas en una
+         segunda vuelta. Ahora son CUATRO en una sola ola:
+           · las FACTURAS salen en un viaje, buscándolas por el pedido, en vez de
+             leer invoice_ids y después las facturas (verificado el 23/10/2026
+             sobre 11 pedidos —facturados, por facturar, uno con dos facturas y
+             uno sin ninguna—: devuelve exactamente las mismas);
+           · las NOTAS no se vuelven a pedir si el pedido está en la cola: la
+             carga ya las trajo en AVISOS, con el mismo modelo, el mismo tipo de
+             mensaje y la misma ventana. Si no está —un pedido APARTADO, que sale
+             de PEND y por eso no entra en AVISOS—, ahí sí se piden. */
+      const enLista=PEND.some(o=>o.id===id);
+      const [lineas,adj,pick,facs,msgsOdoo]=await Promise.all([
         EYG.rpc("sale.order.line","search_read",[[["order_id","=",id]]],
           {fields:["name","product_uom_qty","qty_delivered","qty_invoiced","price_unit","discount","price_subtotal",
                    "product_id","purchase_price","margin","margin_percent"],context:{lang:"es_AR"},limit:0}),
-        EYG.rpc("mail.message","search_read",[[["model","=","sale.order"],["res_id","=",id],["message_type","=","comment"]]],
-          {fields:["date","body","author_id"],limit:0,order:"date desc"}),
         EYG.rpc("ir.attachment","search_read",[[["res_model","=","sale.order"],["res_id","=",id]]],
           {fields:["name","mimetype","create_date"],limit:0,order:"create_date desc"}),
         /* Los papeles del pedido, para poder imprimirlos desde acá. */
-        EYG.rpc("sale.order","read",[[id]],{fields:["invoice_ids"]}).catch(()=>[]),
         EYG.rpc("stock.picking","search_read",[[["sale_id","=",id],["picking_type_code","=","outgoing"]]],
-          {fields:["name","state","date_done","scheduled_date"],limit:0,order:"id desc",context:{lang:"es_AR"}}).catch(()=>[])
+          {fields:["name","state","date_done","scheduled_date"],limit:0,order:"id desc",context:{lang:"es_AR"}}).catch(()=>[]),
+        EYG.rpc("account.move","search_read",
+          [[["invoice_line_ids.sale_line_ids.order_id","=",id],["move_type","in",["out_invoice","out_refund"]]]],
+          {fields:["name","move_type","state","invoice_date","amount_total","journal_id"],
+           context:{lang:"es_AR"},limit:0,order:"id"}).catch(()=>[]),
+        enLista ? Promise.resolve(null)
+                : EYG.rpc("mail.message","search_read",[[["model","=","sale.order"],["res_id","=",id],["message_type","=","comment"]]],
+                    {fields:["date","body","author_id"],limit:0,order:"date desc"}).catch(()=>[])
       ]);
-      // Las del Core van primero: son las que la comercial escribió para ella.
-      const deCore=(AVISOS[id]||[]).filter(a=>a.core)
-        .map(a=>({date:a.fecha, author_id:[0,a.autor], txt:a.txt, core:true}));
-      /* Las facturas del pedido, para el botón de imprimir. Van en una segunda
-         vuelta porque recién con el pedido leído sabemos cuáles son. */
-      const facIds=(ord&&ord[0]&&ord[0].invoice_ids)||[];
-      const facs=facIds.length
-        ? await EYG.rpc("account.move","read",[facIds],
-            {fields:["name","move_type","state","invoice_date","amount_total","journal_id"],context:{lang:"es_AR"}}).catch(()=>[])
-        : [];
-      DET[id]={lineas,
-        msgs:deCore.concat(msgs.map(m=>({date:m.date,author_id:m.author_id,txt:limpiar(m.body)})).filter(m=>m.txt)),
-        adj, facs, pick:pick||[]};
+      /* Las del Core van primero: son las que la comercial escribió para ella.
+         AVISOS ya viene en ese orden (las del Core adelante). */
+      const notas = msgsOdoo
+        ? (AVISOS[id]||[]).filter(a=>a.core).map(a=>({date:a.fecha, author_id:[0,a.autor], txt:a.txt, core:true}))
+            .concat(msgsOdoo.map(m=>({date:m.date, author_id:m.author_id, txt:limpiar(m.body)})).filter(m=>m.txt))
+        : (AVISOS[id]||[]).map(a=>({date:a.fecha, author_id:[0,a.autor], txt:a.txt, core:!!a.core}));
+      DET[id]={lineas, msgs:notas, adj, facs:facs||[], pick:pick||[]};
     }catch(e){ DET[id]={error:e.message||String(e)}; }
     render();
   }
@@ -1657,6 +1856,9 @@ function irPedido(id){ VISTA="cola"; FILTRO={q:"",com:"",tipo:"",solo:"",rango:"
 
 /* ---------- Emitido ---------- */
 function vistaEmitido(){
+  if(EMITIDO==="cargando") return '<div class="cargando">Trayendo los comprobantes del mes…</div>';
+  if(EMITIDO&&EMITIDO.error) return '<div class="errbox">No pude traer los comprobantes: '+esc(EMITIDO.error)+'</div>';
+  if(!Array.isArray(EMITIDO)) return '<div class="cargando">Trayendo los comprobantes del mes…</div>';
   const hoy=EYG.argToday();
   const draft=EMITIDO.filter(m=>m.state==="draft");
   const delDia=EMITIDO.filter(m=>soloFecha(m.invoice_date)===hoy);
@@ -1808,13 +2010,20 @@ async function ejecutar(id,{emitir}){
       const inv=await EYG.rpc("account.move","read",[nuevas],{fields:["name","amount_total","state"],context:{lang:"es_AR"}});
       const nombres=inv.map(i=>(i.name&&i.name!=="/")?i.name:"borrador").join(", ");
       const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
-      try{ await EYG.rpc("sale.order","message_post",[[id]],
-        {body:"🧾 Facturado desde EyG Core por "+esc(quien)+": "+esc(nombres)+" ("+etiqueta+")",message_type:"comment"}); }catch(_){}
-      await cerrarNotasCore(id, "se facturó "+nombres);   // la comercial lo ve resuelto en su panel
       toast("Factura "+nombres+" — "+etiqueta+" ✓");
+      delete TRABAJANDO[id]; delete DET[id];
+      /* El aviso en el chatter de Odoo, el cierre de la nota de la comercial y el
+         refresco de la pantalla no dependen entre sí: van los tres juntos. Uno
+         atrás del otro eran ~2,5 s de reloj DESPUÉS de que la factura ya existía,
+         con el botón girando para nada. */
+      await Promise.all([
+        EYG.rpc("sale.order","message_post",[[id]],
+          {body:"🧾 Facturado desde EyG Core por "+esc(quien)+": "+esc(nombres)+" ("+etiqueta+")",
+           message_type:"comment"}).catch(()=>{}),
+        cerrarNotasCore(id, "se facturó "+nombres),   // la comercial lo ve resuelto en su panel
+        refrescarPedido(id)
+      ]);
     }
-    delete TRABAJANDO[id]; delete DET[id];
-    await refrescarPedido(id);
   }catch(e){
     delete TRABAJANDO[id];
     render();
@@ -1822,26 +2031,32 @@ async function ejecutar(id,{emitir}){
   }
 }
 
-/* Después de tocar un pedido se releen SÓLO ese pedido y los comprobantes del
-   mes: así la pantalla queda al día sin volver a bajar los cientos de
-   pendientes. Si el pedido ya no está pendiente, sale de la lista. */
+/* Después de tocar un pedido se releen SÓLO ese pedido y los totales del mes
+   —no los cientos de pendientes, ni las 1.166 filas del mes: antes esto costaba
+   1,2 s y 423 kB en cada acción, ahora son tres consultas en una ola. */
 async function refrescarPedido(id){
   try{
-    const hoy=EYG.argToday(), iniMes=hoy.slice(0,8)+"01";
-    const [r,emit]=await Promise.all([
+    const hoy=EYG.argToday();
+    const [r,resumen,draftInv]=await Promise.all([
       EYG.rpc("sale.order","read",[[id]],{fields:PF,context:{lang:"es_AR"}}),
-      EYG.rpc("account.move","search_read",[[["move_type","in",["out_invoice","out_refund"]],["invoice_date",">=",iniMes],EYG.VENTA_REAL]],
-        {fields:MF,context:{lang:"es_AR"},limit:0,order:"invoice_date desc, id desc"})
+      pedirResumenMes(),
+      pedirBorradores()
     ]);
     /* Un pedido facturado NO sale de la lista: sigue siendo un confirmado del
-       período y Vanesa tiene que poder verlo. Sólo se actualiza en el lugar. */
+       período y Vanesa tiene que poder verlo. Sólo se actualiza en el lugar.
+       Se actualiza también en FUENTE, que es de donde sale la foto local. */
     const o=r&&r[0];
     const i=PEND.findIndex(x=>x.id===id);
     if(i>=0 && o) PEND[i]=o;
-    EMITIDO=emit;
-    KPI.draftInv=EMITIDO.filter(m=>m.state==="draft").length;
-    recalcularDias();
+    const j=FUENTE.findIndex(x=>x.id===id);
+    if(j>=0 && o) FUENTE[j]=o;
+    KPI.draftInv=draftInv;
+    diasDeResumen(resumen);
     calcularKpis(hoy);
+    /* Las filas del mes quedaron viejas: si estaban bajadas se vuelven a pedir
+       recién cuando hagan falta (y en el acto si está abierta esa pestaña). */
+    if(Array.isArray(EMITIDO)){ EMITIDO=null; if(VISTA==="emitido") cargarEmitido(); }
+    guardarFoto();
   }catch(e){ console.warn("No pude refrescar el pedido",e); }
   render();
 }
@@ -1890,8 +2105,10 @@ document.addEventListener("visibilitychange",()=>{ if(!document.hidden) mirarVer
 setTimeout(mirarVersion, 20000);
 window.cerrarAvisoVersion=cerrarAvisoVersion;
 
+window.reintentar=reintentar;
+
 EYG.guard(["finanzas","admin","direccion"],{pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"]})
-  .then(perfil=>{ PERFIL=perfil; cargar(); });
+  .then(perfil=>{ PERFIL=perfil; pintarFoto(); cargar(); });
 </script>
 </body>
 </html>
