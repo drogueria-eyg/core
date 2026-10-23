@@ -3550,8 +3550,22 @@ async function cargarMotorOfertas(){
   try{ placas=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.capa_placas"])||"{}")||{}; }catch(e){}
   try{ dest=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.ofertas_destacadas"])||"[]")||[]; }catch(e){}
   DESTACADAS=new Set(dest);
+  /* PAUSA Y PRECIO, SIEMPRE FRESCOS (23/10/2026): el caché es del día, pero una línea se puede pausar
+     (a mano o por el control de placas) y su precio cambiar en el día. Se relee la capa (qué sigue
+     activo) y los tramos de la lista 1 (una consulta): la comercial nunca ve un precio viejo. */
+  let vivos=null, frescos={};
+  try{
+    const flat=String(await rpc("ir.config_parameter","get_param",["eyg.precios_fijos_flat"])||"").split("\n").filter(Boolean).map(l=>l.split("~"));
+    vivos=new Set(flat.filter(x=>/^\d+$/.test(x[0]) && x[7]!=="1" && !(x[6]&&x[6]<hoyStr)).map(x=>+x[0]));
+    const tms=(base||[]).map(m=>m.tmpl).filter(t=>vivos.has(t));
+    if(tms.length){
+      const its=await rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",tms]]],{fields:["product_tmpl_id","min_quantity","fixed_price"],limit:0});
+      its.forEach(i=>(frescos[i.product_tmpl_id[0]]=frescos[i.product_tmpl_id[0]]||[]).push({q:Math.round(i.min_quantity||1),p:i.fixed_price}));
+      Object.values(frescos).forEach(e=>e.sort((a,b)=>a.q-b.q));
+    }
+  }catch(e){ vivos=null; }
   const yaOf=new Set(OFERTAS.flatMap(o=>(o.items||[]).map(i=>i&&i.id)));
-  MOTOR_ALL=(base||[]).filter(m=>!yaOf.has(m.pv)).map(m=>({ id:"motor:"+m.tmpl, tipo:"motor", _motor:true, placa:placas[String(m.tmpl)]||"",
+  MOTOR_ALL=(base||[]).filter(m=>!yaOf.has(m.pv) && (!vivos || vivos.has(m.tmpl))).map(m=>{ const e=frescos[m.tmpl]; if(e&&e.length){ m=Object.assign({},m,{esc:e, p1:e[0].p}); } return m; }).map(m=>({ id:"motor:"+m.tmpl, tipo:"motor", _motor:true, placa:placas[String(m.tmpl)]||"",
     titulo:m.nombre, items:[{id:m.pv, nombre:m.nombre}], precio:m.p1, precioAntes:m.pvp>m.p1?m.pvp:0, hasta:m.hasta||"", _esc:m.esc,
     _stock:m.stock, _bajo:m.bajo, _sc:m.sc }));
   // lo que se MUESTRA: con stock y sin vender bajo costo; con placa siempre, el resto por puntaje hasta MOTOR_MAX

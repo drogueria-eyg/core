@@ -174,6 +174,12 @@ let FIJOS=[], _fijoSel=null, _fijoTimer=null, _fijoIdx=null;
    no recalcula precios ni hace falta "Guardar y sincronizar". Sólo líneas de un producto: una
    placa no puede ser la misma para todo un laboratorio. */
 let CAPA_PLACAS={};
+/* CONTROL DE PLACAS (23/10/2026): el cron de Odoo "EyG · Control de placas" pausa la línea si cambió
+   un precio que muestra su placa (ver Oportunidades y Ofertas, tarjeta 🖼️). Acá sólo se avisa; se
+   resuelve allá (subir la placa corregida o confirmar que está bien). */
+let PC_AL={};
+const PLACAS_CRON=102;
+function placasCtlCorrer(){ return rpc("ir.cron.trigger","create",[{cron_id:PLACAS_CRON, call_at:new Date().toISOString().slice(0,19).replace("T"," ")}]).catch(()=>{}); }
 /* 📌 DESTACAR (22/10/2026): una oferta destacada se muestra SIEMPRE en el panel de las comerciales,
    en su fila arriba ("📌 Destacadas"), fuera de la rotación del día. Un solo parámetro para
    Oportunidades y la capa del Motor: eyg.ofertas_destacadas = [ids como los conoce el panel]
@@ -254,6 +260,7 @@ async function cargar(){
     const _ms=parseFloat(etMs); ET.minstep = isNaN(_ms)?0:Math.round(_ms*1000)/10;   // descuento minimo por escalon (0 = off)
     try{ CAPA_PLACAS=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.capa_placas"])||"{}")||{}; }catch(e){ CAPA_PLACAS={}; }
     await destacadasLeer();
+    try{ PC_AL=(JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.placas_control"])||"{}")||{}).alertas||{}; }catch(e){ PC_AL={}; }
     // precios de venta fijos temporales (manuales)
     const rawFijos=await rpc("ir.config_parameter","get_param",["eyg.precios_fijos_flat"]);
     FIJOS=String(rawFijos||"").split("\n").map(l=>l.trim()).filter(Boolean).map(l=>{
@@ -611,6 +618,7 @@ async function capaPlacaGuardar(tmpl,url){
   if(url) m[String(tmpl)]=url; else delete m[String(tmpl)];
   await rpc("ir.config_parameter","set_param",["eyg.capa_placas",JSON.stringify(m)]);
   CAPA_PLACAS=m; render();
+  placasCtlCorrer();   // el control de placas toma los precios de este momento como los de la placa
 }
 function renderFijos(){
   const hoy=hoyStr();
@@ -628,7 +636,7 @@ function renderFijos(){
     const clave=esLab?`${f.lab==="M"?"marca":"categoría"} #${f.labId}`:`#${f.tmpl}`;
     return `<div class="ofrow"${estilo} data-capa="${esc(_norm(f.nombre+" "+clave+(esLab?" laboratorio":"")))}" data-estado="${_capaEst(f)}">
       <div class="ofmain"><div class="oftgt">${esc(f.nombre)} <small style="color:var(--gris2);font-weight:600">${clave}</small></div>
-        <div class="ofdet">${_fijoDet(f)} · ${venc}</div>${capaAlertaFila(f)}</div>
+        <div class="ofdet">${_fijoDet(f)} · ${venc}</div>${capaAlertaFila(f)}${(!esLab&&PC_AL["motor:"+f.tmpl])?`<div class="ofdet" style="color:#b42318;font-weight:700">🖼️ Placa desactualizada: cambió el precio${PC_AL["motor:"+f.tmpl].pauso?" y el control la pausó":""}. Resolvelo en <a href="../inventario/oportunidades.html">Oportunidades y Ofertas</a> (si la reanudás acá sin corregir la placa, se vuelve a pausar).</div>`:""}</div>
       ${marca}
       ${est}
       ${esLab?"":capaPlacaHTML(f.tmpl)}

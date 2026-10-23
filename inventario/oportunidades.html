@@ -28,7 +28,7 @@
   h2.sec{font-size:16px;font-weight:800;margin:22px 2px 12px;display:flex;align-items:center;gap:9px}
   h2.sec .n{background:var(--teal);color:#fff;font-size:12px;font-weight:800;border-radius:20px;padding:2px 9px}
   /* ===== PANEL DE MÉTRICAS (mismo patrón que Facturación/Pendientes) ===== */
-  .kpis{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:9px;margin-bottom:14px}
+  .kpis{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:9px;margin-bottom:14px}
   @media(max-width:1300px){.kpis{grid-template-columns:repeat(4,minmax(0,1fr))}}
   @media(max-width:1000px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
   /* ---- rendimiento de las ofertas (se despliega, no vive en la pantalla) ---- */
@@ -41,6 +41,13 @@
   .rend-t .n{font-size:25px;font-weight:800;color:var(--teal);line-height:1.15;margin-top:3px}
   .rend-t .s{font-size:11.5px;color:var(--gris2);margin-top:2px}
   .rend-tabla{width:100%;border-collapse:collapse;font-size:13px}
+  .pc-fila{display:grid;grid-template-columns:72px 1fr 230px;gap:14px;align-items:start;padding:14px 0;border-bottom:1px solid var(--line)}
+  .pc-img img{width:72px;height:96px;object-fit:cover;border-radius:8px;border:1px solid var(--line);cursor:zoom-in;background:#fff}
+  .pc-acts{display:flex;flex-direction:column;gap:6px}
+  .pc-tab{border-collapse:collapse;font-size:12.5px;margin-top:8px}
+  .pc-tab th{font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--gris2);text-align:right;padding:3px 10px}
+  .pc-tab td{padding:3px 10px;text-align:right;border-top:1px solid #eef2f1} .pc-tab td:first-child{text-align:left;color:var(--gris)}
+  @media(max-width:800px){.pc-fila{grid-template-columns:60px 1fr}.pc-acts{grid-column:1/-1}}
   .rend-tabla th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;color:var(--gris2);padding:7px 8px;border-bottom:1px solid var(--line)}
   .rend-tabla td{padding:9px 8px;border-bottom:1px solid #eef2f1;vertical-align:top}
   .rend-tabla tr.cero td{color:var(--gris2)}
@@ -178,6 +185,7 @@
   .fld input,.fld textarea,.fld select{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;font-family:inherit}
   .fld .row2{display:flex;gap:10px} .fld .row2>div{flex:1}
   .hint{font-size:11px;color:var(--gris2);margin-top:3px}
+  .modal .hint2{font-size:12px;color:var(--gris2);line-height:1.4}
   .prodpick{border:1px solid var(--line);border-radius:9px;padding:8px;max-height:170px;overflow:auto}
   .prodpick .r{display:flex;justify-content:space-between;align-items:center;padding:5px 6px;font-size:12.5px;border-radius:6px;cursor:pointer}
   .prodpick .r:hover{background:var(--bg)}
@@ -612,6 +620,7 @@ async function placaSubir(kind,id,file){
     const {error}=await sb.upload(ruta,file,{contentType:file.type,upsert:false,cacheControl:"31536000"});
     if(error) throw error;
     await placaGuardar(kind,id,sb.getPublicUrl(ruta).data.publicUrl);
+    placasCtlCorrer();   // el control de placas toma los precios de este momento como los de la placa
     toast("Placa guardada ✓ Ya la ven las comerciales.");
   }catch(e){ toast("No pude subir la placa: "+(e.message||e)); }
 }
@@ -1004,6 +1013,129 @@ function pintarRotacionMedida(){
     '<div class="mb">'+cuerpo+'</div></div></div>';
 }
 
+/* 🖼️ CONTROL DE PLACAS (23/10/2026). Las placas se arman afuera con el precio del momento; si
+   después cambia un precio que la placa muestra, la placa miente. El cron de Odoo "EyG · Control
+   de placas" (eyg-core-cron/cron_control_placas.py, cada hora) guarda los precios de cada oferta
+   cuando se sube su placa y, si cambian, PAUSA la oferta y deja la alerta en eyg.placas_control.
+   Acá se ven y se resuelven: subir la placa nueva, o confirmar que la placa está bien. En los dos
+   casos la oferta se reactiva y el control toma los precios de ese momento como los de la placa.
+   Aviso secundario (no pausa): bajo el costo, o el margen cayó 5 puntos desde que se subió la placa. */
+const PLACAS_CRON=102;
+let PC=null, PCAbierto=false;
+async function placasCtlLeer(){ try{ PC=JSON.parse(await getParam("eyg.placas_control","{}")||"{}")||{}; }catch(e){ PC={}; } }
+// que el control corra YA (al subir una placa o reactivar): así toma los precios de este momento
+function placasCtlCorrer(){
+  return EYG.rpc("ir.cron.trigger","create",[{cron_id:PLACAS_CRON, call_at:new Date().toISOString().slice(0,19).replace("T"," ")}]).catch(()=>{});
+}
+const pcAlerta=pid=>PC&&PC.alertas&&PC.alertas[pid];
+function pcChip(pid){ const a=pcAlerta(pid); if(!a) return "";
+  return `<span class="chip c-bad" title="El precio cambió desde que se subió la placa">🖼️ placa desactualizada${a.pauso?" · pausada por el control":""}</span>`; }
+function kpiPlacas(){
+  if(!PC) return '<button class="kpi" onclick="abrirPlacasCtl()"><span class="l">🖼️ Placas desactualizadas</span><div class="n">…</div><div class="s">revisando…</div></button>';
+  const n=Object.keys(PC.alertas||{}).length, ni=Object.keys(PC.info||{}).length;
+  const sub = n ? (Object.values(PC.alertas).filter(a=>a.pauso).length+" pausada"+(Object.values(PC.alertas).filter(a=>a.pauso).length===1?"":"s")+" · corregí la placa")
+                : ((PC.revisadas||0)+" placas al día"+(ni?(" · "+ni+" aviso"+(ni===1?"":"s")+" de margen"):""));
+  return '<button class="kpi '+(n?"alerta":"bien")+'" onclick="abrirPlacasCtl()" title="El control revisa cada hora que el precio de cada placa siga siendo el de hoy.">'+
+    '<span class="l">🖼️ Placas desactualizadas</span><div class="n">'+n+'</div><div class="s">'+esc(sub)+'</div></button>';
+}
+window.abrirPlacasCtl=async()=>{ PCAbierto=true; pintarPlacasCtl(); await placasCtlLeer(); pintarPlacasCtl(); };
+window.cerrarPlacasCtl=()=>{ PCAbierto=false; cerrarModal(); };
+const pcPlata=v=>v==null?"—":money(v);
+function pcTitulo(pid,a){ return (a&&a.t)||pid; }
+const PC_TIPO={sync:"🏷️ Oportunidades", panel:"🏷️ Panel", combo:"🎁 Combo", capa:"💵 Capa del Motor"};
+function pintarPlacasCtl(){
+  const P=PC||{}, AL=Object.entries(P.alertas||{}), IN=Object.entries(P.info||{});
+  const fila=([pid,a])=>`<div class="pc-fila">
+      <div class="pc-img">${a.u?`<img src="${esc(a.u)}" alt="Placa" onclick="placaVer('${esc(a.u)}')">`:""}</div>
+      <div class="pc-main"><b>${esc(String(pcTitulo(pid,a)).slice(0,90))}</b>
+        <div class="rend-quien"><span class="chip c-gris">${PC_TIPO[a.k]||a.k}</span> ${a.pauso?'<span class="chip c-bad">⏸ pausada por el control</span>':'<span class="chip c-oro">sin pausar</span>'} · detectado el ${esc(String(a.desde||"").replace(/^(\d{4})-(\d\d)-(\d\d)/,"$3/$2"))}${a.origen?(" · "+esc(a.origen)):""}</div>
+        <table class="pc-tab"><tr><th></th><th>La placa dice</th><th>Hoy</th></tr>
+          ${(a.cambios||[]).map(c=>`<tr><td>${esc(c[0])}</td><td>${c[1]==null?"—":pcPlata(c[1])}</td><td><b>${c[2]==null?"—":pcPlata(c[2])}</b></td></tr>`).join("")}</table>
+      </div>
+      <div class="pc-acts">
+        <button class="btn sm" onclick="pcSubirNueva('${esc(pid)}')">🖼️ Subir la placa corregida</button>
+        <button class="btn ghost sm" onclick="pcPlacaBien('${esc(pid)}')" title="La placa ya muestra los precios de hoy (o la diferencia no importa): se reactiva con esta placa">✓ La placa está bien · reactivar</button>
+      </div></div>`;
+  const cuerpo = !PC ? '<div class="empty">Leyendo el control…</div>' :
+    (AL.length? AL.map(fila).join("") : '<div class="empty" style="padding:16px">✓ Todas las placas muestran los precios de hoy.</div>')+
+    (IN.length?`<h4 style="margin:22px 0 6px">ℹ️ Para revisar el margen <span style="font-weight:600;color:var(--gris2);font-size:12px">(no se pausan)</span></h4>
+      <div class="hint2" style="margin:0 0 8px">El precio de la placa sigue igual, pero cambió el costo. Decidí si la oferta sigue así o se da de baja.</div>
+      <table class="rend-tabla"><thead><tr><th>Oferta</th><th>Qué pasa</th><th class="num">Precio</th><th class="num">Costo</th><th class="num">Margen</th></tr></thead><tbody>
+      ${IN.map(([pid,x])=>`<tr><td><b>${esc(String(x.t||pid).slice(0,70))}</b><div class="rend-quien">${PC_TIPO[x.k]||x.k}</div></td><td>${esc(x.motivo)}</td><td class="num">${money(x.venta)}</td><td class="num">${money(x.costo)}</td><td class="num" style="color:${x.m<0?"var(--bad)":"inherit"}"><b>${x.m}%</b>${x.m0!=null?`<div class="rend-quien">al subir la placa: ${x.m0}%</div>`:""}</td></tr>`).join("")}
+      </tbody></table>`:"")+
+    `<div class="hint" style="margin-top:14px">El control corre cada hora${P.act?(" (última revisión: "+esc(P.act.slice(8,10)+"/"+P.act.slice(5,7)+" "+P.act.slice(11))+")"):""}. Compara los precios de hoy con los que tenía la oferta cuando se subió su placa: todos los tramos de la lista de Farmacias y el PVP en los éticos; en los combos, el precio y la receta. Si algo cambió, aunque sea un centavo, pausa la oferta y la anota acá. Al subir la placa corregida o confirmar que está bien, la oferta se reactiva y esos pasan a ser los precios de la placa.</div>`;
+  document.getElementById("modal").innerHTML=
+    '<div class="scrim" onclick="if(event.target===this)cerrarPlacasCtl()"><div class="modal" style="max-width:1000px">'+
+    '<div class="mh"><h3>🖼️ Placas desactualizadas</h3><span style="margin-left:auto"><button class="btn ghost sm" onclick="cerrarPlacasCtl()">Cerrar</button></span></div>'+
+    '<div class="mb">'+cuerpo+'</div></div></div>';
+}
+// reactiva la oferta igual que el botón ▶ y espera a que el motor publique su precio
+async function pcReactivar(pid){
+  if(pid.startsWith("sync:")){
+    const o=SYNC_OF.find(x=>x.id===pid.slice(5)); if(!o) return;
+    if(o.pausada){ o.pausada=false; o.reanudada=new Date().toISOString().slice(0,19).replace("T"," "); await rgSave(o.tipo==='p'?o.target:null); }
+  }else if(pid.startsWith("motor:")){
+    const tm=pid.slice(6);
+    const ls=String(await getParam("eyg.precios_fijos_flat","")||"").split("\n");
+    let cambio=false;
+    const nl=ls.map(l=>{ const f=l.split("~"); if(f[0].trim()!==tm||f[7]!=="1") return l; while(f.length<9) f.push(""); f[7]="0"; cambio=true; return f.join("~"); });
+    if(cambio){
+      await setParam("eyg.precios_fijos_flat", nl.join("\n"));
+      const t=await EYG.rpc("product.template","read",[[+tm],["product_variant_id"]],LANG).catch(()=>null);
+      const vid=t&&t[0]&&t[0].product_variant_id&&t[0].product_variant_id[0];
+      if(vid) await EYG.rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR",eyg_solo_producto:vid}}).catch(()=>{});
+    }
+  }else{
+    const o=OFERTAS.find(x=>x.id===pid); if(!o||!o.pausada) return;
+    o.pausada=false;
+    await setParam("eyg.ofertas", JSON.stringify(OFERTAS.filter(x=>x.tipo).map(x=>{const c={...x};delete c._venc;delete c._cat;delete c._agotada;return c;})));
+  }
+}
+// se relee el control antes de escribir (lo escribe también el cron)
+async function pcEditar(fn){
+  let C={}; try{ C=JSON.parse(await getParam("eyg.placas_control","{}")||"{}")||{}; }catch(e){ C={}; }
+  C.ref=C.ref||{}; C.alertas=C.alertas||{}; fn(C);
+  await setParam("eyg.placas_control", JSON.stringify(C)); PC=C;
+}
+window.pcPlacaBien=async pid=>{
+  const a=pcAlerta(pid)||{};
+  if(!confirm("¿La placa de «"+String(a.t||pid).slice(0,60)+"» ya muestra los precios de hoy?\n\nSe reactiva la oferta y los precios de este momento pasan a ser los de la placa.")) return;
+  toast("Reactivando…");
+  try{
+    await pcReactivar(pid);
+    await pcEditar(C=>{ if(C.ref[pid]) C.ref[pid].f=null; delete C.alertas[pid]; });   // firma nueva en la próxima revisión
+    placasCtlCorrer();
+    toast("▶ Reactivada ✓"); render(); if(PCAbierto) pintarPlacasCtl();
+  }catch(e){ toast("No se pudo: "+(e.message||e)); }
+};
+window.pcSubirNueva=pid=>{
+  const inp=document.createElement("input"); inp.type="file"; inp.accept="image/jpeg,image/png,image/webp";
+  inp.onchange=async()=>{ const file=inp.files&&inp.files[0]; if(!file) return;
+    if(!/^image\/(jpeg|png|webp)$/.test(file.type)){ toast("La placa tiene que ser JPG, PNG o WEBP"); return; }
+    if(file.size>5*1024*1024){ toast("La imagen pesa más de 5 MB"); return; }
+    toast("Subiendo la placa…");
+    try{
+      const ext=file.type==="image/png"?"png":file.type==="image/webp"?"webp":"jpg";
+      const base=pid.startsWith("motor:")?("capa-"+pid.slice(6)):pid.replace(/^sync:/,"");
+      const ruta=base.replace(/[^a-zA-Z0-9_-]/g,"_")+"-"+Date.now()+"."+ext;
+      const sb=EYG.supa().storage.from(PLACAS_BUCKET);
+      const {error}=await sb.upload(ruta,file,{contentType:file.type,upsert:false,cacheControl:"31536000"});
+      if(error) throw error;
+      const url=sb.getPublicUrl(ruta).data.publicUrl;
+      if(pid.startsWith("sync:")) await placaGuardar("rg",pid.slice(5),url);
+      else if(pid.startsWith("motor:")){
+        let m={}; try{ m=JSON.parse(await getParam("eyg.capa_placas","{}")||"{}")||{}; }catch(e){}
+        m[pid.slice(6)]=url; await setParam("eyg.capa_placas", JSON.stringify(m));
+      } else await placaGuardar("of",pid,url);
+      await pcReactivar(pid);
+      await pcEditar(C=>{ delete C.alertas[pid]; C.ref[pid]={u:url,f:null,m:null,at:""}; });
+      placasCtlCorrer();
+      toast("Placa nueva guardada y oferta reactivada ✓"); render(); if(PCAbierto) pintarPlacasCtl();
+    }catch(e){ toast("No pude subir la placa: "+(e.message||e)); }
+  };
+  inp.click();
+};
+
 /* 🎯 OFERTAS QUE SE COMPRAN (22/10/2026): TODAS las ofertas —Oportunidades, combos y la capa
    temporal del Motor— con lo que se vendió de cada una mientras estuvo vigente. La cuenta vive
    en assets/ofertas-rend.js (la misma que usa Inicio). Abajo, aparte, lo mandado por WhatsApp
@@ -1215,6 +1347,7 @@ function render(){
     ${kpi("costo","💡 Oportunidades por costo",opoVis.length,ocultasCosto.length?(ocultasCosto.length+" ocultas"):"bajas de costo nuevas","oro")}
     ${kpi("stock","📦 Oportunidades por stock",stockLoading?"…":stkAll.length,"por vencer, sobrestock","")}
     ${kpi("agotadas","⛔ Ofertas sin stock",agot,agot?"apagadas solas":"todas con stock",agot?"apagado":"bien")}
+    ${kpiPlacas()}
     ${kpiRendimiento()}
     ${kpiRotacion()}
   </div>`;
@@ -1383,7 +1516,7 @@ function filaOferta(o){
   const nom=esc(o.titulo||its.map(i=>i.nombre).join(" + "));
   // en los combos nuevos se listan los renglones con su cantidad; en los viejos, los productos sueltos
   const detalle = lin.length ? lin.map(l=>l.qty+" × "+l.nombre).join(" · ") : its.map(i=>i.nombre).join(" + ");
-  const sub=(esCombo(o)?"":catBadge(o._cat))+(n?`<span>${esc(detalle)}</span>`:"");
+  const sub=(esCombo(o)?"":catBadge(o._cat))+pcChip(o.id)+(n?`<span>${esc(detalle)}</span>`:"");
   return filaOf((m!=null&&m<0?" mala":"")+(ag||o._venc||o.pausada?" gris":""), nom, sub, chips, cols, acts,
     `<div class="ppcol">${botonPausa(o,"rgPausarCombo")}${esCombo(o)?"":destacarBtn(o.id)}</div>`+`<div class="fplaca">${placaThumb("of",o)}</div>`);
 }
@@ -1568,7 +1701,7 @@ function filaRegla(o){
   const acts=`<button class="btn ghost sm" onclick="rgEditar('${esc(o.id)}')">Editar</button>`
     +placaBtns("rg",o)
     +`<button class="btn warn sm" onclick="rgEliminar('${esc(o.id)}')">Eliminar</button>`;
-  const sub=(o.tipo==='p'?catBadge(o._cat)+(o._sku?`<span>${esc(o._sku)}</span>`:""):"")+ofAlertaFila(o);
+  const sub=(o.tipo==='p'?catBadge(o._cat)+(o._sku?`<span>${esc(o._sku)}</span>`:""):"")+pcChip("sync:"+o.id)+ofAlertaFila(o);
   return filaOf((m!=null&&m<0?" mala":"")+((ag||st.c!=='act')?" gris":""), esc(o.targetName||("#"+o.target)), sub, chips, cols, acts,
     `<div class="ppcol">${botonPausa(o)}${destacarBtn("sync:"+o.id)}</div>`+`<div class="fplaca">${placaThumb("rg",o)}</div>`);
 }
@@ -2389,6 +2522,7 @@ const RG_GUARDANDO=new Set();
 let _rgCola=Promise.resolve();
 window.rgPausar=id=>{
   const o=SYNC_OF.find(x=>x.id===id); if(!o || RG_GUARDANDO.has(id)) return;
+  if(o.pausada && pcAlerta("sync:"+id)){ pcPlacaBien("sync:"+id); return; }   // si no, el control la vuelve a pausar
   o.pausada=!o.pausada; RG_GUARDANDO.add(id);
   // al reanudarla vuelve a ser "nueva" para la rotación del panel de las comerciales
   if(!o.pausada) o.reanudada=new Date().toISOString().slice(0,19).replace("T"," ");
@@ -2403,6 +2537,7 @@ window.rgPausar=id=>{
    dejarlo armado y revisado antes de soltarlo. */
 window.rgPausarCombo=id=>{
   const o=OFERTAS.find(x=>x.id===id); if(!o || RG_GUARDANDO.has(id)) return;
+  if(o.pausada && pcAlerta(id)){ pcPlacaBien(id); return; }
   o.pausada=!o.pausada; RG_GUARDANDO.add(id);
   if(!rgDraft) render();
   toast(o.pausada?"⏸ Pausado: ya no lo ven las comerciales":"▶ Reanudado: ya lo ven las comerciales");
@@ -2434,6 +2569,7 @@ EYG.requireAuth(["inventario"], perfil=>{
      y no tiene por qué demorar la pantalla. La tarjeta muestra "…" hasta que
      llega, y si falla queda en "—" en vez de mentir un cero. */
   setTimeout(()=>cargarRendimiento().catch(e=>console.warn("rendimiento:",e)),1200);
+  setTimeout(()=>placasCtlLeer().then(()=>{ if(!rgDraft) render(); }),900);
 });
 </script>
 </body>
