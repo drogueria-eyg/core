@@ -1049,6 +1049,25 @@ function pintarRotacionMedida(){
     '<div class="mb">'+cuerpo+'</div></div></div>';
 }
 
+/* OFERTAS ACTIVAS + CAPA DEL MOTOR (26/10/2026). La tarjeta "Ofertas activas" cuenta también los
+   precios especiales de la capa temporal del Motor que ven las comerciales: líneas de UN producto de la
+   lista 1 (Farmacias), activas (no pausadas ni vencidas) y CON STOCK. No entran: las líneas por
+   laboratorio (escalera de una marca), las copias "[OFERTA …]" que Oportunidades deja en las listas
+   institucionales (ya cuentan como esa oferta), ni las listas 2 y 3 (precios para instituciones, no
+   salen en el panel). Es sólo el número de la tarjeta: no lo usa ningún cálculo. */
+let CAPA_KPI=null;
+async function cargarCapaKPI(){
+  try{
+    const hoyS=hoy(), L=String(await getParam("eyg.precios_fijos_flat","")||"").split("\n").map(l=>l.split("~"));
+    const act=L.filter(f=>/^\d+$/.test((f[0]||"").trim()) && f[7]!=="1" && !((f[6]||"").trim() && f[6].trim()<hoyS) && !f.slice(8).join("~").startsWith("[OFERTA "));
+    const tm=[...new Set(act.map(f=>+f[0]))];
+    const st=tm.length?await EYG.rpc("product.template","read",[tm,["qty_available"]],LANG):[];
+    const conStock=new Set(st.filter(t=>(t.qty_available||0)>0).map(t=>t.id));
+    let placas={}; try{ placas=JSON.parse(await getParam("eyg.capa_placas","{}")||"{}")||{}; }catch(e){}
+    CAPA_KPI={ conStock:conStock.size, placa:[...conStock].filter(t=>placas[String(t)]).length, sinStock:tm.length-conStock.size };
+  }catch(e){ CAPA_KPI={error:true}; console.warn("capa (tarjeta ofertas activas):",e); }
+  if(!rgDraft) render();
+}
 /* ===================== 🧠 ASESOR DE OFERTAS (26/10/2026) =====================
    La tarjeta de arriba: propone, una tras otra, las mejores ofertas para armar y las mejoras de
    las que ya están publicadas. El análisis vive en assets/ofertas-asesor.js (EYGAsesor). Acá:
@@ -1590,7 +1609,9 @@ function render(){
   const nOfTot=ofActivas.length+reglasAct.length;
   const kpis=`<div class="kpis">
     ${kpi("perdida","🔴 Ofertas en pérdida",nPerd,nPerd?"se venden bajo el costo":"ninguna bajo costo",nPerd?"alerta":"bien")}
-    ${kpi("ofertas","🏷️ Ofertas activas",nOfTot,ofActivas.length+" del panel · "+reglasAct.length+" descuentos","")}
+    ${kpi("ofertas","🏷️ Ofertas activas",
+      (CAPA_KPI&&!CAPA_KPI.error)?nOfTot+CAPA_KPI.conStock:nOfTot,
+      nOfTot+" de Oportunidades · "+(!CAPA_KPI?"… de la capa":CAPA_KPI.error?"capa sin leer":(CAPA_KPI.conStock+" de la capa ("+CAPA_KPI.placa+" con placa)")),"")}
     ${kpi("costo","💡 Oportunidades por costo",opoVis.length,ocultasCosto.length?(ocultasCosto.length+" ocultas"):"bajas de costo nuevas","oro")}
     ${kpi("stock","📦 Oportunidades por stock",stockLoading?"…":stkAll.length,"por vencer, sobrestock","")}
     ${kpi("agotadas","⛔ Ofertas sin stock",agot,agot?"apagadas solas":"todas con stock",agot?"apagado":"bien")}
@@ -1668,6 +1689,7 @@ function render(){
     </div>
     ${ver("costo")?sec("costo","💡 Oportunidades por costo", cnt(opos.length,opoVis.length), costoBody):""}
     ${ver("stock")?sec("stock","📦 Oportunidades por stock", stockLoading?"…":cnt(oStock.length,stkAll.length), osBody, `<button class="btn ghost sm" onclick="refrescarStockOpo()" ${stockLoading?"disabled":""}>🔄 Actualizar</button>`):""}
+    ${(FOCO==="ofertas"&&CAPA_KPI&&!CAPA_KPI.error&&CAPA_KPI.conStock)?`<div style="margin:0 0 10px;padding:10px 14px;border-radius:12px;background:#F3FBF9;border:1px solid #CFE6E1;font-size:13px">💵 Además hay <b>${CAPA_KPI.conStock} precios especiales</b> de la capa temporal del Motor (${CAPA_KPI.placa} con placa) que las comerciales ven en su panel. Se administran en <a href="../comercial/config-precios.html">Motor de precios</a>; acá abajo están las de Oportunidades.</div>`:""}
     ${verOf?sec("ofertas","🏷️ Ofertas, combos y descuentos", cnt(nOf,nOfT), ofBody, `<button class="btn sm" onclick="rgNueva('desc','ofertas')">+ Nueva</button>`):""}`;
 
   /* El cuadro de rentabilidad se pinta aparte (rgActualizarRent escribe en #rg-rent), así que
@@ -2812,7 +2834,7 @@ window.rgEliminar=async id=>{
 
 EYG.requireAuth(["inventario"], perfil=>{
   document.body.innerHTML = EYG.layout(perfil,"oportunidades",'<div id="cont"></div><div id="modal"></div>',"Oportunidades y Ofertas");
-  Promise.resolve(cargar()).then(()=>setTimeout(()=>cargarAsesor(false),400));
+  Promise.resolve(cargar()).then(()=>{ cargarCapaKPI(); setTimeout(()=>cargarAsesor(false),400); });
   /* El rendimiento va en segunda ola: necesita Supabase y dos vueltas a Odoo,
      y no tiene por qué demorar la pantalla. La tarjeta muestra "…" hasta que
      llega, y si falla queda en "—" en vez de mentir un cero. */
