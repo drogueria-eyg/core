@@ -410,10 +410,14 @@ async function cargarAdjuntos(){
   try{
     const canales=[...new Set(PAGOS.map(p=>p.canal).filter(Boolean))];
     if(!canales.length) return;
-    /* Desde el día anterior al pago más viejo: el comprobante puede haber
-       llegado la noche de antes. */
+    /* SIETE DÍAS ANTES DEL PAGO MÁS VIEJO, no uno.
+       Con un día alcanzaba mientras el bot detectaba el comprobante al toque.
+       Pero si estuvo caído y después se reencolan los mensajes, la detección
+       queda días DESPUÉS del archivo: el 23/10/2026 se recuperaron pagos cuyos
+       comprobantes eran del 21, y acá ni se pedían. Son pocos canales, así que
+       pedir una semana no cuesta nada. */
     const viejo=PAGOS.map(p=>String(p.clave||"").split(":")[1]).filter(Boolean).sort()[0]||"2026-01-01";
-    const desde=new Date(new Date(viejo+"T00:00:00Z").getTime()-24*3600000).toISOString().slice(0,10);
+    const desde=new Date(new Date(viejo+"T00:00:00Z").getTime()-7*24*3600000).toISOString().slice(0,10);
     const r=await EYG.rpc("ir.attachment","search_read",
       [[["res_model","=","discuss.channel"],["res_id","in",canales],["create_date",">=",desde+" 00:00:00"]]],
       {fields:["name","mimetype","file_size","res_id","create_date"],order:"id asc",limit:0});
@@ -501,14 +505,30 @@ function archivosDe(p){
      en UTC, así que un comprobante de las 22 caía en el día siguiente y ese pago
      se quedaba sin archivo. */
   const t0=INST(p.cuando);
-  const lista=ADJ.filter(a=>a.res_id===p.canal && INST(a.create_date)>t0-12*3600000 && INST(a.create_date)<t0+3600000);
+  let lista=ADJ.filter(a=>a.res_id===p.canal && INST(a.create_date)>t0-12*3600000 && INST(a.create_date)<t0+3600000);
+  /* SI LA VENTANA NO ENCUENTRA NADA, SE BUSCA EL ÚLTIMO ANTERIOR.
+     La ventana de 12 h vale cuando el bot lee el comprobante en el momento.
+     Si estuvo caído y el mensaje se reencoló, el archivo puede ser de días
+     antes y la fila quedaba sin nada: pasó con Montañez, Pagella e Italia el
+     23/10/2026. Se toma el último archivo de ESA conversación anterior a la
+     detección, y NO se toma si en el medio hay otro pago del mismo chat —ese
+     archivo es del otro pago, no de éste—. Como es una deducción y no una
+     coincidencia exacta, el botón muestra la fecha para que se vea. */
+  let deducido=false;
+  if(!lista.length){
+    const previos=PAGOS.filter(q=>q.canal===p.canal && INST(q.cuando)<t0).map(q=>INST(q.cuando));
+    const corte=previos.length?Math.max(...previos):0;
+    const antes=ADJ.filter(a=>a.res_id===p.canal && INST(a.create_date)<t0 && INST(a.create_date)>corte);
+    if(antes.length){ lista=[antes[antes.length-1]]; deducido=true; }
+  }
   if(!lista.length) return "";
   const dia=String(p.clave||"").split(":")[1]||"";
   const cli=String(p.cliente||"").replace(/'/g,"");
   return lista.map((a,i)=>{
     const n=lista.length>1?" "+(i+1):"";
+    const f=deducido?" "+String(a.create_date||"").slice(8,10)+"/"+String(a.create_date||"").slice(5,7):"";
     return `<button class="adjb" onclick="verPago(${a.id},'${esc(cli)}','${dia}',false,this)" `+
-           `title="${esc(a.name||"")} · ${Math.round((a.file_size||0)/1024)} KB">📎 Ver${n}</button>`+
+           `title="${esc(a.name||"")} · ${Math.round((a.file_size||0)/1024)} KB${deducido?" · llegó antes que la detección: verificá que sea éste":""}">📎 Ver${n}${f}</button>`+
            `<button class="adjb" onclick="verPago(${a.id},'${esc(cli)}','${dia}',true,this)" title="Bajar el archivo">⬇</button>`;
   }).join("");
 }
