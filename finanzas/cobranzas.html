@@ -92,6 +92,13 @@
   .pagoit .acc .adjb:hover{background:#E4F2EA}
   .pagoit .acc .adjb[disabled]{opacity:.5;cursor:default}
   .pagoit .adjcarga{font-size:11px;color:var(--gris)}
+  /* Sin total: no se inventa un número. Se avisa y los candidatos van abajo. */
+  .pagoit .sintot{font-size:11.5px;font-weight:700;color:var(--gris);background:#F6F8F8;
+      border:1px dashed #CFD9D7;border-radius:7px;padding:2px 8px;white-space:nowrap}
+  .pagoit .cands{font-size:11.5px;color:var(--gris);margin-top:4px;line-height:1.5}
+  .pagoit .cands b{color:var(--ink);font-weight:700}
+  /* El comprobante va en su propio renglón, separado de las decisiones. */
+  .pagoit .adjfila:empty{display:none}
   @media(max-width:900px){ .pagoit{grid-template-columns:1fr;gap:4px} .pagoit .imp{text-align:left} .pagoit .acc{align-items:stretch} .pagoit .accrow{justify-content:flex-start} }
   .cardsec .sectitle{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--teal-deep);margin-bottom:12px}
   .cardsec .sectitle .secclr{font-size:11.5px;font-weight:700;letter-spacing:0;text-transform:none;color:var(--teal);cursor:pointer;white-space:nowrap}
@@ -398,7 +405,7 @@ function fmtContacto(utc){ if(!utc) return null; const d=new Date(utc.replace(" 
 let PAGOS=[], PERFIL=null, pagosAbierto=false;
 /* Los archivos que llegaron por WhatsApp, por conversación. Se piden recién
    cuando alguien despliega el panel: mientras está cerrado no se toca Odoo. */
-let ADJ=null, ARCH={};
+let ADJ=null, ARCH={}, PAGOS_CANAL=[];
 function togglePagos(){
   pagosAbierto=!pagosAbierto;
   render();
@@ -424,6 +431,13 @@ async function cargarAdjuntos(){
     /* Los stickers y los audios no son comprobantes: ensucian la fila. */
     ADJ=(r||[]).filter(a=>!String(a.mimetype||"").startsWith("audio/")
                         && !String(a.name||"").toLowerCase().startsWith("sticker"));
+    /* TODOS los pagos de esos chats, no sólo los pendientes. El corte entre un
+       comprobante y otro necesita saber de los que YA se imputaron: Pagella
+       tiene el pago del 20/10 imputado y el del 23/10 pendiente, y sin esto el
+       comprobante del 20 se le colgaba al pendiente, que no es suyo. */
+    const {data:todos}=await EYG.supa().from("wsp_pagos")
+      .select("canal,cuando").in("canal",canales).gte("cuando",desde);
+    PAGOS_CANAL=todos||[];
   }catch(e){ /* si Odoo no contesta, la lista sigue sirviendo sin los archivos */ }
 }
 /* Mismo camino que en el módulo del bot: el archivo viene en base64 por
@@ -516,7 +530,7 @@ function archivosDe(p){
      coincidencia exacta, el botón muestra la fecha para que se vea. */
   let deducido=false;
   if(!lista.length){
-    const previos=PAGOS.filter(q=>q.canal===p.canal && INST(q.cuando)<t0).map(q=>INST(q.cuando));
+    const previos=PAGOS_CANAL.filter(q=>q.canal===p.canal && INST(q.cuando)<t0).map(q=>INST(q.cuando));
     const corte=previos.length?Math.max(...previos):0;
     /* TODOS los de esa franja, no sólo el último: en una recuperación el
        cliente pudo mandar varias fotos (Pagella mandó dos y el texto del pago
@@ -539,8 +553,17 @@ function cardPagos(){
   if(!PAGOS.length) return "";
   const total=PAGOS.reduce((a,p)=>a+(Number(p.importe)||0),0);
   const filas=PAGOS.map(p=>{
+    /* UN SOLO NÚMERO GRANDE, O NINGUNO.
+       Cuando el asistente no logra un total, la columna recibía la lista entera
+       de importes y, en 130 px, se apilaba en cinco renglones: parecía que la
+       farmacia hizo cinco pagos. No los hizo — el asistente nombra las
+       transferencias Y las facturas que coinciden. Si no hay total, acá va el
+       aviso y los importes candidatos bajan al detalle, en un renglón. */
+    const varios=(p.importes||[]).filter(x=>x!=null);
     const imp=p.importe!=null ? moneyC(p.importe)
-      : (p.importes||[]).map(x=>moneyC(x)).join(" · ")||"—";
+      : `<span class="sintot">a verificar</span>`;
+    const candidatos=(p.importe==null && varios.length)
+      ? `<div class="cands"><b>Importes que nombró:</b> ${varios.map(x=>moneyC(x)).join(" · ")}</div>` : "";
     const cuando=new Date(p.cuando).toLocaleString("es-AR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false});
     const datos=[p.medio,p.operacion?"op "+p.operacion:"",p.fecha_pago?"fecha "+p.fecha_pago:""].filter(Boolean).join(" · ");
     const banco=bancoDestino(p.texto);
@@ -549,10 +572,11 @@ function cardPagos(){
       <div>
         <div class="qui">${esc(p.cliente||"sin identificar")}${banco?` <span class="bdest" title="Banco al que entró la transferencia">→ ${esc(banco)}</span>`:""}</div>
         <div class="det">${esc(datos||"sin datos del medio de pago")}<br>${esc(String(p.texto||"").slice(0,190))}</div>
+        ${candidatos}
       </div>
       <div class="imp">${imp}</div>
       <div class="acc">
-        <div class="accrow">
+        <div class="accrow adjfila">
           ${archivosDe(p)}
           ${p.canal?`<a class="ver" href="../comunicaciones/whatsapp.html?canal=${p.canal}" target="_blank" title="Abrir la conversación donde llegó el comprobante">💬 Chat</a>`:""}
         </div>
