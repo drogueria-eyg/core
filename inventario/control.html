@@ -284,6 +284,11 @@ function clasificar(r){
   if(r.qty>0 && r.valObj>0){
     const falta=r.valObj-r.val;
     if(falta>1000 && r.val < 0.4*r.valObj) return "torcido";
+    /* INFLADO AL DOBLE O MÁS (26/10/2026): Odoo suma TODOS los movimientos de la historia; una entrada
+       vieja cargada con el precio de la CAJA como si fuera la unidad (Ranitidina Denver: $18.181 la
+       ampolla) queda sumada para siempre. Una baja de costo NO llega a duplicar el valor: al doble o más
+       es un error, no un precio que cambió. */
+    if(-falta>1000 && r.val > 2*r.valObj) return "torcido";
   }
   return "sano";
 }
@@ -295,7 +300,7 @@ function render(){
   const total=DATA.length;
   const sanos=g.sano.length;
   const pct=total?Math.round(sanos/total*100):100;
-  const gap=g.torcido.reduce((a,r)=>a+(r.valObj-r.val),0); // plata mal valuada (lo que falta para el valor real)
+  const gap=g.torcido.reduce((a,r)=>a+Math.abs(r.valObj-r.val),0);   // de más o de menos: plata mal valuada // plata mal valuada (lo que falta para el valor real)
   const negLines=DATA.filter(r=>r.clase!=="basura").reduce((a,r)=>a+r.quants.filter(q=>q.qty<0).length,0);
   const raroLines=DATA.filter(r=>r.clase!=="basura"&&prodRaro(r)).length;
   const color=pct>=90?"var(--green)":pct>=70?"var(--org)":"var(--red)";
@@ -366,7 +371,7 @@ function tabValuacion(list){
   const q=VAL.q.toLowerCase();
   let arr=list.filter(r=>!q || r.name.toLowerCase().includes(q) || (r.code||"").toLowerCase().includes(q));
   arr.sort((a,b)=>Math.abs(b.dif)-Math.abs(a.dif));
-  const totGap=list.reduce((a,r)=>a+(r.valObj-r.val),0);
+  const totGap=list.reduce((a,r)=>a+Math.abs(r.valObj-r.val),0);
   const rows=arr.map(r=>{
     const objetivo=Math.round(r.valObj);
     const difTxt=(r.dif<0?"−":"+")+money(Math.abs(r.dif)).slice(1);
@@ -381,7 +386,7 @@ function tabValuacion(list){
       <div class="tr-r"><button class="mini-btn pri" onclick="revalorizar(${r.id})" title="Corrige el valor a ${money(objetivo)} con la herramienta oficial de Odoo. No toca la contabilidad.">🔧 Corregir</button></div>
     </div>`;
   }).join('');
-  return `<div class="note">⚖️ <b>Valor roto.</b> Solo están acá los productos donde Odoo <b>perdió el valor</b> del stock: lo dejó en <b>negativo</b> (imposible) o casi en cero, por haber entregado sin ingresar antes. <b>Debería valer = cantidad × costo del motor</b> (última compra o costo manual). <b>Corregir</b> lleva el valor a ese número con la herramienta oficial de Odoo; <b>no genera asiento contable</b>. <br><b>Ojo:</b> los productos cuyo valor de Odoo es más bajo <b>solo por inflación</b> (el costo subió, pero el valor guardado es el promedio real de lo que pagaste) <b>NO están acá</b> — ese valor es correcto y subirlo inflaría el inventario. De raíz: <b>ingresar la mercadería antes de entregarla</b>.</div>
+  return `<div class="note">⚖️ <b>Valor roto.</b> Están acá los productos donde Odoo tiene el valor del stock <b>roto</b>: <b>negativo</b> (imposible) o casi en cero, por haber entregado sin ingresar antes; o <b>inflado al doble o más</b>, por entradas viejas cargadas con el precio de la caja como si fuera el de la unidad. <b>Debería valer = cantidad × costo del motor</b> (última compra o costo manual). <b>Corregir</b> lleva el valor a ese número con la herramienta oficial de Odoo; <b>no genera asiento contable</b>. <br><b>Ojo:</b> los productos cuyo valor de Odoo es más bajo <b>solo por inflación</b> (el costo subió, pero el valor guardado es el promedio real de lo que pagaste) <b>NO están acá</b> — ese valor es correcto y subirlo inflaría el inventario. De raíz: <b>ingresar la mercadería antes de entregarla</b>.</div>
    <div class="toolbar">
      <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4-4"/></svg><input id="valq" placeholder="Buscar producto o código…" value="${esc(VAL.q)}"></div>
      <button class="mini-btn" onclick="valSelAll()">Seleccionar todos (${arr.length})</button>
@@ -400,6 +405,13 @@ function bindVal(){
 }
 function valSelAll(){ grupo("torcido").forEach(r=>VAL.sel.add(r.id)); repintarBody(); }
 
+// Odoo no deja BAJAR el valor más allá de lo que tienen las capas con unidades: el exceso está en
+// movimientos viejos que ya no tienen ninguna. Se explica en criollo en vez del error técnico.
+function errValuacion(e){
+  const m=String((e&&e.message)||e);
+  if(/no puede ser negativo|cannot be negative/i.test(m)) return "Odoo no permite bajar este valor con la revalorización: el exceso está en movimientos viejos que ya no tienen unidades (las unidades de hoy ya están bien valuadas). Hay que corregirlo por sistema: avisale a Diego.";
+  return "No se pudo corregir: "+m;
+}
 // Revalorización con el asistente nativo de Odoo (no genera asiento; valorización manual_periodic).
 async function revalorizarUno(r){
   const wiz=await rpc("stock.valuation.layer.revaluation","create",[{product_id:r.id,company_id:1,added_value:0,reason:"Revalorización desde EyG Core · Control de Depósito"}]);
@@ -416,7 +428,7 @@ async function revalorizar(id){
   const objetivo=Math.round(r.valObj);
   if(!confirm(`Corregir la valuación de "${cleanName(r.name)}":\n\n• Hoy Odoo dice:  ${money(r.val)}${r.val<0?"   (imposible)":""}\n• Va a quedar:  ${money(objetivo)}   (= ${nf(r.qty)} u × ${money(r.costo)})\n\nUsa la herramienta oficial de Odoo. No toca la contabilidad. ¿Confirmás?`)) return;
   try{ await revalorizarUno(r); toast("✓ Corregido a "+money(objetivo)); VAL.sel.delete(id); await cargar(); }
-  catch(e){ alert("No se pudo corregir: "+(e.message||e)); }
+  catch(e){ alert(errValuacion(e)); }
 }
 async function revalorizarSel(){
   const ids=[...VAL.sel]; const list=grupo("torcido").filter(r=>ids.includes(r.id) && r.qty>0 && r.costo>0);
