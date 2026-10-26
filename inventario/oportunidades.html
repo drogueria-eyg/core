@@ -1056,6 +1056,16 @@ function pintarRotacionMedida(){
    institucionales (ya cuentan como esa oferta), ni las listas 2 y 3 (precios para instituciones, no
    salen en el panel). Es sólo el número de la tarjeta: no lo usa ningún cálculo. */
 let CAPA_KPI=null;
+// el detalle de la capa cuando se toca "en pérdida" o "sin stock" (no está en la lista de abajo)
+function capaAvisoFoco(){
+  if(!CAPA_KPI||CAPA_KPI.error) return "";
+  const caja=(t,items)=>`<div style="margin:0 0 10px;padding:10px 14px;border-radius:12px;background:#F3FBF9;border:1px solid #CFE6E1;font-size:13px">${t}${items}<div style="margin-top:6px">Se administran en <a href="../comercial/config-precios.html">Motor de precios</a>; acá abajo están las de Oportunidades.</div></div>`;
+  if(FOCO==="perdida" && CAPA_KPI.perdida.length) return caja(`💵 <b>${CAPA_KPI.perdida.length} de la capa del Motor venden bajo el costo</b> en su tramo más barato:`,
+    `<ul style="margin:6px 0 0;padding-left:18px">${CAPA_KPI.perdida.sort((a,b)=>a.margen-b.margen).map(x=>`<li>${esc(String(x.nombre).slice(0,80))} — ${x.desde>1?"desde "+x.desde+" u: ":""}${money(x.precio)} con costo ${money(x.costo)} (margen ${x.margen}%)</li>`).join("")}</ul>`);
+  if(FOCO==="agotadas" && CAPA_KPI.sinStock) return caja(`💵 <b>${CAPA_KPI.sinStock} de la capa del Motor están sin stock</b>: las comerciales no las ven hasta que entre mercadería.`,
+    `<div style="margin-top:6px;color:var(--gris)">${CAPA_KPI.sinStockL.slice(0,40).map(x=>esc(String(x.nombre).replace(/\s*\((Precio|Caja)[^)]*\)\s*$/i,"").slice(0,50))).join(" · ")}${CAPA_KPI.sinStock>40?" y "+(CAPA_KPI.sinStock-40)+" más":""}</div>`);
+  return "";
+}
 async function cargarCapaKPI(){
   try{
     const hoyS=hoy(), L=String(await getParam("eyg.precios_fijos_flat","")||"").split("\n").map(l=>l.split("~"));
@@ -1064,7 +1074,21 @@ async function cargarCapaKPI(){
     const st=tm.length?await EYG.rpc("product.template","read",[tm,["qty_available"]],LANG):[];
     const conStock=new Set(st.filter(t=>(t.qty_available||0)>0).map(t=>t.id));
     let placas={}; try{ placas=JSON.parse(await getParam("eyg.capa_placas","{}")||"{}")||{}; }catch(e){}
-    CAPA_KPI={ conStock:conStock.size, placa:[...conStock].filter(t=>placas[String(t)]).length, sinStock:tm.length-conStock.size };
+    const nom={}; act.forEach(f=>{ nom[+f[0]]=f.slice(8).join("~")||("#"+f[0]); });
+    /* EN PÉRDIDA (mismo criterio que las ofertas: margen redondeado negativo, con el costo EFECTIVO del
+       motor), mirando el TRAMO MÁS BARATO de la escalera: si ese tramo vende bajo el costo, cada venta
+       en esa cantidad pierde plata. Sólo las que tienen stock (sin stock no se vende). */
+    const conS=[...conStock], perdida=[];
+    if(conS.length){
+      const [its,vars]=await Promise.all([
+        EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",conS]]],{fields:["product_tmpl_id","min_quantity","fixed_price"],limit:20000}),
+        EYG.rpc("product.product","search_read",[[["product_tmpl_id","in",conS]]],{fields:["product_tmpl_id","x_costo_motor","x_iva_compra","taxes_id","categ_id"],limit:5000,context:{lang:"es_AR"}})]);
+      const min={}; (its||[]).forEach(i=>{ const t=i.product_tmpl_id[0]; if(!min[t]||i.fixed_price<min[t].p) min[t]={p:i.fixed_price,q:Math.round(i.min_quantity||1)}; });
+      const cos={}; (vars||[]).forEach(v=>{ const t=v.product_tmpl_id[0]; if(!cos[t]){ const c=costoEfectivo(v); if(c>0) cos[t]=c; } });
+      conS.forEach(t=>{ const m=min[t], c=cos[t]; if(!m||!c) return; const mg=mrgDe(m.p,c); if(mg!=null&&mg<0) perdida.push({tmpl:t, nombre:nom[t], precio:m.p, desde:m.q, costo:c, margen:mg}); });
+    }
+    const sinStock=tm.filter(t=>!conStock.has(t)).map(t=>({tmpl:t, nombre:nom[t]}));
+    CAPA_KPI={ conStock:conStock.size, placa:conS.filter(t=>placas[String(t)]).length, sinStock:sinStock.length, sinStockL:sinStock, perdida };
   }catch(e){ CAPA_KPI={error:true}; console.warn("capa (tarjeta ofertas activas):",e); }
   if(!rgDraft) render();
 }
@@ -1608,13 +1632,15 @@ function render(){
     + rulesT.filter(o=>o.tipo==='p'&&STOCK_T[o.target]!=null&&STOCK_T[o.target]<=0).length;
   const nOfTot=ofActivas.length+reglasAct.length;
   const kpis=`<div class="kpis">
-    ${kpi("perdida","🔴 Ofertas en pérdida",nPerd,nPerd?"se venden bajo el costo":"ninguna bajo costo",nPerd?"alerta":"bien")}
+    ${(()=>{ const cp=(CAPA_KPI&&!CAPA_KPI.error)?CAPA_KPI.perdida.length:0, n=nPerd+cp;
+      return kpi("perdida","🔴 Ofertas en pérdida",n,n?(nPerd+" de Oportunidades · "+(CAPA_KPI?(CAPA_KPI.error?"capa sin leer":cp+" de la capa"):"… de la capa")):"ninguna bajo costo",n?"alerta":"bien"); })()}
     ${kpi("ofertas","🏷️ Ofertas activas",
       (CAPA_KPI&&!CAPA_KPI.error)?nOfTot+CAPA_KPI.conStock:nOfTot,
       nOfTot+" de Oportunidades · "+(!CAPA_KPI?"… de la capa":CAPA_KPI.error?"capa sin leer":(CAPA_KPI.conStock+" de la capa ("+CAPA_KPI.placa+" con placa)")),"")}
     ${kpi("costo","💡 Oportunidades por costo",opoVis.length,ocultasCosto.length?(ocultasCosto.length+" ocultas"):"bajas de costo nuevas","oro")}
     ${kpi("stock","📦 Oportunidades por stock",stockLoading?"…":stkAll.length,"por vencer, sobrestock","")}
-    ${kpi("agotadas","⛔ Ofertas sin stock",agot,agot?"apagadas solas":"todas con stock",agot?"apagado":"bien")}
+    ${(()=>{ const cs=(CAPA_KPI&&!CAPA_KPI.error)?CAPA_KPI.sinStock:0, n=agot+cs;
+      return kpi("agotadas","⛔ Ofertas sin stock",n,n?(agot+" de Oportunidades · "+(CAPA_KPI?(CAPA_KPI.error?"capa sin leer":cs+" de la capa"):"… de la capa")):"todas con stock",n?"apagado":"bien"); })()}
     ${kpiPlacas()}
     ${kpiRendimiento()}
     ${kpiRotacion()}
@@ -1689,6 +1715,7 @@ function render(){
     </div>
     ${ver("costo")?sec("costo","💡 Oportunidades por costo", cnt(opos.length,opoVis.length), costoBody):""}
     ${ver("stock")?sec("stock","📦 Oportunidades por stock", stockLoading?"…":cnt(oStock.length,stkAll.length), osBody, `<button class="btn ghost sm" onclick="refrescarStockOpo()" ${stockLoading?"disabled":""}>🔄 Actualizar</button>`):""}
+    ${capaAvisoFoco()}
     ${(FOCO==="ofertas"&&CAPA_KPI&&!CAPA_KPI.error&&CAPA_KPI.conStock)?`<div style="margin:0 0 10px;padding:10px 14px;border-radius:12px;background:#F3FBF9;border:1px solid #CFE6E1;font-size:13px">💵 Además hay <b>${CAPA_KPI.conStock} precios especiales</b> de la capa temporal del Motor (${CAPA_KPI.placa} con placa) que las comerciales ven en su panel. Se administran en <a href="../comercial/config-precios.html">Motor de precios</a>; acá abajo están las de Oportunidades.</div>`:""}
     ${verOf?sec("ofertas","🏷️ Ofertas, combos y descuentos", cnt(nOf,nOfT), ofBody, `<button class="btn sm" onclick="rgNueva('desc','ofertas')">+ Nueva</button>`):""}`;
 
