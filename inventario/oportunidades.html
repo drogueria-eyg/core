@@ -320,6 +320,7 @@
 <script src="../assets/ofertas-canal.js?v=20261014"></script>
 <script src="../assets/ofertas-rend.js?v=20261022b"></script>
 <script src="../assets/ofertas-asesor.js?v=20261026"></script>
+<script src="../assets/capa.js?v=20261027"></script>
 <script>
 /* ============ EyG Core · Inventario · Oportunidades y Ofertas ============ */
 const LANG={context:{lang:"es_AR"}};
@@ -1049,6 +1050,330 @@ function pintarRotacionMedida(){
     '<div class="mb">'+cuerpo+'</div></div></div>';
 }
 
+/* ===================== 📶 ESCALERAS Y PRECIOS ESPECIALES (capa del Motor) — 27/10/2026 =====================
+   Todo se crea y se edita ACÁ (antes la capa sólo se manejaba en el Motor de precios, que ahora la
+   muestra en solo lectura). La lógica de la capa vive en assets/capa.js (EYGCapa) y es la misma que
+   usaba el Motor: mismo formato, mismo chequeo de piso y costo, mismo cartel de confirmación.
+   · Escalera por volumen: cantidad de tramos, descuento máximo (éticos: sobre el PVP; resto: sobre la
+     base) y tope en cajas, para UN producto o un LABORATORIO entero. 1 tramo = precio único CON IVA.
+   · Precio para instituciones (listas 2 y 3, NETO): en la misma pantalla, para el producto.
+   · LA CAPA Y LAS OFERTAS DE ESTA PANTALLA CONVIVEN (no se borra nada solo): el motor ya decide.
+     Una oferta de precio único MANDA mientras está vigente y, al terminar, vuelve sola la escalera de
+     la capa (escalera permanente + oferta temporal). Un descuento % o $ "sobre la escalera" se aplica
+     ENCIMA de cada tramo de la capa (escalera + descuento extra). El 27/10 había 20 productos así, a
+     propósito. El editor y las filas muestran cómo convive cada uno.
+   · Al guardar, el motor recalcula ese producto en segundos y se muestra LO QUE QUEDÓ PUBLICADO en
+     Odoo (tramo por tramo, con su margen), con un botón para deshacer. Un laboratorio entero necesita
+     la corrida completa del motor: se aplica en unos minutos. */
+let CAPA={1:[],2:[],3:[]}, CAPA_OK=false, CAPA_TIER=1, CAPA_PLM={}, CAPA_DESHACER=null, CAPA_WARN=null, CAPA_PUB=null;
+async function capaCargar(){
+  try{
+    const T=await EYGCapa.leerTodo(); CAPA={1:T[1].lineas,2:T[2].lineas,3:T[3].lineas};
+    try{ CAPA_PLM=JSON.parse(await getParam("eyg.capa_placas","{}")||"{}")||{}; }catch(e){ CAPA_PLM={}; }
+    CAPA_OK=true;
+  }catch(e){ console.warn("capa:",e); CAPA_OK="error"; }
+  if(!rgDraft) render();
+}
+const capaClave=e=>EYGCapa.claveDe(e);
+const capaInst=tmpl=>({2:CAPA[2].find(x=>!x.espejo&&x.tmpl===tmpl)||null, 3:CAPA[3].find(x=>!x.espejo&&x.tmpl===tmpl)||null});
+function capaDet(e){
+  if(e.tier!==1) return `precio único <b>${money(e.precio)}</b> <small style="color:var(--gris2)">neto</small>`;
+  if(e.tramos===1) return `precio único <b>${money(e.precio)}</b> <small style="color:var(--gris2)">con IVA</small>`;
+  const p=[e.tramos>1?e.tramos+" tramos":"tramos del motor"]; if(e.descmax>0) p.push("desc. máx "+Math.round(e.descmax*100)/100+"%"); if(e.tope>0) p.push("tope "+e.tope);
+  return "escalera · "+p.join(" · ")+(e.perforar?` · <span style="color:var(--bad);font-weight:700">perforación autorizada</span>`:"");
+}
+const qCapa=e=>hay(e.nombre, e.lab?"laboratorio":"", String(e.tmpl||""));
+const capaOfVig=o=>o&&!o.pausada&&!(o.hasta&&o.hasta<hoy());
+function capaConviveTxt(o){
+  const v=capaOfVig(o)?(o.hasta?" hasta el "+fmtF(o.hasta):" sin vencimiento"):" (hoy no está activa)";
+  return (o.modo==="precio"||o.reemplaza)
+    ? `Este producto tiene una <b>oferta de precio único</b> en esta pantalla (${o.modo==="precio"?money(o.valor):o.modo==="pct"?"−"+rgPct(o.valor)+"%":"−"+money(o.valor)}${v}). <b>Conviven:</b> mientras la oferta esté vigente manda ella; cuando termine, queda esta escalera.`
+    : `Este producto tiene un <b>descuento sobre la escalera</b> en esta pantalla (${o.modo==="pct"?"−"+rgPct(o.valor)+"%":"−"+money(o.valor)}${v}). <b>Conviven:</b> ese descuento se aplica encima de cada tramo de esta escalera.`;
+}
+// chip de la fila de la capa: la oferta de esta pantalla que tiene encima
+function capaChipOferta(e){
+  if(e.tier!==1||!e.tmpl) return "";
+  const o=SYNC_OF.find(x=>x.tipo==='p'&&x.target===e.tmpl&&capaOfVig(x)); if(!o) return "";
+  return (o.modo==="precio"||o.reemplaza)
+    ? `<span class="chip c-oro" title="Mientras esté vigente manda la oferta; al terminar vuelve esta escalera">🏷️ oferta de precio único encima${o.hasta?" hasta "+fmtF(o.hasta):""}</span>`
+    : `<span class="chip c-oro" title="El descuento de la oferta se aplica encima de cada tramo">🏷️ + ${o.modo==="pct"?rgPct(o.valor)+"%":money(o.valor)} de oferta encima</span>`;
+}
+// chip de la fila de una oferta de esta pantalla: la escalera de la capa que tiene debajo
+function capaChipRegla(o){
+  if(CAPA_OK!==true||o.tipo!=='p') return "";
+  const e=CAPA[1].find(x=>!x.espejo&&x.tmpl===o.target&&!x.pausado); if(!e) return "";
+  return `<span class="chip c-gris" title="${(o.modo==="precio"||o.reemplaza)?"Mientras esta oferta esté vigente manda ella; al terminar vuelve la escalera de la capa":"Este descuento se aplica sobre cada tramo de la escalera de la capa"}">📶 ${(o.modo==="precio"||o.reemplaza)?"al terminar vuelve su escalera":"sobre su escalera de la capa"}</span>`;
+}
+function capaPlacaThumb(e){
+  if(e.tier!==1||!e.tmpl) return `<div class="fplaca"></div>`;
+  const u=CAPA_PLM[String(e.tmpl)];
+  return `<div class="fplaca">${u?`<img src="${esc(u)}" alt="Placa" loading="lazy" onclick="placaVer('${esc(u)}')">`:`<button class="sinplaca" type="button" title="Subir la placa" onclick="capaPlacaSubirOp(${e.tmpl})">${SVG_SINPLACA}Sin<br>placa</button>`}</div>`;
+}
+function filaCapa(e){
+  const hoyS=hoy(), venc=e.hasta&&e.hasta<hoyS;
+  const est=e.pausado?`<span class="chip c-gris">⏸ pausada</span>`:venc?`<span class="chip c-bad">vencida</span>`:"";
+  const lab=e.lab?`<span class="chip" style="background:#ede6fd;color:#5b21b6">🏭 laboratorio</span>`:"";
+  const al=(e.tier===1&&CAPA_KPI&&CAPA_KPI.perdida)?CAPA_KPI.perdida.find(x=>x.tmpl===e.tmpl):null;
+  const bp=(!al&&e.tier===1&&CAPA_KPI&&CAPA_KPI.bajoPiso)?CAPA_KPI.bajoPiso.find(x=>x.tmpl===e.tmpl):null;
+  const sub=(al?`<div class="ofalerta costo">⛔ desde ${al.desde} u publica ${money(al.precio)} y el costo es ${money(al.costo)}</div>`:"")
+    +(bp?`<div class="ofalerta" style="color:#a1560f">⚠ desde ${bp.desde} u publica ${money(bp.precio)}, bajo el piso de su categoría (${money(bp.piso)}) sin haberlo autorizado</div>`:"")
+    +(e.tier===1&&e.perforar?`<span class="chip c-bad" title="Se confirmó vender por debajo del piso de margen (o del costo)">perforación autorizada</span>`:"")
+    +capaChipOferta(e)
+    +pcChip("motor:"+e.tmpl);
+  const k=esc(capaClave(e));
+  const acts=`<button class="btn ghost sm" onclick="capaEditar(${e.tier},'${k}')">Editar</button>`
+    +(e.tier===1&&e.tmpl?`<button class="btn ghost sm" onclick="capaPlacaSubirOp(${e.tmpl})">🖼️ ${CAPA_PLM[String(e.tmpl)]?"Cambiar placa":"Subir placa"}</button>`:"")
+    +`<button class="btn warn sm" onclick="capaQuitar(${e.tier},'${k}')">Quitar</button>`;
+  const cols=col("tipo", e.tier!==1?"institucional":e.tramos===1?"precio único":"escalera")
+    +col(e.tier!==1||e.tramos===1?"precio":"tramos", e.tier!==1||e.tramos===1?money(e.precio):(e.tramos>1?e.tramos:"motor"))
+    +col("desc. máx", e.tier===1&&e.tramos!==1&&e.descmax>0?(Math.round(e.descmax*100)/100)+"%":"—")
+    +col("tope", e.tier===1&&e.tramos!==1&&e.tope>0?e.tope:"—")
+    +col("lista", EYGCapa.TIER_NOM[e.tier])
+    +colVig(e.hasta);
+  const side=`<div class="ppcol"><div class="ppwrap"><button class="pp${e.pausado?" pausada":""}" onclick="capaPausar(${e.tier},'${k}')" title="${e.pausado?"Pausada: tocá para reanudarla":"Activa: tocá para pausarla"}">${e.pausado?SVG_PLAY:SVG_PAUSA}</button><span class="pp-lbl">${e.pausado?"reanudar":"pausar"}</span></div>${e.tier===1&&e.tmpl?destacarBtn("motor:"+e.tmpl):""}</div>`+capaPlacaThumb(e);
+  return filaOf((e.pausado||venc)?" gris":"", esc(e.nombre)+(e.lab?"":` <small style="color:var(--gris2)">#${e.tmpl}</small>`), lab+est+sub, "", cols, acts, side);
+}
+function capaSeccion(){
+  if(CAPA_OK!==true) return CAPA_OK==="error"?`<div class="empty">No pude leer la capa del Motor.</div>`:`<div class="empty">Leyendo la capa del Motor…</div>`;
+  const tabs=[1,2,3].map(t=>{ const n=CAPA[t].filter(e=>!e.espejo).length; return `<span class="fchip ${CAPA_TIER===t?"on":""}" onclick="capaTab(${t})">${t===1?"💊":t===2?"🏨":"🏥"} ${EYGCapa.TIER_NOM[t]} <b>${n}</b></span>`; }).join("");
+  const lista=CAPA[CAPA_TIER].filter(e=>!e.espejo).filter(qCapa);
+  const esp=CAPA[CAPA_TIER].filter(e=>e.espejo).length;
+  const MAX=150;
+  return `<div class="fbar">${tabs}</div>
+    <div class="hint2" style="margin:0 0 8px">${CAPA_TIER===1?"Escaleras por volumen y precios únicos que pisan al motor en la lista de Farmacias (por producto o por laboratorio).":"Precios fijos NETOS de la lista "+(CAPA_TIER===2?"2":"3")+"."}${esp?` Además hay ${esp} copia${esp===1?"":"s"} automática${esp===1?"":"s"} de ofertas de esta pantalla (no se editan acá: siguen a su oferta).`:""}</div>
+    ${lista.length?lista.slice(0,MAX).map(filaCapa).join(""):`<div class="empty">${Q.trim()?"Nada coincide con la búsqueda.":"No hay líneas en esta lista."}</div>`}
+    ${lista.length>MAX?`<div class="hint2">Se muestran ${MAX} de ${lista.length}: usá el buscador de arriba.</div>`:""}`;
+}
+window.capaTab=t=>{ CAPA_TIER=t; render(); };
+
+/* ---------- acciones de fila (se aplican al toque, como el resto de las ofertas) ---------- */
+window.capaPausar=async(tier,clave)=>{
+  const e=CAPA[tier].find(x=>capaClave(x)===String(clave)); if(!e) return;
+  if(e.pausado && tier===1 && e.tmpl && pcAlerta("motor:"+e.tmpl)){ pcPlacaBien("motor:"+e.tmpl); return; }   // la pausó el control de placas
+  toast(e.pausado?"▶ Reanudando…":"⏸ Pausando…");
+  try{ await EYGCapa.escribir(tier, L=>L.map(x=>capaClave(x)===String(clave)?Object.assign({},x,{pausado:!x.pausado}):x));
+    await EYGCapa.recalcular(e); await capaCargar(); cargarCapaKPI(); toast(e.pausado?"▶ Reanudada ✓":"⏸ Pausada ✓"); }
+  catch(err){ toast("No se pudo: "+(err.message||err)); }
+};
+window.capaQuitar=async(tier,clave)=>{
+  const e=CAPA[tier].find(x=>capaClave(x)===String(clave)); if(!e) return;
+  if(!confirm(e.lab?`¿Quitar la escalera de ${e.nombre}? Sus productos vuelven a la escalera del motor en la próxima corrida.`:`¿Quitar «${e.nombre}» de la lista ${EYGCapa.TIER_NOM[tier]}? Vuelve al precio del motor.`)) return;
+  try{ const antes=await EYGCapa.sacar(tier, clave); await EYGCapa.recalcular(e); await capaCargar(); cargarCapaKPI();
+    CAPA_DESHACER={txt:"Quitaste «"+String(e.nombre).slice(0,50)+"»", tiers:{[tier]:antes}, ent:e}; toast("Quitada ✓ (podés deshacerlo)"); render(); }
+  catch(err){ toast("No se pudo: "+(err.message||err)); }
+};
+window.capaPlacaSubirOp=tmpl=>{
+  const inp=document.createElement("input"); inp.type="file"; inp.accept="image/jpeg,image/png,image/webp";
+  inp.onchange=async()=>{ const file=inp.files&&inp.files[0]; if(!file) return;
+    if(!/^image\/(jpeg|png|webp)$/.test(file.type)){ toast("La placa tiene que ser JPG, PNG o WEBP"); return; }
+    if(file.size>5*1024*1024){ toast("La imagen pesa más de 5 MB"); return; }
+    toast("Subiendo la placa…");
+    try{ const ext=file.type==="image/png"?"png":file.type==="image/webp"?"webp":"jpg", ruta="capa-"+tmpl+"-"+Date.now()+"."+ext;
+      const sb=EYG.supa().storage.from(PLACAS_BUCKET); const {error}=await sb.upload(ruta,file,{contentType:file.type,upsert:false,cacheControl:"31536000"}); if(error) throw error;
+      let m={}; try{ m=JSON.parse(await getParam("eyg.capa_placas","{}")||"{}")||{}; }catch(e){}
+      m[String(tmpl)]=sb.getPublicUrl(ruta).data.publicUrl; await setParam("eyg.capa_placas",JSON.stringify(m)); CAPA_PLM=m;
+      placasCtlCorrer(); toast("Placa guardada ✓ Ya la ven las comerciales."); render(); }
+    catch(e){ toast("No pude subir la placa: "+(e.message||e)); } };
+  inp.click();
+};
+
+/* ---------- el editor: Escalera por volumen (y precio para instituciones) ---------- */
+window.capaEditar=async(tier,clave)=>{
+  const e=CAPA[tier].find(x=>capaClave(x)===String(clave)); if(!e) return;
+  COLAPSA['capa']=false;
+  if(tier!==1){ // una línea sólo de instituciones: se edita en el editor del producto
+    rgDraft={clase:'esc', _edit:true, _donde:'capa', esc:{sel:null, tramos:"", precio:"", descmax:"", tope:"", hasta:e.hasta||"", soloInst:true}};
+    await capaElegirProd(e.tmpl, e.nombre); return; }
+  rgDraft={clase:'esc', _edit:true, _donde:'capa', esc:{sel:null, orig:e, tramos:e.tramos||"", precio:e.tramos===1?e.precio:"", descmax:e.descmax||"", tope:e.tope||"", hasta:e.hasta||""}};
+  if(e.lab) await capaElegirLab(e.lab, e.labId, e.nombre); else await capaElegirProd(e.tmpl, e.nombre);
+};
+let _capaBusq=[], _capaBusqT=null;
+window.capaBuscar=q=>{ clearTimeout(_capaBusqT); _capaBusqT=setTimeout(async()=>{
+  const box=document.getElementById("capa-res"); if(!box) return;
+  if(String(q||"").trim().length<2){ box.innerHTML=""; return; }
+  box.innerHTML=`<div class="ofbitem" style="color:var(--gris)">Buscando…</div>`;
+  try{ const r=await EYGCapa.buscar(q);
+    const t=x=>`<div style="padding:5px 10px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--gris2);background:#f4f7f7">${x}</div>`;
+    box.innerHTML=(r.labs.length?t("Laboratorios (escalera para todos sus productos)")+r.labs.map(i=>`<div class="ofbitem" style="background:#faf8ff;border-left:3px solid #7c3aed" onclick='capaElegirLab(${JSON.stringify(i.lab)},${i.labId},${JSON.stringify(i.nombre)})'>🏭 <b style="color:#5b21b6">${esc(i.nombre)}</b> <small style="color:var(--gris2)">por ${esc(i.et)} · ${i.n} producto${i.n===1?"":"s"} · ${esc(i.fam.map(f=>f[0].toLowerCase()+" "+f[1]).join(" · "))}</small></div>`).join(""):"")
+      +(r.prods.length?t("Productos")+r.prods.map(p=>`<div class="ofbitem" onclick='capaElegirProd(${p.tmpl},${JSON.stringify(p.nombre)})'>🔖 ${esc(p.nombre)} <small style="color:var(--gris2)">${esc(p.sku)}</small></div>`).join(""):"")
+      ||`<div class="ofbitem" style="color:var(--gris)">Sin resultados</div>`;
+  }catch(e){ box.innerHTML=`<div class="ofbitem" style="color:var(--bad)">No pude buscar: ${esc(e.message||e)}</div>`; }
+}, 300); };
+window.capaElegirProd=async(tmpl,nombre)=>{
+  if(!rgDraft||rgDraft.clase!=='esc') return;
+  const E=rgDraft.esc; E.sel={tmpl, nombre, cargando:true}; render();
+  try{ await EYGCapa.cargarReglas(); const info=await EYGCapa.infoProducto(tmpl);
+    E.sel=Object.assign({tmpl, nombre:info.nombre||nombre}, {info});
+    // lo que ya tiene este producto en la capa y en Oportunidades
+    if(!E.orig && !E.soloInst){ const ya=CAPA[1].find(x=>x.tmpl===tmpl); if(ya){ E.orig=ya; E.tramos=ya.tramos||""; E.precio=ya.tramos===1?ya.precio:""; E.descmax=ya.descmax||""; E.tope=ya.tope||""; E.hasta=ya.hasta||""; } }
+    const ins=capaInst(tmpl); E.inst2=ins[2]?ins[2].precio:""; E.inst3=ins[3]?ins[3].precio:""; E.inst2o=ins[2]; E.inst3o=ins[3];
+    E.sync=SYNC_OF.find(o=>o.tipo==='p'&&o.target===tmpl)||null;
+  }catch(e){ E.sel={tmpl, nombre, error:e.message||String(e)}; }
+  render();
+};
+window.capaElegirLab=async(lab,labId,nombre)=>{
+  if(!rgDraft||rgDraft.clase!=='esc') return;
+  const E=rgDraft.esc; E.sel={lab, labId, nombre, cargando:true}; render();
+  try{ await EYGCapa.cargarReglas();
+    if(!E.orig){ const ya=CAPA[1].find(x=>x.lab===lab&&x.labId===labId); if(ya){ E.orig=ya; E.tramos=ya.tramos||""; E.descmax=ya.descmax||""; E.tope=ya.tope||""; E.hasta=ya.hasta||""; } }
+    const propias=new Set(CAPA[1].filter(x=>x.tmpl&&!x.espejo).map(x=>x.tmpl));
+    E.sel=Object.assign({lab, labId, nombre}, {filas:await EYGCapa.filasLab(lab, labId, propias)});
+  }catch(e){ E.sel={lab, labId, nombre, error:e.message||String(e)}; }
+  render();
+};
+const capaNum=id=>{ const v=(document.getElementById(id)||{}).value; return (v===""||v==null)?"":parseFloat(v); };
+window.capaCampo=(k,v)=>{ if(!rgDraft||!rgDraft.esc) return; rgDraft.esc[k]=v; const b=document.getElementById("capa-prev"); if(b) b.innerHTML=capaPrevHTML(); };
+function capaLeerCampos(E){ ["tramos","precio","descmax","tope","inst2","inst3"].forEach(k=>{ const el=document.getElementById("capa-"+k); if(el) E[k]=el.value===""?"":parseFloat(el.value); }); const h=document.getElementById("capa-hasta"); if(h) E.hasta=h.value||""; }
+function capaPrevHTML(){
+  const E=rgDraft&&rgDraft.esc; if(!E||!E.sel) return "";
+  if(E.sel.cargando) return "Trayendo costo, precios y reglas…";
+  if(E.sel.error) return `<span style="color:var(--bad)">No pude leer: ${esc(E.sel.error)}</span>`;
+  const tr=+E.tramos||0, dm=+E.descmax||0;
+  if(E.sel.lab){
+    const filas=E.sel.filas||[]; const prop=filas.filter(p=>p.propia).length;
+    const conM=filas.filter(p=>!p.propia).map(p=>Object.assign({},p,EYGCapa.ultimoEscalon(p, dm/100, true))).filter(x=>x.margen!=null);
+    const B=[["bajo el costo",x=>x<0,"#b0322f","#fbeceb"],["0 a 15%",x=>x>=0&&x<15,"#a1560f","#fdf3e7"],["15 a 27%",x=>x>=15&&x<27,"#8a6d13","#fcf8e6"],["27 a 40%",x=>x>=27&&x<40,"#146b4a","#e9f6ef"],["40% o más",x=>x>=40,"#0f7d84","#e6f4f4"]];
+    const pills=B.map(([l,t,c,bg])=>{ const n=conM.filter(x=>t(x.margen)).length; return n?`<span style="display:inline-block;margin:3px 5px 0 0;padding:3px 9px;border-radius:999px;font-size:11.5px;font-weight:800;background:${bg};color:${c}">${n} ${l}</span>`:""; }).join("");
+    const neg=conM.filter(x=>x.margen<0);
+    return `Alcanza a <b>${filas.length-prop}</b> productos de <b>${esc(E.sel.nombre)}</b>${prop?` (${prop} tienen su propia línea y no se tocan)`:""}. Así queda el <b>último escalón</b> de cada uno con la regla de su categoría:<div style="margin-top:4px">${pills||"<i>sin productos para calcular</i>"}</div>`
+      +(neg.length?`<div style="margin-top:6px;color:var(--bad);font-weight:700">⚠ ${neg.length} quedaría${neg.length===1?"":"n"} bajo el costo: ${esc(neg.slice(0,6).map(x=>String(x.nombre).split(" (")[0]).join(" · "))}${neg.length>6?" y "+(neg.length-6)+" más":""}</div>`:"")
+      +`<div class="hint2" style="margin-top:6px">Un laboratorio entero se aplica con la corrida completa del motor (unos minutos).</div>`;
+  }
+  const I=E.sel.info; if(!I) return "";
+  const cost=EYGCapa.costoEf(I), r=EYGCapa.reglaMotor(I.catId), piso=(r&&cost>0&&(r.piso||0)<1)?cost/(1-r.piso):0;
+  const mg=(p,c)=>c>0&&p>0?`<b style="color:${p<c?"var(--bad)":"inherit"}">${(Math.round((p-c)/p*1000)/10).toLocaleString("es-AR")}%</b>`:"—";
+  const hoyTr=I.tramos.length?I.tramos.map(t=>`${t.q>1?"desde "+t.q+" u":"1 u"} ${money(t.p)} (${mg(t.p,cost)})`).join(" · "):"sin precio publicado";
+  let prop="";
+  if(!E.soloInst){
+    if(tr===1){ const pr=+E.precio||0, neto=pr/(1+(I.ivaVenta||0)/100); prop=pr>0?`<b>Precio único</b> final ${money(pr)} (neto ${money(neto)}${I.ivaVenta?", IVA "+I.ivaVenta+"%":", exento"}) · margen ${mg(neto,cost)}`:"Poné el precio único (con IVA)."; }
+    else { const u=EYGCapa.ultimoEscalon(I, dm/100, true);
+      prop=u.motivo?`<i>${esc(u.motivo)}: el motor no puede armarle escalera</i>`:`<b>Escalera</b> (${tr>1?tr+" tramos":"tramos del motor"}${E.tope?", tope "+E.tope+" cajas":""}) · ${dm?`desc. máx ${dm}%${I.pvp>0?" sobre el PVP "+money(I.pvp):""} → `:"hasta el piso → "}último escalón <b>${money(u.precio)}</b> · margen ${mg(u.precio,cost)}${piso&&u.precio<piso-0.005?` <span style="color:#a1560f;font-weight:700">bajo el piso ${money(piso)}</span>`:""}`; }
+  }
+  const ins=[[2,E.inst2],[3,E.inst3]].filter(x=>+x[1]>0).map(([t,v])=>`${EYGCapa.TIER_NOM[t]} ${money(+v)} · margen ${mg(+v,cost)}`).join(" · ");
+  return `Costo <b>${money(cost)}</b>${piso?` · piso de su categoría <b>${money(piso)}</b> (${Math.round(r.piso*100)}%)`:""} · stock ${nfmt(Math.round(I.stock))} u<br>Hoy publica: ${hoyTr}${prop?"<br>"+prop:""}${ins?"<br>🏥 "+ins:""}
+    <div class="hint2" style="margin-top:6px">El precio exacto de cada tramo lo arma el motor: al guardar te muestro lo que quedó publicado en Odoo, con su margen.</div>`;
+}
+function capaFormHTML(seg){
+  const E=rgDraft.esc||(rgDraft.esc={}), S=E.sel, esLab=!!(S&&S.lab), I=S&&S.info, et=!!(I&&I.pvp>0);
+  const selTxt=S?`<div class="oftgtsel">${esLab?"🏭":"🔖"} ${esc(S.nombre)}${esLab?"":(I&&I.sku?` <small>${esc(I.sku)}</small>`:"")} ${rgDraft._edit?"":`<button class="btn-mini" onclick="rgDraft.esc.sel=null;render()">cambiar</button>`}</div>`
+    :`<input type="text" id="capa-q" placeholder="Buscá un producto o un laboratorio…" oninput="capaBuscar(this.value)" autocomplete="off"><div id="capa-res" class="ofbusq"></div>`;
+  const n=(id,v,ph,on)=>`<input type="number" id="capa-${id}" step="any" value="${v===""||v==null?"":v}" ${ph?`placeholder="${ph}"`:""} oninput="${on||`capaCampo('${id}',this.value===''?'':parseFloat(this.value))`}">`;
+  const aviso=[];
+  if(S&&!esLab&&E.sync) aviso.push(capaConviveTxt(E.sync));
+  if(E.orig&&!rgDraft._edit) aviso.push(`Ya tiene una línea en la capa: la estás editando.`);
+  const tr=+E.tramos||0;
+  return `<div class="rgform">${seg||""}
+    <div class="fld2" style="margin-bottom:12px"><label>Producto o laboratorio</label>${selTxt}</div>
+    ${aviso.map(a=>`<div class="eticobox">${a}</div>`).join("")}
+    ${S&&!S.cargando&&!S.error?`
+    ${E.soloInst?"":`<div class="grid4">
+      <div class="fld2"><label>Cant. de tramos</label>${n("tramos",E.tramos,"del motor",`capaCampo('tramos',this.value===''?'':parseInt(this.value));render()`)}<div class="hint2">1 = precio único · N = escalera de N tramos · vacío = los del motor</div></div>
+      ${tr===1&&!esLab?`<div class="fld2"><label>Precio único final</label>${n("precio",E.precio,"con IVA")}<div class="hint2">CON IVA: el motor publica el neto</div></div>`
+        :`<div class="fld2"><label>Desc. máximo ${et?"sobre el PVP":"sobre la base"}</label>${n("descmax",E.descmax,"%")}<div class="hint2">vacío = el motor baja hasta el piso</div></div>
+          <div class="fld2"><label>Tope (cajas)</label>${n("tope",E.tope,"franjas")}<div class="hint2">en qué cantidad cae el último tramo</div></div>`}
+      <div class="fld2"><label>Vigencia hasta</label><input type="date" id="capa-hasta" value="${esc(E.hasta||"")}" onchange="capaCampo('hasta',this.value)"><div class="hint2">vacío = sin vencimiento</div></div>
+    </div>`}
+    ${esLab?"":`<div class="grid4" style="margin-top:6px">
+      <div class="fld2"><label>🏨 SAMCOs y clínicas (lista 2)</label>${n("inst2",E.inst2,"del motor")}<div class="hint2">precio NETO · vacío = el del motor${E.inst2o?" (borralo para quitarlo)":""}</div></div>
+      <div class="fld2"><label>🏥 Instituciones (lista 3)</label>${n("inst3",E.inst3,"del motor")}<div class="hint2">precio NETO · vacío = el del motor${E.inst3o?" (borralo para quitarlo)":""}</div></div>
+    </div>`}
+    <div class="fld2" style="margin-top:4px"><label>Cómo queda</label><div id="capa-prev" class="rentbox">${capaPrevHTML()}</div></div>`:S?`<div class="rentbox">${capaPrevHTML()}</div>`:""}
+    <div class="acts2"><button class="cancel" onclick="rgDraft=null;render()">Cancelar</button>${S&&!S.cargando&&!S.error?`<button class="ok" onclick="capaGuardar()">Guardar y aplicar</button>`:""}</div>
+  </div>`;
+}
+
+/* ---------- guardar: chequeo → (cartel) → escribir → motor → lo publicado ---------- */
+window.capaGuardar=async()=>{
+  const E=rgDraft&&rgDraft.esc; if(!E||!E.sel) return;
+  capaLeerCampos(E);
+  const S=E.sel, esLab=!!S.lab, tr=parseInt(E.tramos)||0, pr=+E.precio||0, dm=+E.descmax||0, tp=parseInt(E.tope)||0;
+  const ents=[];
+  if(!E.soloInst){
+    if(esLab && tr===1){ toast("Por laboratorio no se puede un precio único: sería el mismo número para todos. Usá desc. máximo, tope o tramos."); return; }
+    if(!esLab && tr===1 && !(pr>0)){ toast("Para precio único (1 tramo) poné el precio con IVA"); return; }
+    if(tr!==1 && !(dm>0||tp>0||tr>1)){ toast("Definí desc. máximo, tope o cantidad de tramos"); return; }
+    ents.push(Object.assign({tier:1, nombre:S.nombre, precio:tr===1?pr:0, descmax:tr===1?0:dm, tramos:tr, tope:tr===1?0:tp, perforar:false, hasta:E.hasta||"", pausado:E.orig?!!E.orig.pausado:false},
+      esLab?{lab:S.lab, labId:S.labId, tmpl:0}:{tmpl:S.tmpl, lab:"", labId:0}));
+  }
+  const quitarInst=[];
+  if(!esLab) [2,3].forEach(t=>{ const v=+E["inst"+t]||0, o=E["inst"+t+"o"];
+    if(v>0) ents.push({tier:t, tmpl:S.tmpl, lab:"", labId:0, nombre:S.nombre, precio:v, perforar:false, hasta:(o&&o.hasta)||E.hasta||"", pausado:o?!!o.pausado:false});
+    else if(o) quitarInst.push(t); });
+  if(!ents.length && !quitarInst.length){ toast("No hay nada para guardar"); return; }
+  // chequeo de piso y costo (la misma cuenta del Motor), por cada lista
+  const filas=esLab?(S.filas||[]):[Object.assign({},S.info,{nombre:S.nombre})];
+  const chk={bajoCosto:[], bajoPiso:[], sinDato:[], total:0};
+  ents.forEach(en=>{ const c=EYGCapa.chequear(en, filas); c.bajoCosto.forEach(x=>chk.bajoCosto.push(Object.assign(x,{lista:EYGCapa.TIER_NOM[en.tier]}))); c.bajoPiso.forEach(x=>chk.bajoPiso.push(Object.assign(x,{lista:EYGCapa.TIER_NOM[en.tier]}))); chk.total=Math.max(chk.total,c.total); });
+  if(chk.bajoCosto.length||chk.bajoPiso.length){ CAPA_WARN={ents, quitarInst, chk}; capaWarnPintar(); return; }
+  await capaCommit(ents, quitarInst);
+};
+function capaWarnPintar(){
+  const W=CAPA_WARN; if(!W) return; const c=W.chk;
+  const lista=a=>`<div style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin:6px 0">${a.slice(0,60).map(x=>`<div style="display:flex;gap:8px;padding:5px 9px;border-top:1px solid #eef2f1;font-size:12.5px"><span style="flex:1">${esc(String(x.nombre).slice(0,70))} <small style="color:var(--gris2)">${esc(x.lista||"")}</small></span><span>${x.stock>0?"stock "+nfmt(Math.round(x.stock)):"sin stock"}</span><span style="width:230px;text-align:right">${money(x.precio)} · costo ${money(x.costoEf)} · <b>${x.margen.toFixed(1)}%</b></span></div>`).join("")}${a.length>60?`<div style="padding:5px 9px;color:var(--gris2)">…y ${a.length-60} más</div>`:""}</div>`;
+  document.getElementById("modal").innerHTML=`<div class="scrim" onclick="if(event.target===this)capaWarnNo()"><div class="modal" style="max-width:820px">
+    <div class="mh"><h3>${c.bajoCosto.length?"⛔":"⚠"} Revisá antes de aplicar</h3><span style="margin-left:auto"><button class="btn ghost sm" onclick="capaWarnNo()">Cancelar</button></span></div><div class="mb">
+    ${c.bajoCosto.length?`<h4 style="color:var(--bad);margin:0">⛔ ${c.bajoCosto.length} queda${c.bajoCosto.length===1?"":"n"} POR DEBAJO DEL COSTO</h4>${lista(c.bajoCosto)}<label style="display:flex;gap:6px;color:var(--bad);font-weight:700"><input type="checkbox" id="cw-c" onchange="capaWarnSync()"> Confirmo vender por debajo del costo</label>`:""}
+    ${c.bajoPiso.length?`<h4 style="color:#a1560f;margin:14px 0 0">⚠ ${c.bajoPiso.length} queda${c.bajoPiso.length===1?"":"n"} por debajo del piso de margen</h4>${lista(c.bajoPiso)}<label style="display:flex;gap:6px;color:#a1560f;font-weight:700"><input type="checkbox" id="cw-p" onchange="capaWarnSync()"> Confirmo vender con menos margen que el piso</label>`:""}
+    <div style="display:flex;gap:10px;margin-top:14px"><button class="btn" id="cw-go" disabled onclick="capaWarnSi()">Aplicar igual</button><button class="btn ghost" onclick="capaWarnNo()">Volver y corregir</button></div>
+  </div></div></div>`;
+}
+window.capaWarnSync=()=>{ const b=document.getElementById("cw-go"), c=document.getElementById("cw-c"), p=document.getElementById("cw-p"); if(b) b.disabled=(!!c&&!c.checked)||(!!p&&!p.checked); };
+window.capaWarnNo=()=>{ CAPA_WARN=null; cerrarModal(); };
+window.capaWarnSi=async()=>{ const W=CAPA_WARN; CAPA_WARN=null; cerrarModal(); if(!W) return; W.ents.forEach(e=>{ if(e.tier===1) e.perforar=true; }); await capaCommit(W.ents, W.quitarInst); };
+async function capaCommit(ents, quitarInst){
+  const E=rgDraft&&rgDraft.esc; const S=E&&E.sel; if(!S) return;
+  const btn=document.querySelector(".rgform .acts2 .ok"); if(btn){ btn.disabled=true; btn.textContent="Guardando…"; }
+  const deshacer={tiers:{}, sync:null, txt:"Guardaste «"+String(S.nombre).slice(0,50)+"»"};
+  try{
+    const t1=ents.find(e=>e.tier===1);
+    for(const e of ents){ const raw=await EYGCapa.poner(e.tier, e); if(!(e.tier in deshacer.tiers)) deshacer.tiers[e.tier]=raw; }
+    for(const t of quitarInst){ const raw=await EYGCapa.sacar(t, String(S.tmpl)); if(!(t in deshacer.tiers)) deshacer.tiers[t]=raw; }
+    if(btn) btn.textContent="El motor está aplicando…";
+    const modo=await EYGCapa.recalcular(S.lab?{lab:S.lab}:{tmpl:S.tmpl});
+    deshacer.ent=S.lab?{lab:S.lab}:{tmpl:S.tmpl};
+    CAPA_DESHACER=deshacer;
+    rgDraft=null; await capaCargar(); cargarCapaKPI(); if(window._asReproponer) _asReproponer();
+    if(modo==="listo" && S.tmpl){ await capaMostrarPublicado(S.tmpl, S.nombre); }
+    else { toast("Guardado ✓ El motor lo aplica a los productos del laboratorio en la próxima corrida (unos minutos)."); render(); }
+  }catch(err){
+    if(btn){ btn.disabled=false; btn.textContent="Guardar y aplicar"; }
+    toast("No se pudo guardar: "+(err.message||err));
+  }
+}
+/* lo que quedó publicado en Odoo después de guardar: la verdad, tramo por tramo */
+async function capaMostrarPublicado(tmpl, nombre){
+  let P=null, I=null; try{ [P,I]=await Promise.all([EYGCapa.publicado(tmpl), EYGCapa.infoProducto(tmpl)]); }catch(e){}
+  const cost=I?EYGCapa.costoEf(I):0;
+  const mg=p=>cost>0&&p>0?`<b style="color:${p<cost?"var(--bad)":"inherit"}">${(Math.round((p-cost)/p*1000)/10).toLocaleString("es-AR")}%</b>`:"—";
+  const filas=P?P[3].map(t=>`<tr><td>${t.q>1?"desde "+t.q+" u":"1 unidad"}</td><td style="text-align:right"><b>${money(t.p)}</b></td><td style="text-align:right">${I&&I.pvp>0?"−"+(Math.round((1-t.p/I.pvp)*10000)/100).toLocaleString("es-AR")+"% PVP":""}</td><td style="text-align:right">${mg(t.p)}</td></tr>`).join(""):"";
+  const inst=P?[[16,"🏨 SAMCOs y clínicas"],[5,"🏥 Instituciones"]].filter(([l])=>P[l]!=null).map(([l,n])=>`<tr><td>${n}</td><td style="text-align:right"><b>${money(P[l])}</b></td><td></td><td style="text-align:right">${mg(P[l])}</td></tr>`).join(""):"";
+  document.getElementById("modal").innerHTML=`<div class="scrim" onclick="if(event.target===this)cerrarModal()"><div class="modal" style="max-width:620px">
+    <div class="mh"><h3>✓ Así quedó publicado en Odoo</h3><span style="margin-left:auto"><button class="btn ghost sm" onclick="cerrarModal();render()">Listo</button></span></div><div class="mb">
+    <div style="font-weight:700;margin-bottom:8px">${esc(nombre)}</div>
+    ${(()=>{ const o=SYNC_OF.find(x=>x.tipo==='p'&&x.target===tmpl&&capaOfVig(x)); if(!o) return ""; return (o.modo==="precio"||o.reemplaza)?`<div class="eticobox">🏷️ Hoy <b>manda la oferta de precio único</b> de esta pantalla${o.hasta?" (hasta el "+fmtF(o.hasta)+")":""}: lo de abajo es ese precio. La escalera que guardaste queda lista y aparece sola cuando la oferta termine.</div>`:`<div class="eticobox">🏷️ Encima de esta escalera corre el descuento de oferta de esta pantalla (${o.modo==="pct"?"−"+rgPct(o.valor)+"%":"−"+money(o.valor)}): lo de abajo ya lo incluye.</div>`; })()}
+    ${filas?`<table class="rend-tabla"><thead><tr><th>Farmacias (lista 1)</th><th class="num">Precio</th><th></th><th class="num">Margen</th></tr></thead><tbody>${filas}${inst}</tbody></table>`:`<div class="empty">No pude leer lo publicado.</div>`}
+    <div class="hint" style="margin-top:8px">Costo ${money(cost)} (el mismo con que calcula el motor). Precios como están en Odoo, al centavo.</div>
+    <div style="display:flex;gap:10px;margin-top:14px"><button class="btn" onclick="cerrarModal();render()">Listo</button><button class="btn ghost" onclick="capaDeshacer()">↶ Deshacer</button></div>
+  </div></div></div>`;
+}
+window.capaDeshacer=async()=>{
+  const D=CAPA_DESHACER; if(!D) return; cerrarModal();
+  if(!confirm(D.txt+": ¿lo deshago? Vuelve todo a como estaba antes.")) return;
+  try{ for(const t of Object.keys(D.tiers)) await EYGCapa.restaurar(+t, D.tiers[t]);
+    if(D.sync){ SYNC_OF=D.sync; await Promise.all([setParam(KEY_SYNC_OF, JSON.stringify(SYNC_OF)), setParam(KEY_SYNC_OF_FLAT, ofSyncFlat(SYNC_OF))]); try{ await sincronizarEspejoInst(); }catch(e){} }
+    if(D.ent) await EYGCapa.recalcular(D.ent);
+    CAPA_DESHACER=null; await capaCargar(); cargarCapaKPI(); toast("↶ Deshecho ✓"); render(); }
+  catch(e){ toast("No se pudo deshacer: "+(e.message||e)); }
+};
+/* abrir desde un enlace (el Motor de precios, que ahora es de solo lectura, manda acá): ?capa=<tier>:<clave> */
+function capaDesdeEnlace(){
+  const m=/[?&]capa=([123]):([A-Za-z0-9]+)/.exec(location.search); if(!m) return;
+  const t=+m[1], k=m[2].toUpperCase();
+  const e=CAPA[t].find(x=>capaClave(x)===k);
+  if(e){ CAPA_TIER=t; capaEditar(t,k); }
+  else if(/^\d+$/.test(k)){ rgDraft={clase:'esc', _donde:'capa', esc:{sel:null, tramos:"", precio:"", descmax:"", tope:"", hasta:""}}; COLAPSA['capa']=false; capaElegirProd(+k,"#"+k); }
+}
+
 /* OFERTAS ACTIVAS + CAPA DEL MOTOR (26/10/2026). La tarjeta "Ofertas activas" cuenta también los
    precios especiales de la capa temporal del Motor que ven las comerciales: líneas de UN producto de la
    lista 1 (Farmacias), activas (no pausadas ni vencidas) y CON STOCK. No entran: las líneas por
@@ -1074,21 +1399,23 @@ async function cargarCapaKPI(){
     const st=tm.length?await EYG.rpc("product.template","read",[tm,["qty_available"]],LANG):[];
     const conStock=new Set(st.filter(t=>(t.qty_available||0)>0).map(t=>t.id));
     let placas={}; try{ placas=JSON.parse(await getParam("eyg.capa_placas","{}")||"{}")||{}; }catch(e){}
-    const nom={}; act.forEach(f=>{ nom[+f[0]]=f.slice(8).join("~")||("#"+f[0]); });
+    const nom={}, perf={}; act.forEach(f=>{ nom[+f[0]]=f.slice(8).join("~")||("#"+f[0]); perf[+f[0]]=(f[5]==="1"); });
     /* EN PÉRDIDA (mismo criterio que las ofertas: margen redondeado negativo, con el costo EFECTIVO del
        motor), mirando el TRAMO MÁS BARATO de la escalera: si ese tramo vende bajo el costo, cada venta
        en esa cantidad pierde plata. Sólo las que tienen stock (sin stock no se vende). */
-    const conS=[...conStock], perdida=[];
+    const conS=[...conStock], perdida=[], bajoPiso=[];
     if(conS.length){
       const [its,vars]=await Promise.all([
         EYG.rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",conS]]],{fields:["product_tmpl_id","min_quantity","fixed_price"],limit:20000}),
         EYG.rpc("product.product","search_read",[[["product_tmpl_id","in",conS]]],{fields:["product_tmpl_id","x_costo_motor","x_iva_compra","taxes_id","categ_id"],limit:5000,context:{lang:"es_AR"}})]);
       const min={}; (its||[]).forEach(i=>{ const t=i.product_tmpl_id[0]; if(!min[t]||i.fixed_price<min[t].p) min[t]={p:i.fixed_price,q:Math.round(i.min_quantity||1)}; });
-      const cos={}; (vars||[]).forEach(v=>{ const t=v.product_tmpl_id[0]; if(!cos[t]){ const c=costoEfectivo(v); if(c>0) cos[t]=c; } });
-      conS.forEach(t=>{ const m=min[t], c=cos[t]; if(!m||!c) return; const mg=mrgDe(m.p,c); if(mg!=null&&mg<0) perdida.push({tmpl:t, nombre:nom[t], precio:m.p, desde:m.q, costo:c, margen:mg}); });
+      const cos={}, cat={}; (vars||[]).forEach(v=>{ const t=v.product_tmpl_id[0]; if(!cos[t]){ const c=costoEfectivo(v); if(c>0){ cos[t]=c; cat[t]=v.categ_id&&v.categ_id[0]; } } });
+      conS.forEach(t=>{ const m=min[t], c=cos[t]; if(!m||!c) return; const mg=mrgDe(m.p,c);
+        if(mg!=null&&mg<0) perdida.push({tmpl:t, nombre:nom[t], precio:m.p, desde:m.q, costo:c, margen:mg});
+        else if(!perf[t]){ const pz=pisoDe(c, cat[t]); if(pz>0 && m.p<pz*_OF_TOL_PISO) bajoPiso.push({tmpl:t, nombre:nom[t], precio:m.p, desde:m.q, piso:pz}); } });
     }
     const sinStock=tm.filter(t=>!conStock.has(t)).map(t=>({tmpl:t, nombre:nom[t]}));
-    CAPA_KPI={ conStock:conStock.size, placa:conS.filter(t=>placas[String(t)]).length, sinStock:sinStock.length, sinStockL:sinStock, perdida };
+    CAPA_KPI={ conStock:conStock.size, placa:conS.filter(t=>placas[String(t)]).length, sinStock:sinStock.length, sinStockL:sinStock, perdida, bajoPiso };
   }catch(e){ CAPA_KPI={error:true}; console.warn("capa (tarjeta ofertas activas):",e); }
   if(!rgDraft) render();
 }
@@ -1694,6 +2021,8 @@ function render(){
         :"Todavía no hay ofertas ni descuentos. Tocá <b>+ Nueva oferta o descuento</b>."));
   // si la fila que lo anclaba no se dibujó (una búsqueda o un filtro la dejó afuera), el
   // editor sale arriba: nunca se pierde un borrador a medio escribir.
+  // la sección de la capa se arma ANTES: si el editor está anclado ahí, no tiene que salir también arriba
+  const capaBody = (!FOCO||FOCO==="ofertas") ? edIn("capa")+capaSeccion() : "";
   const editorTop = edIn("top") || ((rgDraft && !_edPuesto) ? rgFormHTML() : "");
   cont.innerHTML=`
     <div class="intro">
@@ -1717,7 +2046,8 @@ function render(){
     ${ver("stock")?sec("stock","📦 Oportunidades por stock", stockLoading?"…":cnt(oStock.length,stkAll.length), osBody, `<button class="btn ghost sm" onclick="refrescarStockOpo()" ${stockLoading?"disabled":""}>🔄 Actualizar</button>`):""}
     ${capaAvisoFoco()}
     ${(FOCO==="ofertas"&&CAPA_KPI&&!CAPA_KPI.error&&CAPA_KPI.conStock)?`<div style="margin:0 0 10px;padding:10px 14px;border-radius:12px;background:#F3FBF9;border:1px solid #CFE6E1;font-size:13px">💵 Además hay <b>${CAPA_KPI.conStock} precios especiales</b> de la capa temporal del Motor (${CAPA_KPI.placa} con placa) que las comerciales ven en su panel. Se administran en <a href="../comercial/config-precios.html">Motor de precios</a>; acá abajo están las de Oportunidades.</div>`:""}
-    ${verOf?sec("ofertas","🏷️ Ofertas, combos y descuentos", cnt(nOf,nOfT), ofBody, `<button class="btn sm" onclick="rgNueva('desc','ofertas')">+ Nueva</button>`):""}`;
+    ${verOf?sec("ofertas","🏷️ Ofertas, combos y descuentos", cnt(nOf,nOfT), ofBody, `<button class="btn sm" onclick="rgNueva('desc','ofertas')">+ Nueva</button>`):""}
+    ${(!FOCO||FOCO==="ofertas")?sec("capa","📶 Escaleras y precios especiales", CAPA_OK===true?String([1,2,3].reduce((a,t)=>a+CAPA[t].filter(e=>!e.espejo).length,0)):"…", capaBody, `<button class="btn sm" onclick="rgNueva('esc','capa')">+ Nueva escalera</button>`):""}`;
 
   /* El cuadro de rentabilidad se pinta aparte (rgActualizarRent escribe en #rg-rent), así que
      hay que volver a pintarlo después de cada render o queda el "Calculando el costo…". */
@@ -1998,7 +2328,7 @@ function filaRegla(o){
   const acts=`<button class="btn ghost sm" onclick="rgEditar('${esc(o.id)}')">Editar</button>`
     +placaBtns("rg",o)
     +`<button class="btn warn sm" onclick="rgEliminar('${esc(o.id)}')">Eliminar</button>`;
-  const sub=(o.tipo==='p'?catBadge(o._cat)+(o._sku?`<span>${esc(o._sku)}</span>`:""):"")+pcChip("sync:"+o.id)+ofAlertaFila(o);
+  const sub=(o.tipo==='p'?catBadge(o._cat)+(o._sku?`<span>${esc(o._sku)}</span>`:""):"")+pcChip("sync:"+o.id)+capaChipRegla(o)+ofAlertaFila(o);
   return filaOf((m!=null&&m<0?" mala":"")+((ag||st.c!=='act')?" gris":""), esc(o.targetName||("#"+o.target)), sub, chips, cols, acts,
     `<div class="ppcol">${botonPausa(o)}${destacarBtn("sync:"+o.id)}</div>`+`<div class="fplaca">${placaThumb("rg",o)}</div>`);
 }
@@ -2018,8 +2348,10 @@ function rgFormHTML(){
   const d=rgDraft;
   const combo=d.clase==='combo';
   const seg = d._edit ? "" : `<div class="seg">
-    <button class="${!combo?'on':''}" onclick="rgSetClase('desc')">🏷️ Descuento (producto o categoría)</button>
+    <button class="${d.clase==='desc'||!d.clase?'on':''}" onclick="rgSetClase('desc')">🏷️ Precio único o descuento</button>
+    <button class="${d.clase==='esc'?'on':''}" onclick="rgSetClase('esc')" title="Escalera por cantidad: tramos, tope y descuento máximo, para un producto o un laboratorio">📶 Escalera por volumen</button>
     ${COMBOS_ACTIVOS?`<button class="${combo?'on':''}" onclick="rgSetClase('combo')">🎁 Combo (varios productos)</button>`:""}</div>`;
+  if(d.clase==='esc') return capaFormHTML(seg);
   if(combo) return `<div class="rgform">${seg}${rgComboFormHTML()}</div>`;
   const tgtTxt=d.target?(d.tipo==='p'?"🔖 ":"📂 ")+esc(d.targetName):"";
   const results=(!d.target && rgBusq.length)?`<div class="ofbusq">${rgBusq.map(r=>`<div class="ofbitem" onclick="rgElegir('${r.k}',${r.id},'${esc((r.name||'').replace(/'/g,''))}')">${r.k==='p'?"🔖":"📂"} ${esc(r.name)}${r.sku?(" · "+esc(r.sku)):""}</div>`).join("")}</div>`:"";
@@ -2210,6 +2542,7 @@ function rgComboFormHTML(){
     <div class="acts2"><button class="cancel" onclick="rgDraft=null;render()">Cancelar</button><button class="ok" onclick="rgGuardarCombo()">${d._edit?"Guardar cambios":"Guardar el combo"}</button></div>`;
 }
 window.rgSetClase=async c=>{ if(!rgDraft) return; rgDraft.clase=c;
+  if(c==='esc'){ rgDraft.esc=rgDraft.esc||{sel:null, tramos:"", precio:"", descmax:"", tope:"", hasta:""}; render(); return; }
   if(c==='combo'){ rgDraft.lineas=rgDraft.lineas||[]; rgDraft.tipo='combo'; if(!rgDraft.codigo){ rgDraft.codigo=await rgProximoCodigo(); } }
   else { rgDraft.tipo=null; rgDraft.target=null; rgDraft.targetName=""; }
   rgBusq=[];rgBusqQ=""; render(); };
@@ -2351,7 +2684,8 @@ function rgAsomar(){
   const inp=el.querySelector('input:not([type=hidden]):not([disabled])');
   if(inp) setTimeout(()=>{ try{ inp.focus({preventScroll:true}); }catch(e){} }, 60);
 }
-window.rgNueva=(clase,donde)=>{ if((donde||'ofertas')==='ofertas') COLAPSA['ofertas']=false;
+window.rgNueva=(clase,donde)=>{ if((donde||'ofertas')==='ofertas') COLAPSA['ofertas']=false; if(donde==='capa') COLAPSA['capa']=false;
+  if(clase==='esc'){ rgDraft={clase:'esc', _donde:(donde||'top'), esc:{sel:null, tramos:"", precio:"", descmax:"", tope:"", hasta:""}}; render(); rgAsomar(); return; }
   rgDraft={id:"of"+Date.now(),clase:clase||'desc',tipo:(clase==='combo'?'combo':null),target:null,targetName:"",modo:"pct",valor:"",reemplaza:true,hasta:"",stock:"",pausada:false,items:[],lineas:[],desc:0,codigo:"",titulo:"",precio:0,precioAntes:0,nota:"",_donde:(donde||'ofertas')};
   if(clase==='combo') rgProximoCodigo().then(c=>{ if(rgDraft&&!rgDraft.codigo){ rgDraft.codigo=c; render(); } });
   rgBusq=[];rgBusqQ="";rgCosto=null;rgRentPara=null;rgTramos=null;rgTramosBase=null;rgApplied=null;
@@ -2696,6 +3030,10 @@ window.rgGuardar=async()=>{
 /* Guarda y aplica la oferta (después de pasar el chequeo, o de confirmarlo en el cartel). */
 async function rgAplicar(rule, d){
   const desdeOpo=d._desdeOpo, desdeStock=d._desdeStock;
+  /* La capa y esta oferta CONVIVEN (27/10/2026): no se borra la línea de la capa; el motor decide (ver
+     el bloque de ESCALERAS). Sólo se avisa cómo va a quedar. */
+  if(rule.tipo==='p' && CAPA_OK===true){ const ya=CAPA[1].find(x=>!x.espejo&&x.tmpl===rule.target);
+    if(ya && !ya.pausado) toast(rule.modo==='precio'||rule.reemplaza?"Tiene escalera en la capa: esta oferta manda mientras esté vigente y al terminar vuelve la escalera":"Tiene escalera en la capa: este descuento se aplica encima de cada tramo"); }
   if(rule.tipo==='p' && d._canal) CANAL_T[rule.target]=d._canal;   // destino ya calculado en el editor
   const i=SYNC_OF.findIndex(o=>o.id===rule.id);
   if(i>=0) SYNC_OF[i]=rule; else SYNC_OF.push(rule);
@@ -2861,7 +3199,7 @@ window.rgEliminar=async id=>{
 
 EYG.requireAuth(["inventario"], perfil=>{
   document.body.innerHTML = EYG.layout(perfil,"oportunidades",'<div id="cont"></div><div id="modal"></div>',"Oportunidades y Ofertas");
-  Promise.resolve(cargar()).then(()=>{ cargarCapaKPI(); setTimeout(()=>cargarAsesor(false),400); });
+  Promise.resolve(cargar()).then(()=>{ cargarCapaKPI(); capaCargar().then(capaDesdeEnlace); setTimeout(()=>cargarAsesor(false),400); });
   /* El rendimiento va en segunda ola: necesita Supabase y dos vueltas a Odoo,
      y no tiene por qué demorar la pantalla. La tarjeta muestra "…" hasta que
      llega, y si falla queda en "—" en vez de mentir un cero. */
