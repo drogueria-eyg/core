@@ -28,9 +28,16 @@
   h2.sec{font-size:16px;font-weight:800;margin:22px 2px 12px;display:flex;align-items:center;gap:9px}
   h2.sec .n{background:var(--teal);color:#fff;font-size:12px;font-weight:800;border-radius:20px;padding:2px 9px}
   /* ===== PANEL DE MÉTRICAS (mismo patrón que Facturación/Pendientes) ===== */
-  .kpis{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:9px;margin-bottom:14px}
-  @media(max-width:1300px){.kpis{grid-template-columns:repeat(4,minmax(0,1fr))}}
-  @media(max-width:1000px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  /* KPIs (28/10/2026): dos filas de 4 agrupadas por tema; todas las tarjetas con la MISMA estructura
+     (título en una línea, número, texto de 2 líneas fijas) para que queden alineadas. */
+  .kpiw{margin-bottom:14px}
+  .kpigrp{font-size:10.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:var(--gris2);margin:0 2px 6px}
+  .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-bottom:10px}
+  @media(max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .kpis .kpi{display:flex;flex-direction:column;align-items:stretch;min-height:104px}
+  .kpis .kpi .l{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .kpis .kpi .n{font-size:26px;margin-top:6px}
+  .kpis .kpi .s{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.8em;margin-top:auto;padding-top:4px}
   /* ---- rendimiento de las ofertas (se despliega, no vive en la pantalla) ---- */
   .kpi.rend{border-color:#bcd9d4;background:linear-gradient(180deg,#f3fbf9,#fff)}
   .rend-res{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:16px}
@@ -41,6 +48,7 @@
   .rend-t .n{font-size:25px;font-weight:800;color:var(--teal);line-height:1.15;margin-top:3px}
   .rend-t .s{font-size:11.5px;color:var(--gris2);margin-top:2px}
   .rend-tabla{width:100%;border-collapse:collapse;font-size:13px}
+  .sp-fila{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)} .sp-main{flex:1;min-width:0} .sp-main b{display:block;font-size:13px}
   /* 🧠 Asesor de ofertas: tarjeta master */
   .as-card{background:linear-gradient(135deg,#06413E 0%,#0B6B66 55%,#0E8C84 100%);color:#fff;border-radius:18px;padding:16px 20px 18px;margin:0 0 16px;box-shadow:0 10px 30px rgba(6,65,62,.25);position:relative;overflow:hidden}
   .as-card:before{content:"";position:absolute;right:-60px;top:-60px;width:220px;height:220px;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.12),transparent 70%)}
@@ -1415,9 +1423,61 @@ async function cargarCapaKPI(){
         else if(!perf[t]){ const pz=pisoDe(c, cat[t]); if(pz>0 && m.p<pz*_OF_TOL_PISO) bajoPiso.push({tmpl:t, nombre:nom[t], precio:m.p, desde:m.q, piso:pz}); } });
     }
     const sinStock=tm.filter(t=>!conStock.has(t)).map(t=>({tmpl:t, nombre:nom[t]}));
-    CAPA_KPI={ conStock:conStock.size, placa:conS.filter(t=>placas[String(t)]).length, sinStock:sinStock.length, sinStockL:sinStock, perdida, bajoPiso };
+    try{ VIG_REG=JSON.parse(await getParam("eyg.ofertas_vigencias","{}")||"{}")||{}; }catch(e){ VIG_REG={}; }
+    CAPA_KPI={ conStock:conStock.size, conStockSet:conStock, placa:conS.filter(t=>placas[String(t)]).length, sinStock:sinStock.length, sinStockL:sinStock, perdida, bajoPiso };
   }catch(e){ CAPA_KPI={error:true}; console.warn("capa (tarjeta ofertas activas):",e); }
   if(!rgDraft) render();
+}
+/* ===================== 🖼️ SIN PLACA (28/10/2026) =====================
+   Las ofertas NUEVAS (alta en los últimos 14 días) que todavía no tienen imagen, de todos lados:
+   Oportunidades, combos y escaleras/precios únicos de la capa. Sólo las vigentes y con stock (lo que
+   ven las comerciales). La fecha de alta sale del registro de vigencias (eyg.ofertas_vigencias, cron de
+   Odoo); las ofertas de esta pantalla también la tienen en su id. Las líneas de la capa que ya existían
+   cuando arrancó el registro (22/10) no tienen fecha: van a "anteriores", igual que las ofertas viejas
+   sin placa (hay algunas sin placa a propósito, como Atracurio o Sidenar): se ven aparte y no suman. */
+let VIG_REG=null, SP_ABIERTO=false, SP_FILTRO="";
+const SP_DIAS=14;
+const spTs=id=>{ const m=/of(\d{13})/.exec(id||""); return m?new Date(+m[1]-3*3600e3).toISOString().slice(0,10):""; };
+function spLista(){
+  const hoyS=hoy(), lim=new Date(Date.now()-SP_DIAS*864e5-3*3600e3).toISOString().slice(0,10);
+  const V=VIG_REG||{}, ini=V.inicio||"";
+  const alta=(key,fb)=>{ const r=V.o&&V.o[key]; const d=r&&r.d&&r.d[0]&&r.d[0][0]; if(d && (!ini || d>ini)) return d; return fb||""; };
+  const vig=h=>!h||h>=hoyS, out=[];
+  SYNC_OF.filter(o=>o.tipo==='p'&&o.target&&!o.pausada&&vig(o.hasta)&&!o.placa&&(STOCK_T[o.target]==null||STOCK_T[o.target]>0)).forEach(o=>
+    out.push({key:"sync:"+o.id, origen:"Oportunidades", nombre:o.targetName||("#"+o.target), alta:alta("sync:"+o.id, spTs(o.id)), stock:STOCK_T[o.target], subir:`placaElegir('rg','${esc(o.id)}')`}));
+  OFERTAS.filter(o=>o&&o.tipo&&!o.pausada&&vig(o.hasta)&&!o._agotada&&!o.placa).forEach(o=>
+    out.push({key:o.id, origen:esCombo(o)?"Combo":"Oferta del panel", nombre:o.titulo||(o.items||[]).map(i=>i.nombre).join(" + "), alta:alta(o.id, (o.creada||"").slice(0,10)||spTs(o.id)), stock:o.stock, subir:`placaElegir('of','${esc(o.id)}')`}));
+  if(CAPA_OK===true && CAPA_KPI && CAPA_KPI.conStockSet) CAPA[1].filter(e=>!e.espejo&&e.tmpl&&!e.pausado&&vig(e.hasta)&&CAPA_KPI.conStockSet.has(e.tmpl)&&!CAPA_PLM[String(e.tmpl)]).forEach(e=>
+    out.push({key:"motor:"+e.tmpl, origen:e.tramos===1?"Precio único (capa)":"Escalera (capa)", nombre:e.nombre, alta:alta("motor:"+e.tmpl,""), stock:null, subir:`capaPlacaSubirOp(${e.tmpl})`}));
+  out.forEach(x=>x.nueva=!!(x.alta && x.alta>=lim));
+  return out.sort((a,b)=>(b.nueva-a.nueva)||String(b.alta).localeCompare(String(a.alta))||a.nombre.localeCompare(b.nombre));
+}
+function kpiSinPlaca(){
+  if(CAPA_OK!==true || !CAPA_KPI) return '<button class="kpi" onclick="abrirSinPlaca()"><span class="l">📷 Sin placa</span><div class="n">…</div><div class="s">revisando…</div></button>';
+  const L=spLista(), nu=L.filter(x=>x.nueva).length, ant=L.length-nu;
+  return '<button class="kpi '+(nu?"alerta":"bien")+'" onclick="abrirSinPlaca()" title="Ofertas nuevas (últimos '+SP_DIAS+' días) que todavía no tienen imagen. Tocá para verlas y subirles la placa.">'+
+    '<span class="l">📷 Sin placa</span><div class="n">'+nu+'</div><div class="s">'+(nu?("oferta"+(nu===1?"":"s")+" nueva"+(nu===1?"":"s")+" sin imagen"):"las nuevas tienen imagen")+(ant?" · "+ant+" anteriores":"")+'</div></button>';
+}
+window.abrirSinPlaca=()=>{ SP_ABIERTO=true; pintarSinPlaca(); };
+window.cerrarSinPlaca=()=>{ SP_ABIERTO=false; cerrarModal(); };
+window.spFiltrar=k=>{ SP_FILTRO=(SP_FILTRO===k?"":k); pintarSinPlaca(); };
+function pintarSinPlaca(){
+  const L=spLista(), F=x=>!SP_FILTRO||x.origen.indexOf(SP_FILTRO)>=0;
+  const nu=L.filter(x=>x.nueva&&F(x)), ant=L.filter(x=>!x.nueva&&F(x));
+  const cnt=k=>L.filter(x=>x.origen.indexOf(k)>=0).length;
+  const chip=(k,t)=>`<span class="fchip ${SP_FILTRO===k?"on":""}" onclick="spFiltrar('${k}')">${t} <b>${cnt(k)}</b></span>`;
+  const fila=x=>`<div class="sp-fila"><div class="sp-main"><b>${esc(String(x.nombre).slice(0,90))}</b>
+      <div class="rend-quien"><span class="chip c-gris">${esc(x.origen)}</span> ${x.nueva?'<span class="chip c-oro">nueva</span>':""} ${x.alta?"alta "+fmtF(x.alta):"alta sin registrar"}${x.stock!=null&&x.stock!==""?" · stock "+nfmt(Math.round(+x.stock)):""}</div></div>
+      <button class="btn sm" onclick="${x.subir}">🖼️ Subir placa</button></div>`;
+  document.getElementById("modal").innerHTML=
+    '<div class="scrim" onclick="if(event.target===this)cerrarSinPlaca()"><div class="modal" style="max-width:900px">'+
+    '<div class="mh"><h3>🖼️ Ofertas sin placa</h3><span style="margin-left:auto"><button class="btn ghost sm" onclick="cerrarSinPlaca()">Cerrar</button></span></div><div class="mb">'+
+    `<div class="fbar">${chip("","Todas").replace("<b>"+cnt("")+"</b>","<b>"+L.length+"</b>")}${chip("Oportunidades","🏷️ Oportunidades")}${chip("Combo","🎁 Combos")}${chip("capa","📶 Capa del Motor")}</div>`+
+    `<h4 style="margin:10px 0 4px">Nuevas (últimos ${SP_DIAS} días) · ${nu.length}</h4>`+
+    (nu.length?nu.map(fila).join(""):'<div class="empty" style="padding:12px">✓ Todas las ofertas nuevas tienen su placa.</div>')+
+    (ant.length?`<details style="margin-top:14px"><summary style="cursor:pointer;font-weight:700">Anteriores sin placa · ${ant.length} <span style="font-weight:400;color:var(--gris2)">(no suman en la tarjeta: algunas no llevan placa a propósito)</span></summary>${ant.slice(0,200).map(fila).join("")}${ant.length>200?'<div class="hint2">Se muestran 200.</div>':""}</details>`:"")+
+    `<div class="hint" style="margin-top:12px">Sólo las ofertas vigentes y con stock: lo que ven las comerciales. Al subir la placa, la oferta sale de esta lista y entra en la rotación del panel; el control de placas toma sus precios en el momento.</div>`+
+    '</div></div></div>';
 }
 /* ===================== 🧠 ASESOR DE OFERTAS (26/10/2026) =====================
    La tarjeta de arriba: propone, una tras otra, las mejores ofertas para armar y las mejoras de
@@ -1925,7 +1985,7 @@ function pintarRendimiento(){
   }
   document.getElementById("modal").innerHTML=
     '<div class="scrim" onclick="if(event.target===this)cerrarRendimiento()"><div class="modal" style="max-width:1080px">'+
-    '<div class="mh"><h3>🎯 Ofertas que se compran</h3>'+
+    '<div class="mh"><h3>🎯 Ofertas que se compran</h3><button class="btn ghost sm" style="margin-left:10px" onclick="abrirRotacionMedida()" title="Antes y después de la rotación de ofertas en el panel de las comerciales">🔄 ¿La rotación rinde?</button>'+
       '<span style="margin-left:auto;display:flex;gap:8px;align-items:center">'+
       '<select onchange="rendPeriodo(this.value)" style="font-size:12px;padding:5px 8px;border-radius:8px;border:1px solid var(--line);font-family:inherit">'+
       [[1,"hoy"],[7,"últimos 7 días"],[30,"últimos 30 días"],[90,"últimos 90 días"],[365,"último año"]]
@@ -1958,20 +2018,21 @@ function render(){
   const agot=[...combosT,...singlesT].filter(o=>o._agotada).length
     + rulesT.filter(o=>o.tipo==='p'&&STOCK_T[o.target]!=null&&STOCK_T[o.target]<=0).length;
   const nOfTot=ofActivas.length+reglasAct.length;
-  const kpis=`<div class="kpis">
-    ${(()=>{ const cp=(CAPA_KPI&&!CAPA_KPI.error)?CAPA_KPI.perdida.length:0, n=nPerd+cp;
-      return kpi("perdida","🔴 Ofertas en pérdida",n,n?(nPerd+" de Oportunidades · "+(CAPA_KPI?(CAPA_KPI.error?"capa sin leer":cp+" de la capa"):"… de la capa")):"ninguna bajo costo",n?"alerta":"bien"); })()}
+  const kpis=`<div class="kpiw"><div class="kpigrp">Ofertas</div><div class="kpis">
     ${kpi("ofertas","🏷️ Ofertas activas",
       (CAPA_KPI&&!CAPA_KPI.error)?nOfTot+CAPA_KPI.conStock:nOfTot,
       nOfTot+" de Oportunidades · "+(!CAPA_KPI?"… de la capa":CAPA_KPI.error?"capa sin leer":(CAPA_KPI.conStock+" de la capa ("+CAPA_KPI.placa+" con placa)")),"")}
-    ${kpi("costo","💡 Oportunidades por costo",opoVis.length,ocultasCosto.length?(ocultasCosto.length+" ocultas"):"bajas de costo nuevas","oro")}
-    ${kpi("stock","📦 Oportunidades por stock",stockLoading?"…":stkAll.length,"por vencer, sobrestock","")}
-    ${(()=>{ const cs=(CAPA_KPI&&!CAPA_KPI.error)?CAPA_KPI.sinStock:0, n=agot+cs;
-      return kpi("agotadas","⛔ Ofertas sin stock",n,n?(agot+" de Oportunidades · "+(CAPA_KPI?(CAPA_KPI.error?"capa sin leer":cs+" de la capa"):"… de la capa")):"todas con stock",n?"apagado":"bien"); })()}
-    ${kpiPlacas()}
     ${kpiRendimiento()}
-    ${kpiRotacion()}
-  </div>`;
+    ${(()=>{ const cp=(CAPA_KPI&&!CAPA_KPI.error)?CAPA_KPI.perdida.length:0, n=nPerd+cp;
+      return kpi("perdida","🔴 En pérdida",n,n?(nPerd+" de Oportunidades · "+(CAPA_KPI?(CAPA_KPI.error?"capa sin leer":cp+" de la capa"):"… de la capa")):"ninguna bajo costo",n?"alerta":"bien"); })()}
+    ${(()=>{ const cs=(CAPA_KPI&&!CAPA_KPI.error)?CAPA_KPI.sinStock:0, n=agot+cs;
+      return kpi("agotadas","⛔ Sin stock",n,n?(agot+" de Oportunidades · "+(CAPA_KPI?(CAPA_KPI.error?"capa sin leer":cs+" de la capa"):"… de la capa")):"todas con stock",n?"apagado":"bien"); })()}
+  </div><div class="kpigrp">Para hacer</div><div class="kpis">
+    ${kpiSinPlaca()}
+    ${kpiPlacas()}
+    ${kpi("costo","💡 Bajas de costo",opoVis.length,ocultasCosto.length?(ocultasCosto.length+" ocultas"):"bajas de costo nuevas","oro")}
+    ${kpi("stock","📦 Stock para liquidar",stockLoading?"…":stkAll.length,"por vencer, sobrestock","")}
+  </div></div>`;
   // ---- el foco de un KPI filtra las secciones ----
   const ver=s=>!FOCO||FOCO===s;
   const soloPerd=FOCO==="perdida", soloAgot=FOCO==="agotadas";
@@ -2052,6 +2113,7 @@ function render(){
   /* El cuadro de rentabilidad se pinta aparte (rgActualizarRent escribe en #rg-rent), así que
      hay que volver a pintarlo después de cada render o queda el "Calculando el costo…". */
   if(rgDraft && rgDraft.tipo==='p' && rgRentPara && rgRentPara===rgDraft.target) rgActualizarRent();
+  if(SP_ABIERTO && document.querySelector("#modal .scrim")) pintarSinPlaca();
 }
 
 /* ============ FILAS ============
