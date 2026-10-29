@@ -76,6 +76,21 @@
   .ml table.top td.l{text-align:left;white-space:normal}
   .ml table.top .rk{color:var(--gris2);font-weight:800;margin-right:8px}
   .ml table.top .code{color:var(--gris2);font-size:11px}
+  /* ---- Matriz unidades por producto mes a mes ---- */
+  .ml .matwrap{overflow-x:auto;margin:0 -4px}
+  .ml table.mat{border-collapse:collapse;width:100%;font-size:12px;min-width:760px}
+  .ml table.mat th{font-size:9.5px;letter-spacing:.3px;text-transform:uppercase;color:var(--gris2);font-weight:800;text-align:right;padding:6px 7px;white-space:nowrap;background:#F7FBFA}
+  .ml table.mat th.l{text-align:left}
+  .ml table.mat td{padding:6px 7px;text-align:right;font-variant-numeric:tabular-nums;border-top:1px solid var(--line);white-space:nowrap}
+  .ml table.mat td.l{text-align:left;white-space:normal;min-width:190px}
+  .ml table.mat td.z{color:var(--gris2)}
+  .ml table.mat td.tot{font-weight:800;color:var(--ink);border-left:1px solid var(--line)}
+  .ml table.mat th.tot{border-left:1px solid var(--line)}
+  .ml table.mat td.fac{color:var(--gris)}
+  .ml table.mat .rk{color:var(--gris2);font-weight:800;margin-right:7px}
+  .ml table.mat .code{color:var(--gris2);font-size:10.5px}
+  .ml table.mat tbody tr:hover{background:var(--agua)}
+  .ml table.mat tfoot td{border-top:2px solid var(--line);font-weight:800;color:var(--teal-deep);background:#F7FBFA}
   .ml .mini{color:var(--gris2);font-size:12.5px;text-align:center;padding:30px 0}
   .ml .foot{font-size:11.5px;color:var(--gris2);margin-top:14px}
 
@@ -89,6 +104,10 @@
     .ml .hero{-webkit-print-color-adjust:exact;print-color-adjust:exact}
     .ml .no-print{display:none!important}
     .ml .card,.ml .kpi{box-shadow:none;break-inside:avoid}
+    .ml .matwrap{overflow-x:visible}
+    .ml table.mat{min-width:0;font-size:8.5px}
+    .ml table.mat th,.ml table.mat td{padding:3px 4px}
+    .ml table.mat td.l{min-width:0}
   }
 </style>
 </head>
@@ -189,15 +208,19 @@ async function detalle(ent){
     const pp=porProd[pid]||(porProd[pid]={u:0,neto:0}); pp.u+=x.product_uom_qty||0; pp.neto+=x.price_subtotal||0;
     const cid=x.order_partner_id&&x.order_partner_id[0]; if(cid){ const fiscal=_com[cid]||cid; clientes.add(fiscal);
       const s=_rub[cid]; if(s==="f"){cliF.add(fiscal);netoF+=x.price_subtotal||0;} else if(s==="i"){cliI.add(fiscal);netoI+=x.price_subtotal||0;} } });
-  const topPids=Object.keys(porProd).map(Number).sort((a,b)=>porProd[b].neto-porProd[a].neto).slice(0,10);
+  // top por UNIDADES (lo que sirve para negociar): hasta 25 productos
+  const orden=Object.keys(porProd).map(Number).sort((a,b)=>(porProd[b].u-porProd[a].u)||(porProd[b].neto-porProd[a].neto));
+  const topPids=orden.slice(0,25), hayMas=Math.max(0, orden.length-topPids.length);
   const names={}; if(topPids.length)(await rpc("product.product","read",[topPids,["name","default_code"]])).forEach(p=>names[p.id]=p);
-  // evolución mes a mes (una consulta por mes, se agrupan solas)
+  // evolución mes a mes POR PRODUCTO (una consulta por mes, agrupada por producto)
   const mres=await Promise.all(MESES.map(d=>rpc("sale.order.line","read_group",
     [[["product_id","in",pids],["order_id.state","in",["sale","done"]],["order_id.date_order",">=",mlim(d)],["order_id.date_order","<",mnext(d)]],
-     ["price_subtotal:sum","product_uom_qty:sum"],[]],{lazy:false})));
-  const serieN=mres.map(r=>(r&&r[0]&&r[0].price_subtotal)||0);
-  const serieU=mres.map(r=>(r&&r[0]&&r[0].product_uom_qty)||0);
-  const det={ porProd, names, topPids, serieN, serieU,
+     ["price_subtotal:sum","product_uom_qty:sum"],["product_id"]],{lazy:false,limit:100000})));
+  const serieN=[], serieU=[], mesU={};   // serie total + mesU[pid] = [u mes0..mes11]
+  mres.forEach((rows,mi)=>{ let sn=0,su=0; (rows||[]).forEach(x=>{ if(!x.product_id) return; const pid=x.product_id[0];
+      const u=x.product_uom_qty||0; (mesU[pid]||(mesU[pid]=new Array(MESES.length).fill(0)))[mi]+=u; sn+=x.price_subtotal||0; su+=u; });
+    serieN.push(sn); serieU.push(su); });
+  const det={ porProd, names, topPids, hayMas, mesU, serieN, serieU,
     clientes:clientes.size, cliF:cliF.size, cliI:cliI.size, netoF, netoI };
   DET[ck]=det; return det;
 }
@@ -280,10 +303,13 @@ function renderFicha(root, det){
     const gpct = prev>0 ? (cur-prev)/prev*100 : (cur>0?100:0);
     const gcls = gpct>=5?"up":gpct<=-5?"down":"flat", garr = gpct>=5?"▲":gpct<=-5?"▼":"▬";
     const mixT=det.netoF+det.netoI;
-    const topRows = det.topPids.map((pid,i)=>{ const nm=det.names[pid]||{}, pp=det.porProd[pid];
-      return `<tr><td class="l"><span class="rk">${i+1}</span>${esc((nm.name||"").replace(/\s*\[.*?\]\s*/g," ").trim()||("#"+pid))}
-        ${nm.default_code?`<div class="code">${esc(nm.default_code)}</div>`:""}</td>
-        <td>${Math.round(pp.u).toLocaleString("es-AR")}</td><td><b>${money(pp.neto)}</b></td></tr>`; }).join("");
+    const matHead = `<th class="l">Producto</th>${MLAB.map(m=>`<th>${m}</th>`).join("")}<th class="tot">Total u</th><th class="fac">Fact. 12m</th>`;
+    const matFilas = det.topPids.map((pid,i)=>{ const nm=det.names[pid]||{}, pp=det.porProd[pid], mu=det.mesU[pid]||[];
+      const nmTxt = esc((nm.name||"").replace(/\s*\[.*?\]\s*/g," ").trim()||("#"+pid));
+      const celdas = MESES.map((_,mi)=>{ const u=Math.round(mu[mi]||0); return `<td class="${u?'':'z'}">${u?u.toLocaleString("es-AR"):'·'}</td>`; }).join("");
+      return `<tr><td class="l"><span class="rk">${i+1}</span>${nmTxt}${nm.default_code?`<span class="code"> · ${esc(nm.default_code)}</span>`:""}</td>${celdas}<td class="tot">${Math.round(pp.u).toLocaleString("es-AR")}</td><td class="fac">${money(pp.neto)}</td></tr>`; }).join("");
+    const totMes = MESES.map((_,mi)=>`<td>${Math.round(det.serieU[mi]||0).toLocaleString("es-AR")}</td>`).join("");
+    const matFoot = `<tr><td class="l">Total ${EJE==="lab"?"del laboratorio":"del proveedor"} (todos los productos)</td>${totMes}<td class="tot">${Math.round(r.u).toLocaleString("es-AR")}</td><td class="fac">${money(r.neto)}</td></tr>`;
     body=`
       <div class="kpis">
         <div class="kpi"><div class="l">Facturación 12 meses</div><div class="v">${money(r.neto)}</div><div class="d">venta neta de sus productos</div></div>
@@ -300,9 +326,13 @@ function renderFicha(root, det){
             <div class="row"><span class="dot" style="background:var(--c-inst)"></span>Instituciones y SAMCO <b>${mixT>0?Math.round(det.netoI/mixT*100):0}%</b> <span class="u">(${det.cliI})</span></div>
           </div></div>
       </div>
-      <div class="card"><h3>Productos que más vendemos ${EJE==="lab"?"de este laboratorio":"de este proveedor"}</h3>
-        <table class="top"><thead><tr><th class="l">Producto</th><th>Unidades</th><th>Facturación 12m</th></tr></thead>
-        <tbody>${topRows||`<tr><td colspan="3" class="mini">Sin ventas en el período.</td></tr>`}</tbody></table>
+      <div class="card"><h3>Unidades por producto, mes a mes <small>lo que le compramos de cada producto · para pedir mejores precios</small></h3>
+        <div class="matwrap"><table class="mat">
+          <thead><tr>${matHead}</tr></thead>
+          <tbody>${matFilas||`<tr><td class="l">Sin ventas en el período.</td></tr>`}</tbody>
+          ${matFilas?`<tfoot>${matFoot}</tfoot>`:""}
+        </table></div>
+        ${det.hayMas?`<div class="foot">Se muestran los 25 productos más vendidos por unidades. Hay ${det.hayMas} más con menos movimiento (el “Total” de abajo incluye a todos).</div>`:""}
       </div>
       <div class="foot">EyG · datos de ${MLAB[0]} a ${MLAB[11]} · ventas netas de pedidos confirmados en Odoo. Alcance = clientes fiscales distintos que compraron al menos una unidad.</div>`;
   }
