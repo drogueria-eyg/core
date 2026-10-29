@@ -209,7 +209,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=121"></script>
+<script src="../assets/core.js?v=122"></script>
 <script src="../assets/liquidacion.js?v=10"></script>
 <script>
 const M=EYG.money, esc=EYG.esc;
@@ -755,6 +755,19 @@ async function comiLoadData(){
     COMI.cerrados.forEach((m,i)=>{ if(cargados[i]) COMI.cierres[m]=cargados[i]; });
   }catch(e){}
 }
+/* Devuelve la lista de epocas con la del mes en curso puesta al dia. Si la tasa no cambio,
+   queda como estaba y no se agrega ruido. */
+function comiEpocas(ib,ih,fb,fh,eb,eh){
+  const cfg=COMI.cfg||EYG.COMI_DEF;
+  const hist=JSON.parse(JSON.stringify(cfg.ratesHist||[]));
+  const nuevas={ inst:{base:ib,high:ih}, farm:{base:fb,high:fh}, externo:{base:eb,high:eh} };
+  const vigentes=(EYG.tasasDe?EYG.tasasDe(COMI.curM,cfg):cfg.rates)||cfg.rates;
+  if(JSON.stringify(vigentes)===JSON.stringify(nuevas)) return hist;
+  const i=hist.findIndex(e=>e&&e.desde===COMI.curM);
+  if(i>=0) hist[i]={desde:COMI.curM, rates:nuevas}; else hist.push({desde:COMI.curM, rates:nuevas});
+  hist.sort((a,b)=>String(a.desde)<String(b.desde)?-1:1);
+  return hist;
+}
 function comiReadKnobs(){
   const v=id=>{ const e=document.getElementById(id); return e?e.value:null; };
   const num=(id,d)=>{ const x=parseFloat(v(id)); return isFinite(x)?x:d; };
@@ -778,7 +791,12 @@ function comiReadKnobs(){
       inst:{ base:num("r_inst_b",D.rates.inst.base*100)/100, high:num("r_inst_h",D.rates.inst.high*100)/100 },
       farm:{ base:num("r_farm_b",D.rates.farm.base*100)/100, high:num("r_farm_h",D.rates.farm.high*100)/100 },
       externo:{ base:num("r_ext_b",D.rates.externo.base*100)/100, high:num("r_ext_h",D.rates.externo.high*100)/100 },
-    }
+    },
+    /* Una tasa distinta ABRE UNA EPOCA desde el mes en curso, en vez de pisar el pasado: los
+       meses anteriores se siguen calculando con la que regia entonces, esten liquidados o no. */
+    ratesHist: comiEpocas(num("r_inst_b",D.rates.inst.base*100)/100, num("r_inst_h",D.rates.inst.high*100)/100,
+      num("r_farm_b",D.rates.farm.base*100)/100, num("r_farm_h",D.rates.farm.high*100)/100,
+      num("r_ext_b",D.rates.externo.base*100)/100, num("r_ext_h",D.rates.externo.high*100)/100)
   });
 }
 function comiRender(){

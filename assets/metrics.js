@@ -1,6 +1,6 @@
 /* ===== EyG · motor compartido de comisión / nivel / salud (puro, sin datos) ===== */
 window.EYGM = (function(){
-  const RATES={ inst:{base:.020,high:.030}, farm:{base:.020,high:.030} };   // farmacias bajó a 2/3% el 1/10/2026
+  const RATES={ inst:{base:.020,high:.030}, farm:{base:.023,high:.028} };   // respaldo: lo normal es que la tasa llegue en d.rates, ya resuelta por mes
   const EXTERNOS=["Samanta Luna"];
   const PERFIL={ inst:{valor:38,activ:12,nom:"Instituciones"}, farm:{valor:25,activ:25,nom:"Farmacias"} };
   const NIV=[{n:"Bronce",e:"🥉",m:1},{n:"Plata",e:"🥈",m:1.05},{n:"Oro",e:"🥇",m:1.10},{n:"Platino",e:"💎",m:1.15},{n:"Diamante",e:"👑",m:1.20}];

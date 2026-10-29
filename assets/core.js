@@ -2457,7 +2457,12 @@ window.EYG = (function(){
        paqueteDesde     = desde qué mes rigen las reglas nuevas (antes, las viejas). */
   const COMI_KEY="eyg.comisiones";
   const COMI_DEF={ metaMeses:3, metaMetodo:"mediana", metaCrecimiento:0.25, metaCuentaVacios:true,
-    rates:{ inst:{base:.020,high:.030}, farm:{base:.020,high:.030}, externo:{base:.030,high:.040} },
+    rates:{ inst:{base:.020,high:.030}, farm:{base:.023,high:.028}, externo:{base:.030,high:.040} },
+    /* EPOCAS DE TASAS. Cada cambio abre una, con el mes desde el que rige, y cada mes se calcula
+       con la que regia entonces. Sin esto, cambiar una tasa movia el numero de cualquier mes que
+       todavia no estuviera liquidado. `rates` de arriba es un espejo de la ultima epoca, para lo
+       que lee la tasa de hoy sin mirar un mes en particular. */
+    ratesHist:[],
     perfilTicket:300000, externoCorte:50000000,
     /* ===== PAQUETE DEL 1/10/2026 =====
        Todo lo que sigue rige desde paqueteDesde. Los meses anteriores se calculan con las reglas
@@ -2605,10 +2610,18 @@ window.EYG = (function(){
 
   /* LAS REGLAS DE UN MES: las del paquete si el mes ya entra, las de antes si no. Una sola puerta,
      para que las tasas y la meta no se calculen distinto en cada pantalla. */
+  /* La tasa que regia un mes: la ultima epoca que empezo en o antes de ese mes. Si no hay
+     ninguna cargada, las de hoy, que es como se comportaba antes. */
+  function tasasDe(curM, cfg){
+    cfg=cfg||_comiCfg||COMI_DEF;
+    const h=(cfg.ratesHist||[]).filter(e=>e&&e.rates&&String(e.desde)<=String(curM))
+      .sort((a,b)=>String(a.desde)<String(b.desde)?-1:1);
+    return h.length ? h[h.length-1].rates : cfg.rates;
+  }
   function reglasDe(curM, cfg){
     cfg=cfg||_comiCfg||COMI_DEF;
     if(paqueteRige(curM, cfg)) return { metaMetodo:cfg.metaMetodo, metaCrecimiento:cfg.metaCrecimiento,
-      metaMeses:cfg.metaMeses, metaCuentaVacios:cfg.metaCuentaVacios, rates:cfg.rates };
+      metaMeses:cfg.metaMeses, metaCuentaVacios:cfg.metaCuentaVacios, rates:tasasDe(curM, cfg) };
     const p=cfg.reglasPrevias||COMI_DEF.reglasPrevias||{};
     const _o=(k,d)=>(p[k]!=null?p[k]:cfg[k]);
     return { metaMetodo:_o("metaMetodo"), metaCrecimiento:_o("metaCrecimiento"),
@@ -2676,7 +2689,7 @@ window.EYG = (function(){
   }
 
   return { supa, rpc, rpcExacto, rpcHead, rpcReintentable, recalcularPreciosTodo, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, r2, money, totalesOdoo, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, ofPids, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
-    COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde, minimoDeVenta, semanasDelMes, semanasDetalle, perfilDe, paqueteRige, reglasDe, moraIndice, moraResta,
+    COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde, minimoDeVenta, semanasDelMes, semanasDetalle, perfilDe, paqueteRige, reglasDe, tasasDe, moraIndice, moraResta,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
