@@ -741,6 +741,16 @@ window.EYG = (function(){
     {key:"deposito-control", dept:"deposito", cat:"Depósito", ico:"🩺", titulo:"Control de Depósito", desc:"Saneá el depósito: contá y ajustá el stock físico, corregí la valuación torcida, completá costos faltantes y limpiá archivados y basura. Deja el inventario fiel a la realidad.", roles:["inventario","maestro"], ready:true, path:()=>"inventario/control.html"},
     {key:"oportunidades", dept:"compras", cat:"Compras", ico:"💡", titulo:"Oportunidades y Ofertas", desc:"Cuando un costo baja, el sistema detecta una oportunidad de oferta. Confirmala (precio, stock, vigencia) o armá combos, y van a la tarjeta de los comerciales.", roles:["inventario"], ready:true, path:()=>"inventario/oportunidades.html"},
     {key:"pendientes", dept:"compras", cat:"Compras", ico:"📋", titulo:"Pendientes de reposición", desc:"Lo que los clientes pidieron y no había stock: qué reponer y para quién. Los comerciales cargan el faltante al vender; dirección y compras lo gestionan hasta reponerlo.", roles:["direccion","finanzas","inventario","comercial","lider","admin","maestro"], ready:true, path:()=>"inventario/pendientes.html"},
+    /* EN PRUEBAS: ficha de laboratorio/proveedor para captación. Métricas de cómo
+       compramos y vendemos sus productos (facturación 12m, alcance en farmacias/
+       instituciones, evolución y top), lista para mostrarle a un proveedor que nos
+       visita (botón Imprimir/PDF). Oculta hasta liberarla: borrar la línea `pruebas`
+       de acá y el {pruebas:…} del EYG.guard() de direccion/metricas-lab.html. */
+    {key:"metricas-lab", dept:"compras", cat:"Compras", ico:"🤝", titulo:"Laboratorios y proveedores",
+      desc:"La ficha de cada laboratorio o proveedor: cuánto vendemos de sus productos, a cuántas farmacias e instituciones llega, cómo viene mes a mes y su top de productos. Pensada para mostrársela a quien nos visita.",
+      roles:["direccion","inventario"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
+      path:()=>"direccion/metricas-lab.html"},
     /* EN PRUEBAS: CRM de contactos (existentes + por conquistar). Oculto para todo
        el equipo hasta terminarlo — sólo super-admins (Diego/German). Para liberarlo:
        borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de datos/contactos.html. */
