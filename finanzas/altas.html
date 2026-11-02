@@ -48,6 +48,12 @@
   @keyframes spin{to{transform:rotate(360deg)}}
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:10px;font-size:14px;font-weight:600;box-shadow:0 8px 26px rgba(0,0,0,.25);z-index:999;opacity:0;transition:opacity .2s;pointer-events:none}
   .toast.show{opacity:1}
+  .hab{border:1px solid var(--line);border-left:4px solid var(--teal);border-radius:11px;padding:11px 13px;margin-top:6px;background:#fff}
+  .hab.falta{border-left-color:#B7791F;background:#fdf9ef}
+  .hab .t{font-size:13.5px;font-weight:700;margin-bottom:4px}
+  .hab .acts{margin-top:9px}
+  .hab .arch{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px}
+  .hab .quitar{border:0;background:none;color:var(--gris2);font:inherit;font-size:11.5px;text-decoration:underline;cursor:pointer;padding:0 4px}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js?v=123"></script>
@@ -60,7 +66,10 @@
    Odoo; acá una persona decide. NINGUNA SE APRUEBA SOLA (Dirección, 2/11/2026:
    "pueden haber intrusos"). Aprueban Germán Banquero y Bárbara Moscato (y los
    admin): la lista vive en el parámetro de Odoo eyg.portal_altas y la que
-   manda es la función, no esta pantalla. En Odoo no hay nada hasta aprobar. */
+   manda es la función, no esta pantalla. En Odoo no hay nada hasta aprobar.
+   LA HABILITACIÓN (DECIDE) YA NO LA PIDE EL FORMULARIO (Dirección, 2/11/2026:
+   frenaba el alta, algunas farmacias no la tienen a mano). Se le pide al cliente
+   y se sube acá; al subirla, la función la lee y la cruza con el CUIT. */
 const esc=s=>EYG.esc(s);
 let D=null, FILTRO="revisar", ABIERTA=null, OCUPADO=false;
 const SEM={verde:["#1E7D46","Todo coincide"],amarillo:["#B7791F","Hay algo para mirar"],rojo:["#B0322F","No cierra"]};
@@ -97,7 +106,7 @@ function render(){
   const n={revisar:real.filter(pend).length, aprobada:real.filter(a=>a.estado==="aprobada").length, rechazada:real.filter(a=>a.estado==="rechazada").length, todas:D.altas.length};
   const lista=FILTRO==="todas"?D.altas:FILTRO==="revisar"?real.filter(pend):real.filter(a=>a.estado===FILTRO);
   const chip=(k,l)=>`<button class="chk ${FILTRO===k?'on':''}" onclick="FILTRO='${k}';render()">${l} · ${n[k]}</button>`;
-  cont.innerHTML=`<p class="intro">Clientes que pidieron acceso desde <a href="https://drogueriaeyg.odoo.com/alta" target="_blank" rel="noopener">drogueriaeyg.odoo.com/alta</a>. El sistema ya leyó la habilitación, consultó el CUIT en ARCA y lo buscó en Odoo; <b>ninguna se aprueba sola</b>. Al aprobar se crea la ficha (o se usa la que ya existe), se carga el legajo y se habilita el usuario del portal con la contraseña que el cliente eligió al pedir el alta; se le avisa por correo. Si se rechaza, en Odoo no queda nada.</p>
+  cont.innerHTML=`<p class="intro">Clientes que pidieron acceso desde <a href="https://drogueriaeyg.odoo.com/alta" target="_blank" rel="noopener">drogueriaeyg.odoo.com/alta</a>. El sistema ya consultó el CUIT en ARCA y lo buscó en Odoo; <b>ninguna se aprueba sola</b>. La habilitación no se pide en el formulario: se le pide al cliente y se sube en cada solicitud, y el sistema la lee y la cruza con el CUIT. Al aprobar se crea la ficha (o se usa la que ya existe), se carga el legajo y se habilita el usuario del portal con la contraseña que el cliente eligió al pedir el alta; se le avisa por correo. Si se rechaza, en Odoo no queda nada.</p>
     <div class="chks">${chip("revisar","Para revisar")}${chip("aprobada","Aprobadas")}${chip("rechazada","Rechazadas")}${chip("todas","Todas")}</div>
     ${lista.length?lista.map(tarjeta).join(""):`<div class="empty">${FILTRO==="revisar"?"No hay solicitudes pendientes de revisión.":"No hay solicitudes en esta vista."}</div>`}`;
 }
@@ -109,10 +118,10 @@ function tarjeta(a){
     <div class="top" onclick="ABIERTA=${abierta?'null':`'${a.id}'`};render()">
       <span title="${sem[1]}" style="width:11px;height:11px;border-radius:50%;background:${sem[0]};flex:none"></span>
       <h3>${esc(d.razon||"")}${d.cartel?` <span style="font-weight:600;color:var(--gris)">· ${esc(d.cartel)}</span>`:""}</h3>
-      ${tipo?`<span class="pill tipo">${esc(tipo)}</span>`:""}${d.prueba?'<span class="pill off">Prueba</span>':""}<span class="pill ${est[0]}">${est[1]}</span>
+      ${tipo?`<span class="pill tipo">${esc(tipo)}</span>`:""}${d.prueba?'<span class="pill off">Prueba</span>':""}${pend(a)&&!(a.archivos||[]).length?'<span class="pill prog">Falta habilitación</span>':""}<span class="pill ${est[0]}">${est[1]}</span>
     </div>
     <div class="meta"><span>📍 ${esc(d.localidad||"")}${d.provincia&&!/santa fe/i.test(d.provincia)?" ("+esc(d.provincia)+")":""}</span><span>CUIT ${esc(fCuit(a.cuit))}</span><span>✉️ ${esc(a.email)}</span><span>📞 ${esc(d.telefono||"")}</span><span>🕒 ${fAR(a.creada)}</span></div>
-    <div class="cuerpo"><b style="color:${sem[0]}">${sem[1]}.</b> ${a.semaforo==="verde"?"CUIT, ARCA, habilitación y titular coinciden.":esc(an.motivo||(an.errores||[]).join(" · ")||"")}</div>
+    <div class="cuerpo"><b style="color:${sem[0]}">${sem[1]}.</b> ${a.semaforo==="verde"?((a.archivos||[]).length?"CUIT, ARCA, habilitación y titular coinciden.":"CUIT y ARCA coinciden. La habilitación todavía no se subió."):esc(an.motivo||(an.errores||[]).join(" · ")||"")}</div>
     ${a.estado==="aprobada"?`<div class="hint" style="margin-top:6px">✅ Aprobada por ${esc(res.por||"")} el ${fAR(res.cuando)}${res.partner_id?` · <a href="https://drogueriaeyg.odoo.com/web#id=${res.partner_id}&model=res.partner&view_type=form" target="_blank" rel="noopener">ver ficha en Odoo</a>`:""}${res.comercial?` · comercial ${esc(res.comercial.nombre)}`:""}${res.mail?` · mail ${esc(res.mail)}`:""}</div>`:""}
     ${a.estado==="rechazada"?`<div class="hint" style="margin-top:6px">✖️ ${esc(res.motivo||"")} — ${esc(res.por||"")} el ${fAR(res.cuando)}${res.mail?` · mail ${esc(res.mail)}`:""}</div>`:""}
     ${abierta?detalle(a):`<div class="acts"><button class="btn ghost sm" onclick="ABIERTA='${a.id}';render()">Ver el análisis</button></div>`}
@@ -123,7 +132,18 @@ function detalle(a){
   const ico=c=>c.ok===true?'<b style="color:#1E7D46">✔</b>':c.ok===false?'<b style="color:#B0322F">✘</b>':'<b style="color:#B7791F">?</b>';
   const checks=(an.checks||[]).map(c=>`<tr><td style="width:22px">${ico(c)}</td><td>${esc(c.texto)}${c.grave&&c.ok===false?' <span class="pill" style="background:#fbe3e1;color:#b0322f">clave</span>':""}</td></tr>`).join("");
   const fila=(k,v)=>v?`<tr><td class="k">${k}</td><td>${esc(v)}</td></tr>`:"";
-  const arch=(a.archivos||[]).map(f=>`<button class="btn ghost sm" onclick="ver('${a.id}','${esc(f.path)}')">${f.tipo==="application/pdf"?"📄":"🖼️"} ${esc(f.nombre)}</button>`).join(" ");
+  const abierta=pend(a), archs=a.archivos||[];
+  const arch=archs.map(f=>`<span><button class="btn ghost sm" onclick="ver('${a.id}','${esc(f.path)}')">${f.tipo==="application/pdf"?"📄":"🖼️"} ${esc(f.nombre)}</button>${abierta?`<button class="quitar" onclick="quitarHab('${a.id}','${esc(f.path)}',this)">quitar</button>`:""}</span>`).join(" ");
+  // La habilitación se pide después del formulario: acá se ve si falta, se le pide
+  // al cliente por WhatsApp con un texto ya escrito y se sube.
+  const pedido="Hola, te escribimos de Droguería EyG por la solicitud de acceso al portal de "+(d.cartel||d.razon||"tu establecimiento")+". Para completar el alta necesitamos la habilitación del local (en farmacias de Santa Fe, la Decisión del Departamento de Inspección de Farmacia). Podés enviarla por este medio, en PDF o en fotos. Gracias.";
+  const wa=waNum(d.telefono||"");
+  const subirBtn=abierta?`<label class="btn ${archs.length?"ghost sm":"sm"}" style="cursor:pointer">${archs.length?"Agregar hojas":"Subir habilitación"}<input type="file" accept="application/pdf,image/jpeg,image/png,image/webp" multiple hidden onchange="subirHab('${a.id}',this)"></label>`:"";
+  const hab=`<div class="hab ${archs.length?"":"falta"}">
+      <div class="t">${archs.length?"Habilitación cargada":"Habilitación pendiente"}</div>
+      ${archs.length?`<div class="arch">${arch}</div>`:`<div style="font-size:13px;line-height:1.45">Hay que pedírsela al cliente y subirla acá. Al subirla, el sistema la lee y la cruza con el CUIT y con ARCA.</div>`}
+      ${abierta?`<div class="acts">${subirBtn}${!archs.length&&wa?`<a class="btn ghost sm" href="https://api.whatsapp.com/send?phone=${wa}&text=${encodeURIComponent(pedido)}" target="_blank" rel="noopener">Pedírsela por WhatsApp</a>`:""}</div>`:""}
+    </div>`;
   // Lo que más importa contra intrusos: si ya es cliente y el contacto no coincide, llamar al de la ficha.
   const cont=(an.checks||[]).find(c=>c.k==="contacto");
   const ficha=an.ficha;
@@ -141,10 +161,10 @@ function detalle(a){
         ${(an.errores||[]).length?`<div class="hint" style="color:#B0322F;margin-top:6px">⚠ ${esc(an.errores.join(" · "))}</div>`:""}
         <div class="sub" style="margin-top:14px">Contacto informado</div>
         <div style="font-size:13px">📞 ${telLinks(d.telefono||"")}<br>✉️ <b>${esc(a.email)}</b><br>📍 ${esc(d.calle||"")}, ${esc(d.localidad||"")} (${esc(d.provincia||"")})</div>
-        <div class="sub" style="margin-top:14px">Habilitación presentada</div><div style="display:flex;gap:6px;flex-wrap:wrap">${arch||'<span class="hint">Sin archivos</span>'}</div>
+        <div class="sub" style="margin-top:14px">Habilitación (DECIDE)</div>${hab}
       </div>
       <div><div class="sub">Lo que dice la habilitación</div>
-        ${h?`<table class="lista">${fila("Es de",h.establecimiento)}${fila("Tipo",h.tipo)}${fila("Número",h.numero)}${fila("Fecha",fFecha(h.fecha))}${fila("Vence",fFecha(h.vencimiento))}${fila("Nombre",h.nombre_establecimiento)}${fila("Domicilio",[h.domicilio,h.localidad].filter(Boolean).join(", "))}${fila("Titular",h.titular_nombre||h.entidad_nombre)}${fila("DNI",h.titular_dni)}${fila("CUIT",h.titular_cuit)}${fila("Matrícula",h.titular_matricula)}${fila("Dir. técnico",h.director_tecnico)}${fila("Antes era de",h.titular_anterior)}${fila("Organismo",h.organismo)}${fila("Nota",h.observaciones)}</table>`:'<div class="hint">No se pudo leer.</div>'}
+        ${h?`<table class="lista">${fila("Es de",h.establecimiento)}${fila("Tipo",h.tipo)}${fila("Número",h.numero)}${fila("Fecha",fFecha(h.fecha))}${fila("Vence",fFecha(h.vencimiento))}${fila("Nombre",h.nombre_establecimiento)}${fila("Domicilio",[h.domicilio,h.localidad].filter(Boolean).join(", "))}${fila("Titular",h.titular_nombre||h.entidad_nombre)}${fila("DNI",h.titular_dni)}${fila("CUIT",h.titular_cuit)}${fila("Matrícula",h.titular_matricula)}${fila("Dir. técnico",h.director_tecnico)}${fila("Antes era de",h.titular_anterior)}${fila("Organismo",h.organismo)}${fila("Nota",h.observaciones)}</table>`:`<div class="hint">${archs.length?"No se pudo leer.":"Todavía no se subió."}</div>`}
         <div class="sub" style="margin-top:14px">ARCA</div>
         ${ar&&ar.existe?`<table class="lista">${fila("Nombre",ar.nombre_completo)}${fila("Estado",ar.estado)}${fila("Domicilio fiscal",[ar.domicilio,ar.localidad,ar.provincia].filter(Boolean).join(", "))}${fila("IVA",ar.iva==="RI"?"Responsable inscripto":ar.iva==="MONO"?"Monotributo "+(ar.categoria_mono||""):ar.iva)}${fila("Actividades",(ar.actividades||[]).map(x=>x.id+" "+String(x.desc).toLowerCase()).join(" · "))}</table>`:`<div class="hint">${esc((ar&&ar.error)||"Sin datos de ARCA")}</div>`}
       </div>
@@ -199,10 +219,11 @@ async function aprobar(id,btn){
     const acceso=u.contrasena==="la que eligió el cliente"
       ? "ingresa con la contraseña que eligió al pedir el alta; se le avisa por correo"
       : "recibe un correo con el enlace para crear la contraseña";
-    const txt="Se va a dar el alta así:\n\n"+
+    const sinHab=!((D.altas.find(x=>x.id===id)||{}).archivos||[]).length;
+    const txt=(sinHab?"ATENCIÓN: todavía no se subió la habilitación. Se puede aprobar igual, pero el legajo queda sin ella.\n\n":"")+"Se va a dar el alta así:\n\n"+
       (ficha?`• Usa la ficha que YA existe: ${ficha.nombre} (no se crea otra)`:`• Crea la ficha: ${nueva&&nueva.vals&&nueva.vals.name}\n• Rubro ${p.rubro} · lista ${lista}`)+
       `\n• Comercial asignado: ${p.comercial&&p.comercial.nombre}`+(p.traspaso?`\n• TRASPASO de cartera: ${p.traspaso.de} → ${p.traspaso.a} (queda registrado en la ficha)`:"")+
-      "\n• Legajo: la habilitación y la constancia de ARCA"+
+      (sinHab?"\n• Legajo: sólo la constancia de ARCA":"\n• Legajo: la habilitación y la constancia de ARCA")+
       `\n• Usuario del portal ${u.login}: ${acceso}`+
       `\n• Aviso a ${((pasos.find(x=>x.que==="aviso")||{}).a||[]).join(", ")}\n\n¿Confirmás?`;
     if(!confirm(txt)) return;
@@ -234,6 +255,41 @@ async function rechazar(id,btn){
   if(btn){ btn.disabled=true; btn.textContent="Rechazando…"; }
   try{ const r=await fn({accion:"rechazar",id,motivo,avisar}); toast("Solicitud rechazada"+(avisar?" · mail "+r.mail:""),true); ABIERTA=null; await cargar(); }
   catch(e){ toast("⚠ "+e.message); if(btn){ btn.disabled=false; btn.textContent="Confirmar rechazo"; } }
+}
+// Las fotos se achican en el navegador (2200 px, JPEG) como hacía el formulario:
+// una foto de celular pasa de 5 MB a menos de 1 MB y se lee igual.
+function achicar(file){
+  return new Promise((ok,mal)=>{ const img=new Image(), url=URL.createObjectURL(file);
+    img.onload=()=>{ const k=Math.min(1,2200/Math.max(img.width,img.height)), w=Math.round(img.width*k), h=Math.round(img.height*k);
+      const cv=document.createElement("canvas"); cv.width=w; cv.height=h; const cx=cv.getContext("2d"); cx.fillStyle="#fff"; cx.fillRect(0,0,w,h); cx.drawImage(img,0,0,w,h);
+      URL.revokeObjectURL(url); cv.toBlob(b=>b?ok(b):mal(new Error("no se pudo procesar")),"image/jpeg",0.86); };
+    img.onerror=()=>{ URL.revokeObjectURL(url); mal(new Error("No se pudo abrir "+file.name)); }; img.src=url; });
+}
+const aB64=blob=>new Promise((ok,mal)=>{ const r=new FileReader(); r.onload=()=>ok(String(r.result).split(",")[1]||""); r.onerror=mal; r.readAsDataURL(blob); });
+async function subirHab(id,input){
+  const files=Array.from(input.files||[]); input.value="";   // copia: input.files es una lista viva
+  if(!files.length||OCUPADO) return;
+  const lbl=input.closest("label"); OCUPADO=true; if(lbl){ lbl.style.opacity=".6"; lbl.firstChild.textContent="Subiendo y leyendo…"; }
+  try{
+    const archivos=[];
+    for(const f of files){
+      if(f.type==="application/pdf"||/\.pdf$/i.test(f.name)){
+        if(f.size>12*1048576) throw new Error(f.name+" supera los 12 MB");
+        archivos.push({nombre:f.name,tipo:"application/pdf",b64:await aB64(f)});
+      } else { const b=await achicar(f); archivos.push({nombre:f.name.replace(/\.[a-z0-9]+$/i,"")+".jpg",tipo:"image/jpeg",b64:await aB64(b)}); }
+    }
+    const r=await fn({accion:"subir",id,archivos});
+    toast("Habilitación cargada · "+({verde:"todo coincide",amarillo:"hay algo para mirar",rojo:"un control clave no coincide"}[r.analisis&&r.analisis.semaforo]||"análisis actualizado"),true);
+    ABIERTA=id; OCUPADO=false; await cargar();
+  }catch(e){ toast("⚠ "+e.message); }
+  finally{ OCUPADO=false; if(lbl&&document.body.contains(lbl)){ lbl.style.opacity=""; } }
+}
+async function quitarHab(id,path,btn){
+  if(OCUPADO||!confirm("¿Quitar este archivo? El análisis se vuelve a hacer con lo que quede.")) return;
+  OCUPADO=true; if(btn){ btn.disabled=true; btn.textContent="quitando…"; }
+  try{ await fn({accion:"quitar",id,path}); toast("Archivo quitado",true); ABIERTA=id; OCUPADO=false; await cargar(); }
+  catch(e){ toast("⚠ "+e.message); }
+  finally{ OCUPADO=false; }
 }
 async function reanalizar(id,btn){
   if(btn){ btn.disabled=true; btn.textContent="Analizando…"; }
