@@ -669,6 +669,11 @@ window.EYG = (function(){
     {key:"legajos", dept:"finanzas", cat:"Administración", ico:"📁", titulo:"Legajos de clientes", desc:"Documentación de alta de cada cliente: habilitación sanitaria y constancia de CUIT, con vencimientos y estado a simple vista. Los archivos quedan pegados al contacto.", roles:["finanzas","cobranzas","admin","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/legajos.html"},
+    /* Altas de clientes: las solicitudes del formulario drogueriaeyg.odoo.com/alta.
+       Ninguna se aprueba sola. Aprueban Germán y Bárbara (concesión por persona,
+       modulos_extra) y los admin; quién puede aprobar lo decide la función portal-alta. */
+    {key:"altas", dept:"finanzas", cat:"Administración", ico:"🪪", titulo:"Altas de clientes", desc:"Clientes que pidieron acceso al portal desde el formulario /alta: la habilitación leída, el CUIT en ARCA y lo que hay en Odoo, para aprobar o rechazar. Nada se crea en Odoo hasta aprobar.", roles:["admin"], ready:true,
+      path:()=>"finanzas/altas.html"},
     /* EN PRUEBAS: consulta crediticia por CUIT (Central de Deudores del BCRA, fuente pública/gratis).
        La página le pega directo al BCRA (no usa Supabase). Gateada al super-admin hasta revisarla.
        Para liberarla: borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/situacion-crediticia.html. */

@@ -113,9 +113,7 @@ let toastT; function toast(msg, ok){ const t=document.getElementById("toast"); i
 EYG.guard(["direccion","admin"]).then(async perfil=>{
   PERFIL=perfil; window.__perfil=perfil;
   document.body.innerHTML = EYG.layout(perfil,"portal",'<div id="cont"><div class="spin"></div></div><div class="toast" id="toast"></div>',"Portal web");
-  if(/[?&]tab=altas/.test(location.search)) TAB="altas";
   render(); cargarTab();
-  if(!ALTAS) altasCargar();   // para el contador de pendientes en la solapa
 });
 
 function render(){
@@ -124,12 +122,11 @@ function render(){
     <button class="tab ${TAB==='resumen'?'on':''}" onclick="setTab('resumen')">📈 Resumen</button>
     <button class="tab ${TAB==='cinta'?'on':''}" onclick="setTab('cinta')">📢 Cinta de avisos</button>
     <button class="tab ${TAB==='noticias'?'on':''}" onclick="setTab('noticias')">📰 Noticias</button>
-    <button class="tab ${TAB==='altas'?'on':''}" onclick="setTab('altas')">🪪 Altas${ALTAS&&altasPendientes()?' <span class="pill prog">'+altasPendientes()+'</span>':''}</button>
+    <a class="tab" href="../finanzas/altas.html" title="Solicitudes de alta al portal (Administración)" style="text-decoration:none">🪪 Altas de clientes ↗</a>
   </div>`;
   let body="";
   if(TAB==="resumen") body=vistaResumen();
   else if(TAB==="cinta") body=vistaCinta();
-  else if(TAB==="altas") body=vistaAltas();
   else body=vistaNoticias();
   cont.innerHTML=tabs+`<div id="body">${body}</div>`;
 }
@@ -139,7 +136,6 @@ function cargarTab(){
   if(TAB==="resumen" && !CINTA) cintaCargar();
   if(TAB==="cinta" && !CINTA) cintaCargar();
   if(TAB==="noticias" && !POSTS) noticiasCargar();
-  if(TAB==="altas" && !ALTAS) altasCargar();
 }
 
 /* ======================= RESUMEN =======================
@@ -764,163 +760,6 @@ async function cintaGuardarAviso(){
 }
 async function cintaToggle(id){ const a=(CINTA.avisos||[]).find(x=>x.id===id); if(!a) return; a.activo=(a.activo===false); render(); await cintaGuardar(a.activo?"Aviso reactivado":"Aviso desactivado"); }
 async function cintaBorrar(id){ if(!confirm("¿Borrar este aviso de la cinta?")) return; CINTA.avisos=(CINTA.avisos||[]).filter(x=>x.id!==id); render(); await cintaGuardar("Borrado"); }
-
-/* ======================= ALTAS =======================
-   Las farmacias que piden acceso desde drogueriaeyg.odoo.com/alta. La función
-   `portal-alta` ya leyó el DECIDE, consultó ARCA y miró Odoo: acá se ve qué dio
-   cada control y se decide. En Odoo no hay nada hasta que se aprueba (los
-   rechazos no dejan ficha). Con el alta automática prendida, las que dan todo
-   verde se aprueban solas y aparecen acá ya aprobadas. */
-let ALTAS=null, AFILTRO="revisar", AABIERTA=null, ACFG=null, AOCUPADO=false;
-const ASEM={verde:["#1E7D46","Todo coincide"],amarillo:["#B7791F","Hay algo para mirar"],rojo:["#B0322F","No cierra"]};
-const AEST={revisar:["prog","Para revisar"],error:["prog","No se pudo analizar"],analizando:["prog","Analizando"],recibida:["prog","Recibida"],aprobada:["dest","Aprobada"],rechazada:["off","Rechazada"]};
-async function altaFn(body){
-  const r=await EYG.supa().functions.invoke("portal-alta",{body});
-  if(r.error){ let m=r.error.message||String(r.error); try{ const j=await r.error.context.json(); m=j.error||(j.errores||[]).join(" · ")||m; }catch(e){} throw new Error(m); }
-  if(r.data&&r.data.ok===false) throw new Error(r.data.error||"Error");
-  return r.data;
-}
-async function altasCargar(){
-  try{
-    const [q,c]=await Promise.all([
-      EYG.supa().from("portal_altas").select("*").order("creada",{ascending:false}).limit(300),
-      ACFG?Promise.resolve(ACFG):altaFn({accion:"config"}).catch(()=>null),
-    ]);
-    if(q.error) throw q.error;
-    ALTAS=q.data||[]; if(c) ACFG=c;
-  }catch(e){ ALTAS=[]; toast("No pude leer las solicitudes: "+(e.message||e)); }
-  render();
-}
-const altaPend=a=>a.estado==="revisar"||a.estado==="error";
-function altasPendientes(){ return (ALTAS||[]).filter(a=>altaPend(a)&&!(a.datos&&a.datos.prueba)).length; }
-// Fechas de Supabase (timestamptz): se muestran en hora de Argentina.
-const fAR=t=>{ if(!t) return ""; const d=new Date(t); if(isNaN(d)) return String(t).slice(0,16); return d.toLocaleString("es-AR",{timeZone:"America/Argentina/Buenos_Aires",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).replace(",",""); };
-const fmtCuitA=c=>{c=String(c||"");return c.length===11?c.slice(0,2)+"-"+c.slice(2,10)+"-"+c.slice(10):c;};
-function vistaAltas(){
-  if(!ALTAS) return '<div class="spin"></div>';
-  const cfg=(ACFG&&ACFG.config)||{};
-  const real=ALTAS.filter(a=>!(a.datos&&a.datos.prueba));
-  const n={revisar:real.filter(altaPend).length, aprobada:real.filter(a=>a.estado==="aprobada").length, rechazada:real.filter(a=>a.estado==="rechazada").length, todas:ALTAS.length};
-  const lista=(AFILTRO==="todas"?ALTAS:AFILTRO==="revisar"?real.filter(altaPend):real.filter(a=>a.estado===AFILTRO));
-  const chip=(k,l)=>`<button class="chk ${AFILTRO===k?'on':''}" onclick="AFILTRO='${k}';render()">${l} · ${n[k]}</button>`;
-  return `<div class="sw"><div class="knob ${cfg.auto?'on':''}" onclick="altaAuto()"><i></i></div>
-      <div style="flex:1;min-width:220px"><b>Alta automática ${cfg.auto?'prendida':'apagada'}</b>
-      <div class="hint">${cfg.auto?'Las solicitudes con todo en verde se aprueban solas: ficha, legajo, usuario y mail con el link. Las demás esperan acá.':'Todas las solicitudes esperan acá a que alguien las apruebe, aunque den todo en verde.'}</div></div>
-      <a class="btn ghost sm" href="https://drogueriaeyg.odoo.com/alta" target="_blank" rel="noopener">Ver el formulario ↗</a></div>
-    <div class="chks" style="margin:0 0 14px">${chip("revisar","Para revisar")}${chip("aprobada","Aprobadas")}${chip("rechazada","Rechazadas")}${chip("todas","Todas")}</div>
-    ${lista.length?lista.map(altaCard).join(""):`<div class="empty">${AFILTRO==="revisar"?"No hay solicitudes esperando. 👌":"Nada por acá."}</div>`}`;
-}
-function altaCard(a){
-  const d=a.datos||{}, an=a.analisis||{}, sem=ASEM[a.semaforo]||["#8A9A97","Sin analizar"], est=AEST[a.estado]||["off",a.estado];
-  const abierta=AABIERTA===a.id;
-  const res=a.resultado||{};
-  return `<div class="card" style="border-left:5px solid ${sem[0]}">
-    <div class="top" style="cursor:pointer" onclick="AABIERTA=${abierta?'null':`'${a.id}'`};render()">
-      <span title="${sem[1]}" style="width:11px;height:11px;border-radius:50%;background:${sem[0]};flex:none"></span>
-      <h3 style="flex:1;min-width:200px">${esc(d.razon||"")}${d.cartel?` <span style="font-weight:600;color:var(--gris)">· ${esc(d.cartel)}</span>`:""}</h3>
-      ${d.prueba?'<span class="pill off">Prueba</span>':""}<span class="pill ${est[0]}">${est[1]}</span>
-    </div>
-    <div class="meta"><span>📍 ${esc(d.localidad||"")}${d.provincia&&!/santa fe/i.test(d.provincia)?" ("+esc(d.provincia)+")":""}</span><span>CUIT ${esc(fmtCuitA(a.cuit))}</span><span>✉️ ${esc(a.email)}</span><span>📞 ${esc(d.telefono||"")}</span><span>🕒 ${fAR(a.creada)}</span></div>
-    <div class="cuerpo" style="margin-top:8px"><b style="color:${sem[0]}">${sem[1]}.</b> ${a.semaforo==="verde"?"CUIT, ARCA, habilitación y titular coinciden.":esc(an.motivo||(an.errores||[]).join(" · ")||"")}</div>
-    ${a.estado==="aprobada"?`<div class="hint" style="margin-top:6px">✅ Aprobada por ${esc(res.por||"")} el ${fAR(res.cuando)}${res.partner_id?` · <a href="https://drogueriaeyg.odoo.com/web#id=${res.partner_id}&model=res.partner&view_type=form" target="_blank" rel="noopener">ver ficha en Odoo</a>`:""}${res.comercial?` · comercial ${esc(res.comercial.nombre)}`:""}${res.mail?` · mail ${esc(res.mail)}`:""}</div>`:""}
-    ${a.estado==="rechazada"?`<div class="hint" style="margin-top:6px">✖️ ${esc(res.motivo||"")} — ${esc(res.por||"")} el ${fAR(res.cuando)}${res.mail?` · mail ${esc(res.mail)}`:""}</div>`:""}
-    ${abierta?altaDetalle(a):`<div class="acts"><button class="btn ghost sm" onclick="AABIERTA='${a.id}';render()">Ver el análisis</button></div>`}
-  </div>`;
-}
-function altaDetalle(a){
-  const an=a.analisis||{}, dc=an.decide, ar=an.arca;
-  const ico=c=>c.ok===true?'<b style="color:#1E7D46">✔</b>':c.ok===false?'<b style="color:#B0322F">✘</b>':'<b style="color:#B7791F">?</b>';
-  const checks=(an.checks||[]).map(c=>`<tr><td style="width:22px">${ico(c)}</td><td>${esc(c.texto)}${c.grave&&c.ok===false?' <span class="pill" style="background:#fbe3e1;color:#b0322f">clave</span>':""}</td></tr>`).join("");
-  const dato=(k,v)=>v?`<tr><td style="color:var(--gris2);white-space:nowrap;padding-right:12px">${k}</td><td>${esc(v)}</td></tr>`:"";
-  const pend=altaPend(a);
-  const coms=(ACFG&&ACFG.comerciales)||[];
-  const sug=an.comercial||{};
-  const arch=(a.archivos||[]).map(f=>`<button class="btn ghost sm" onclick="altaVer('${a.id}','${esc(f.path)}')">${f.tipo==="application/pdf"?"📄":"🖼️"} ${esc(f.nombre)}</button>`).join(" ");
-  return `<div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
-    <div class="row2">
-      <div><div class="hint" style="font-weight:700;margin-bottom:6px">CONTROLES</div><table class="lista">${checks||'<tr><td>Sin análisis</td></tr>'}</table>
-        ${(an.errores||[]).length?`<div class="hint" style="color:#B0322F;margin-top:6px">⚠ ${esc(an.errores.join(" · "))}</div>`:""}</div>
-      <div><div class="hint" style="font-weight:700;margin-bottom:6px">LO QUE DICE EL DECIDE</div>
-        ${dc?`<table class="lista">${dato("Tipo",dc.tipo)}${dato("Número",dc.numero)}${dato("Fecha",dc.fecha&&dc.fecha.split("-").reverse().join("/"))}${dato("Farmacia",dc.farmacia_nombre)}${dato("Domicilio",[dc.domicilio,dc.localidad].filter(Boolean).join(", "))}${dato("Titular",dc.titular_nombre)}${dato("DNI",dc.titular_dni)}${dato("Matrícula",dc.titular_matricula)}${dato("Antes era de",dc.titular_anterior)}${dato("Organismo",dc.organismo)}${dato("Nota",dc.observaciones)}</table>`:'<div class="hint">No se pudo leer.</div>'}
-        <div class="hint" style="font-weight:700;margin:12px 0 6px">ARCA</div>
-        ${ar&&ar.existe?`<table class="lista">${dato("Nombre",ar.nombre_completo)}${dato("Estado",ar.estado)}${dato("Domicilio fiscal",[ar.domicilio,ar.localidad,ar.provincia].filter(Boolean).join(", "))}${dato("IVA",ar.iva==="RI"?"Responsable inscripto":ar.iva==="MONO"?"Monotributo "+(ar.categoria_mono||""):ar.iva)}${dato("Actividades",(ar.actividades||[]).map(x=>x.id+" "+String(x.desc).toLowerCase()).join(" · "))}</table>`:`<div class="hint">${esc((ar&&ar.error)||"Sin datos de ARCA")}</div>`}
-      </div>
-    </div>
-    <div class="hint" style="font-weight:700;margin:12px 0 6px">HABILITACIÓN QUE SUBIÓ</div><div style="display:flex;gap:6px;flex-wrap:wrap">${arch||'<span class="hint">Sin archivos</span>'}</div>
-    ${pend?`<div class="formbox" style="margin:14px 0 0;max-width:none">
-      <div class="fld"><label>Comercial que la va a atender</label><select id="acom-${a.id}">${coms.map(u=>`<option value="${u.id}" ${u.id===sug.id?'selected':''}>${esc(u.name)}</option>`).join("")}</select>
-        <div class="hint">${sug.nombre?`Sugerida: ${esc(sug.nombre)} — ${esc(sug.por||"")}. Si ya es cliente, queda con su comercial de siempre.`:""}</div></div>
-      <div class="acts" style="margin-top:4px">
-        <button class="btn" onclick="altaAprobar('${a.id}',this)">✅ Aprobar y dar acceso</button>
-        <button class="btn warn" onclick="altaRechazoForm('${a.id}')">Rechazar</button>
-        <button class="btn ghost" onclick="altaReanalizar('${a.id}',this)">↻ Volver a analizar</button>
-        <button class="btn ghost" onclick="AABIERTA=null;render()">Cerrar</button>
-      </div>
-      <div id="arech-${a.id}"></div></div>`
-      :`<div class="acts"><button class="btn ghost sm" onclick="AABIERTA=null;render()">Cerrar</button></div>`}
-  </div>`;
-}
-async function altaVer(id,path){
-  const w=window.open("about:blank","_blank");
-  try{ const r=await altaFn({accion:"archivo",id,path}); if(w) w.location=r.url; else window.open(r.url,"_blank"); }
-  catch(e){ if(w) w.close(); toast("⚠ "+e.message); }
-}
-async function altaAuto(){
-  const cfg=(ACFG&&ACFG.config)||{}; const nuevo=!cfg.auto;
-  if(nuevo&&!confirm("¿Prender el alta automática?\n\nLas solicitudes con todo en verde se van a aprobar solas: se crea (o se usa) la ficha, se carga el legajo, se crea el usuario del portal y le llega el mail para crear la contraseña. La comercial y Dirección reciben el aviso.")) return;
-  try{ const r=await altaFn({accion:"config",set:{auto:nuevo}}); ACFG={...(ACFG||{}),config:r.config}; render(); toast(nuevo?"Alta automática prendida":"Alta automática apagada",true); }
-  catch(e){ toast("⚠ "+e.message); }
-}
-async function altaAprobar(id,btn){
-  if(AOCUPADO) return;
-  const sel=document.getElementById("acom-"+id); const comercial_id=sel?Number(sel.value):undefined;
-  AOCUPADO=true; if(btn){ btn.disabled=true; btn.textContent="Revisando…"; }
-  try{
-    // primero un ensayo: qué va a escribir, para confirmarlo sabiendo
-    const en=await altaFn({accion:"aprobar",id,comercial_id,ensayo:true});
-    const p=en.resultado||{}, pasos=p.pasos||[];
-    const ficha=pasos.find(x=>x.que==="usar la ficha existente"), nueva=pasos.find(x=>x.que==="crear la ficha");
-    const txt="Se va a dar el alta así:\n\n"+
-      (ficha?`• Usa la ficha que YA existe: ${ficha.nombre} (no se crea otra)`:`• Crea la ficha: ${nueva&&nueva.vals&&nueva.vals.name}`)+
-      `\n• Comercial: ${p.comercial&&p.comercial.nombre} (${p.comercial&&p.comercial.por})`+
-      "\n• Legajo: la habilitación y la constancia de ARCA"+
-      `\n• Usuario del portal y mail con el link a ${(pasos.find(x=>x.que==="usuario del portal")||{}).login}`+
-      `\n• Aviso a ${((pasos.find(x=>x.que==="aviso")||{}).a||[]).join(", ")}\n\n¿Confirmás?`;
-    if(!confirm(txt)) return;
-    if(btn) btn.textContent="Dando el alta…";
-    const r=await altaFn({accion:"aprobar",id,comercial_id});
-    toast("✅ Alta hecha · mail "+((r.resultado&&r.resultado.mail)||""),true);
-    AABIERTA=null; await altasCargar();
-  }catch(e){ toast("⚠ "+e.message); }
-  finally{ AOCUPADO=false; if(btn&&document.body.contains(btn)){ btn.disabled=false; btn.textContent="✅ Aprobar y dar acceso"; } }
-}
-function altaRechazoForm(id){
-  const a=(ALTAS||[]).find(x=>x.id===id); if(!a) return;
-  const box=document.getElementById("arech-"+id); if(!box) return;
-  const an=a.analisis||{};
-  // Motivo sugerido en criollo: es lo que va a leer la farmacia.
-  const malo=(an.checks||[]).find(c=>c.grave&&c.ok===false);
-  const sug=!malo?"":malo.k==="actividad"?"Droguería EyG vende a farmacias, y según ARCA el CUIT no tiene actividad de farmacia.":
-    malo.k==="decide"?"El archivo que subiste no es la habilitación de la farmacia. Volvé a pedir el alta subiendo la habilitación (el \"DECIDE\").":
-    malo.k==="titular"?"La habilitación que subiste no corresponde al titular del CUIT.":
-    malo.k==="arca"?"No pudimos validar el CUIT en ARCA.":"";
-  box.innerHTML=`<div class="fld" style="margin-top:12px"><label>Motivo (es lo que va a leer la farmacia en el mail)</label><textarea id="amot-${id}" style="min-height:80px">${esc(sug)}</textarea></div>
-    <label class="hint" style="display:flex;gap:7px;align-items:center;margin-bottom:10px"><input type="checkbox" id="aav-${id}" checked> Mandarle el mail avisando</label>
-    <button class="btn warn" onclick="altaRechazar('${id}',this)">Confirmar rechazo</button>`;
-}
-async function altaRechazar(id,btn){
-  const motivo=(document.getElementById("amot-"+id)||{}).value||"";
-  const avisar=!!(document.getElementById("aav-"+id)||{}).checked;
-  if(motivo.trim().length<5){ toast("Escribí el motivo"); return; }
-  if(btn){ btn.disabled=true; btn.textContent="Rechazando…"; }
-  try{ const r=await altaFn({accion:"rechazar",id,motivo,avisar}); toast("Solicitud rechazada"+(avisar?" · mail "+r.mail:""),true); AABIERTA=null; await altasCargar(); }
-  catch(e){ toast("⚠ "+e.message); if(btn){ btn.disabled=false; btn.textContent="Confirmar rechazo"; } }
-}
-async function altaReanalizar(id,btn){
-  if(btn){ btn.disabled=true; btn.textContent="Analizando…"; }
-  try{ await altaFn({accion:"reanalizar",id}); toast("Análisis actualizado",true); await altasCargar(); }
-  catch(e){ toast("⚠ "+e.message); if(btn){ btn.disabled=false; btn.textContent="↻ Volver a analizar"; } }
-}
 
 </script>
 </body>
