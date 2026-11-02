@@ -131,6 +131,9 @@ function detalle(a){
   const rojo=a.semaforo==="rojo"?`<div class="aviso rojo">Un control clave no coincide. Corresponde rechazarla, salvo que el dato se haya confirmado por otra vía.</div>`:"";
   const opc=(arr,sel,val,txt)=>arr.map(x=>`<option value="${esc(val(x))}" ${String(val(x))===String(sel)?"selected":""}>${esc(txt(x))}</option>`).join("");
   const comSug=(an.comercial||{}).id;
+  // La lista incluye siempre a quien ya tiene al cliente, aunque no esté en los equipos.
+  const yaEsDe=an.comercial&&an.comercial.por==="ya es su cliente"?an.comercial:null;
+  const comOpc=D.comerciales.slice(); if(yaEsDe&&!comOpc.some(x=>x.id===yaEsDe.id)) comOpc.unshift({id:yaEsDe.id,name:yaEsDe.nombre,equipo:"su comercial actual"});
   return `<div class="det">
     ${avisoContacto}${rojo}
     <div class="cols">
@@ -151,10 +154,10 @@ function detalle(a){
         <div class="fld"><label>Tipo de cliente</label><select id="t-${a.id}" onchange="cambiaTipo('${a.id}')">${opc(D.tipos,prop.tipo||d.tipo,x=>x.k,x=>x.nom)}</select></div>
         <div class="fld"><label>Rubro en Odoo</label><select id="r-${a.id}">${opc(D.rubros,prop.rubro,x=>x,x=>x)}</select></div>
         <div class="fld"><label>Lista de precios</label><select id="l-${a.id}">${opc(D.listas,prop.lista_id,x=>x.id,x=>x.nom)}</select></div>
-        <div class="fld"><label>Comercial</label><select id="c-${a.id}">${opc(D.comerciales,comSug,x=>x.id,x=>x.name+" · "+x.equipo)}</select>
-          <div class="hint">${an.comercial?esc("Sugerida: "+an.comercial.nombre+" — "+an.comercial.por):""}</div></div>
+        <div class="fld"><label>Comercial asignado</label><select id="c-${a.id}" onchange="avisoTraspaso('${a.id}')">${opc(comOpc,comSug,x=>x.id,x=>x.name+" · "+x.equipo)}</select>
+          <div class="hint">${yaEsDe?esc("Hoy es cliente de "+yaEsDe.nombre+"."):an.comercial?esc("Sugerencia: "+an.comercial.nombre+" — "+an.comercial.por):""}</div></div>
       </div>
-      <div class="hint" style="margin:-4px 0 10px">Si ya es cliente, se usa su ficha y se queda con su comercial de siempre.</div>
+      <div class="hint" id="tr-${a.id}" data-actual="${yaEsDe?yaEsDe.id:""}" data-nombre="${yaEsDe?esc(yaEsDe.nombre):""}" style="margin:-4px 0 10px">El cliente queda asignado a la persona elegida acá.</div>
       <div class="acts">
         <button class="btn" onclick="aprobar('${a.id}',this)">✅ Aprobar y dar acceso</button>
         <button class="btn warn" onclick="rechazoForm('${a.id}')">Rechazar</button>
@@ -164,6 +167,13 @@ function detalle(a){
       <div id="rech-${a.id}"></div></div>`
       :`<div class="acts"><button class="btn ghost sm" onclick="ABIERTA=null;render()">Cerrar</button></div>`}
   </div>`;
+}
+// Si ya tenía comercial y se elige otra, es un traspaso de cartera: se avisa antes.
+function avisoTraspaso(id){
+  const box=document.getElementById("tr-"+id), sel=document.getElementById("c-"+id); if(!box||!sel) return;
+  const actual=box.dataset.actual;
+  if(actual&&sel.value!==actual){ box.innerHTML="<b>Traspaso de cartera:</b> la ficha pasa de "+box.dataset.nombre+" a "+esc(sel.selectedOptions[0].text.split(" · ")[0])+". Queda registrado en la ficha y mueve la comisión desde ahora."; box.style.color="#9a6a0b"; }
+  else { box.textContent="El cliente queda asignado a la persona elegida acá."; box.style.color=""; }
 }
 function cambiaTipo(id){
   const t=D.tipos.find(x=>x.k===document.getElementById("t-"+id).value); if(!t) return;
@@ -191,7 +201,7 @@ async function aprobar(id,btn){
       : "recibe un correo con el enlace para crear la contraseña";
     const txt="Se va a dar el alta así:\n\n"+
       (ficha?`• Usa la ficha que YA existe: ${ficha.nombre} (no se crea otra)`:`• Crea la ficha: ${nueva&&nueva.vals&&nueva.vals.name}\n• Rubro ${p.rubro} · lista ${lista}`)+
-      `\n• Comercial: ${p.comercial&&p.comercial.nombre} (${p.comercial&&p.comercial.por})`+
+      `\n• Comercial asignado: ${p.comercial&&p.comercial.nombre}`+(p.traspaso?`\n• TRASPASO de cartera: ${p.traspaso.de} → ${p.traspaso.a} (queda registrado en la ficha)`:"")+
       "\n• Legajo: la habilitación y la constancia de ARCA"+
       `\n• Usuario del portal ${u.login}: ${acceso}`+
       `\n• Aviso a ${((pasos.find(x=>x.que==="aviso")||{}).a||[]).join(", ")}\n\n¿Confirmás?`;
