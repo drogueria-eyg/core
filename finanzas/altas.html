@@ -148,6 +148,9 @@ function detalle(a){
   const cont=(an.checks||[]).find(c=>c.k==="contacto");
   const ficha=an.ficha;
   const avisoContacto=cont&&cont.ok!==true&&ficha?`<div class="aviso amar"><b>Atención:</b> ya es cliente y el correo y el teléfono informados <b>no coinciden con los de la ficha</b>. Antes de aprobar, conviene confirmar con el teléfono registrado: ${(ficha.tels||[]).length?ficha.tels.map(telLinks).join(" · "):"<i>la ficha no tiene teléfono</i>"}${(ficha.mails||[]).length?` — mail en la ficha: <b>${esc(ficha.mails.join(", "))}</b>`:""}</div>`:"";
+  // Ya tiene acceso con otro correo: al aprobar, ese mismo usuario pasa al correo nuevo.
+  const cm=an.cambio_mail;
+  const avisoCambio=cm?`<div class="aviso amar"><b>Cambio de correo de acceso.</b> Este cliente ya entra al portal con <b>${esc(cm.anterior)}</b>${cm.ultimo_ingreso?` (último ingreso ${fAR(cm.ultimo_ingreso+"Z")})`:" (nunca ingresó)"}. Si se aprueba, el acceso pasa a <b>${esc(a.email)}</b>: el correo anterior deja de servir, se actualiza el correo de la ficha y se le avisa a ${esc(cm.anterior)}. No se crea un usuario nuevo. Antes de aprobar, conviene confirmarlo con el teléfono de la ficha.</div>`:"";
   const rojo=a.semaforo==="rojo"?`<div class="aviso rojo">Un control clave no coincide. Corresponde rechazarla, salvo que el dato se haya confirmado por otra vía.</div>`:"";
   const opc=(arr,sel,val,txt)=>arr.map(x=>`<option value="${esc(val(x))}" ${String(val(x))===String(sel)?"selected":""}>${esc(txt(x))}</option>`).join("");
   const comSug=(an.comercial||{}).id;
@@ -155,7 +158,7 @@ function detalle(a){
   const yaEsDe=an.comercial&&an.comercial.por==="ya es su cliente"?an.comercial:null;
   const comOpc=D.comerciales.slice(); if(yaEsDe&&!comOpc.some(x=>x.id===yaEsDe.id)) comOpc.unshift({id:yaEsDe.id,name:yaEsDe.nombre,equipo:"su comercial actual"});
   return `<div class="det">
-    ${avisoContacto}${rojo}
+    ${avisoCambio}${avisoContacto}${rojo}
     <div class="cols">
       <div><div class="sub">Controles</div><table class="lista">${checks||'<tr><td>Sin análisis</td></tr>'}</table>
         ${(an.errores||[]).length?`<div class="hint" style="color:#B0322F;margin-top:6px">⚠ ${esc(an.errores.join(" · "))}</div>`:""}
@@ -207,7 +210,8 @@ async function ver(id,path){
 async function aprobar(id,btn){
   if(OCUPADO) return;
   const val=k=>(document.getElementById(k+"-"+id)||{}).value;
-  const body={accion:"aprobar",id,tipo:val("t"),rubro:val("r"),lista_id:Number(val("l")),comercial_id:Number(val("c"))};
+  const alta=D.altas.find(x=>x.id===id)||{}, an0=alta.analisis||{};
+  const body={accion:"aprobar",id,tipo:val("t"),rubro:val("r"),lista_id:Number(val("l")),comercial_id:Number(val("c")),reemplazar:!!an0.cambio_mail};
   OCUPADO=true; if(btn){ btn.disabled=true; btn.textContent="Revisando…"; }
   try{
     // primero un ensayo: qué va a escribir, para confirmarlo sabiendo
@@ -215,12 +219,15 @@ async function aprobar(id,btn){
     const p=en.resultado||{}, pasos=p.pasos||[];
     const ficha=pasos.find(x=>x.que==="usar la ficha existente"), nueva=pasos.find(x=>x.que==="crear la ficha");
     const lista=(D.listas.find(x=>x.id===p.lista_id)||{}).nom||"";
-    const u=pasos.find(x=>x.que==="usuario del portal")||{};
+    const u=pasos.find(x=>x.que==="usuario del portal")||pasos.find(x=>x.que==="cambiar el correo del acceso")||{};
+    if(!u.login&&u.a) u.login=u.a;
     const acceso=u.contrasena==="la que eligió el cliente"
       ? "ingresa con la contraseña que eligió al pedir el alta; se le avisa por correo"
       : "recibe un correo con el enlace para crear la contraseña";
-    const sinHab=!((D.altas.find(x=>x.id===id)||{}).archivos||[]).length;
-    const txt=(sinHab?"ATENCIÓN: todavía no se subió la habilitación. Se puede aprobar igual, pero el legajo queda sin ella.\n\n":"")+"Se va a dar el alta así:\n\n"+
+    const sinHab=!(alta.archivos||[]).length;
+    const cont=(an0.checks||[]).find(c=>c.k==="contacto");
+    const txt=(p.cambio?`CAMBIO DE CORREO: el acceso pasa de ${p.cambio.anterior} a ${u.login||alta.email}. El correo anterior deja de servir y se le avisa.`+(cont&&cont.ok!==true?"\n¡OJO! El correo y el teléfono informados NO coinciden con los de la ficha: confirmalo antes con el teléfono registrado.":"")+"\n\n":"")+
+      (sinHab?"ATENCIÓN: todavía no se subió la habilitación. Se puede aprobar igual, pero el legajo queda sin ella.\n\n":"")+"Se va a dar el alta así:\n\n"+
       (ficha?`• Usa la ficha que YA existe: ${ficha.nombre} (no se crea otra)`:`• Crea la ficha: ${nueva&&nueva.vals&&nueva.vals.name}\n• Rubro ${p.rubro} · lista ${lista}`)+
       `\n• Comercial asignado: ${p.comercial&&p.comercial.nombre}`+(p.traspaso?`\n• TRASPASO de cartera: ${p.traspaso.de} → ${p.traspaso.a} (queda registrado en la ficha)`:"")+
       (sinHab?"\n• Legajo: sólo la constancia de ARCA":"\n• Legajo: la habilitación y la constancia de ARCA")+
