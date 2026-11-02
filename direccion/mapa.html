@@ -176,10 +176,11 @@
 /* ╔══════════════════════ REGISTRO (editar acá) ══════════════════════╗ */
 
 const MAPA = {
-  version: "4.2",
-  actualizado: "2026-10-21",
+  version: "4.3",
+  actualizado: "2026-11-02",
   ley: "Ningún cambio en Core, Odoo, Supabase, GitHub o la web queda terminado hasta quedar registrado en este mapa.",
   bitacora: [
+    { f:"2026-11-02", t:"ALTA DE CLIENTES AL PORTAL. Nuevo formulario drogueriaeyg.odoo.com/alta (adjunto JS publico + pagina de Odoo) donde la farmacia carga datos basicos y sube la habilitacion (el DECIDE). La edge function portal-alta guarda la solicitud en portal_altas + bucket privado portal-altas (EN ODOO NO SE CREA NADA hasta aprobar), lee el DECIDE con Claude (claude-opus-5-5, salida estructurada), consulta el CUIT en ARCA directo (ws_sr_constancia_inscripcion con el ticket que ya tiene Odoo en l10n_ar.afipws.connection; si vencio lo renueva con get_data_from_padron_afip sobre la propia empresa, que no escribe) y mira Odoo (fichas con ese CUIT, usuario con ese mail, farmacia gemela sin CUIT). Controles: CUIT valido, ARCA activo con actividad 477310, DECIDE de farmacia, DNI del titular = CUIT (en transferencias el titular es el 'a favor de'), localidad, Santa Fe, 2a circunscripcion. Semaforo verde/amarillo/rojo. Aprobar = usa la ficha existente o crea una con el formato de la casa (Apellido, Nombre (Fcia. X), lista (1) Farmacias, rubro FARMACIAS, datos del padron), legajo [LEGAJO] con DECIDE + constancia ARCA, usuario portal (grupo 10, mismo metodo que el panel del comercial), mail con el link para crear la contrasena firmado por la comercial y aviso por WhatsApp + campanita a la comercial y Direccion. Comercial: la que ya tiene la ficha; si es nueva, la que atiende >=60% de las farmacias de esa localidad; si no (Rosario), por turno. Bandeja en Core > Portal web > Altas (admin y direccion) con interruptor de alta automatica (parametro eyg.portal_altas, arranca APAGADO). Probado con 3 DECIDE reales sin crear nada en Odoo." },
     { f:"2026-10-21", t:"Frecuencias (aprobadas por Diego): motor de precios cron 92 de 15 a 30 min (cada vuelta completa tarda 35 s-3 min y mientras corre Odoo responde 4-5 veces mas lento; el boton ⚡ Recalcular precios ahora y el recalculo por producto siguen siendo inmediatos); cinta %OFF cron 94 de 1 a 5 min; copia completa del buscador (pg_cron sync-buscar-hourly) de cada 15 min a cada hora — el chequeo rapido de cada minuto (buscador-precios-al-minuto) sigue igual." },
     { f:"2026-10-21", t:"OPTIMIZACION, segunda tanda. (1) LOTES: EYG.rpc junta las consultas pedidas en el mismo instante y las manda en UN viaje (hasta 10) al conector odoo-rpc v11, que las corre de a 4. Medido: 6 consultas 1,4→0,8 s; 14 consultas 2,7→1,85 s; 40 consultas 6,8→4,5 s; Supabase cuenta 1 llamada por lote. El turno de la pestaña ahora tiene PESO (un lote de N ocupa min(N,4)), así nunca hay más de 4 consultas de una pestaña en Odoo. Cada consulta del lote anda o falla por su cuenta, con la misma regla de reintento. EYG.rpcExacto devuelve el resultado tal cual; los wrappers propios (panel, precios, control, cobranzas, egresos) pasan por ahí. (2) INICIO: las 10 sumas de ventas (semana, 7/14/30/60 días, mes, mes anterior, año) salen de UNA consulta agrupada por día en hora AR; verificado idéntico al centavo contra las 10 sueltas, para toda la droguería y para un comercial. (3) Consola WhatsApp: rutina 45→90 s y tope de 1 ida a Odoo cada 15 s aunque haya novedad. (4) Comunicaciones: al guardar, las novedades vencidas hace más de 7 días pasan a eyg.comunicaciones_archivo (el parámetro que lee la campanita en cada pantalla baja de 177 KB a ~78 KB); el módulo Comunicaciones las sigue mostrando en Enviadas. core.js v=120, home.js v=14." },
     { f:"2026-10-21", t:"OPTIMIZACION por Core y Odoo trabados. Medido: una consulta trivial a Odoo tardaba 5-7 s mientras corria un recalculo COMPLETO del motor de precios y 0,3-1,3 s fuera de el. Causa principal: «Guardar y recalcular» (Configuracion de precios, capa, tiers) y las ofertas por categoria corrian la accion 1213 completa (~4.200 productos, 1-3 min) DENTRO de la conexion del navegador; el conector corta a los 40 s y el Core REINTENTABA hasta 4 veces → varios recalculos completos a la vez. Ahora: (1) EYG.recalcularPreciosTodo pide a la tarea del motor (cron 92) que corra ya, con un ir.cron.trigger: corre en el proceso de tareas de Odoo, una sola vez, y la pantalla espera mirando eyg.precios.sync. El motor NO se toco. (2) EYG.rpc y los wrappers propios (panel, precios, control, cobranzas, egresos) reintentan SOLO fallas de red/429/502-504 y solo lecturas; nunca un corte por tiempo ni un error de Odoo (EYG.rpcReintentable). (3) Menos consultas periodicas: Cobranzas probe 20→60 s y recarga completa 55 s→5 min, bloqueos (body-like sin cota) solo con marca nueva o cada 10 min, foco solo si pasaron 2 min (~660→~80 consultas/h por pestaña); Contactos recarga 1→5 min; Stock carritos 12→45 s; Tablero no recarga con la pestaña oculta; Lider relee el mes cada 15 min y no cada 3; Panel no consulta wsp-visibles oculto; cuenta corriente abierta de riesgoCartera compartida en cacheOdoo cc-abierta (3 min). core.js v=119." },
@@ -339,6 +340,10 @@ const NODOS = [
   d:"Junta noticias del sector salud para publicar en el portal desde el módulo Portal web.", est:"activo" },
 { id:"fn-ofertas-top", capa:"supabase", grp:"ringA", ico:"🏷️", n:"eyg-ofertas-top", sub:"edge function",
   d:"Arma el top de ofertas del día en 2 versiones (Farmacias / Instituciones), segmentadas por rubro del cliente. La consume el aviso diario de WhatsApp de las 7:02.", toca:["sec-productos","sec-clientes"], est:"activo" },
+{ id:"fn-portal-alta", capa:"supabase", grp:"ringA", ico:"🪪", n:"portal-alta", sub:"edge function · alta de clientes al portal",
+  d:"Recibe las solicitudes del formulario /alta, lee la habilitación (DECIDE) con Claude, consulta el CUIT en ARCA, busca la ficha en Odoo y decide (semáforo). Al aprobar crea o usa la ficha, carga el legajo, crea el usuario del portal y manda el mail para crear la contraseña. Nada toca Odoo hasta aprobar.",
+  toca:["sec-clientes","sec-web","sec-config"],
+  usa:["portal_altas + bucket portal-altas","res.partner (ficha, legajo, padrón)","res.users (usuario del portal, grupo 10)","ir.attachment [LEGAJO]","l10n_ar.afipws.connection (ticket ARCA)","mail.mail","crm.team 6 + sale.order (comercial sugerida)","param eyg.portal_altas","Claude claude-opus-5-5"], est:"activo" },
 { id:"fn-portal-cinta", capa:"supabase", grp:"ringA", ico:"🎗️", n:"portal-cinta", sub:"edge function",
   d:"Lee y escribe el parámetro eyg.portal_cinta: el texto y la segmentación de la cinta coral que ven los clientes en el portal.", toca:["sec-config"], est:"activo" },
 { id:"fn-sync-web", capa:"supabase", grp:"ringA", ico:"💱", n:"sync-web", sub:"edge function · cron cada 15 min",
@@ -373,6 +378,10 @@ const NODOS = [
   d:"Los números que muestra el sitio institucional (contadores animados): se leen en vivo con la clave pública, solo lectura por RLS.", est:"activo" },
 { id:"t-productos-web", capa:"supabase", grp:"ringB", ico:"📇", n:"productos_web", sub:"tabla · 664 productos · índice del buscador",
   d:"El espejo de los productos publicados que alimenta el buscador difuso de la tienda. Sin RLS a propósito (lectura pública del buscador) — pendiente: endurecer para que la clave pública no pueda escribir.", est:"activo" },
+{ id:"t-portal-altas", capa:"supabase", grp:"ringB", ico:"🪪", n:"portal_altas + bucket portal-altas", sub:"tabla + archivos privados",
+  d:"Las solicitudes de alta al portal: datos, archivos de la habilitación, análisis (DECIDE, ARCA, Odoo, controles) y resultado. Sólo la escribe portal-alta; la lee el Core (admin y dirección) por RLS.", est:"activo" },
+{ id:"arca", capa:"satelite", grp:"sat", ico:"🏛️", n:"ARCA — constancia de inscripción", sub:"ws_sr_constancia_inscripcion (padrón A5)",
+  d:"El padrón de ARCA: estado del CUIT, nombre, domicilio fiscal, IVA y actividades. Odoo lo usa para actualizar fichas; portal-alta le pregunta directo con el ticket de Odoo para validar a quien pide el alta (actividad 477310 = farmacia).", est:"activo" },
 { id:"t-portal", capa:"supabase", grp:"ringB", ico:"🚚", n:"portal_beneficio + portal_entrega", sub:"tablas · 1 + 31 filas",
   d:"Beneficios vigentes y ventanas de entrega por zona que se muestran en el portal de clientes.", est:"activo" },
 { id:"t-agente-memoria", capa:"supabase", grp:"ringB", ico:"🧠", n:"Memoria del Asistente", sub:"tablas agente_conversaciones · agente_mensajes · agente_memoria",
@@ -530,7 +539,7 @@ const NODOS = [
 { id:"L-portal", capa:"core", grp:"lobo", ico:"🌐", n:"Portal web", sub:"departamento del Core", lobo:"portal",
   d:"Todo lo del portal de clientes, junto en un solo módulo.", est:"activo" },
 { id:"portal", capa:"core", grp:"mod", lobo:"portal", ico:"🌐", n:"Portal web (módulo)", sub:"portal/portal.html",
-  d:"Métricas reales del portal (visitas, pedidos online, clientes que entran), la cinta coral segmentada por perfil crediticio y la publicación de noticias.",
+  d:"Métricas reales del portal (visitas, pedidos online, clientes que entran), la cinta coral segmentada por perfil crediticio, la publicación de noticias y la bandeja de altas (solicitudes del formulario /alta: aprobar, rechazar, alta automática).",
   toca:["sec-web","sec-clientes","sec-ventas","sec-config"],
   usa:["website.visitor","website.track (visitas reales)","blog.blog + blog.post (noticias)","sale.order (pedidos online)","res.partner","res.users","account.payment.term","param eyg.portal_cinta","tablas portal_beneficio + portal_entrega"], est:"activo" },
 
@@ -656,7 +665,7 @@ const ENLACES = [
   ["fn-agente","t-core-users"],["fn-agente","anthropic"],
   /* functions satélite de Supabase */
   ["fn-ofertas-top","odoo-rpc"],["fn-sync-web","odoo-rpc"],["fn-sync-buscar","odoo-rpc"],
-  ["fn-salud-novedades","portal"],["portal","fn-portal-cinta"],["fn-portal-cinta","params","config"],
+  ["fn-salud-novedades","portal"],["portal","fn-portal-cinta"],["portal","fn-portal-alta"],["fn-portal-alta","t-portal-altas"],["fn-portal-alta","anthropic"],["fn-portal-alta","arca"],["fn-portal-alta","params","config"],["fn-portal-alta","fn-wsp-agente"],["fn-portal-cinta","params","config"],
   ["fn-sync-web","t-productos-web"],["fn-sync-buscar","t-productos-web"],
   ["t-productos-web","sql-fns"],["sql-fns","sec-web"],
   /* el pulso del sistema: la página solo lee lo que dejó la function */
