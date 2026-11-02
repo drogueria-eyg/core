@@ -370,11 +370,27 @@ function fallaPDF(w, msg, urlOdoo){
   if(urlOdoo) window.open(urlOdoo, "_blank");
 }
 
+/* El comprobante que se quiere imprimir casi siempre YA ESTÁ en la pantalla: en
+   la lista de Emitido (que trae access_token) o en el detalle del pedido. Si lo
+   tenemos con su token, el PDF se abre sin preguntarle nada a Odoo. */
+function facturaConocida(id){
+  if(Array.isArray(EMITIDO)){
+    const m=EMITIDO.find(x=>x.id===id);
+    if(m && m.access_token) return m;
+  }
+  for(const k in DET){
+    const f=((DET[k]&&DET[k].facs)||[]).find(x=>x.id===id);
+    if(f && f.access_token) return f;
+  }
+  return null;
+}
+
 async function imprimirFactura(id, ev){
   if(ev) ev.stopPropagation();
   const w=ventanaPDF();
   try{
-    const m=(await EYG.rpc("account.move","read",[[id]],{fields:["access_token","name","state"]}))[0];
+    const m=facturaConocida(id)
+      ||(await EYG.rpc("account.move","read",[[id]],{fields:["access_token","name","state"]}))[0];
     if(!m) throw new Error("no encontré el comprobante");
     if(m.state!=="posted") throw new Error("todavía está en borrador: emitila y después imprimila");
     let tok=m.access_token;
@@ -389,37 +405,81 @@ async function imprimirFactura(id, ev){
   }
 }
 
+/* web_search_read devuelve los campos relacionados como objetos ({id, name}) y
+   el remito impreso espera la forma clásica de Odoo ([id, "nombre"]). Se traduce
+   acá y no se toca nada más. */
+const _tupla=o=>(o&&typeof o==="object")?[o.id, o.display_name||o.name||""]:(o||false);
+
+/* TODO el remito en UN viaje. Antes eran tres encadenados —leer el remito, y
+   recién con su partner_id y su sale_id ir a buscar cliente, pedido y
+   renglones—: medido el 2/11/2026, 1.577 ms contra 748 ms así.
+   La "specification" es la forma en que el propio Odoo 17 pide un formulario con
+   todo lo que cuelga; verificado que los renglones que trae (move_line_ids) son
+   exactamente los mismos que buscar stock.move.line por picking_id. */
 async function datosRemito(id){
-  const p=(await EYG.rpc("stock.picking","read",[[id]],
-    {fields:["name","partner_id","sale_id","state","date_done","scheduled_date","origin","note","user_id","weight"],context:{lang:"es_AR"}}))[0];
-  if(!p) throw new Error("no encontré el remito");
-  const [lins,cli,ped,emi]=await Promise.all([
-    EYG.rpc("stock.move.line","search_read",[[["picking_id","=",id]]],
-      {fields:["product_id","quantity","lot_id","expiration_date","product_uom_id"],context:{lang:"es_AR"},limit:0}),
-    EYG.rpc("res.partner","read",[[p.partner_id[0]]],
-      {fields:["name","vat","l10n_ar_formatted_vat","street","street2","city","state_id","zip","phone","l10n_ar_afip_responsibility_type_id"],context:{lang:"es_AR"}}).catch(()=>[]),
-    p.sale_id?EYG.rpc("sale.order","read",[[p.sale_id[0]]],
-      {fields:["name","client_order_ref","user_id","payment_term_id"],context:{lang:"es_AR"}}).catch(()=>[]):Promise.resolve([]),
+  const [r, emi]=await Promise.all([
+    EYG.rpc("stock.picking","web_search_read",[],{
+      domain:[["id","=",id]], limit:1, context:{lang:"es_AR"},
+      specification:{
+        name:{}, state:{}, date_done:{}, scheduled_date:{}, origin:{}, note:{}, weight:{},
+        user_id:{fields:{display_name:{}}},
+        partner_id:{fields:{name:{},vat:{},l10n_ar_formatted_vat:{},street:{},street2:{},city:{},zip:{},phone:{},
+                            state_id:{fields:{display_name:{}}},
+                            l10n_ar_afip_responsibility_type_id:{fields:{display_name:{}}}}},
+        sale_id:{fields:{name:{},client_order_ref:{},
+                         user_id:{fields:{display_name:{}}},
+                         payment_term_id:{fields:{display_name:{}}}}},
+        move_line_ids:{fields:{quantity:{}, expiration_date:{},
+                               product_id:{fields:{display_name:{}}},
+                               lot_id:{fields:{display_name:{}}},
+                               product_uom_id:{fields:{display_name:{}}}}}
+      }
+    }),
     emisorRemito()
   ]);
-  return {p, lins, cli:cli[0]||{}, ped:ped[0]||{}, emi};
+  const rec=(r&&r.records&&r.records[0])||null;
+  if(!rec) throw new Error("no encontré el remito");
+
+  const c=rec.partner_id||{}, v=rec.sale_id||{};
+  const p={ id:rec.id, name:rec.name, state:rec.state, date_done:rec.date_done,
+            scheduled_date:rec.scheduled_date, origin:rec.origin, note:rec.note,
+            weight:rec.weight, user_id:_tupla(rec.user_id), partner_id:_tupla(rec.partner_id) };
+  const cli={ name:c.name, vat:c.vat, l10n_ar_formatted_vat:c.l10n_ar_formatted_vat,
+              street:c.street, street2:c.street2, city:c.city, zip:c.zip, phone:c.phone,
+              state_id:_tupla(c.state_id),
+              l10n_ar_afip_responsibility_type_id:_tupla(c.l10n_ar_afip_responsibility_type_id) };
+  const ped=rec.sale_id?{ name:v.name, client_order_ref:v.client_order_ref,
+                          user_id:_tupla(v.user_id), payment_term_id:_tupla(v.payment_term_id) }:{};
+  const lins=(rec.move_line_ids||[]).map(l=>({
+    id:l.id, quantity:l.quantity, expiration_date:l.expiration_date,
+    product_id:_tupla(l.product_id), lot_id:_tupla(l.lot_id), product_uom_id:_tupla(l.product_uom_id) }));
+  return {p, lins, cli, ped, emi};
 }
 
 /* Los datos del emisor son los mismos que imprime la factura nueva, y el logo
    pesa 31 KB: se traen una sola vez por sesión. */
-let _EMISOR=null;
-async function emisorRemito(){
-  if(_EMISOR) return _EMISOR;
-  try{
-    const c=(await EYG.rpc("res.company","read",[[1]],
-      {fields:["name","partner_id","street","street2","city","zip","state_id","phone","logo",
-               "l10n_ar_afip_responsibility_type_id","l10n_ar_gross_income_type","l10n_ar_gross_income_number","l10n_ar_afip_start_date"],
-       context:{lang:"es_AR"}}))[0]||{};
-    let cuit="";
-    try{ cuit=((await EYG.rpc("res.partner","read",[[c.partner_id[0]]],{fields:["l10n_ar_formatted_vat"]}))[0]||{}).l10n_ar_formatted_vat||""; }catch(_){ }
-    _EMISOR={c, cuit};
-  }catch(e){ _EMISOR={c:{}, cuit:""}; }
-  return _EMISOR;
+let _EMISOR=null, _EMISOR_PIDE=null;
+/* El CUIT sale de res.company.vat, formateado acá, y no de un segundo viaje a
+   res.partner: verificado el 2/11/2026 que 30716356988 da "30-71635698-8", que
+   es exactamente lo que devolvía l10n_ar_formatted_vat. */
+function _cuit(v){
+  const d=String(v||"").replace(/[^0-9]/g,"");
+  return d.length===11 ? d.slice(0,2)+"-"+d.slice(2,10)+"-"+d.slice(10) : String(v||"");
+}
+function emisorRemito(){
+  if(_EMISOR) return Promise.resolve(_EMISOR);
+  if(_EMISOR_PIDE) return _EMISOR_PIDE;      // ya se está pidiendo: esperar ESA
+  _EMISOR_PIDE=(async()=>{
+    try{
+      const c=(await EYG.rpc("res.company","read",[[1]],
+        {fields:["name","vat","street","street2","city","zip","state_id","phone","logo",
+                 "l10n_ar_afip_responsibility_type_id","l10n_ar_gross_income_type","l10n_ar_gross_income_number","l10n_ar_afip_start_date"],
+         context:{lang:"es_AR"}}))[0]||{};
+      _EMISOR={c, cuit:_cuit(c.vat)};
+    }catch(e){ _EMISOR={c:{}, cuit:""}; }
+    return _EMISOR;
+  })();
+  return _EMISOR_PIDE;
 }
 
 /* ══════════════ SI SALIÓ UNA VERSIÓN NUEVA, AVISAR ══════════════
@@ -438,7 +498,7 @@ async function emisorRemito(){
    solo: puede estar a mitad de una edición de renglones.
 
    ⚠️ Al publicar un cambio de este módulo, subir MODULO_VER. */
-/*VER*/const MODULO_VER="2026-10-23-r9";
+/*VER*/const MODULO_VER="2026-11-02-r10";
 let _verNueva=false;
 
 async function mirarVersion(){
@@ -801,6 +861,7 @@ async function cargar(){
     render();
     guardarFoto();
     contadores();          // los dos números de pastilla, sin hacer esperar a nadie
+    emisorRemito();        // el membrete del remito, listo antes de que lo pidan
   }catch(e){
     /* Si ya hay una foto en pantalla no la borro: queda lo último que vio, con el
        cartel diciendo que no se pudo actualizar y por qué. */
@@ -1579,7 +1640,7 @@ async function abrir(id){
           {fields:["name","state","date_done","scheduled_date"],limit:0,order:"id desc",context:{lang:"es_AR"}}).catch(()=>[]),
         EYG.rpc("account.move","search_read",
           [[["invoice_line_ids.sale_line_ids.order_id","=",id],["move_type","in",["out_invoice","out_refund"]]]],
-          {fields:["name","move_type","state","invoice_date","amount_total","journal_id"],
+          {fields:["name","move_type","state","invoice_date","amount_total","journal_id","access_token"],
            context:{lang:"es_AR"},limit:0,order:"id"}).catch(()=>[]),
         enLista ? Promise.resolve(null)
                 : EYG.rpc("mail.message","search_read",[[["model","=","sale.order"],["res_id","=",id],["message_type","=","comment"]]],
@@ -1985,45 +2046,88 @@ function accionFacturar(id, avisado){
   });
 }
 
+/* De la acción que devuelve Odoo saca los ids de las facturas. Puede venir como
+   res_id (una sola) o como un dominio [("id","in",[…])], y el dominio a veces
+   viaja como texto. Cualquier cosa rara devuelve [] y el que llama vuelve a
+   preguntar, que es como se hacía antes. */
+function idsDeAccion(a){
+  if(!a || typeof a!=="object") return [];
+  if(a.res_id) return [a.res_id];
+  const d=a.domain;
+  if(Array.isArray(d)){
+    for(const c of d){
+      if(Array.isArray(c) && c[0]==="id" && (c[1]==="in"||c[1]==="=")) return [].concat(c[2]).filter(x=>typeof x==="number");
+    }
+  }else if(typeof d==="string"){
+    const m=/\[\s*([0-9]+(?:\s*,\s*[0-9]+)*)\s*\]/.exec(d);
+    if(m) return m[1].split(",").map(x=>parseInt(x,10)).filter(x=>x>0);
+  }
+  return [];
+}
+
+/* ══════════════ FACTURAR ══════════════
+   Eran SEIS viajes uno atrás del otro y el botón giraba ~5 s. Quedan TRES:
+     1. el control de "¿ya está facturado?" Y la creación del asistente, en la
+        MISMA tanda: no dependen entre sí, y EYG.rpc las manda en un solo viaje.
+        Si el control falla, el asistente queda huérfano y no pasa nada: es un
+        modelo transitorio que Odoo barre solo;
+     2. create_invoices, que con "open_invoices" en el contexto ya devuelve la
+        acción con los ids de las facturas — un viaje menos;
+     3. action_post, que es el que habla con AFIP y saca el CAE.
+   Leer el NÚMERO de la factura, avisar en el chatter y cerrar la nota de la
+   comercial pasan a hacerse después de soltar la pantalla: ninguno de los tres
+   cambia lo que ya pasó, y encadenados eran otros ~2,5 s de espera. El cartel
+   primero dice "Factura emitida ✓" y cuando llega el número se completa. */
 async function ejecutar(id,{emitir}){
   cerrarDialogo();
   const o=PEND.find(x=>x.id===id); if(!o) return;
   TRABAJANDO[id]=true; render();
   try{
-    {
-      const antes=(await EYG.rpc("sale.order","read",[[id]],{fields:["invoice_ids","invoice_status","amount_to_invoice"]}))[0];
-      if(antes.invoice_status==="invoiced" && !antes.amount_to_invoice)
-        throw new Error("El pedido ya está facturado por completo.");
-      const ctx={active_model:"sale.order",active_ids:[id],active_id:id,lang:"es_AR"};
-      const wid=await EYG.rpc("sale.advance.payment.inv","create",[{advance_payment_method:"delivered"}],{context:ctx});
-      await EYG.rpc("sale.advance.payment.inv","create_invoices",[[wid]],{context:ctx});
-      const desp=(await EYG.rpc("sale.order","read",[[id]],{fields:["invoice_ids"]}))[0];
-      const previas=antes.invoice_ids||[];
-      const nuevas=(desp.invoice_ids||[]).filter(x=>previas.indexOf(x)<0);
-      if(!nuevas.length)
-        throw new Error("Odoo no generó ninguna factura. Revisá el pedido en Odoo: puede no tener nada por facturar.");
-      let etiqueta="en borrador";
-      if(emitir){
-        await EYG.rpc("account.move","action_post",[nuevas],{context:{lang:"es_AR"}});
-        etiqueta="emitida";
-      }
-      const inv=await EYG.rpc("account.move","read",[nuevas],{fields:["name","amount_total","state"],context:{lang:"es_AR"}});
-      const nombres=inv.map(i=>(i.name&&i.name!=="/")?i.name:"borrador").join(", ");
-      const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
-      toast("Factura "+nombres+" — "+etiqueta+" ✓");
-      delete TRABAJANDO[id]; delete DET[id];
-      /* El aviso en el chatter de Odoo, el cierre de la nota de la comercial y el
-         refresco de la pantalla no dependen entre sí: van los tres juntos. Uno
-         atrás del otro eran ~2,5 s de reloj DESPUÉS de que la factura ya existía,
-         con el botón girando para nada. */
-      await Promise.all([
+    const ctx={active_model:"sale.order",active_ids:[id],active_id:id,lang:"es_AR"};
+    const [leido, wid]=await Promise.all([
+      EYG.rpc("sale.order","read",[[id]],{fields:["invoice_ids","invoice_status","amount_to_invoice"]}),
+      EYG.rpc("sale.advance.payment.inv","create",[{advance_payment_method:"delivered"}],{context:ctx})
+    ]);
+    const antes=(leido&&leido[0])||{};
+    if(antes.invoice_status==="invoiced" && !antes.amount_to_invoice)
+      throw new Error("El pedido ya está facturado por completo.");
+    const previas=antes.invoice_ids||[];
+
+    const acc=await EYG.rpc("sale.advance.payment.inv","create_invoices",[[wid]],
+      {context:Object.assign({},ctx,{open_invoices:true})});
+    /* La acción puede traer TODAS las facturas del pedido, así que se le restan
+       las que ya estaban. Si no trae ninguna, se pregunta como antes. */
+    let nuevas=idsDeAccion(acc).filter(x=>previas.indexOf(x)<0);
+    if(!nuevas.length){
+      const desp=(await EYG.rpc("sale.order","read",[[id]],{fields:["invoice_ids"]}))[0]||{};
+      nuevas=(desp.invoice_ids||[]).filter(x=>previas.indexOf(x)<0);
+    }
+    if(!nuevas.length)
+      throw new Error("Odoo no generó ninguna factura. Revisá el pedido en Odoo: puede no tener nada por facturar.");
+
+    let etiqueta="en borrador";
+    if(emitir){
+      await EYG.rpc("account.move","action_post",[nuevas],{context:{lang:"es_AR"}});
+      etiqueta="emitida";
+    }
+
+    /* Hecho: se suelta la pantalla acá. */
+    toast(nuevas.length===1?("Factura "+etiqueta+" ✓"):(fnum(nuevas.length)+" facturas ✓"));
+    delete TRABAJANDO[id]; delete DET[id];
+    render();
+    refrescarPedido(id);        // repinta solo cuando llega
+
+    const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
+    EYG.rpc("account.move","read",[nuevas],{fields:["name"],context:{lang:"es_AR"}})
+      .then(inv=>{
+        const nombres=(inv||[]).map(i=>(i.name&&i.name!=="/")?i.name:"borrador").join(", ");
+        if(nombres) toast("Factura "+nombres+" — "+etiqueta+" ✓");
         EYG.rpc("sale.order","message_post",[[id]],
           {body:"🧾 Facturado desde EyG Core por "+esc(quien)+": "+esc(nombres)+" ("+etiqueta+")",
-           message_type:"comment"}).catch(()=>{}),
-        cerrarNotasCore(id, "se facturó "+nombres),   // la comercial lo ve resuelto en su panel
-        refrescarPedido(id)
-      ]);
-    }
+           message_type:"comment"}).catch(()=>{});
+        return cerrarNotasCore(id, "se facturó "+nombres);   // la comercial lo ve resuelto
+      })
+      .catch(e=>console.warn("No pude dejar el aviso de la factura",e));
   }catch(e){
     delete TRABAJANDO[id];
     render();
