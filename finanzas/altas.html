@@ -99,7 +99,7 @@ function render(){
   const chip=(k,l)=>`<button class="chk ${FILTRO===k?'on':''}" onclick="FILTRO='${k}';render()">${l} · ${n[k]}</button>`;
   cont.innerHTML=`<p class="intro">Clientes que pidieron acceso desde <a href="https://drogueriaeyg.odoo.com/alta" target="_blank" rel="noopener">drogueriaeyg.odoo.com/alta</a>. El sistema ya leyó la habilitación, consultó el CUIT en ARCA y lo buscó en Odoo; <b>ninguna se aprueba sola</b>. Al aprobar se crea la ficha (o se usa la que ya existe), se carga el legajo, se crea el usuario del portal y le llega el mail para crear su contraseña. Si se rechaza, en Odoo no queda nada.</p>
     <div class="chks">${chip("revisar","Para revisar")}${chip("aprobada","Aprobadas")}${chip("rechazada","Rechazadas")}${chip("todas","Todas")}</div>
-    ${lista.length?lista.map(tarjeta).join(""):`<div class="empty">${FILTRO==="revisar"?"No hay solicitudes esperando. 👌":"Nada por acá."}</div>`}`;
+    ${lista.length?lista.map(tarjeta).join(""):`<div class="empty">${FILTRO==="revisar"?"No hay solicitudes pendientes de revisión.":"No hay solicitudes en esta vista."}</div>`}`;
 }
 function tarjeta(a){
   const d=a.datos||{}, an=a.analisis||{}, sem=SEM[a.semaforo]||["#8A9A97","Sin analizar"], est=EST[a.estado]||["off",a.estado];
@@ -127,8 +127,8 @@ function detalle(a){
   // Lo que más importa contra intrusos: si ya es cliente y el contacto no coincide, llamar al de la ficha.
   const cont=(an.checks||[]).find(c=>c.k==="contacto");
   const ficha=an.ficha;
-  const avisoContacto=cont&&cont.ok!==true&&ficha?`<div class="aviso amar">⚠️ <b>Ojo:</b> ya es cliente y el mail y el teléfono que dejó <b>no son los que tenemos</b>. Antes de aprobar, confirmá llamando al teléfono de la ficha: ${(ficha.tels||[]).length?ficha.tels.map(telLinks).join(" · "):"<i>la ficha no tiene teléfono</i>"}${(ficha.mails||[]).length?` — mail en la ficha: <b>${esc(ficha.mails.join(", "))}</b>`:""}</div>`:"";
-  const rojo=a.semaforo==="rojo"?`<div class="aviso rojo">Hay un control clave que no cierra. Lo normal es rechazarla; si la aprobás, que sea porque lo confirmaste por otro lado.</div>`:"";
+  const avisoContacto=cont&&cont.ok!==true&&ficha?`<div class="aviso amar"><b>Atención:</b> ya es cliente y el correo y el teléfono informados <b>no coinciden con los de la ficha</b>. Antes de aprobar, conviene confirmar con el teléfono registrado: ${(ficha.tels||[]).length?ficha.tels.map(telLinks).join(" · "):"<i>la ficha no tiene teléfono</i>"}${(ficha.mails||[]).length?` — mail en la ficha: <b>${esc(ficha.mails.join(", "))}</b>`:""}</div>`:"";
+  const rojo=a.semaforo==="rojo"?`<div class="aviso rojo">Un control clave no coincide. Corresponde rechazarla, salvo que el dato se haya confirmado por otra vía.</div>`:"";
   const opc=(arr,sel,val,txt)=>arr.map(x=>`<option value="${esc(val(x))}" ${String(val(x))===String(sel)?"selected":""}>${esc(txt(x))}</option>`).join("");
   const comSug=(an.comercial||{}).id;
   return `<div class="det">
@@ -136,9 +136,9 @@ function detalle(a){
     <div class="cols">
       <div><div class="sub">Controles</div><table class="lista">${checks||'<tr><td>Sin análisis</td></tr>'}</table>
         ${(an.errores||[]).length?`<div class="hint" style="color:#B0322F;margin-top:6px">⚠ ${esc(an.errores.join(" · "))}</div>`:""}
-        <div class="sub" style="margin-top:14px">Contacto que dejó</div>
+        <div class="sub" style="margin-top:14px">Contacto informado</div>
         <div style="font-size:13px">📞 ${telLinks(d.telefono||"")}<br>✉️ <b>${esc(a.email)}</b><br>📍 ${esc(d.calle||"")}, ${esc(d.localidad||"")} (${esc(d.provincia||"")})</div>
-        <div class="sub" style="margin-top:14px">Habilitación que subió</div><div style="display:flex;gap:6px;flex-wrap:wrap">${arch||'<span class="hint">Sin archivos</span>'}</div>
+        <div class="sub" style="margin-top:14px">Habilitación presentada</div><div style="display:flex;gap:6px;flex-wrap:wrap">${arch||'<span class="hint">Sin archivos</span>'}</div>
       </div>
       <div><div class="sub">Lo que dice la habilitación</div>
         ${h?`<table class="lista">${fila("Es de",h.establecimiento)}${fila("Tipo",h.tipo)}${fila("Número",h.numero)}${fila("Fecha",fFecha(h.fecha))}${fila("Vence",fFecha(h.vencimiento))}${fila("Nombre",h.nombre_establecimiento)}${fila("Domicilio",[h.domicilio,h.localidad].filter(Boolean).join(", "))}${fila("Titular",h.titular_nombre||h.entidad_nombre)}${fila("DNI",h.titular_dni)}${fila("CUIT",h.titular_cuit)}${fila("Matrícula",h.titular_matricula)}${fila("Dir. técnico",h.director_tecnico)}${fila("Antes era de",h.titular_anterior)}${fila("Organismo",h.organismo)}${fila("Nota",h.observaciones)}</table>`:'<div class="hint">No se pudo leer.</div>'}
@@ -205,18 +205,18 @@ function rechazoForm(id){
   const an=a.analisis||{};
   // Motivo sugerido en criollo: es lo que va a leer el cliente.
   const malo=(an.checks||[]).find(c=>c.grave&&c.ok===false);
-  const sug=!malo?"":malo.k==="actividad"?"Según ARCA, el CUIT no tiene la actividad que corresponde al tipo de negocio que indicaste.":
-    malo.k==="habilitacion"?"El archivo que subiste no es la habilitación del local. Podés volver a pedir el alta subiendo la habilitación.":
-    malo.k==="titular"?"La habilitación que subiste no corresponde al titular del CUIT.":
-    malo.k==="arca"?"No pudimos validar el CUIT en ARCA.":"";
-  box.innerHTML=`<div class="fld" style="margin-top:12px"><label>Motivo (es lo que va a leer el cliente en el mail)</label><textarea id="m-${id}">${esc(sug)}</textarea></div>
-    <label class="hint" style="display:flex;gap:7px;align-items:center;margin-bottom:10px"><input type="checkbox" id="av-${id}" checked> Mandarle el mail avisando</label>
+  const sug=!malo?"":malo.k==="actividad"?"Según ARCA, el CUIT no registra la actividad que corresponde al tipo de establecimiento indicado.":
+    malo.k==="habilitacion"?"El archivo adjunto no corresponde a la habilitación del establecimiento. La solicitud puede presentarse nuevamente con la habilitación vigente.":
+    malo.k==="titular"?"La habilitación presentada no corresponde al titular del CUIT informado.":
+    malo.k==="arca"?"No fue posible validar el CUIT en ARCA.":"";
+  box.innerHTML=`<div class="fld" style="margin-top:12px"><label>Motivo (es el texto que recibe el cliente por correo)</label><textarea id="m-${id}">${esc(sug)}</textarea></div>
+    <label class="hint" style="display:flex;gap:7px;align-items:center;margin-bottom:10px"><input type="checkbox" id="av-${id}" checked> Enviar el correo al cliente</label>
     <button class="btn warn" onclick="rechazar('${id}',this)">Confirmar rechazo</button>`;
 }
 async function rechazar(id,btn){
   const motivo=(document.getElementById("m-"+id)||{}).value||"";
   const avisar=!!(document.getElementById("av-"+id)||{}).checked;
-  if(motivo.trim().length<5){ toast("Escribí el motivo"); return; }
+  if(motivo.trim().length<5){ toast("Falta el motivo"); return; }
   if(btn){ btn.disabled=true; btn.textContent="Rechazando…"; }
   try{ const r=await fn({accion:"rechazar",id,motivo,avisar}); toast("Solicitud rechazada"+(avisar?" · mail "+r.mail:""),true); ABIERTA=null; await cargar(); }
   catch(e){ toast("⚠ "+e.message); if(btn){ btn.disabled=false; btn.textContent="Confirmar rechazo"; } }
