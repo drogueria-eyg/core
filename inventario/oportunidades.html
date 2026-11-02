@@ -2192,13 +2192,35 @@ function asPintarTodas(){
    Aviso secundario (no pausa): bajo el costo, o el margen cayó 5 puntos desde que se subió la placa. */
 const PLACAS_CRON=102;
 let PC=null, PCAbierto=false;
-async function placasCtlLeer(){ try{ PC=JSON.parse(await getParam("eyg.placas_control","{}")||"{}")||{}; }catch(e){ PC={}; } }
+async function placasCtlLeer(){ try{ PC=JSON.parse(await getParam("eyg.placas_control","{}")||"{}")||{}; }catch(e){ PC={}; }
+  try{ PCAV=JSON.parse(await getParam(PCAV_KEY,"{}")||"{}")||{}; }catch(e){ PCAV={}; } }
+/* DETALLES DE PLACA QUE NO PAUSAN (2/11/2026, Diego: "cuando son detalles así ponelas dentro de la tarjeta
+   con alguna advertencia"). El precio de la placa es el de hoy, pero algo menor no coincide: la fecha
+   ("válido hasta 31/10" cuando se extendió al 30/11), falta "IVA incluido", etc. El control automático
+   no lee la imagen, así que estos avisos se cargan a mano (revisando las imágenes) en eyg.placas_avisos:
+   {pid:{t, k, u, aviso, at}}. Un aviso vale sólo para ESA imagen (u): al subir otra placa se va solo. */
+const PCAV_KEY="eyg.placas_avisos";
+let PCAV={};
+function pcPlacaUrl(pid){
+  if(pid.startsWith("sync:")){ const o=SYNC_OF.find(x=>x.id===pid.slice(5)); return o&&o.placa||""; }
+  if(pid.startsWith("motor:")) return CAPA_PLM[pid.slice(6)]||"";
+  const o=OFERTAS.find(x=>x.id===pid); return o&&o.placa||"";
+}
+// los avisos que siguen valiendo: la placa es la misma imagen que se revisó (si no se sabe, se muestra)
+function pcAvisos(){ return Object.entries(PCAV||{}).filter(([pid,a])=>{ const u=pcPlacaUrl(pid); return !u||!a.u||u===a.u; }); }
+const pcAviso=pid=>{ const a=PCAV&&PCAV[pid]; if(!a) return null; const u=pcPlacaUrl(pid); return (!u||!a.u||u===a.u)?a:null; };
+window.pcAvisoQuitar=async pid=>{
+  try{ let m={}; try{ m=JSON.parse(await getParam(PCAV_KEY,"{}")||"{}")||{}; }catch(e){}
+    delete m[pid]; await setParam(PCAV_KEY, JSON.stringify(m)); PCAV=m; toast("Aviso quitado ✓"); render(); if(PCAbierto) pintarPlacasCtl(); }
+  catch(e){ toast("No se pudo: "+(e.message||e)); }
+};
 // que el control corra YA (al subir una placa o reactivar): así toma los precios de este momento
 function placasCtlCorrer(){
   return EYG.rpc("ir.cron.trigger","create",[{cron_id:PLACAS_CRON, call_at:new Date().toISOString().slice(0,19).replace("T"," ")}]).catch(()=>{});
 }
 const pcAlerta=pid=>PC&&PC.alertas&&PC.alertas[pid];
-function pcChip(pid){ const a=pcAlerta(pid); if(!a) return "";
+function pcChip(pid){ const a=pcAlerta(pid);
+  if(!a){ const v=pcAviso(pid); return v?`<span class="chip c-oro" title="${esc(v.aviso)}">🖼️ placa con detalles · sigue activa</span>`:""; }
   return `<span class="chip c-bad" title="El precio cambió desde que se subió la placa">🖼️ placa desactualizada${a.pauso?" · pausada por el control":""}</span>`; }
 function kpiPlacas(){
   if(!PC) return '<button class="kpi" onclick="abrirPlacasCtl()"><span class="l">🖼️ Placas desactualizadas</span><div class="n">…</div><div class="s">revisando…</div></button>';
@@ -2209,9 +2231,10 @@ function kpiPlacas(){
   const horas=PC.act?(new Date(ahoraAR.replace(" ","T")+"Z")-new Date(String(PC.act).replace(" ","T")+"Z"))/36e5:99;
   if(horas>3) return '<button class="kpi alerta" onclick="abrirPlacasCtl()" title="El control de placas no está corriendo: avisá a sistemas.">'+
     '<span class="l">🖼️ Placas desactualizadas</span><div class="n">⚠</div><div class="s">el control no corre desde '+esc(PC.act?fmtF(String(PC.act).slice(0,10))+" "+String(PC.act).slice(11,16):"nunca")+'</div></button>';
-  const sub = n ? (Object.values(PC.alertas).filter(a=>a.pauso).length+" pausada"+(Object.values(PC.alertas).filter(a=>a.pauso).length===1?"":"s")+" · corregí la placa")
-                : ((PC.revisadas||0)+" placas al día"+(ni?(" · "+ni+" aviso"+(ni===1?"":"s")+" de margen"):""));
-  return '<button class="kpi '+(n?"alerta":"bien")+'" onclick="abrirPlacasCtl()" title="El control revisa cada hora que el precio de cada placa siga siendo el de hoy.">'+
+  const nd=pcAvisos().length, det=nd?(" · "+nd+" con detalles"):"";
+  const sub = n ? (Object.values(PC.alertas).filter(a=>a.pauso).length+" pausada"+(Object.values(PC.alertas).filter(a=>a.pauso).length===1?"":"s")+" · corregí la placa"+det)
+                : ((PC.revisadas||0)+" placas al día"+det+(ni?(" · "+ni+" aviso"+(ni===1?"":"s")+" de margen"):""));
+  return '<button class="kpi '+(n?"alerta":nd?"":"bien")+'" onclick="abrirPlacasCtl()" title="El control revisa cada hora que el precio de cada placa siga siendo el de hoy.">'+
     '<span class="l">🖼️ Placas desactualizadas</span><div class="n">'+n+'</div><div class="s">'+esc(sub)+'</div></button>';
 }
 window.abrirPlacasCtl=async()=>{ PCAbierto=true; pintarPlacasCtl(); await placasCtlLeer(); pintarPlacasCtl(); };
@@ -2232,8 +2255,22 @@ function pintarPlacasCtl(){
         <button class="btn sm" onclick="pcSubirNueva('${esc(pid)}')">🖼️ Subir la placa corregida</button>
         <button class="btn ghost sm" onclick="pcPlacaBien('${esc(pid)}')" title="La placa ya muestra los precios de hoy (o la diferencia no importa): se reactiva con esta placa">✓ La placa está bien · reactivar</button>
       </div></div>`;
+  const AV=pcAvisos();
+  const filaAv=([pid,a])=>{ const u=pcPlacaUrl(pid)||a.u; return `<div class="pc-fila">
+      <div class="pc-img">${u?`<img src="${esc(u)}" alt="Placa" onclick="placaVer('${esc(u)}')">`:""}</div>
+      <div class="pc-main"><b>${esc(String(a.t||pid).slice(0,90))}</b>
+        <div class="rend-quien"><span class="chip c-gris">${PC_TIPO[a.k]||a.k||""}</span> <span class="chip c-oro">sigue activa</span>${a.at?" · revisada el "+esc(fmtF(a.at)):""}</div>
+        <div style="margin-top:6px;font-size:13px;color:#8a5a12">⚠ ${esc(a.aviso)}</div>
+      </div>
+      <div class="pc-acts">
+        <button class="btn sm" onclick="pcSubirNueva('${esc(pid)}')">🖼️ Subir la placa corregida</button>
+        <button class="btn ghost sm" onclick="pcAvisoQuitar('${esc(pid)}')">✓ Ya está bien · quitar el aviso</button>
+      </div></div>`; };
   const cuerpo = !PC ? '<div class="empty">Leyendo el control…</div>' :
     (AL.length? AL.map(fila).join("") : '<div class="empty" style="padding:16px">✓ Todas las placas muestran los precios de hoy.</div>')+
+    (AV.length?`<h4 style="margin:22px 0 6px">⚠ Placas con detalles para corregir · ${AV.length} <span style="font-weight:600;color:var(--gris2);font-size:12px">(siguen activas: el precio está bien)</span></h4>
+      <div class="hint2" style="margin:0 0 8px">Algo menor de la imagen no coincide (la fecha de vigencia, una leyenda…). La oferta sigue publicada; cuando subas la placa corregida, el aviso se va solo.</div>
+      ${AV.map(filaAv).join("")}`:"")+
     (IN.length?`<h4 style="margin:22px 0 6px">ℹ️ Para revisar el margen <span style="font-weight:600;color:var(--gris2);font-size:12px">(no se pausan)</span></h4>
       <div class="hint2" style="margin:0 0 8px">El precio de la placa sigue igual, pero cambió el costo. Decidí si la oferta sigue así o se da de baja.</div>
       <table class="rend-tabla"><thead><tr><th>Oferta</th><th>Qué pasa</th><th class="num">Precio</th><th class="num">Costo</th><th class="num">Margen</th></tr></thead><tbody>
@@ -2305,6 +2342,7 @@ window.pcSubirNueva=pid=>{
       } else await placaGuardar("of",pid,url);
       await pcReactivar(pid);
       await pcEditar(C=>{ delete C.alertas[pid]; C.ref[pid]={u:url,f:null,m:null,at:""}; });
+      if(PCAV[pid]){ try{ let m=JSON.parse(await getParam(PCAV_KEY,"{}")||"{}")||{}; delete m[pid]; await setParam(PCAV_KEY, JSON.stringify(m)); PCAV=m; }catch(e){} }
       placasCtlCorrer();
       toast("Placa nueva guardada y oferta reactivada ✓"); render(); if(PCAbierto) pintarPlacasCtl();
     }catch(e){ toast("No pude subir la placa: "+(e.message||e)); }
