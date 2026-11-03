@@ -1,4 +1,4 @@
-/* ===== EyG Core · VISUAL NUEVA (piloto) =====
+/* ===== EyG Core · VISUAL NUEVA =====
    Pone la clase html.v2 (que activa assets/v2.css), carga Exo 2, cambia el
    monograma viejo por el logo del portal, reemplaza los emojis por íconos de
    línea y TRADUCE los colores fijos de cada pantalla a la paleta nueva.
@@ -11,23 +11,21 @@
    sombras, radios y la familia tipográfica: nunca medidas ni posiciones. Y
    como todo termina en variables, el modo oscuro es redefinir las variables.
 
-   Quién la ve: sólo PILOTO. ?visual=vieja la apaga, ?visual=nueva la prende
-   (queda recordado en este navegador). El modo oscuro se elige con el botón
-   del menú lateral y también queda recordado. */
+   Quién la ve: todos, en todas las pantallas (desde el 3/11/2026; antes fue un
+   piloto de Diego y Germán). Se carga en el <head> de cada página, así arranca
+   antes de que se dibuje nada y no hay un instante con la visual vieja.
+   Salida de emergencia: ?visual=vieja la apaga y ?visual=nueva la vuelve a
+   prender (queda recordado en ese navegador). El modo oscuro se elige con el
+   botón del menú lateral (o del encabezado, en las pantallas sin menú). */
 window.EYGV2 = (function(){
-  const PILOTO = [
-    "a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122", // Diego Velázquez (d.velazquez@)
-    "53ab45c75c97fc80109dddf425c8343ca47287b95bcad8ee868cad8fd3d171bd", // German Banquero (g.banquero@)
-  ];
-  const LS = "eyg_visual", LS_TEMA = "eyg_tema", LS_ULT = "eyg_v2_ultimo";
+  const LS = "eyg_visual", LS_TEMA = "eyg_tema";
   const SELF = (document.currentScript && document.currentScript.src) || "";
   const ASSETS = SELF.replace(/v2\.js(\?.*)?$/, "");
   const H = document.documentElement;
   const lsGet = k => { try{ return localStorage.getItem(k); }catch(e){ return null; } };
   const lsSet = (k,v) => { try{ localStorage.setItem(k,v); }catch(e){} };
 
-  function para(perfil){
-    if(!perfil || !PILOTO.includes(perfil._h)) return false;
+  function quiereNueva(){
     const q = new URLSearchParams(location.search).get("visual");
     if(q==="vieja" || q==="nueva") lsSet(LS, q);
     return (lsGet(LS) || "nueva") === "nueva";
@@ -61,6 +59,7 @@ window.EYGV2 = (function(){
   const v = n => `var(--${n})`;
   const TEAL = h => h>=150 && h<=200;
   const OSC = new Set(["brand","brand-2","tip"]);            // fondos oscuros: llevan texto claro
+  const OSC_TXT = new Set([...OSC, "gris2"]);                // fondos sobre los que el texto va claro
   const CLAROS = new Set(["surface","bg2","agua","soft","okbg","badbg","warnbg","infobg","tribg","lime"]);
 
   /* Devuelve el nombre del token (sin var()) o null para dejar el color como está. */
@@ -78,16 +77,24 @@ window.EYGV2 = (function(){
       return "tribg";
     }
     if(l>=0.78 && (s<0.25 || TEAL(h))) return "soft-line";
+    if(l>=0.8){                                                 // tintes de chips (beige, rosa, celeste…)
+      if(h>=80&&h<150) return "okbg";
+      if(h<20||h>=330) return "badbg";
+      if(h<70) return "warnbg";
+      if(h<260) return "infobg";
+      return "tribg";
+    }
     if(TEAL(h) && s>0.25 && l<0.5) return l<0.25 ? "brand" : "brand-2";
     if(TEAL(h) && s>0.25 && l<0.78) return "aqua";                                     // verde agua medio (barras, chips)
     if(l<0.2 && (s<0.4 || TEAL(h))) return "tip";
+    if(s<0.2 && l>=0.35 && l<0.78) return "gris2";                                     // chips y pastillas grises
     if(s>0.5 && l>0.38 && l<0.78 && h>=8 && h<50) return "lime";                       // coral y dorado → acento lima
     return null;
   }
   function tokenTexto(c, fondo){
     if(c.a<0.04) return null;
     const {h,s,l}=hsl(c);
-    const oscuro = fondo && OSC.has(fondo), claro = fondo && CLAROS.has(fondo);
+    const oscuro = fondo && OSC_TXT.has(fondo), claro = fondo && CLAROS.has(fondo);
     if(fondo==="lime") return "on-lime";
     if(c.r>235&&c.g>235&&c.b>235) return claro ? "petrol" : (c.a<1?null:"on-brand");
     /* Un verde agua clarito como texto sólo se lee sobre petróleo: ahí es donde se usaba
@@ -102,6 +109,7 @@ window.EYGV2 = (function(){
     if((h<15||h>=340) && s>0.3) return "bad";
     if(h>=15&&h<58 && s>0.3) return "warn";
     if(h>=195&&h<250 && s>0.3) return "info";
+    if(h>=250&&h<320 && s>0.3) return "tri";
     return null;
   }
   function tokenLinea(c){
@@ -132,7 +140,8 @@ window.EYGV2 = (function(){
   const VAR_FONDO = {teal:"brand","teal-deep":"brand","teal-med":"brand-2",aqua:"brand-2",coral:"lime",gold:"lime"};
   const VAR_LINEA = {teal:"brand-2","teal-deep":"brand-2","teal-med":"brand-2",aqua:"hover-line",coral:"lime-ink",gold:"lime-ink"};
   const varTexto = (n, fondo) => {
-    const oscuro = fondo && OSC.has(fondo);
+    const oscuro = fondo && OSC_TXT.has(fondo);
+    if(oscuro && /^teal/.test(n)) return "on-brand";
     if(fondo==="lime") return "on-lime";
     return ({teal:"petrol","teal-deep":"petrol","teal-med":"petrol-2",
              aqua: oscuro||!fondo ? "on-brand-2" : "petrol-2", surface:"on-brand", coral:"coral-txt", gold: oscuro ? "lime" : "warn"})[n];
@@ -172,12 +181,38 @@ window.EYGV2 = (function(){
   }
 
   /* Traduce una lista de declaraciones "a:b;c:d" (cuerpo de una regla o un style="…"). */
-  const DECL = /([-a-zA-Z]+)(\s*:\s*)((?:[^;"'(]|\((?:[^()]|\([^)]*\))*\)|"[^"]*"|'[^']*')+)/g;
+  /* Variables propias de cada página (":root{--muted:#8A9A97}"): se traducen según el
+     nombre o, si no dice nada, según lo claro del color. Las que la piel ya define
+     (--ink, --teal, …) quedan como están: html.v2 les gana igual y traducirlas
+     armaría un ciclo (--ink: var(--ink)). */
+  const TOKENS = new Set(("brand brand-2 on-brand on-brand-2 lime on-lime coral-txt ink gris gris2 petrol petrol-2 icon lime-ink "+
+    "bg bg2 surface agua soft chip track line soft-line field btn-line hover-line tip ok okbg bad badbg warn warnbg info infobg "+
+    "tri tribg teal teal-deep teal-med aqua coral radius shadow gold paper wa").split(" "));
+  const RXC1 = /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|\bwhite\b/;
+  function varPropia(nombre, val){
+    const n = nombre.slice(2).toLowerCase();
+    if(TOKENS.has(n)) return val;
+    if(/shadow|sombra/.test(n)) return sombra(val);
+    if(/radius|radio/.test(n)) return radio(val);
+    const m = val.match(RXC1); const c = m && parse(m[0]);
+    if(!c) return val;
+    const tipo = /bg|fondo|surface|card|panel|paper|papel|back|base/.test(n) ? "fondo"
+               : /line|border|borde|sep/.test(n) ? "linea"
+               : /txt|text|ink|fg|muted|gris|tinta/.test(n) ? "texto"
+               : (hsl(c).l>=0.85 ? "fondo" : "texto");
+    if(tipo==="fondo") return conColores(val, x=>{ const k=hsl(x); return (k.l<0.15 && /bg|fondo|base/.test(n)) ? "bg" : tokenFondo(x); });
+    if(tipo==="linea") return conColores(val, tokenLinea);
+    return conColores(val, x=>tokenTexto(x, null));
+  }
+  const DECL = /([-a-zA-Z0-9_]+)(\s*:\s*)((?:[^;"'(]|\((?:[^()]|\([^)]*\))*\)|"[^"]*"|'[^']*')+)/g;
   function declaraciones(txt){
     let fondoTok=null, hay=false;
     txt.replace(DECL, (all,p,sep,val)=>{ hay=true; p=p.toLowerCase(); if(p==="background"||p==="background-color"||p==="background-image"){ const r=fondo(val); if(r.tok) fondoTok=r.tok; } return all; });
     if(!hay) return txt;
-    return txt.replace(DECL, (all,p,sep,val)=>{
+    /* Un fondo que pasa a lima (era coral o dorado) lleva texto petróleo: si la regla no
+       trae color propio, el blanco que heredaba de otra regla no se leería. */
+    const sinColor = fondoTok==="lime" && !/(^|[;{\s])color\s*:/i.test(txt);
+    const res = txt.replace(DECL, (all,p,sep,val)=>{
       const P=p.toLowerCase();
       let nv=val;
       if(P==="background"||P==="background-color"||P==="background-image") nv=fondo(val).val;
@@ -188,8 +223,10 @@ window.EYGV2 = (function(){
       else if(/^(border|outline|text-decoration|column-rule)/.test(P) && !/radius/.test(P)) nv=conVars(conColores(val, tokenLinea), n=>VAR_LINEA[n]);
       else if(/radius$/.test(P)) nv=radio(val);
       else if(P==="font-family" && /archivo/i.test(val)) nv="inherit";
+      else if(P.startsWith("--")) nv=varPropia(P, val);
       return nv===val ? all : p+sep+nv;
     });
+    return sinColor ? res.replace(/;?\s*$/, ";color:var(--on-lime)") : res;
   }
   /* Una hoja de estilos entera: se traduce cada bloque más interno (incluye los de @media). */
   function hoja(css){
@@ -197,31 +234,71 @@ window.EYGV2 = (function(){
   }
 
   const ORIG = new Map();    // <style> → texto original, para poder volver atrás sin recargar
+  /* Pantallas HUD, pensadas oscuras (Mapa del sistema, Tablero en vivo, Asistente,
+     consola de WhatsApp): su <body> trae un fondo casi negro y tienen su propio juego
+     de colores neón (--hud-*, --tb-*, y también --agua o --gris usados como TEXTO).
+     Traducirlas como si fueran claras las apagaba. Se quedan con sus colores, en el
+     modo oscuro de la piel (menú, tipografía, logo, íconos), y sus variables ganan
+     sobre las de la piel aunque se llamen igual. */
+  function esOscura(css){
+    const vars={}; css.replace(/(--[\w-]+)\s*:\s*([^;}]+)/g,(a,n,v)=>{ vars[n]=v.trim(); return a; });
+    const reglas = [...css.matchAll(/(?:^|[}\s,])(?:html\s*,\s*)?body\s*\{([^}]*)\}/g)];
+    for(const b of reglas){
+      const bg = b[1].match(/background(?:-color)?\s*:\s*([^;}]+)/);
+      if(!bg) continue;
+      let val = bg[1];
+      for(let i=0;i<3;i++) val = val.replace(/var\((--[\w-]+)(?:,[^)]*)?\)/g,(a,n)=>vars[n]||a);
+      const m = val.match(RXC1); const c = m && parse(m[0]);
+      if(c) return hsl(c).l < 0.2;
+    }
+    return false;
+  }
+  function fijarOscuro(){ H.dataset.v2Fijo = "oscuro"; H.classList.add("v2hud"); aplicarTema("oscuro"); }
+  const esHud = () => H.classList.contains("v2hud");
+  const hud = css => css.replace(/(^|[},])\s*:root\s*\{/g, "$1 html.v2.v2hud:root{");
+
   function traducirEstilos(){
     document.querySelectorAll("style:not([data-v2])").forEach(st=>{
       if(st.id==="v2-fuente") return;
+      if(esOscura(st.textContent)) fijarOscuro();
       ORIG.set(st, st.textContent);
-      st.textContent = hoja(st.textContent);
+      st.textContent = esHud() ? hud(st.textContent) : hoja(st.textContent);
       st.dataset.v2 = "1";
     });
+    /* Las hojas compartidas del Core (core.css, home.css, producto.css…) también traen
+       colores fijos. Se leen ya cargadas, se traducen a un <style> puesto justo después
+       (mismo orden de cascada) y la hoja original queda apagada, no borrada. */
+    document.querySelectorAll('link[rel="stylesheet"]:not([data-v2])').forEach(l=>{
+      if(!/\/assets\/[^/]+\.css/.test(l.href) || /\/v2\.css/.test(l.href)) return;
+      let reglas; try{ reglas = l.sheet && l.sheet.cssRules; }catch(e){ return; }
+      if(!reglas){ l.addEventListener("load", ()=>programar(), {once:true}); return; }
+      const st = document.createElement("style");
+      st.dataset.v2 = "1"; st.dataset.v2De = l.getAttribute("href"); if(l.media) st.media = l.media;
+      st.textContent = hoja([...reglas].map(r=>r.cssText).join("\n"));
+      l.after(st);
+      l.dataset.v2 = "1"; l.dataset.v2Media = l.media || ""; l.media = "not all";
+    });
+  }
+  function traducirUno(e){
+    if(!e || e.nodeType!==1 || esHud()) return;
+    if(e.hasAttribute("style")){
+      const s=e.getAttribute("style");
+      if(e.__v2s!==s){ const n=declaraciones(s); if(n!==s) e.setAttribute("style", n); e.__v2s=e.getAttribute("style"); }
+    }
+    if(e.namespaceURI==="http://www.w3.org/2000/svg"){
+      for(const a of ["fill","stroke","stop-color"]){
+        const val=e.getAttribute(a);
+        if(!val || val.startsWith("var(") || val==="none") continue;
+        const c=parse(val); const t=c&&tokenGrafico(c);
+        if(t) e.style.setProperty(a, v(t));                  // el atributo no acepta var(): va como estilo
+      }
+      e.__v2s=e.getAttribute("style");
+    }
   }
   function traducirNodo(el){
-    if(!el || el.nodeType!==1) return;
-    const todos = [el, ...el.querySelectorAll("[style],[fill],[stroke],[stop-color]")];
-    for(const e of todos){
-      if(e.hasAttribute && e.hasAttribute("style")){
-        const s=e.getAttribute("style");
-        if(e.__v2s!==s){ const n=declaraciones(s); if(n!==s) e.setAttribute("style", n); e.__v2s=e.getAttribute("style"); }
-      }
-      if(e.namespaceURI==="http://www.w3.org/2000/svg"){
-        for(const a of ["fill","stroke","stop-color"]){
-          const val=e.getAttribute && e.getAttribute(a);
-          if(!val || val.startsWith("var(") || val==="none") continue;
-          const c=parse(val); const t=c&&tokenGrafico(c);
-          if(t) e.style.setProperty(a, v(t));                // el atributo no acepta var(): va como estilo
-        }
-      }
-    }
+    if(!el || el.nodeType!==1 || esHud()) return;
+    traducirUno(el);
+    el.querySelectorAll("[style],[fill],[stroke],[stop-color]").forEach(traducirUno);
   }
 
   /* ================= Íconos de línea (24×24, trazo 1,6, como .eyg-r-icon del portal) ================= */
@@ -369,7 +446,7 @@ window.EYGV2 = (function(){
     const sb = document.querySelector(".sbrand a");
     if(sb && !sb.querySelector(".v2logo")) sb.innerHTML = LOGO()+`<span class="v2tag">Panel<b>interno</b></span>`;
     /* encabezados propios de algunos módulos (panel.html, cobranzas…): monograma "EyG" + "Core" */
-    document.querySelectorAll(".topbar .mono, .eyg-top .mono").forEach(m=>{
+    document.querySelectorAll(".topbar .mono, .eyg-top .mono, .login-card .brand .mono").forEach(m=>{
       if(m.querySelector(".v2logo")) return;
       m.innerHTML = LOGO(); m.classList.add("v2mono");
       const tg = m.nextElementSibling; if(tg && tg.classList.contains("tag")) tg.classList.add("v2tagcore");
@@ -381,10 +458,17 @@ window.EYGV2 = (function(){
     const dh = document.querySelector(".mbody .dhead h1");
     if(dh && !dh.previousElementSibling?.classList?.contains("v2kick"))
       dh.insertAdjacentHTML("beforebegin", `<span class="v2kick">Resumen del día</span>`);
-    /* selector claro/oscuro, al pie del menú lateral */
+    /* selector claro/oscuro: al pie del menú lateral; en las pantallas sin menú
+       (panel de un comercial, cobranzas de Bárbara…) va como botón chico en el encabezado */
+    const BT = c => `<button type="button" class="v2tema${c}" onclick="EYGV2.alternarTema()" title="Cambiar entre modo claro y oscuro"></button>`;
     const sf = document.querySelector(".sfoot");
-    if(sf && !sf.querySelector(".v2tema")){
-      sf.insertAdjacentHTML("afterbegin", `<button type="button" class="v2tema" onclick="EYGV2.alternarTema()" title="Cambiar entre modo claro y oscuro"></button>`);
+    if(sf){
+      if(!sf.querySelector(".v2tema")) sf.insertAdjacentHTML("afterbegin", BT(""));
+      document.querySelectorAll(".v2tema-mini").forEach(b=>b.remove());    // el menú llegó después: un solo botón
+    }
+    else {
+      const tb = document.querySelector(".topbar, .eyg-top");
+      if(tb && !tb.querySelector(".v2tema")) tb.insertAdjacentHTML("beforeend", BT(" v2tema-mini"));
     }
     pintarBotonTema();
   }
@@ -394,10 +478,12 @@ window.EYGV2 = (function(){
       const quiero = osc ? "claro" : "oscuro";
       if(b.dataset.m===quiero) return;
       b.dataset.m = quiero;
-      b.innerHTML = svg(osc?"sun":"moon") + `<span>Modo ${quiero}</span>`;
+      b.innerHTML = svg(osc?"sun":"moon") + (b.classList.contains("v2tema-mini") ? "" : `<span>Modo ${quiero}</span>`);
+      b.setAttribute("aria-label", `Pasar a modo ${quiero}`);
     });
   }
   function aplicarTema(t){
+    if(H.dataset.v2Fijo) t = H.dataset.v2Fijo;
     H.classList.toggle("oscuro", t==="oscuro");
     H.style.colorScheme = t==="oscuro" ? "dark" : "light";
     pintarBotonTema();
@@ -408,7 +494,7 @@ window.EYGV2 = (function(){
   }
 
   /* ================= Pasadas ================= */
-  let obs=null, pend=false, cola=new Set(), todo=true;
+  let obs=null, pend=false, cola=new Set(), attrs=new Set(), todo=true;
   function pasar(){
     traducirEstilos();
     /* con core.js en el <head> la piel arranca antes de que exista el <body>: la primera
@@ -416,11 +502,15 @@ window.EYGV2 = (function(){
     if(todo && document.body){ traducirNodo(document.body); emojis(document.body); todo=false; }
     else for(const n of cola){ if(n.isConnected){ traducirNodo(n.nodeType===1?n:n.parentNode||document.body); emojis(n); } }
     cola.clear();
+    /* gráficos que se repintan cambiando el estilo de un elemento que ya estaba
+       (barras que crecen, celdas de calor, el período que cambia): sólo ese elemento */
+    attrs.forEach(traducirUno); attrs.clear();
     marca();
   }
   function programar(recs){
     if(recs) for(const r of recs){
       if(r.type==="characterData") cola.add(r.target);
+      else if(r.type==="attributes"){ if(r.target.__v2s!==r.target.getAttribute("style") || r.attributeName!=="style") attrs.add(r.target); }
       else r.addedNodes.forEach(n=>{ if(n.nodeType===1||n.nodeType===3) cola.add(n); });
     }
     /* Se pasa en el acto (el observador ya llega antes de que se pinte): así no hay un
@@ -432,8 +522,12 @@ window.EYGV2 = (function(){
   }
   function observar(){
     if(!obs) obs = new MutationObserver(programar);
-    obs.observe(document.documentElement, {childList:true, subtree:true, characterData:true});
+    obs.observe(document.documentElement, {childList:true, subtree:true, characterData:true,
+      attributes:true, attributeFilter:["style","fill","stroke"]});
   }
+  /* Exo 2 ya viene pedida en el <head> de cada página (id v2-fuente-link): sólo se
+     inyecta si falta. La tipografía vieja (Archivo) se dejó de cargar; si alguien
+     vuelve a la visual vieja con ?visual=vieja, off() la pide. */
   function fuente(){
     if(document.getElementById("v2-fuente-link")) return;
     const pc=document.createElement("link"); pc.rel="preconnect"; pc.href="https://fonts.gstatic.com"; pc.crossOrigin="";
@@ -443,27 +537,33 @@ window.EYGV2 = (function(){
   }
 
   function on(){
-    if(!H.classList.contains("v2")){
-      H.classList.add("v2"); fuente();
-      aplicarTema(lsGet(LS_TEMA)==="oscuro" ? "oscuro" : "claro");
-      todo=true; observar(); programar();
-    }
-    lsSet(LS_ULT, "1");
+    if(H.classList.contains("v2")) return;
+    H.classList.add("v2"); fuente();
+    aplicarTema(lsGet(LS_TEMA)==="oscuro" ? "oscuro" : "claro");
+    todo=true; observar(); programar();
   }
   function off(){
     if(!H.classList.contains("v2")) return;
     if(obs) obs.disconnect();
-    H.classList.remove("v2","oscuro"); H.style.colorScheme="";
+    H.classList.remove("v2","oscuro","v2hud"); delete H.dataset.v2Fijo; H.style.colorScheme="";
     ORIG.forEach((txt,st)=>{ st.textContent=txt; delete st.dataset.v2; }); ORIG.clear();
-    lsSet(LS_ULT, "0");
+    document.querySelectorAll("style[data-v2-de]").forEach(st=>st.remove());
+    document.querySelectorAll('link[data-v2]').forEach(l=>{ l.media = l.dataset.v2Media || ""; delete l.dataset.v2; });
   }
-  /* Después del login: prende o apaga según quién entró. */
-  function aplicar(perfil){ if(para(perfil)) on(); else off(); }
 
-  /* Arranque temprano: si en este navegador la última sesión fue del piloto con la
-     visual nueva, se prende ya, antes de que el login resuelva (sin parpadeo blanco
-     en modo oscuro). Si después entra otra persona, aplicar() la apaga. */
-  if(lsGet(LS_ULT)==="1" && lsGet(LS)!=="vieja" && new URLSearchParams(location.search).get("visual")!=="vieja") on();
+  /* Compatibilidad: las páginas del piloto llamaban aplicar(perfil) después del login.
+     Una copia vieja de esas páginas en la caché del navegador lo puede seguir haciendo,
+     así que se queda como sinónimo de "prender si corresponde". */
+  const aplicar = () => { if(quiereNueva()) on(); };
 
-  return { on, off, para, aplicar, svg, alternarTema, PILOTO, _hoja:hoja, _decl:declaraciones };
+  function fuenteVieja(){
+    if(document.getElementById("v1-fuente-link")) return;
+    const l=document.createElement("link"); l.id="v1-fuente-link"; l.rel="stylesheet";
+    l.href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap";
+    document.head.append(l);
+  }
+
+  if(quiereNueva()) on(); else fuenteVieja();
+
+  return { on, off, aplicar, svg, alternarTema, _hoja:hoja, _decl:declaraciones };
 })();
