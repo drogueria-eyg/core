@@ -104,7 +104,15 @@
   .tagq.sinres{border-color:#f0b8b5;color:#B0322F}
   h2.sec{font-size:16px;font-weight:800;margin:22px 0 12px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
   h2.sec span{font-size:12px;font-weight:600;color:var(--gris2)}
-  .secs{margin:-2px 0 14px} .depu{margin:-6px 0 14px}
+  .secs{margin:-2px 0 14px}
+  .pt{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:0}
+  .seg{display:grid;grid-template-columns:minmax(150px,290px) minmax(0,1fr) 46px 40px;gap:10px;align-items:center;font-size:13px;padding:5px 6px;border-radius:8px;cursor:pointer}
+  .seg:hover{background:#F3F8F7} .seg .l{font-weight:700} .seg .l i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px}
+  .seg .d{display:block;font-weight:400;font-size:11px;color:var(--gris2);margin-left:16px}
+  .seg .bar{height:12px;background:#EEF3F2;border-radius:6px;overflow:hidden} .seg .bar i{display:block;height:100%;border-radius:6px}
+  .seg b{text-align:right;font-variant-numeric:tabular-nums} .seg .p{font-size:11.5px;color:var(--gris2)}
+  .segsep{border-top:1px dashed var(--line);margin:6px 0}
+  @media(max-width:600px){.seg{grid-template-columns:minmax(0,1fr) 70px 40px}.seg .p{display:none}} .depu{margin:-6px 0 14px}
   .lista td.mir{font-size:12px;color:var(--gris);line-height:1.4} .lista .lite,.lista td .lite{color:var(--gris2);font-size:11.5px}
 
   /* ---- Cinta: vista previa igual a la del portal ---- */
@@ -202,7 +210,7 @@ const PRESETS=[["hoy","Hoy"],["ayer","Ayer"],["7","7 días"],["30","30 días"],[
 const RUBRO="x_studio_selection_field_6ui_1j42g6fu9";
 const TZ_ODOO={context:{tz:"America/Argentina/Buenos_Aires"}};
 let MET=null, INTERNOS=[], RANGO={p:"30",desde:"",hasta:""};
-let MF={sec:"resumen",com:"",rubro:"",estado:"todos",q:"",orden:"monto",dir:-1,ver:50}, SERIE="clientes", CLI_AB=null, CLI_DET={};
+let MF={sec:"resumen",act:"",com:"",rubro:"",estado:"todos",q:"",orden:"monto",dir:-1,ver:50}, SERIE="clientes", CLI_AB=null, CLI_DET={};
 /* La gente de EyG entra al portal todo el día (para mirar precios, cargar pedidos o
    probar cosas): si no los sacamos, la mitad de las visitas son nuestras. Internos =
    usuarios de Odoo que NO son del portal (share=false), también los dados de baja:
@@ -260,6 +268,25 @@ function rango(){
    Antes de que existiera el monitor (fines de agosto de 2026) no hay marca.
    🔴 Si status-check deja de abrir la portada, esto deja de separar. */
 const MON_DESDE="2026-08-25";
+/* Qué tan seguido entra cada cliente: siempre las últimas 8 semanas hasta hoy (no
+   depende del período elegido), contando días con páginas propias (ya sin lo anónimo).
+   Tener usuario no es usar el portal: el 2/11/2026 había 437 usuarios de clientes y
+   135 nunca habían iniciado sesión (Odoo los deja en estado "nunca conectado"). */
+const ACT_SEM=8;
+const SEGS=[
+  ["frecuente","Frecuentes","entraron 6 o más de las últimas 8 semanas","#1E7D46"],
+  ["aveces","De vez en cuando","entre 2 y 5 de las últimas 8 semanas","#048782"],
+  ["una","Una sola semana","entraron en 1 de las últimas 8 semanas","#7FB8B4"],
+  ["dormido","Dormidos","usaron su cuenta, pero no en las últimas 8 semanas","#C9A227"],
+  ["nunca","Nunca la activaron","tienen usuario y nunca iniciaron sesión","#B0322F"],
+  ["sinusuario","Compran y no tienen usuario","compraron en los últimos 90 días, sin usuario del portal","#8A9A97"]];
+function segmento(c){
+  if(!c.acceso) return c.v90?"sinusuario":"";
+  if(!c.uso && !c.act.w.size) return "nunca";
+  const w=c.act.w.size;
+  return w>=6?"frecuente":w>=2?"aveces":w===1?"una":"dormido";
+}
+const segNom=k=>(SEGS.find(x=>x[0]===k)||[,""])[1];
 const HOME="https://drogueriaeyg.odoo.com/";
 const tsUTC=s=>Date.parse(String(s).replace(" ","T")+"Z");
 const fUTC=k=>new Date(k).toISOString().slice(0,19).replace("T"," ");
@@ -297,13 +324,14 @@ async function metricas(){
     const so=(x,y)=>en("date_order",x,y).concat([["website_id","!=",false],["partner_id","not in",ints]]);
     const CONF=["sale","done"];
     /* las aperturas de la portada traen la marca del monitor (ver depurar); un día antes, por los tramos que vienen de atrás */
-    const monD=[addD(R.comparar?R.pd:R.d,-1),MON_DESDE].sort()[1];
+    const H=hoy(), dAct=addD(H,-(ACT_SEM*7-1));
+    const monD=[addD([R.comparar?R.pd:R.d,dAct].sort()[0],-1),MON_DESDE].sort()[1];
     const pVis=EYG.rpc("website.visitor","search_read",[[["partner_id","not in",ints]]],{fields:["partner_id"],limit:0});
     /* lo anónimo se separa en paralelo con lo demás: necesita las aperturas de la portada y los visitantes que son clientes */
-    const pAnon=R.a<MON_DESDE?Promise.resolve([]):Promise.all([
-      EYG.rpc("website.track","search_read",[[["url","=",HOME],["visit_datetime",">=",aUTC(monD)],["visit_datetime","<",aUTC(addD(R.a,1))]]],{fields:["visitor_id","visit_datetime"],limit:0,order:"visit_datetime asc"}),
+    const pAnon=Promise.all([
+      EYG.rpc("website.track","search_read",[[["url","=",HOME],["visit_datetime",">=",aUTC(monD)],["visit_datetime","<",aUTC(addD(H,1))]]],{fields:["visitor_id","visit_datetime"],limit:0,order:"visit_datetime asc"}),
       pVis]).then(([m,v])=>{ const ok={}; arr(v).forEach(x=>{ if(x.partner_id) ok[x.id]=1; }); return depurar(m,ok); });
-    const [vis,users,dias,prods,horas,busq,ords,lineas,diasP,ordsP,evr,anon,ad,pubP]=await Promise.all([
+    const [vis,users,dias,prods,horas,busq,ords,lineas,diasP,ordsP,evr,anon,ad,pubP,diasA,v90]=await Promise.all([
       pVis,
       EYG.rpc("res.users","search_read",[[["share","=",true],["active","=",true]]],{fields:["partner_id","login_date"],limit:0}),
       // páginas: sólo los registros con dirección (Odoo anota cada ficha dos veces: la página y el producto)
@@ -322,12 +350,16 @@ async function metricas(){
       EYG.rpc("website.track","search_count",[en("visit_datetime",R.d,R.a).concat([["url","ilike","utm_source=meta"]])]),
       // lo anónimo que todavía no le tocó a nadie (sigue en el usuario público)
       EYG.rpc("website.track","read_group",[en("visit_datetime",R.d,R.a).concat([["visitor_id.partner_id","=",4],["product_id","!=",false]]),["id"],["product_id"]],{lazy:false}),
+      // actividad: días con páginas en las últimas 8 semanas, y quién compró en 90 días por cualquier canal
+      EYG.rpc("website.track","read_group",[tr(dAct,H).concat([["url","!=",false]]),["id"],["visitor_id","visit_datetime:day"]],{lazy:false,...TZ_ODOO}),
+      EYG.rpc("sale.order","read_group",[[["state","in",CONF],["date_order",">=",aUTC(addD(H,-89))],["partner_id","not in",ints]],["id"],["partner_id"]],{lazy:false}),
     ]);
     /* contacto → cuenta del cliente */
     const pids=new Set();
     arr(vis).forEach(v=>v.partner_id&&pids.add(v.partner_id[0]));
     arr(users).forEach(u=>u.partner_id&&pids.add(u.partner_id[0]));
     arr(ords).concat(arr(ordsP)).forEach(o=>o.partner_id&&pids.add(o.partner_id[0]));
+    arr(v90).forEach(g=>g.partner_id&&pids.add(g.partner_id[0]));
     const ps=arr(await EYG.rpc("res.partner","read",[[...pids],["commercial_partner_id"]],{context:{active_test:false}}));
     const cuentaDe={}; ps.forEach(p=>cuentaDe[p.id]=p.commercial_partner_id?p.commercial_partner_id[0]:p.id);
     const cids=[...new Set(Object.values(cuentaDe))];
@@ -336,21 +368,24 @@ async function metricas(){
     const nuevo=c=>({id:c.id, nom:c.x_studio_nombre_de_fantasia||c.name||("Cliente "+c.id), razon:c.x_studio_nombre_de_fantasia?c.name:"",
       com:c.user_id?c.user_id[1]:"", ciudad:c.city||"", rubro:c[RUBRO]||"", acceso:false, login:"",
       dias:new Set(), pv:0, prodV:0, prodD:0, prods:{}, busq:0, ped:0, monto:0, carr:0, carrMonto:0, ultVisita:"", ultPed:"", vids:[], pids:[], ev:{ses:0,busq:0,sin:0,carr:0,desc_:0,cuenta:0},
-      pvP:0, diasP:new Set(), pedP:0, montoP:0});
+      pvP:0, diasP:new Set(), pedP:0, montoP:0, uso:false, act:{w:new Set(),d:new Set()}, v90:false});
     cs.forEach(c=>CLI[c.id]=nuevo(c));
     Object.entries(cuentaDe).forEach(([pc,cid])=>{ if(CLI[cid]) CLI[cid].pids.push(+pc); });
     const cli=pid=>CLI[cuentaDe[pid]];
     const vis2cli={};
     arr(vis).forEach(v=>{ if(!v.partner_id) return; const c=cli(v.partner_id[0]); if(c){ vis2cli[v.id]=c; c.vids.push(v.id); } });
-    arr(users).forEach(u=>{ const c=u.partner_id&&cli(u.partner_id[0]); if(!c) return; c.acceso=true; if(u.login_date&&u.login_date>c.login) c.login=u.login_date; });
+    arr(users).forEach(u=>{ const c=u.partner_id&&cli(u.partner_id[0]); if(!c) return; c.acceso=true; if(u.login_date){ c.uso=true; if(u.login_date>c.login) c.login=u.login_date; } });
+    arr(v90).forEach(g=>{ const c=g.partner_id&&cli(g.partner_id[0]); if(c) c.v90=true; });
     /* lo anónimo anotado a clientes: se descuenta de cada cuenta y se junta aparte (pestaña "Visitantes sin cuenta") */
-    const ANON=new Set(), aDia={}, aProd={}, aHora={};
+    const ANON=new Set(), aDia={}, aProd={}, aHora={}, aAct={}, iniA=tsUTC(aUTC(dAct));
     const SC={mon:0,pag:0,prodV:0,prods:{}};
     const sumaP=(id,nom,n)=>{ const p=SC.prods[id]||(SC.prods[id]={nom:sinCod(nom),n:0}); p.n+=n; SC.prodV+=n; };
     const ini=tsUTC(aUTC(R.d)), fin=tsUTC(aUTC(addD(R.a,1))), iniP=tsUTC(aUTC(R.pd)), finP=tsUTC(aUTC(addD(R.pa,1)));
     arr(anon).forEach(t=>{
       const k=tsUTC(t.visit_datetime), v=t.visitor_id[0], ahora=k>=ini&&k<fin, antes=R.comparar&&k>=iniP&&k<finP;
-      if(!vis2cli[v] || (!ahora&&!antes)) return;
+      if(!vis2cli[v]) return;
+      if(t.url && k>=iniA){ const ka=v+"|"+diaAR(t.visit_datetime); aAct[ka]=(aAct[ka]||0)+1; }
+      if(!ahora&&!antes) return;
       ANON.add(t.id);
       if(t.url){ const kd=(ahora?"":"P")+v+"|"+diaAR(t.visit_datetime); aDia[kd]=(aDia[kd]||0)+1;
         if(ahora){ const h=enAR(t.visit_datetime), kh=((h.getUTCDay()+6)%7)+"|"+h.getUTCHours(); aHora[kh]=(aHora[kh]||0)+1; } }
@@ -367,6 +402,8 @@ async function metricas(){
       c.dias.add(k); c.pv+=n; if(k>c.ultVisita) c.ultVisita=k; const x=dDia(k); x.pv+=n; x.cli.add(c.id); });
     arr(diasP).forEach(g=>{ const v=g.visitor_id&&g.visitor_id[0], c=vis2cli[v], k=diaDe(g); if(!c||!k) return;
       const n=g.__count-(aDia["P"+v+"|"+k]||0); if(n<=0) return; c.diasP.add(k); c.pvP+=n; });
+    arr(diasA).forEach(g=>{ const v=g.visitor_id&&g.visitor_id[0], c=vis2cli[v], k=diaDe(g); if(!c||!k) return;
+      if(g.__count-(aAct[v+"|"+k]||0)<=0) return; c.act.d.add(k); c.act.w.add(Math.floor((diasEntre(dAct,k)-1)/7)); });
     /* productos mirados */
     const PROD={};     // product_id → {nom, vistas, cli:Set (lo miraron), comp:Set (lo compraron por el portal)}
     const dProd=g=>PROD[g.product_id[0]]||(PROD[g.product_id[0]]={id:g.product_id[0],nom:sinCod(g.product_id[1]),vistas:0,cli:new Set(),comp:new Set(),ped:0,uni:0,monto:0});
@@ -408,7 +445,7 @@ async function metricas(){
         const nom={}; cn.forEach(x=>nom[x.id]=x.name); EV.cats.forEach(x=>{ x.nombre=nom[x.id]||("Categoría "+x.id); }); }catch(e){} }
     }
     if(yo!==MET_N) return;
-    MET={R, CLI:Object.values(CLI), porDia, PROD:Object.values(PROD), BUS:Object.values(BUS), CARR, PEDS, HORA, EV, ANON, SC, AD:+ad||0};
+    MET={R, CLI:Object.values(CLI), porDia, PROD:Object.values(PROD), BUS:Object.values(BUS), CARR, PEDS, HORA, EV, ANON, SC, AD:+ad||0, dAct};
   }catch(e){ if(yo!==MET_N) return; MET={R, error:String(e.message||e)}; }
   render();
 }
@@ -462,9 +499,19 @@ function vistaResumen(){
   return filtrosHTML()+secs+cuerpo;
 }
 const kpiH=(k,v,d,sub)=>`<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div>${d||""}${sub?`<div class="sub">${sub}</div>`:""}</div>`;
+function actividadHTML(B){
+  const n={}; B.forEach(c=>{ const k=segmento(c); if(k) n[k]=(n[k]||0)+1; });
+  const conUsr=SEGS.slice(0,5).reduce((a,x)=>a+(n[x[0]]||0),0);
+  const farm=B.filter(c=>c.rubro==="FARMACIAS"&&segmento(c)==="sinusuario").length;
+  return `<div class="panel"><h3>Qué tan seguido entran <span class="lite">· clientes con usuario, últimas ${ACT_SEM} semanas (${fD(MET.dAct)} → hoy) · no depende del período elegido · tocá una fila para ver quiénes son</span></h3>
+    ${SEGS.map(([k,l,d,col],i)=>`${i===5?'<div class="segsep"></div>':""}<div class="seg" onclick="metAct('${k}')"><span class="l"><i style="background:${col}"></i>${l}<span class="d">${d}${k==="sinusuario"&&!MF.rubro&&n[k]?` · ${num(farm)} son farmacias`:""}</span></span>
+      <span class="bar"><i style="width:${Math.max(n[k]?1:0,pct(n[k]||0,conUsr||1))}%;background:${col}"></i></span><b>${num(n[k]||0)}</b><span class="p">${i<5?pct(n[k]||0,conUsr)+"%":""}</span></div>`).join("")}
+    <div class="hint" style="margin-top:8px">Se cuenta una semana cuando el cliente entró al menos un día. "Compran y no tienen usuario" son los que conviene invitar al portal.</div></div>`;
+}
+function metAct(k){ MF.act=k; MF.estado="todos"; MF.ver=50; metSec("clientes"); }
 function resumenHTML(B,ids){
   const R=MET.R, s=(f)=>B.reduce((a,c)=>a+f(c),0);
-  const conAcceso=B.filter(c=>c.acceso).length;
+  const conAcceso=B.filter(c=>c.acceso).length, usan=B.filter(c=>c.acceso&&segmento(c)!=="nunca").length;
   const entraron=B.filter(c=>c.dias.size), entraronP=B.filter(c=>c.diasP.size).length;
   const visitas=s(c=>c.dias.size), visitasP=s(c=>c.diasP.size), pv=s(c=>c.pv), pvP=s(c=>c.pvP);
   const ped=s(c=>c.ped), pedP=s(c=>c.pedP), monto=s(c=>c.monto), montoP=s(c=>c.montoP);
@@ -472,7 +519,7 @@ function resumenHTML(B,ids){
   const miraron=entraron.filter(c=>c.prodV).length, armaron=B.filter(c=>c.ped||c.carr).length;
   const carr=MET.CARR.filter(o=>ids.has(o.cli.id));
   const kpis=`<div class="kpis">
-    ${kpiH("Clientes que entraron",num(entraron.length),delta(entraron.length,entraronP,R),`de ${num(conAcceso)} con acceso (${pct(entraron.length,conAcceso)}%)`)}
+    ${kpiH("Clientes que entraron",num(entraron.length),delta(entraron.length,entraronP,R),`de ${num(usan)} que usan su cuenta (${pct(entraron.length,usan)}%) · ${num(conAcceso-usan)} con usuario nunca entraron`)}
     ${kpiH("Visitas",num(visitas),delta(visitas,visitasP,R),"un cliente en un día")}
     ${kpiH("Páginas vistas",num(pv),delta(pv,pvP,R),`${num(s(c=>c.prodV))} fichas de producto`)}
     ${kpiH("Pedidos por el portal",num(ped),delta(ped,pedP,R),`de ${num(compraron)} cliente${compraron===1?"":"s"}`)}
@@ -482,12 +529,12 @@ function resumenHTML(B,ids){
   </div>`;
   const limp=MET.ANON?MET.SC.mon+MET.SC.pag+MET.SC.prodV:0;
   const nota=(limp||R.d<MON_DESDE)?`<div class="hint depu">🧹 ${limp?`Se descartaron ${num(limp)} registros que Odoo anotó a clientes y no eran suyos: el monitor del sistema, que abre el portal cada 5 minutos, y visitas sin iniciar sesión que Odoo le pasa al próximo cliente que entra (se ven en «Visitantes sin cuenta»).`:""}${R.d<MON_DESDE?` Antes del ${fD(MON_DESDE)} eso no se puede separar: las páginas de esas fechas pueden venir infladas.`:""}</div>`:"";
-  const embudo=[["Con acceso al portal",conAcceso],["Entraron",entraron.length],["Miraron productos",miraron],["Armaron un carrito",armaron],["Compraron",compraron]];
+  const embudo=[["Tienen usuario",conAcceso],["Activaron la cuenta",usan],["Entraron en el período",entraron.length],["Miraron productos",miraron],["Armaron un carrito",armaron],["Compraron",compraron]];
   const emb=`<div class="panel"><h3>Del acceso a la compra <span class="lite">· clientes, en el período</span></h3>
     ${embudo.map(([l,n],i)=>`<div class="emb"><span class="l">${l}</span><span class="bar"><i style="width:${Math.max(1,pct(n,embudo[0][1]||1))}%"></i></span><b>${num(n)}</b><span class="p">${i?pct(n,embudo[i-1][1])+"% del paso anterior":""}</span></div>`).join("")}
     <div class="hint" style="margin-top:8px">"Armaron un carrito" incluye a los que después lo confirmaron. Un cliente puede comprar sin haber entrado en el período si el carrito venía de antes.</div></div>`;
   const rec=recorridoHTML();
-  return kpis+nota+graficoHTML(B,ids)+(rec?`<div class="dos">${emb}${rec}</div>${horasHTML()}`:`<div class="dos">${emb}${horasHTML()}</div>`)+cintaPanelHTML();
+  return kpis+nota+actividadHTML(B)+graficoHTML(B,ids)+(rec?`<div class="dos">${emb}${rec}</div>${horasHTML()}`:`<div class="dos">${emb}${horasHTML()}</div>`)+cintaPanelHTML();
 }
 
 /* ---------- evolución ---------- */
@@ -531,7 +578,7 @@ function horasHTML(){
 }
 
 /* ---------- clientes ---------- */
-const ESTADOS=[["todos","Todos"],["compraron","Compraron"],["nocompraron","Entraron y no compraron"],["carrito","Carrito sin confirmar"],["noentraron","Con acceso y no entraron"]];
+const ESTADOS=[["todos","Todos"],["compraron","Compraron"],["nocompraron","Entraron y no compraron"],["carrito","Carrito sin confirmar"],["noentraron","Tienen usuario y no entraron"]];
 function estadoCli(c){
   if(c.ped) return ["Compró","ok"];
   if(c.carr) return ["Carrito abierto","warn"];
@@ -540,24 +587,26 @@ function estadoCli(c){
   return ["",""];
 }
 function clientesFiltrados(B){
-  let L=B.filter(c=>c.dias.size||c.ped||c.carr||c.acceso);
+  let L=B.filter(c=>c.dias.size||c.ped||c.carr||c.acceso||c.v90);
+  if(MF.act) L=L.filter(c=>segmento(c)===MF.act);
   const e=MF.estado;
   if(e==="compraron") L=L.filter(c=>c.ped);
   else if(e==="nocompraron") L=L.filter(c=>c.dias.size&&!c.ped);
   else if(e==="carrito") L=L.filter(c=>c.carr);
   else if(e==="noentraron") L=L.filter(c=>c.acceso&&!c.dias.size&&!c.ped);
-  else L=L.filter(c=>c.dias.size||c.ped||c.carr);
+  else if(!MF.act) L=L.filter(c=>c.dias.size||c.ped||c.carr);
   const q=(MF.q||"").trim().toLowerCase();
   if(q) L=L.filter(c=>(c.nom+" "+c.razon+" "+c.ciudad+" "+c.com).toLowerCase().includes(q));
-  const k=MF.orden, v=c=>k==="nom"?c.nom.toLowerCase():k==="com"?c.com:k==="dias"?c.dias.size:k==="ult"?(c.ultVisita||c.login||""):c[k];
+  const k=MF.orden, v=c=>k==="nom"?c.nom.toLowerCase():k==="com"?c.com:k==="dias"?c.dias.size:k==="sem"?c.act.w.size:k==="ult"?(c.ultVisita||c.login||""):c[k];
   L.sort((a,b)=>{ const x=v(a), y=v(b); return (x<y?-1:x>y?1:0)*MF.dir || b.monto-a.monto || b.pv-a.pv; });
   return L;
 }
 function clientesHTML(B){
   const L=clientesFiltrados(B);
   return `<div class="panel" id="p-clientes"><h3>Clientes <span class="lite">· <span id="n-clientes">${num(L.length)}</span> · tocá uno para ver qué miró, buscó y compró</span></h3>
+    <div class="chips" style="margin-bottom:8px"><span class="rot" style="margin:0 4px 0 0">Actividad:</span><button class="chip sm ${!MF.act?'on':''}" onclick="MF.act='';MF.ver=50;CLI_AB=null;render()">Todas</button>${SEGS.map(([v,l,d,col])=>`<button class="chip sm ${MF.act===v?'on':''}" title="${d}" onclick="MF.act='${v}';MF.ver=50;CLI_AB=null;render()"><i class="pt" style="background:${col}"></i>${l}</button>`).join("")}</div>
     <div class="fechas" style="margin-bottom:10px">
-      <div class="chips">${ESTADOS.map(([v,l])=>`<button class="chip sm ${MF.estado===v?'on':''}" onclick="MF.estado='${v}';MF.ver=50;CLI_AB=null;render()">${l}</button>`).join("")}</div>
+      <div class="chips"><span class="rot" style="margin:0 4px 0 0">En el período:</span>${ESTADOS.map(([v,l])=>`<button class="chip sm ${MF.estado===v?'on':''}" onclick="MF.estado='${v}';MF.ver=50;CLI_AB=null;render()">${l}</button>`).join("")}</div>
       <input class="buscar" placeholder="Buscar cliente, ciudad o comercial" value="${esc(MF.q)}" oninput="MF.q=this.value;metTabla()">
       <button class="btn ghost sm" onclick="metCSV()">⬇ Descargar CSV</button></div>
     <div style="overflow-x:auto" id="t-clientes">${tablaCli(L)}</div></div>`;
@@ -566,17 +615,18 @@ function filaCli(c){
   const [et,cl]=estadoCli(c), ab=CLI_AB===c.id;
   return `<tr class="cl ${ab?'ab':''}" onclick="metCliente(${c.id})">
     <td><b>${esc(c.nom)}</b>${c.razon?`<div class="sub">${esc(c.razon)}</div>`:""}<div class="sub">${esc([c.ciudad,c.com].filter(Boolean).join(" · "))}</div></td>
-    <td>${et?`<span class="est ${cl}">${et}</span>`:""}</td>
+    <td>${et?`<span class="est ${cl}">${et}</span>`:""}${(sg=>sg?`<div class="sub" style="white-space:nowrap"><i class="pt" style="background:${SEGS.find(x=>x[0]===sg)[3]}"></i>${segNom(sg)}</div>`:"")(segmento(c))}</td>
+    <td class="n" style="color:var(--gris)" title="semanas con ingreso, de las últimas ${ACT_SEM}">${c.act.w.size?num(c.act.w.size):"—"}</td>
     <td class="n">${num(c.dias.size)}</td><td class="n">${num(c.pv)}</td><td class="n">${num(c.prodD)}</td><td class="n">${num(c.busq)}</td>
     <td class="n">${num(c.ped)}</td><td class="n">${c.monto?pesos(c.monto):"—"}</td>
     <td class="n" style="font-weight:600;color:var(--gris)">${c.ultVisita?fD(c.ultVisita):(c.login?`<span title="último ingreso registrado (sin páginas en el período)">${fD(c.login)}</span>`:"—")}</td></tr>
-    ${ab?`<tr class="det"><td colspan="9">${detalleHTML(c)}</td></tr>`:""}`;
+    ${ab?`<tr class="det"><td colspan="10">${detalleHTML(c)}</td></tr>`:""}`;
 }
 function tablaCli(L){
   const th=(k,l,n)=>`<th class="${n?'r':''} ord ${MF.orden===k?'on':''}" onclick="metOrden('${k}')">${l}${MF.orden===k?(MF.dir<0?" ↓":" ↑"):""}</th>`;
   const filas=L.slice(0,MF.ver).map(filaCli).join("");
-  return `<table class="lista cli"><thead><tr>${th("nom","Cliente")}<th></th>${th("dias","Visitas",1)}${th("pv","Páginas",1)}${th("prodD","Productos",1)}${th("busq","Búsquedas",1)}${th("ped","Pedidos",1)}${th("monto","Online $",1)}${th("ult","Última visita",1)}</tr></thead>
-    <tbody>${filas||`<tr><td colspan="9" class="hint" style="padding:16px">Ningún cliente con esos filtros.</td></tr>`}</tbody></table>
+  return `<table class="lista cli"><thead><tr>${th("nom","Cliente")}<th></th>${th("sem","Semanas",1)}${th("dias","Visitas",1)}${th("pv","Páginas",1)}${th("prodD","Productos",1)}${th("busq","Búsquedas",1)}${th("ped","Pedidos",1)}${th("monto","Online $",1)}${th("ult","Última visita",1)}</tr></thead>
+    <tbody>${filas||`<tr><td colspan="10" class="hint" style="padding:16px">Ningún cliente con esos filtros.</td></tr>`}</tbody></table>
     ${L.length>MF.ver?`<div style="text-align:center;margin-top:10px"><button class="btn ghost sm" onclick="MF.ver+=100;render()">Ver ${num(Math.min(100,L.length-MF.ver))} más (quedan ${num(L.length-MF.ver)})</button></div>`:""}`;
 }
 /* el buscador redibuja sólo la tabla, para no perder el foco del campo */
@@ -636,8 +686,8 @@ function detalleHTML(c){
 function metCSV(){
   const L=clientesFiltrados(base()), R=MET.R;
   const q=v=>`"${String(v??"").replace(/"/g,'""')}"`;
-  const filas=[["Cliente","Razón social","Ciudad","Rubro","Comercial","Estado","Acceso al portal","Visitas","Páginas","Productos distintos","Búsquedas","Búsquedas sin resultado","Agregados al carrito","Descargas","Pedidos online","Facturado online","Carritos sin confirmar","Última visita","Último pedido online"]]
-    .concat(L.map(c=>[c.nom,c.razon,c.ciudad,c.rubro,c.com,estadoCli(c)[0],c.acceso?"Sí":"No",c.dias.size,c.pv,c.prodD,c.busq,c.ev.sin,c.ev.carr,c.ev.desc_,c.ped,Math.round(c.monto),c.carr,c.ultVisita?fD(c.ultVisita):"",c.ultPed?fD(c.ultPed):""]));
+  const filas=[["Cliente","Razón social","Ciudad","Rubro","Comercial","Estado","Actividad (últimas 8 semanas)","Semanas con ingreso (de 8)","Acceso al portal","Visitas","Páginas","Productos distintos","Búsquedas","Búsquedas sin resultado","Agregados al carrito","Descargas","Pedidos online","Facturado online","Carritos sin confirmar","Última visita","Último pedido online"]]
+    .concat(L.map(c=>[c.nom,c.razon,c.ciudad,c.rubro,c.com,estadoCli(c)[0],segNom(segmento(c)),c.act.w.size,c.acceso?(c.uso||c.act.w.size?"Sí":"Tiene usuario, nunca entró"):"No",c.dias.size,c.pv,c.prodD,c.busq,c.ev.sin,c.ev.carr,c.ev.desc_,c.ped,Math.round(c.monto),c.carr,c.ultVisita?fD(c.ultVisita):"",c.ultPed?fD(c.ultPed):""]));
   const blob=new Blob(["﻿"+filas.map(f=>f.map(q).join(";")).join("\r\n")],{type:"text/csv;charset=utf-8"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`portal-clientes_${R.d}_${R.a}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 }
@@ -789,7 +839,7 @@ function carritosHTML(L){
     <tbody>${L.slice(0,20).map(o=>`<tr class="cl" onclick="metIrCliente(${o.cli.id})"><td><b>${esc(o.cli.nom)}</b><div class="sub">${esc(o.cli.com||"sin comercial")}</div></td><td class="n" style="color:var(--gris);font-weight:600">${fD(o.dia)}</td><td class="n" style="color:var(--gris)">${num(o.cart_quantity)}</td><td class="n">${pesos(o.amount_total)}</td></tr>`).join("")}</tbody></table>
     <div class="hint" style="margin-top:8px">Es un buen motivo para que el comercial llame: el cliente ya eligió qué quería.</div>`:'<div class="hint">No quedaron carritos abiertos en el período.</div>'}</div>`;
 }
-function metIrCliente(id){ MF.sec="clientes"; MF.estado="todos"; MF.q=""; const L=clientesFiltrados(base()); const i=L.findIndex(c=>c.id===id); if(i>=MF.ver) MF.ver=i+1;
+function metIrCliente(id){ MF.sec="clientes"; MF.act=""; MF.estado="todos"; MF.q=""; const L=clientesFiltrados(base()); const i=L.findIndex(c=>c.id===id); if(i>=MF.ver) MF.ver=i+1;
   CLI_AB=null; metCliente(id); setTimeout(()=>{ const p=document.getElementById("p-clientes"); if(p) p.scrollIntoView({behavior:"smooth"}); },50); }
 
 /* Cómo viene cada aviso de la cinta: a cuántos les llegó y qué hicieron.
