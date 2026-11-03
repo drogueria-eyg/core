@@ -2207,11 +2207,25 @@ function pcPlacaUrl(pid){
   const o=OFERTAS.find(x=>x.id===pid); return o&&o.placa||"";
 }
 // los avisos que siguen valiendo: la placa es la misma imagen que se revisó (si no se sabe, se muestra)
-function pcAvisos(){ return Object.entries(PCAV||{}).filter(([pid,a])=>{ const u=pcPlacaUrl(pid); return !u||!a.u||u===a.u; }); }
-const pcAviso=pid=>{ const a=PCAV&&PCAV[pid]; if(!a) return null; const u=pcPlacaUrl(pid); return (!u||!a.u||u===a.u)?a:null; };
+/* AVISO DE PVP (3/11/2026): con los precios congelados, si AlfaBeta cambia el PVP el precio de la oferta
+   sigue siendo el de la placa; lo único que queda viejo es el PVP que la placa muestra. El control
+   (cron 102) lo anota en placas_control.pvp y acá va con los demás detalles, sin pausar. */
+function pcAvisoPvp(pid){ const v=PC&&PC.pvp&&PC.pvp[pid]; if(!v) return "";
+  return "La placa muestra PVP "+money(v.placa)+" y hoy AlfaBeta dice "+money(v.hoy)+". El precio de la oferta sigue siendo el de la placa (está congelado)."; }
+function pcAvisos(){
+  const m={};
+  Object.entries(PCAV||{}).forEach(([pid,a])=>{ const u=pcPlacaUrl(pid); if(!u||!a.u||u===a.u) m[pid]=Object.assign({},a); });
+  Object.entries((PC&&PC.pvp)||{}).forEach(([pid,v])=>{ const t=pcAvisoPvp(pid);
+    m[pid]=m[pid]?Object.assign(m[pid],{aviso:m[pid].aviso+" · "+t}):{t:v.t,k:v.k,u:v.u,aviso:t,pvp:true}; });
+  return Object.entries(m);
+}
+const pcAviso=pid=>{ const e=pcAvisos().find(x=>x[0]===pid); return e?e[1]:null; };
 window.pcAvisoQuitar=async pid=>{
   try{ let m={}; try{ m=JSON.parse(await getParam(PCAV_KEY,"{}")||"{}")||{}; }catch(e){}
-    delete m[pid]; await setParam(PCAV_KEY, JSON.stringify(m)); PCAV=m; toast("Aviso quitado ✓"); render(); if(PCAbierto) pintarPlacasCtl(); }
+    if(m[pid]){ delete m[pid]; await setParam(PCAV_KEY, JSON.stringify(m)); } PCAV=m;
+    // el de PVP: la placa queda aceptada con el PVP de hoy (no vuelve a avisar)
+    if(PC&&PC.pvp&&PC.pvp[pid]) await pcEditar(C=>{ const v=(C.pvp||{})[pid]; if(v&&C.ref[pid]&&C.ref[pid].f) C.ref[pid].f.pvp=v.hoy; if(C.pvp) delete C.pvp[pid]; });
+    toast("Aviso quitado ✓"); render(); if(PCAbierto) pintarPlacasCtl(); }
   catch(e){ toast("No se pudo: "+(e.message||e)); }
 };
 // que el control corra YA (al subir una placa o reactivar): así toma los precios de este momento
@@ -2220,7 +2234,9 @@ function placasCtlCorrer(){
 }
 const pcAlerta=pid=>PC&&PC.alertas&&PC.alertas[pid];
 function pcChip(pid){ const a=pcAlerta(pid);
-  if(!a){ const v=pcAviso(pid); return v?`<span class="chip c-oro" title="${esc(v.aviso)}">🖼️ placa con detalles · sigue activa</span>`:""; }
+  if(!a){ const v=pcAviso(pid); if(v) return `<span class="chip c-oro" title="${esc(v.aviso)}">🖼️ placa con detalles · sigue activa</span>`;
+    const c=PC&&PC.cong&&PC.cong[pid]; if(!c) return "";
+    const mal=(c.est||[]).length; return `<span class="chip ${mal?"c-oro":"c-gris"}" title="Mientras dure la oferta se publica el precio de la placa, aunque cambie el costo o el PVP.${mal?" "+esc(cgEstTxt(c)):""}">🔒 precio de la placa${mal?" · revisar margen":""}</span>`; }
   return `<span class="chip c-bad" title="El precio cambió desde que se subió la placa">🖼️ placa desactualizada${a.pauso?" · pausada por el control":""}</span>`; }
 function kpiPlacas(){
   if(!PC) return '<button class="kpi" onclick="abrirPlacasCtl()"><span class="l">🖼️ Placas desactualizadas</span><div class="n">…</div><div class="s">revisando…</div></button>';
@@ -2237,6 +2253,61 @@ function kpiPlacas(){
   return '<button class="kpi '+(n?"alerta":nd?"":"bien")+'" onclick="abrirPlacasCtl()" title="El control revisa cada hora que el precio de cada placa siga siendo el de hoy.">'+
     '<span class="l">🖼️ Placas desactualizadas</span><div class="n">'+n+'</div><div class="s">'+esc(sub)+'</div></button>';
 }
+/* 🔒 PRECIOS CONGELADOS (3/11/2026, Diego: "que la oferta y los precios se mantengan congelados en esos
+   valores definidos al momento de la oferta, hasta su fecha de finalización ... lo que sí se debe ir
+   inspeccionando siempre son los márgenes reales"). Mientras una oferta con placa siga vigente y sin
+   editar, el motor publica los precios de su placa (eyg.precios_congelados) y sigue calculando por detrás
+   lo que pondría hoy. El control (cron 102) deja en placas_control.cong el margen de cada una:
+   bajo_costo · bajo_piso (sin permiso para perforar) · cayo (5 puntos o más) · cede (hoy sale más barato
+   que la placa: se publica lo de hoy, porque una oferta nunca sube un precio). */
+const CG_EST={bajo_costo:["c-bad","vende bajo el costo"], bajo_piso:["c-oro","bajo el margen mínimo"], cayo:["c-oro","el margen cayó"], cede:["c-gris","hoy sale más barato: se publica lo de hoy"]};
+function cgEstTxt(c){ return (c.est||[]).map(e=>(CG_EST[e]||["",e])[1]).join(" · "); }
+function cgTramos(r){ if(!r) return "—"; const L=Array.isArray(r)?r.map(x=>[+x[0],+x[1]]):Object.entries(r).map(([q,p])=>[+q,+p]);
+  L.sort((a,b)=>a[0]-b[0]); const V=L.length>1&&Math.abs(L[0][1]-L[1][1])<0.005?L.slice(1):L;
+  return V.map(([q,p],i)=>(V.length===1?"":((q<=1?"1":q)+(i===V.length-1?"+":"")+": "))+money(p)).join(" · "); }
+function kpiCongelados(){
+  const C=(PC&&PC.cong)||{}, L=Object.values(C), n=L.length;
+  if(!PC) return '<button class="kpi" onclick="abrirCongelados()"><span class="l">🔒 Precios de placa</span><div class="n">…</div><div class="s">revisando…</div></button>';
+  const malo=L.filter(c=>(c.est||[]).some(e=>e==="bajo_costo")).length, rev=L.filter(c=>(c.est||[]).length).length;
+  const sub=n?(rev?(rev+" para revisar el margen"+(malo?(" · "+malo+" bajo el costo"):"")):"márgenes bien"):"ninguna oferta con placa";
+  return '<button class="kpi '+(malo?"alerta":rev?"":"bien")+'" onclick="abrirCongelados()" title="Ofertas con placa: se publica el precio de su placa hasta que vencen. Acá se vigila su margen.">'+
+    '<span class="l">🔒 Precios de placa</span><div class="n">'+n+'</div><div class="s">'+esc(sub)+'</div></button>';
+}
+window.abrirCongelados=async()=>{ await placasCtlLeer(); pintarCongelados(); };
+function pintarCongelados(){
+  const C=(PC&&PC.cong)||{};
+  const L=Object.entries(C).sort((a,b)=>((b[1].est||[]).length-(a[1].est||[]).length)||((a[1].m??999)-(b[1].m??999)));
+  const filas=L.map(([pid,c])=>{ const u=pcPlacaUrl(pid)||c.u, calc=c.calc?cgTramos(c.calc):"—";
+    return `<tr><td style="width:56px">${u?`<img src="${esc(u)}" alt="Placa" style="width:48px;height:48px;object-fit:cover;border-radius:6px;cursor:zoom-in" onclick="placaVer('${esc(u)}')">`:""}</td>
+      <td><b>${esc(String(c.t||pid).slice(0,70))}</b><div class="rend-quien">${PC_TIPO[c.k]||c.k} · placa del ${esc(String(c.at||"").replace(/^(\d{4})-(\d\d)-(\d\d).*/,"$3/$2"))}</div>
+        ${(c.est||[]).map(e=>`<span class="chip ${(CG_EST[e]||["c-gris"])[0]}">${esc((CG_EST[e]||["",e])[1])}</span>`).join(" ")}</td>
+      <td class="num"><b>${cgTramos(c.cong)}</b></td>
+      <td class="num" style="color:var(--gris)">${calc}</td>
+      <td class="num">${c.costo?money(c.costo):"—"}</td>
+      <td class="num" style="color:${c.m!=null&&c.m<0?"var(--bad)":"inherit"}"><b>${c.m!=null?c.m+"%":"—"}</b>${c.m0!=null?`<div class="rend-quien">al subir la placa: ${c.m0}%</div>`:""}</td>
+      <td><button class="btn ghost sm" onclick="cgDescongelar('${esc(pid)}')" title="Deja de publicar el precio de la placa">Pasar al precio de hoy</button></td></tr>`; }).join("");
+  document.getElementById("modal").innerHTML=
+    '<div class="scrim" onclick="if(event.target===this)cerrarModal()"><div class="modal" style="max-width:1150px">'+
+    '<div class="mh"><h3>🔒 Precios de placa · '+L.length+'</h3><span style="margin-left:auto"><button class="btn ghost sm" onclick="cerrarModal()">Cerrar</button></span></div>'+
+    '<div class="mb"><div class="hint2" style="margin:0 0 10px">Mientras una oferta con placa está vigente, Odoo publica <b>el precio de su placa</b> (web, portal, cotizador, panel de comerciales, pedidos), aunque cambie el costo o el PVP. Cuando vence, se pausa o se saca, vuelve sola al precio del motor. Si la editás, toma el precio nuevo y el control te pide la placa nueva.</div>'+
+    (L.length?`<table class="rend-tabla"><thead><tr><th></th><th>Oferta</th><th class="num">Precio de la placa</th><th class="num">El motor hoy pondría</th><th class="num">Costo hoy</th><th class="num">Margen hoy</th><th></th></tr></thead><tbody>${filas}</tbody></table>`:'<div class="empty">No hay ofertas con placa vigentes.</div>')+
+    '<div class="hint" style="margin-top:12px">Los precios son sin IVA, por tramo de cantidad. El margen es sobre el primer tramo, con el costo de hoy. Se revisa cada hora'+(PC&&PC.act?(" (última: "+esc(String(PC.act).slice(8,10)+"/"+String(PC.act).slice(5,7)+" "+String(PC.act).slice(11))+")"):"")+'.</div></div></div></div>';
+}
+window.cgDescongelar=async pid=>{
+  const c=(PC&&PC.cong||{})[pid]; if(!c) return;
+  if(!confirm("«"+String(c.t||pid).slice(0,60)+"»\n\nDeja de publicarse el precio de la placa y pasa al de hoy ("+(c.calc?cgTramos(c.calc):"el que calcule el motor")+").\nLa placa queda desactualizada: el control pausa la oferta hasta que subas la placa nueva.")) return;
+  toast("Pasando al precio de hoy…");
+  try{
+    await pcEditar(C=>{ if(C.ref[pid]) C.ref[pid].s="sin congelar "+new Date().toISOString().slice(0,10); if(C.cong) delete C.cong[pid]; });
+    let cg={}; try{ cg=JSON.parse(await getParam("eyg.precios_congelados","{}")||"{}")||{}; }catch(e){}
+    if(cg[String(c.tm)]&&cg[String(c.tm)].pid===pid){ delete cg[String(c.tm)]; await setParam("eyg.precios_congelados", JSON.stringify(cg)); }
+    const t=await EYG.rpc("product.template","read",[[+c.tm],["product_variant_id"]],LANG).catch(()=>null);
+    const vid=t&&t[0]&&t[0].product_variant_id&&t[0].product_variant_id[0];
+    if(vid) await EYG.rpc("ir.actions.server","run",[[1213]],{context:{lang:"es_AR",eyg_solo_producto:vid}}).catch(()=>{});
+    placasCtlCorrer();
+    toast("Listo: publica el precio de hoy. Subí la placa nueva."); render(); pintarCongelados();
+  }catch(e){ toast("No se pudo: "+(e.message||e)); }
+};
 window.abrirPlacasCtl=async()=>{ PCAbierto=true; pintarPlacasCtl(); await placasCtlLeer(); pintarPlacasCtl(); };
 window.cerrarPlacasCtl=()=>{ PCAbierto=false; cerrarModal(); };
 const pcPlata=v=>v==null?"—":money(v);
@@ -2276,7 +2347,7 @@ function pintarPlacasCtl(){
       <table class="rend-tabla"><thead><tr><th>Oferta</th><th>Qué pasa</th><th class="num">Precio</th><th class="num">Costo</th><th class="num">Margen</th></tr></thead><tbody>
       ${IN.map(([pid,x])=>`<tr><td><b>${esc(String(x.t||pid).slice(0,70))}</b><div class="rend-quien">${PC_TIPO[x.k]||x.k}</div></td><td>${esc(x.motivo)}</td><td class="num">${money(x.venta)}</td><td class="num">${money(x.costo)}</td><td class="num" style="color:${x.m<0?"var(--bad)":"inherit"}"><b>${x.m}%</b>${x.m0!=null?`<div class="rend-quien">al subir la placa: ${x.m0}%</div>`:""}</td></tr>`).join("")}
       </tbody></table>`:"")+
-    `<div class="hint" style="margin-top:14px">El control corre cada hora${P.act?(" (última revisión: "+esc(P.act.slice(8,10)+"/"+P.act.slice(5,7)+" "+P.act.slice(11))+")"):""}. Compara los precios de hoy con los que tenía la oferta cuando se subió su placa: todos los tramos de la lista de Farmacias y el PVP en los éticos; en los combos, el precio y la receta. Si algo cambió, aunque sea un centavo, pausa la oferta y la anota acá. Al subir la placa corregida o confirmar que está bien, la oferta se reactiva y esos pasan a ser los precios de la placa.</div>`;
+    `<div class="hint" style="margin-top:14px">El control corre cada hora${P.act?(" (última revisión: "+esc(P.act.slice(8,10)+"/"+P.act.slice(5,7)+" "+P.act.slice(11))+")"):""}. Compara los precios de hoy con los que tenía la oferta cuando se subió su placa: todos los tramos de la lista de Farmacias y el PVP en los éticos; en los combos, el precio y la receta. Desde el 3/11 los precios de las ofertas con placa quedan congelados (tarjeta 🔒 Precios de placa), así que sólo pueden cambiar si se edita la oferta: en ese caso la pausa y la anota acá. Si sólo cambió el PVP de AlfaBeta, no pausa: va a "Placas con detalles". Al subir la placa corregida o confirmar que está bien, la oferta se reactiva y esos pasan a ser los precios de la placa.</div>`;
   document.getElementById("modal").innerHTML=
     '<div class="scrim" onclick="if(event.target===this)cerrarPlacasCtl()"><div class="modal" style="max-width:1000px">'+
     '<div class="mh"><h3>🖼️ Placas desactualizadas</h3><span style="margin-left:auto"><button class="btn ghost sm" onclick="cerrarPlacasCtl()">Cerrar</button></span></div>'+
@@ -2568,6 +2639,7 @@ function render(){
   </div><div class="kpigrp">Para hacer</div><div class="kpis">
     ${kpiSinPlaca()}
     ${kpiPlacas()}
+    ${kpiCongelados()}
     ${kpi("costo","💡 Bajas de costo",opoVis.length,ocultasCosto.length?(ocultasCosto.length+" ocultas"):"bajas de costo nuevas","oro")}
     ${kpi("stock","📦 Stock para liquidar",stockLoading?"…":stkAll.length,"por vencer, sobrestock","")}
   </div></div>`;
