@@ -1302,6 +1302,8 @@ window.capaGuardar=async()=>{
     if(esLab && tr===1){ toast("Por laboratorio no se puede un precio único: sería el mismo número para todos. Usá desc. máximo, tope o tramos."); return; }
     if(!esLab && tr===1 && !(pr>0)){ toast("Para precio único (1 tramo) poné el precio con IVA"); return; }
     if(tr!==1 && !(dm>0||tp>0||tr>1)){ toast("Definí desc. máximo, tope o cantidad de tramos"); return; }
+    // la escalera la arma el motor sólo en categorías con regla (el precio único no la necesita) — caso OXA 50, 3/11/2026
+    if(!esLab && tr!==1 && S.info && S.info.catId && Object.keys(REGLA_CAT).length && !reglaCat(S.info.catId)){ toast("Este producto está en una categoría sin regla en el motor: la escalera no se armaría. Pasalo primero a la categoría de su laboratorio."); return; }
     ents.push(Object.assign({tier:1, nombre:S.nombre, precio:tr===1?pr:0, descmax:tr===1?0:dm, tramos:tr, tope:tr===1?0:tp, perforar:false, hasta:E.hasta||"", pausado:E.orig?!!E.orig.pausado:false},
       esLab?{lab:S.lab, labId:S.labId, tmpl:0}:{tmpl:S.tmpl, lab:"", labId:0}));
   }
@@ -1462,6 +1464,8 @@ function grpCalc(I, G){
   const r={tmpl:I.tmpl, nombre:I.nombre, sku:I.sku, stock:I.stock, costo:cost, piso, pvp, hoy1:(I.tramos[0]||{}).p||0,
     hoyN:(I.tramos[I.tramos.length-1]||{}).p||0, hoyQ:(I.tramos[I.tramos.length-1]||{}).q||1, p1:0, pN:0, qN:1, notas:[], err:""};
   const ya=grpSyncDe(I.tmpl), mio=ya&&G.gid&&grpDe("sync:"+ya.id)===G.gid;
+  // sin regla en el motor la oferta/escalera no se aplica nunca (caso DERTRIM, 3/11/2026)
+  if(I.catId && Object.keys(REGLA_CAT).length && !reglaCat(I.catId)){ r.err="su categoría no tiene regla en el motor: no se aplicaría (pasalo a la categoría de su laboratorio)"; return r; }
   if(G.clase==='desc'){
     if(!(v>0)) { r.err="falta el valor"; return r; }
     if(ya && !mio) r.notas.push(`reemplaza su oferta actual (${(ya.modo==="precio")?money(ya.valor):ya.modo==="pct"?"−"+rgPct(ya.valor)+"%":"−"+money(ya.valor)})`);
@@ -3699,6 +3703,11 @@ window.rgGuardar=async()=>{
     rule.modo='precio'; rule.valor=precio; rule.reemplaza=true;
   }
   if(d._cat) rule._cat=d._cat;   // para el badge de categoría sin recargar
+  // 3/11/2026 (caso DERTRIM): el motor sólo precia las categorías con regla (eyg.sync_precios_flat). Un
+  // producto en una categoría sin regla (la raíz «ETICOS» de AlfaBeta) nunca recibe la oferta, y sin regla
+  // tampoco hay piso que chequear: se guardaba sin ningún aviso y Odoo seguía mostrando el PVP.
+  if(rule.tipo==='p' && rgCatId && Object.keys(REGLA_CAT).length && !reglaCat(rgCatId)){
+    toast(`Este producto está en «${d._cat||"categoría "+rgCatId}», que no tiene regla en el motor: la oferta no se aplicaría. Pasalo primero a la categoría de su laboratorio.`); return; }
   // ANTES de aplicar: ¿algún producto queda bajo el costo o bajo el piso? Si sí, se confirma.
   const chk=ofChequear(rule);
   if(chk===null){ toast("Esperá a que termine de calcular cómo queda la categoría"); return; }
