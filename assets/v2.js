@@ -17,6 +17,7 @@
 window.EYGV2 = (function(){
   const PILOTO = [
     "a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122", // Diego Velázquez (d.velazquez@)
+    "53ab45c75c97fc80109dddf425c8343ca47287b95bcad8ee868cad8fd3d171bd", // German Banquero (g.banquero@)
   ];
   const LS = "eyg_visual", LS_TEMA = "eyg_tema", LS_ULT = "eyg_v2_ultimo";
   const SELF = (document.currentScript && document.currentScript.src) || "";
