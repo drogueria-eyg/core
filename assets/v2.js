@@ -1,30 +1,229 @@
 /* ===== EyG Core · VISUAL NUEVA (piloto) =====
    Pone la clase html.v2 (que activa assets/v2.css), carga Exo 2, cambia el
-   monograma viejo por el logo del portal y reemplaza los emojis por íconos de
-   línea, como en el portal (que no usa emojis).
-   El inicio se redibuja solo (reloj, sondeos), así que un observador vuelve a
-   pasar la piel cada vez que algo cambia; la pasada es idempotente.
+   monograma viejo por el logo del portal, reemplaza los emojis por íconos de
+   línea y TRADUCE los colores fijos de cada pantalla a la paleta nueva.
 
-   Quién la ve: por ahora sólo PILOTO. Para comparar: ?visual=vieja la apaga y
-   ?visual=nueva la vuelve a prender (queda recordado en este navegador). */
+   Por qué un traductor: cada módulo trae su propio <style> (panel.html tiene
+   74 KB) y además arma HTML con colores en línea. Reescribirlos a mano sería
+   tocar miles de reglas y arriesgar romper algo. El traductor lee cada color,
+   lo clasifica (blanco, tinte claro, petróleo, gris, verde/rojo/ámbar…) y lo
+   cambia por la variable del tema que le corresponde. Sólo toca colores,
+   sombras, radios y la familia tipográfica: nunca medidas ni posiciones. Y
+   como todo termina en variables, el modo oscuro es redefinir las variables.
+
+   Quién la ve: sólo PILOTO. ?visual=vieja la apaga, ?visual=nueva la prende
+   (queda recordado en este navegador). El modo oscuro se elige con el botón
+   del menú lateral y también queda recordado. */
 window.EYGV2 = (function(){
   const PILOTO = [
     "a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122", // Diego Velázquez (d.velazquez@)
   ];
-  const LS = "eyg_visual";
+  const LS = "eyg_visual", LS_TEMA = "eyg_tema", LS_ULT = "eyg_v2_ultimo";
   const SELF = (document.currentScript && document.currentScript.src) || "";
   const ASSETS = SELF.replace(/v2\.js(\?.*)?$/, "");
+  const H = document.documentElement;
+  const lsGet = k => { try{ return localStorage.getItem(k); }catch(e){ return null; } };
+  const lsSet = (k,v) => { try{ localStorage.setItem(k,v); }catch(e){} };
 
   function para(perfil){
     if(!perfil || !PILOTO.includes(perfil._h)) return false;
     const q = new URLSearchParams(location.search).get("visual");
-    try{
-      if(q==="vieja" || q==="nueva") localStorage.setItem(LS, q);
-      return (localStorage.getItem(LS) || "nueva") === "nueva";
-    }catch(e){ return q!=="vieja"; }
+    if(q==="vieja" || q==="nueva") lsSet(LS, q);
+    return (lsGet(LS) || "nueva") === "nueva";
   }
 
-  /* ---- Íconos de línea (24×24, trazo 1,6, como .eyg-r-icon del portal) ---- */
+  /* ================= Traductor de colores ================= */
+  function parse(s){
+    s = s.trim().toLowerCase();
+    if(s==="white") return {r:255,g:255,b:255,a:1};
+    let m = s.match(/^#([0-9a-f]{3,8})$/);
+    if(m){
+      let h=m[1];
+      if(h.length===3||h.length===4) h=h.split("").map(c=>c+c).join("");
+      if(h.length!==6&&h.length!==8) return null;
+      return {r:parseInt(h.slice(0,2),16),g:parseInt(h.slice(2,4),16),b:parseInt(h.slice(4,6),16),a:h.length===8?parseInt(h.slice(6,8),16)/255:1};
+    }
+    m = s.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+%?))?\s*\)$/);
+    if(m){ let a=m[4]==null?1:(m[4].endsWith("%")?parseFloat(m[4])/100:parseFloat(m[4])); return {r:+m[1],g:+m[2],b:+m[3],a}; }
+    return null;
+  }
+  function hsl({r,g,b}){
+    r/=255; g/=255; b/=255;
+    const mx=Math.max(r,g,b), mn=Math.min(r,g,b), l=(mx+mn)/2;
+    let h=0, s=0;
+    if(mx!==mn){
+      const d=mx-mn; s = l>0.5 ? d/(2-mx-mn) : d/(mx+mn);
+      h = mx===r ? (g-b)/d+(g<b?6:0) : mx===g ? (b-r)/d+2 : (r-g)/d+4; h*=60;
+    }
+    return {h,s,l};
+  }
+  const v = n => `var(--${n})`;
+  const TEAL = h => h>=150 && h<=200;
+  const OSC = new Set(["brand","brand-2","tip"]);            // fondos oscuros: llevan texto claro
+  const CLAROS = new Set(["surface","bg2","agua","soft","okbg","badbg","warnbg","infobg","tribg","lime"]);
+
+  /* Devuelve el nombre del token (sin var()) o null para dejar el color como está. */
+  function tokenFondo(c){
+    if(c.a<0.04) return null;
+    const {h,s,l}=hsl(c);
+    if(c.a<1) return null;                                   // velos y transparencias: quedan
+    if(l>=0.985 && s<0.6) return "surface";
+    if(l>=0.9){
+      if(s<0.2 || TEAL(h)) return l>=0.962 ? "bg2" : "agua";
+      if(h>=80&&h<150) return "okbg";
+      if(h<20||h>=330) return "badbg";
+      if(h<70) return "warnbg";
+      if(h<260) return "infobg";
+      return "tribg";
+    }
+    if(l>=0.78 && (s<0.25 || TEAL(h))) return "soft-line";
+    if(TEAL(h) && s>0.25 && l<0.5) return l<0.25 ? "brand" : "brand-2";
+    if(TEAL(h) && s>0.25 && l<0.78) return "aqua";                                     // verde agua medio (barras, chips)
+    if(l<0.2 && (s<0.4 || TEAL(h))) return "tip";
+    if(s>0.5 && l>0.38 && l<0.78 && h>=8 && h<50) return "lime";                       // coral y dorado → acento lima
+    return null;
+  }
+  function tokenTexto(c, fondo){
+    if(c.a<0.04) return null;
+    const {h,s,l}=hsl(c);
+    const oscuro = fondo && OSC.has(fondo), claro = fondo && CLAROS.has(fondo);
+    if(fondo==="lime") return "on-lime";
+    if(c.r>235&&c.g>235&&c.b>235) return claro ? "petrol" : (c.a<1?null:"on-brand");
+    /* Un verde agua clarito como texto sólo se lee sobre petróleo: ahí es donde se usaba
+       (rótulos de tarjetas oscuras, subtítulos del encabezado). Va el gris papel de marca. */
+    if(TEAL(h) && s>0.2 && l>0.6) return claro ? "petrol-2" : "on-brand-2";
+    if(l>0.8 && s<0.25) return claro ? "gris" : "on-brand-2";
+    if(oscuro) return (TEAL(h)&&s>0.2) ? "on-brand-2" : null;
+    if(TEAL(h) && s>0.2) return l<0.33 ? "petrol" : "petrol-2";
+    if(l<0.22 && s<0.45) return "ink";
+    if(s<0.18) return l<0.5 ? "gris" : "gris2";
+    if(h>=80&&h<165 && s>0.3) return "ok";
+    if((h<15||h>=340) && s>0.3) return "bad";
+    if(h>=15&&h<58 && s>0.3) return "warn";
+    if(h>=195&&h<250 && s>0.3) return "info";
+    return null;
+  }
+  function tokenLinea(c){
+    if(c.a<0.04) return null;
+    const {h,s,l}=hsl(c);
+    if(c.a<1) return null;
+    if(l>=0.985) return "surface";
+    if(l>=0.8 && (s<0.3 || TEAL(h))) return "line";
+    if(TEAL(h) && s>0.2) return "brand-2";
+    if(s>0.55 && l>0.5 && l<0.78 && ((h>=8&&h<28)||(h>=32&&h<48))) return "lime-ink";
+    return null;
+  }
+  function tokenGrafico(c){
+    if(c.a<0.04) return null;
+    const {h,s,l}=hsl(c);
+    if(c.r>235&&c.g>235&&c.b>235) return "surface";
+    if(TEAL(h) && s>0.2){ if(l>=0.82) return "track"; return l<0.25 ? "brand" : (l<0.5 ? "brand-2" : "aqua"); }
+    if(s<0.15 && l>0.85) return "track";
+    if(s<0.15 && l<0.25) return "ink";
+    return null;
+  }
+  const RXC = /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|\bwhite\b/g;
+  const conColores = (val, fn) => val.replace(RXC, m => { const c=parse(m); const t=c&&fn(c); return t ? v(t) : m; });
+
+  /* Las variables viejas del Core se usaban igual para fondo y para texto (--teal-deep
+     pinta el encabezado Y los títulos). En el modo oscuro eso no puede ser lo mismo,
+     así que se separan según la propiedad donde aparecen. */
+  const VAR_FONDO = {teal:"brand","teal-deep":"brand","teal-med":"brand-2",aqua:"brand-2",coral:"lime",gold:"lime"};
+  const VAR_LINEA = {teal:"brand-2","teal-deep":"brand-2","teal-med":"brand-2",aqua:"hover-line",coral:"lime-ink",gold:"lime-ink"};
+  const varTexto = (n, fondo) => {
+    const oscuro = fondo && OSC.has(fondo);
+    if(fondo==="lime") return "on-lime";
+    return ({teal:"petrol","teal-deep":"petrol","teal-med":"petrol-2",
+             aqua: oscuro||!fondo ? "on-brand-2" : "petrol-2", surface:"on-brand", coral:"coral-txt", gold: oscuro ? "lime" : "warn"})[n];
+  };
+  const conVars = (val, fn) => val.replace(/var\(--([a-z0-9-]+)\)/g, (m,n)=>{ const t=fn(n); return t ? v(t) : m; });
+
+  function sombra(val){
+    if(/^\s*none\s*$/i.test(val)) return val;
+    const partes = val.split(/,(?![^(]*\))/);
+    const quedan = partes.map(p=>{
+      if(/inset/.test(p)) return conVars(conColores(p, c=>tokenLinea(c)||tokenTexto(c)), n=>VAR_LINEA[n]);
+      const m = p.match(RXC); const c = m && parse(m[0]);
+      const largos = (p.replace(RXC,"").match(/-?[\d.]+px/g)||[]).map(x=>Math.abs(parseFloat(x)));
+      const blur = largos[2]||0;
+      /* el portal no usa sombras: sólo queda la elevación de ventanas y menús (oscura, difusa) */
+      if(!c || c.a<0.2 || blur<20 || hsl(c).l>0.3) return null;
+      return p.replace(RXC, `rgba(10,30,28,${Math.min(c.a,.3)})`);
+    }).filter(Boolean);
+    return quedan.length ? quedan.join(",") : "none";
+  }
+  function fondo(val){
+    if(/url\(/.test(val) && !/gradient/.test(val)) return {val, tok:null};
+    const toks=[];
+    let nuevo = conVars(val, n=>{ const t=VAR_FONDO[n]||({surface:"surface",agua:"agua",bg:"bg2",okbg:"okbg",badbg:"badbg",warnbg:"warnbg"})[n]; if(t) toks.push(t); return VAR_FONDO[n]; });
+    nuevo = nuevo.replace(RXC, m=>{ const c=parse(m); const t=c&&tokenFondo(c); toks.push(t||(c&&c.a<1?"~":null)); return t?v(t):m; });
+    if(/gradient/.test(val)){
+      const firmes = toks.filter(t=>t && t!=="~");
+      if(!firmes.length && toks.length) return {val:"none", tok:null};                                         // brillos decorativos: fuera
+      if(firmes.every(t=>OSC.has(t)) && firmes.length) return {val:v("brand"), tok:"brand"};                  // degradé petróleo → plano
+      if(firmes.every(t=>CLAROS.has(t)) && firmes.length) return {val:v(firmes[0]), tok:firmes[0]};          // degradé claro → plano
+      return {val:nuevo, tok:null};
+    }
+    return {val:nuevo, tok:toks.find(t=>t && t!=="~")||null};
+  }
+  function radio(val){
+    return val.replace(/(\d+(?:\.\d+)?)px/g, (m,n)=>{ n=+n; if(n>=12&&n<=18) return "9px"; if(n>18&&n<40) return "6px"; return m; });
+  }
+
+  /* Traduce una lista de declaraciones "a:b;c:d" (cuerpo de una regla o un style="…"). */
+  const DECL = /([-a-zA-Z]+)(\s*:\s*)((?:[^;"'(]|\((?:[^()]|\([^)]*\))*\)|"[^"]*"|'[^']*')+)/g;
+  function declaraciones(txt){
+    let fondoTok=null, hay=false;
+    txt.replace(DECL, (all,p,sep,val)=>{ hay=true; p=p.toLowerCase(); if(p==="background"||p==="background-color"||p==="background-image"){ const r=fondo(val); if(r.tok) fondoTok=r.tok; } return all; });
+    if(!hay) return txt;
+    return txt.replace(DECL, (all,p,sep,val)=>{
+      const P=p.toLowerCase();
+      let nv=val;
+      if(P==="background"||P==="background-color"||P==="background-image") nv=fondo(val).val;
+      else if(P==="color"||P==="-webkit-text-fill-color") nv=conVars(conColores(val, c=>tokenTexto(c, fondoTok)), n=>varTexto(n, fondoTok));
+      else if(P==="box-shadow") nv=sombra(val);
+      else if(P==="text-shadow") nv="none";
+      else if(P==="fill"||P==="stroke"||P==="stop-color") nv=conVars(conColores(val, tokenGrafico), n=>VAR_FONDO[n]);
+      else if(/^(border|outline|text-decoration|column-rule)/.test(P) && !/radius/.test(P)) nv=conVars(conColores(val, tokenLinea), n=>VAR_LINEA[n]);
+      else if(/radius$/.test(P)) nv=radio(val);
+      else if(P==="font-family" && /archivo/i.test(val)) nv="inherit";
+      return nv===val ? all : p+sep+nv;
+    });
+  }
+  /* Una hoja de estilos entera: se traduce cada bloque más interno (incluye los de @media). */
+  function hoja(css){
+    return css.replace(/\{([^{}]*)\}/g, (all, cuerpo)=> /@font-face|src\s*:/.test(cuerpo) ? all : "{"+declaraciones(cuerpo)+"}");
+  }
+
+  const ORIG = new Map();    // <style> → texto original, para poder volver atrás sin recargar
+  function traducirEstilos(){
+    document.querySelectorAll("style:not([data-v2])").forEach(st=>{
+      if(st.id==="v2-fuente") return;
+      ORIG.set(st, st.textContent);
+      st.textContent = hoja(st.textContent);
+      st.dataset.v2 = "1";
+    });
+  }
+  function traducirNodo(el){
+    if(!el || el.nodeType!==1) return;
+    const todos = [el, ...el.querySelectorAll("[style],[fill],[stroke],[stop-color]")];
+    for(const e of todos){
+      if(e.hasAttribute && e.hasAttribute("style")){
+        const s=e.getAttribute("style");
+        if(e.__v2s!==s){ const n=declaraciones(s); if(n!==s) e.setAttribute("style", n); e.__v2s=e.getAttribute("style"); }
+      }
+      if(e.namespaceURI==="http://www.w3.org/2000/svg"){
+        for(const a of ["fill","stroke","stop-color"]){
+          const val=e.getAttribute && e.getAttribute(a);
+          if(!val || val.startsWith("var(") || val==="none") continue;
+          const c=parse(val); const t=c&&tokenGrafico(c);
+          if(t) e.style.setProperty(a, v(t));                // el atributo no acepta var(): va como estilo
+        }
+      }
+    }
+  }
+
+  /* ================= Íconos de línea (24×24, trazo 1,6, como .eyg-r-icon del portal) ================= */
   const P = {
     home:'<path d="M3 11 12 4l9 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5h4v5"/>',
     chat:'<path d="M4 5h16v11H10l-5 4v-4H4z"/>',
@@ -73,88 +272,197 @@ window.EYGV2 = (function(){
     check:'<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
     clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     truck:'<path d="M3 6h11v10H3zM14 9h4l3 3v4h-7"/><circle cx="7" cy="17.5" r="1.7"/><circle cx="17" cy="17.5" r="1.7"/>',
+    cart:'<path d="M3 4h2l2.2 11h10.6L20 7H6.2"/><circle cx="9" cy="19" r="1.5"/><circle cx="17" cy="19" r="1.5"/>',
+    bell:'<path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+    star:'<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8L3.5 9.7l5.9-.9z"/>',
+    medal:'<circle cx="12" cy="14.5" r="5.5"/><path d="M8.5 3h7L13.5 9h-3z"/>',
+    gift:'<rect x="3.5" y="8.5" width="17" height="4" rx="1"/><path d="M5 12.5V20h14v-7.5M12 8.5V20M12 8.5C10 4 6.5 5 7.5 7.3 8 8.5 12 8.5 12 8.5zM12 8.5c2-4.5 5.5-3.5 4.5-1.2-.5 1.2-4.5 1.2-4.5 1.2z"/>',
+    fire:'<path d="M12 21a7 7 0 0 0 7-7c0-4-3.5-6-4-10-2 2-3 4-3 6-1-1-2-1.5-2.5-3C7 9 5 11.5 5 14a7 7 0 0 0 7 7z"/>',
+    mail:'<rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="m3.5 6 8.5 7 8.5-7"/>',
+    pin:'<path d="M12 21s-6.5-6-6.5-11a6.5 6.5 0 0 1 13 0c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
+    eye:'<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+    key:'<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3M14 9l2 2"/>',
+    lock:'<rect x="5" y="10.5" width="14" height="10" rx="1.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
+    refresh:'<path d="M20 11a8 8 0 0 0-14.5-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.5 4.5L20 16M20 20v-4h-4"/>',
+    x:'<path d="m6 6 12 12M6 18 18 6"/>',
+    info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
     menu:'<path d="M4 7h16M4 12h16M4 17h16"/>',
+    moon:'<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>',
+    sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
+    drop:'<path d="M12 3.5s6 6.6 6 11a6 6 0 0 1-12 0c0-4.4 6-11 6-11z"/>',
+    trash:'<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+    gem:'<path d="M6 4h12l3 5-9 11L3 9z"/><path d="M3 9h18M9 4l3 16M15 4l-3 16"/>',
+    crown:'<path d="m3 8 4.5 4L12 5l4.5 7L21 8l-2 11H5z"/>',
+    ban:'<circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/>',
+    save:'<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/>',
+    doc:'<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
+    printer:'<path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="1.5"/><path d="M7 14h10v7H7z"/>',
+    snow:'<path d="M12 2.5v19M3.8 7.2l16.4 9.6M3.8 16.8l16.4-9.6"/><path d="m9.5 4 2.5 2 2.5-2M9.5 20l2.5-2 2.5 2"/>',
+    flag:'<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+    pie:'<path d="M12 3v9h9a9 9 0 1 1-9-9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/>',
+    image:'<rect x="3" y="5" width="18" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.8"/><path d="m21 16-5-5-8 8"/>',
+    scale:'<path d="M12 4v16M7 20h10M5 7h14M5 7l-3 6a3 3 0 0 0 6 0zM19 7l-3 6a3 3 0 0 0 6 0z"/>',
+    plus:'<path d="M12 5v14M5 12h14"/>',
     dot:'<circle cx="12" cy="12" r="3"/>',
   };
   const EMO = {
-    "🏠":"home","💬":"chat","🏥":"hosp","📣":"megaf","⚡":"bolt","📊":"chart","🧮":"calc","💯":"target","🎯":"target",
-    "📦":"box","💊":"pill","🔎":"search","🔍":"search","📥":"inbox","🏷":"tag","🩺":"pulse","🫀":"heart","💡":"bulb","📋":"clip",
-    "🤝":"link","🔀":"merge","👥":"users","👤":"user","🗺":"map","🧠":"nodes","✨":"spark","🌐":"globe","⚙":"gear",
-    "⚗":"flask","🏛":"bank","🏦":"bank","🐾":"paw","💰":"money","💳":"card","💸":"out","📁":"folder","📚":"book",
-    "🧾":"receipt","🪪":"idcard","📈":"trend","📅":"cal","🗓":"cal","⚠":"alert","⛔":"alert","🏆":"trophy","🚀":"arrow",
-    "📱":"phone","🤖":"bot","✍":"pen","📐":"chart","✅":"check","⏰":"clock","⏱":"clock","🕒":"clock","🚚":"truck","❔":"dot",
+    "🏠":"home","💬":"chat","🗨":"chat","🏥":"hosp","📣":"megaf","📢":"megaf","⚡":"bolt","📊":"chart","📉":"chart","🧮":"calc","💯":"target","🎯":"target",
+    "📦":"box","💊":"pill","🔎":"search","🔍":"search","📥":"inbox","🏷":"tag","🩺":"pulse","🫀":"heart","💡":"bulb","📋":"clip","📝":"pen",
+    "🤝":"link","🔀":"merge","👥":"users","👤":"user","🧑":"user","🗺":"map","🧠":"nodes","✨":"spark","🌐":"globe","⚙":"gear","🧭":"target",
+    "⚗":"flask","🏛":"bank","🏦":"bank","🐾":"paw","💰":"money","💵":"money","💲":"money","💳":"card","💸":"out","📁":"folder","📂":"folder","📚":"book","📖":"book",
+    "🧾":"receipt","🪪":"idcard","📈":"trend","📅":"cal","🗓":"cal","📆":"cal","⚠":"alert","⛔":"alert","🚨":"alert","❗":"alert","🏆":"trophy","🚀":"arrow",
+    "📱":"phone","📞":"phone","☎":"phone","🤖":"bot","✍":"pen","✏":"pen","📐":"chart","✅":"check","✔":"check","☑":"check","⏰":"clock","⏱":"clock","🕒":"clock","⏳":"clock","⌛":"clock",
+    "🚚":"truck","🛒":"cart","🔔":"bell","⭐":"star","🌟":"star","🥇":"medal","🥈":"medal","🥉":"medal","🏅":"medal","🎖":"medal","🎁":"gift","🔥":"fire",
+    "📧":"mail","✉":"mail","📨":"mail","📤":"out","📍":"pin","📌":"pin","👀":"eye","👁":"eye","🔑":"key","🔒":"lock","🔐":"lock","🔄":"refresh","🔁":"refresh",
+    "❌":"x","✖":"x","🗂":"folder","🎉":"spark","🆕":"star","🩸":"drop","🗑":"trash","💎":"gem","👑":"crown","🚫":"ban","🕐":"clock",
+    "👌":"check","📩":"mail","💾":"save","📄":"doc","📃":"doc","🔓":"lock","🖨":"printer","👏":"spark","🎟":"tag","🧩":"nodes","✂":"x","☀":"sun","🌤":"sun",
+    "❄":"snow","😴":"moon","♻":"refresh","🏁":"flag","🥧":"pie","🪣":"box","💪":"bolt","🔻":"alert","🕳":"dot","☕":"clock","💚":"heart","❤":"heart","🔗":"link",
+    "🔖":"tag","🖼":"image","🚧":"alert","⚖":"scale","➕":"plus","➖":"dot","ℹ":"info","❔":"info","❓":"info","🏢":"bank","🏪":"hosp","👋":null,
   };
+  const DOTS = {"🔴":"bad","🟠":"warn","🟡":"warn","🟢":"ok","🔵":"info","🟣":"tri","⚪":"gris2","⚫":"ink","🟩":"ok","🟥":"bad","🟨":"warn"};
   const svg = (k,cls="v2i") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[k]||P.dot}</svg>`;
-  const RX = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}]/u;
-  const RX_ALL = /[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\u{1F1E6}-\u{1F1FF}‍️⃣]/gu;
+  /* Flechas, ©, ™ y cuadraditos son tipografía de los botones ("Ver todo →"), no emojis. */
+  const TIPO = "(?![\\u00A9\\u00AE\\u2122\\u2190-\\u21FF\\u2934\\u2935\\u25AA-\\u25FE\\u27A1\\u2B05-\\u2B07])";
+  const RX = new RegExp(TIPO+"[\\p{Extended_Pictographic}\\u{1F1E6}-\\u{1F1FF}]", "u");
+  const RX_ALL = new RegExp(TIPO+"[\\p{Extended_Pictographic}\\u{1F1E6}-\\u{1F1FF}]|[\\u{1F3FB}-\\u{1F3FF}\\u200d\\ufe0f\\u20e3]", "gu");
+  const SOLO = /^[\s\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}‍️⃣]+$/u;
+  const NO_TOCAR = "script,style,textarea,pre,code,input,select,option,[contenteditable],[data-v2-keep]";
   function iconoDe(txt){
-    const t = (txt||"").replace(/[️‍]/g,"").trim();
-    for(const ch of Array.from(t)) if(EMO[ch]) return EMO[ch];
-    return RX.test(t) ? "dot" : null;
+    const t=(txt||"").replace(/[️‍]/g,"").trim();
+    for(const ch of Array.from(t)){ if(DOTS[ch]) return {dot:DOTS[ch]}; if(ch in EMO) return EMO[ch]?{k:EMO[ch]}:null; }
+    return {k:"dot"};
   }
-  /* Deja el texto sin emojis (y sin el espacio que los separaba). */
-  function limpiar(el){
-    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-    const ns=[]; while(w.nextNode()) ns.push(w.currentNode);
-    ns.forEach(n=>{
-      if(!RX.test(n.nodeValue)) return;
-      const v = n.nodeValue.replace(RX_ALL,"").replace(/\s{2,}/g," ");
-      n.nodeValue = /^\s/.test(n.nodeValue) && n.previousSibling ? v : v.replace(/^\s+/,"");
+  function iconoHTML(i){
+    return i.dot ? `<svg class="v2i v2dot" viewBox="0 0 24 24" aria-hidden="true" style="fill:var(--${i.dot});stroke:none"><circle cx="12" cy="12" r="5"/></svg>` : svg(i.k);
+  }
+  /* Un texto con emojis: si el elemento es SÓLO el emoji (un casillero de ícono) va un ícono
+     de línea; si el emoji acompaña un texto, se saca. */
+  function emojis(raiz){
+    if(!raiz) return;
+    if(raiz.nodeType===3){ raiz = raiz.parentNode; if(!raiz) return; }
+    if(raiz.nodeType!==1 || raiz.closest(NO_TOCAR)) return;
+    const w = document.createTreeWalker(raiz, NodeFilter.SHOW_TEXT);
+    const ns=[]; while(w.nextNode()) if(RX.test(w.currentNode.nodeValue)) ns.push(w.currentNode);
+    for(const n of ns){
+      const el=n.parentElement; if(!el || el.closest(NO_TOCAR)) continue;
+      if(SOLO.test(n.nodeValue) && el.childNodes.length===1 && el.tagName!=="SVG"){
+        const i=iconoDe(n.nodeValue);
+        if(i) el.innerHTML = iconoHTML(i); else n.nodeValue="";
+        el.classList.add("v2ic");
+        continue;
+      }
+      if(SOLO.test(n.nodeValue)){                               // emoji suelto pegado a otro elemento
+        const i=iconoDe(n.nodeValue);
+        const sp=document.createElement("span"); sp.className="v2ic v2ic-in";
+        if(i) sp.innerHTML=iconoHTML(i);
+        n.replaceWith(sp); continue;
+      }
+      const vv=n.nodeValue.replace(RX_ALL,"").replace(/ {2,}/g," ");
+      n.nodeValue = n.previousSibling ? vv : vv.replace(/^\s+/,"");
+    }
+  }
+
+  /* ================= Marca, menú y tema ================= */
+  const LOGO = () => `<img class="v2logo" src="${ASSETS}logo-eyg.svg" alt="Droguería EyG">`;
+  function marca(){
+    const sb = document.querySelector(".sbrand a");
+    if(sb && !sb.querySelector(".v2logo")) sb.innerHTML = LOGO()+`<span class="v2tag">Panel<b>interno</b></span>`;
+    /* encabezados propios de algunos módulos (panel.html, cobranzas…): monograma "EyG" + "Core" */
+    document.querySelectorAll(".topbar .mono, .eyg-top .mono").forEach(m=>{
+      if(m.querySelector(".v2logo")) return;
+      m.innerHTML = LOGO(); m.classList.add("v2mono");
+      const tg = m.nextElementSibling; if(tg && tg.classList.contains("tag")) tg.classList.add("v2tagcore");
+    });
+    const ham = document.querySelector(".mbar .ham");
+    if(ham && !ham.querySelector("svg")) ham.innerHTML = svg("menu");
+    const rh = document.querySelector(".eyg-railham");
+    if(rh && !rh.querySelector("svg")) rh.innerHTML = svg("menu");
+    const dh = document.querySelector(".mbody .dhead h1");
+    if(dh && !dh.previousElementSibling?.classList?.contains("v2kick"))
+      dh.insertAdjacentHTML("beforebegin", `<span class="v2kick">Resumen del día</span>`);
+    /* selector claro/oscuro, al pie del menú lateral */
+    const sf = document.querySelector(".sfoot");
+    if(sf && !sf.querySelector(".v2tema")){
+      sf.insertAdjacentHTML("afterbegin", `<button type="button" class="v2tema" onclick="EYGV2.alternarTema()" title="Cambiar entre modo claro y oscuro"></button>`);
+    }
+    pintarBotonTema();
+  }
+  function pintarBotonTema(){
+    const osc = H.classList.contains("oscuro");
+    document.querySelectorAll(".v2tema").forEach(b=>{
+      const quiero = osc ? "claro" : "oscuro";
+      if(b.dataset.m===quiero) return;
+      b.dataset.m = quiero;
+      b.innerHTML = svg(osc?"sun":"moon") + `<span>Modo ${quiero}</span>`;
     });
   }
-  /* Un casillero de ícono (sidebar, accesos, novedades): emoji → svg. */
-  function iconizar(el){
-    if(el.dataset.v2===el.textContent) return;
-    const k = iconoDe(el.textContent);
-    if(!k) return;
-    el.innerHTML = svg(k);
-    el.dataset.v2 = el.textContent;   // textContent de un svg es "" → sólo marca hecho
+  function aplicarTema(t){
+    H.classList.toggle("oscuro", t==="oscuro");
+    H.style.colorScheme = t==="oscuro" ? "dark" : "light";
+    pintarBotonTema();
+  }
+  function alternarTema(){
+    const t = H.classList.contains("oscuro") ? "claro" : "oscuro";
+    lsSet(LS_TEMA, t); aplicarTema(t);
   }
 
-  const LIMPIAR = [".mbody .dhead h1",".mbody .cx-h h2",".mbody .ktile .kl",".mbody .canleg-h",".mbody .cnl-h",
-    ".mbody .big-l",".mbody .rhead",".mbody .rl",".mbody .lv .n",".mbody .evo-stats .l",".mbody .pills button",
-    ".mbody .vt-l",".mbody .sest",".sfoot a",".sfoot .out",".mbody .gcta",".mbody .more",".mbody .cli-tabs button",
-    ".cli-top h3",".mbody .legend span",".mbody .evo-stats .v",".mbody .cx>div:not([class])"];
-  const ICONOS = [".snav .item .ic",".mbody .q .qi",".mbody .fi .fic",".mbody .vt-i"];
-
+  /* ================= Pasadas ================= */
+  let obs=null, pend=false, cola=new Set(), todo=true;
   function pasar(){
-    document.querySelectorAll(ICONOS.join(",")).forEach(iconizar);
-    document.querySelectorAll(LIMPIAR.join(",")).forEach(limpiar);
-    /* marca: monograma Georgia → logo del portal + rótulo con filete */
-    const sb = document.querySelector(".sbrand a");
-    if(sb && !sb.querySelector(".v2logo")){
-      sb.innerHTML = `<img class="v2logo" src="${ASSETS}logo-eyg.svg" alt="Droguería EyG"><span class="v2tag">Panel<b>interno</b></span>`;
-    }
-    const ham = document.querySelector(".mbar .ham");
-    if(ham && !ham.querySelector("svg")) ham.innerHTML = svg("menu","v2i");
-    /* epígrafe del encabezado, como el «kicker» del portal */
-    const dh = document.querySelector(".mbody .dhead h1");
-    if(dh && !dh.previousElementSibling?.classList?.contains("v2kick")){
-      dh.insertAdjacentHTML("beforebegin", `<span class="v2kick">Resumen del día</span>`);
-    }
+    traducirEstilos();
+    /* con core.js en el <head> la piel arranca antes de que exista el <body>: la primera
+       pasada completa queda para cuando aparezca (lo avisa el observador) */
+    if(todo && document.body){ traducirNodo(document.body); emojis(document.body); todo=false; }
+    else for(const n of cola){ if(n.isConnected){ traducirNodo(n.nodeType===1?n:n.parentNode||document.body); emojis(n); } }
+    cola.clear();
+    marca();
   }
-
-  let obs=null, pend=false;
-  function programar(){
+  function programar(recs){
+    if(recs) for(const r of recs){
+      if(r.type==="characterData") cola.add(r.target);
+      else r.addedNodes.forEach(n=>{ if(n.nodeType===1||n.nodeType===3) cola.add(n); });
+    }
+    /* Se pasa en el acto (el observador ya llega antes de que se pinte): así no hay un
+       cuadro con los colores viejos, y no depende de requestAnimationFrame, que el
+       navegador pausa con la pestaña en segundo plano. */
     if(pend) return; pend=true;
-    requestAnimationFrame(()=>{ pend=false; if(obs) obs.disconnect(); try{ pasar(); } finally { observar(); } });
+    if(obs) obs.disconnect();
+    try{ pasar(); } catch(e){ console.warn("EYGV2:", e); } finally { pend=false; observar(); }
   }
   function observar(){
     if(!obs) obs = new MutationObserver(programar);
-    obs.observe(document.body, {childList:true, subtree:true});
+    obs.observe(document.documentElement, {childList:true, subtree:true, characterData:true});
+  }
+  function fuente(){
+    if(document.getElementById("v2-fuente-link")) return;
+    const pc=document.createElement("link"); pc.rel="preconnect"; pc.href="https://fonts.gstatic.com"; pc.crossOrigin="";
+    const l=document.createElement("link"); l.id="v2-fuente-link"; l.rel="stylesheet";
+    l.href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;500;600&display=swap";
+    document.head.append(pc,l);
   }
 
   function on(){
-    const h = document.documentElement;
-    if(h.classList.contains("v2")) return;
-    h.classList.add("v2");
-    if(!document.getElementById("v2-fuente")){
-      const pc = document.createElement("link"); pc.rel="preconnect"; pc.href="https://fonts.gstatic.com"; pc.crossOrigin="";
-      const l = document.createElement("link"); l.id="v2-fuente"; l.rel="stylesheet";
-      l.href = "https://fonts.googleapis.com/css2?family=Exo+2:wght@400;500;600&display=swap";
-      document.head.append(pc, l);
+    if(!H.classList.contains("v2")){
+      H.classList.add("v2"); fuente();
+      aplicarTema(lsGet(LS_TEMA)==="oscuro" ? "oscuro" : "claro");
+      todo=true; observar(); programar();
     }
-    observar(); programar();
+    lsSet(LS_ULT, "1");
   }
-  return { on, para, svg, PILOTO };
+  function off(){
+    if(!H.classList.contains("v2")) return;
+    if(obs) obs.disconnect();
+    H.classList.remove("v2","oscuro"); H.style.colorScheme="";
+    ORIG.forEach((txt,st)=>{ st.textContent=txt; delete st.dataset.v2; }); ORIG.clear();
+    lsSet(LS_ULT, "0");
+  }
+  /* Después del login: prende o apaga según quién entró. */
+  function aplicar(perfil){ if(para(perfil)) on(); else off(); }
+
+  /* Arranque temprano: si en este navegador la última sesión fue del piloto con la
+     visual nueva, se prende ya, antes de que el login resuelva (sin parpadeo blanco
+     en modo oscuro). Si después entra otra persona, aplicar() la apaga. */
+  if(lsGet(LS_ULT)==="1" && lsGet(LS)!=="vieja" && new URLSearchParams(location.search).get("visual")!=="vieja") on();
+
+  return { on, off, para, aplicar, svg, alternarTema, PILOTO, _hoja:hoja, _decl:declaraciones };
 })();
