@@ -9,10 +9,11 @@
    el Core la escucha con postgres_changes (RLS: sólo usuarios del Core). Si el
    canal en vivo no conecta, se pregunta cada 20 s.
 
-   A quién le aparece (lo enciende EYG.guard):
-   · comercial → las farmacias cuya cuenta tiene a ese vendedor en Odoo (user_id);
-   · líder     → las suyas y las de su equipo (organigrama);
-   · admin / dirección → todos los clientes (para supervisar); se puede silenciar.
+   A quién le aparece (lo enciende EYG.guard; ver start()):
+   · por ahora sólo las comerciales del equipo Farmacias (crm.team "Farmacias y
+     comercios"): cada una, las farmacias cuya cuenta la tiene como vendedora;
+   · Diego y Germán: en el panel de una comercial, exactamente lo de ella; en el
+     resto del Core, todo el equipo Farmacias. Se puede silenciar.
    Nunca cuenta al equipo de EyG (usuarios internos de Odoo).
    La página puede apagarlo con <body data-eyg-vivo="no"> (pantallas kiosco). */
 (function(){
@@ -21,6 +22,8 @@
   const NUEVA_VISITA_MIN = 30; // más de 30 minutos sin nada = vuelve a "entrar"
   const ST = { perfil:null, uids:null, todos:false, internos:new Set(), part:{}, cats:{},
                vivos:{}, sel:null, abierto:false, mudo:false, ultimoId:0, canal:null, audio:null, nombreYo:"" };
+  const SUPERVISAN = ["diego velazquez","german banquero"];
+  const norm = s=>String(s||"").normalize("NFD").replace(/\p{M}/gu,"").toLowerCase().replace(/\s+/g," ").trim();
   const LS = k=>{ try{ return localStorage.getItem(k); }catch(e){ return null; } };
   const LSset = (k,v)=>{ try{ localStorage.setItem(k,v); }catch(e){} };
   const esc = s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -83,7 +86,7 @@
     })().catch(()=>null);
     return ST.part[pid];
   }
-  function esMia(info){ return !!info && (ST.todos || (ST.uids && ST.uids.has(info.vendId))); }
+  function esMia(info){ return !!info && !!ST.uids && ST.uids.has(info.vendId); }
 
   /* ---------- llegada de un movimiento ---------- */
   async function llega(e, silencio){
@@ -204,6 +207,7 @@
     }
     w.querySelector(".pv-body").innerHTML=
       (L.length||R.length?`<div class="pv-chips">${L.map(chip).join("")}${R.length?`<span class="pv-sep">Hace un rato</span>${R.map(chip).join("")}`:""}</div>`:"")+cuerpo;
+    w.querySelector(".pv-alc").textContent=ST.alcance||"";
     const m=w.querySelector(".pv-mudo"); m.textContent=ST.mudo?"🔕":"🔔"; m.title=ST.mudo?"Sonido apagado: tocá para encenderlo":"Sonido encendido: tocá para silenciar";
   }
   function abrir(cuenta){ if(cuenta) ST.sel=cuenta; ST.abierto=true; const w=document.getElementById("pv-win"); w.hidden=false; requestAnimationFrame(()=>w.classList.add("in")); pintar(); }
@@ -214,7 +218,7 @@
     const raiz=document.createElement("div"); raiz.id="pv-raiz";
     raiz.innerHTML=`<div id="pv-pila" role="status" aria-live="polite"></div>
       <section id="pv-win" hidden aria-label="Portal en vivo">
-        <header><span class="pv-live"><i></i>EN VIVO</span><h3>Portal EyG</h3>
+        <header><span class="pv-live"><i></i>EN VIVO</span><h3>Portal EyG<small class="pv-alc"></small></h3>
           <button type="button" class="pv-mudo" onclick="EYGPortalVivo.mudo()"></button>
           <button type="button" class="pv-x" onclick="EYGPortalVivo.cerrar()" aria-label="Cerrar">×</button></header>
         <div class="pv-body"></div>
@@ -232,14 +236,27 @@
     if(!(sup || ["admin","direccion","comercial","lider"].includes(rol))) return;
     ST.perfil=perfil; ST.mudo=LS("eyg_vivo_mudo")==="1"; ST.nombreYo=perfil.nombre||"";
     try{
-      if(sup || rol==="admin" || rol==="direccion") ST.todos=true;
-      else{
-        const yo=await EYG.nombreOrg(perfil); if(!yo) return;
-        let nombres=[yo];
-        if(rol==="lider"){ try{ nombres=nombres.concat([...(await EYG.orgDescendientes(yo))]); }catch(e){} }
-        const us=arr(await EYG.rpc("res.users","search_read",[[["name","in",nombres],["share","=",false]]],{fields:["id"],limit:50,context:{active_test:false}}));
-        if(!us.length) return;
-        ST.uids=new Set(us.map(u=>u.id));
+      /* Por ahora sólo el equipo de Farmacias (crm.team "Farmacias y comercios"):
+         cada comercial ve su cartera. Diego y Germán lo siguen de cerca: en el panel
+         de una comercial (comercial/panel.html?c=…) ven exactamente lo que ve ella, y
+         en el resto del Core, las carteras de todo el equipo juntas (decisión de
+         Diego, 3/11/2026). El resto todavía no lo ve. */
+      const eq=arr(await EYG.rpc("crm.team","search_read",[[["name","ilike","farmacia"]]],{fields:["member_ids"]}));
+      const farm=new Set(eq.flatMap(t=>t.member_ids||[]));
+      /* el nombre puede venir del organigrama o del enlace del panel y no ser letra por
+         letra el del usuario de Odoo (tildes, segundo apellido): se compara normalizado */
+      const equipo=farm.size?arr(await EYG.rpc("res.users","read",[[...farm],["name"]],{context:{active_test:false}})):[];
+      const de=n=>{ const k=norm(n); return k?equipo.filter(u=>{ const m=norm(u.name); return m===k || m.startsWith(k+" ") || k.startsWith(m+" "); }).map(u=>u.id):[]; };
+      const yo=(await EYG.nombreOrg(perfil).catch(()=>""))||perfil.nombre||"";
+      if(SUPERVISAN.includes(norm(yo)) || SUPERVISAN.includes(norm(perfil.nombre))){
+        const c=/\/comercial\/panel\.html$/i.test(location.pathname) ? new URLSearchParams(location.search).get("c") : "";
+        if(c){
+          const ids=de(c); if(!ids.length) return;          // panel de alguien que no es de Farmacias
+          ST.uids=new Set(ids); ST.alcance="Cartera de "+c.split(" ")[0];
+        } else { ST.uids=farm; ST.todos=true; ST.alcance="Equipo Farmacias"; }
+      } else {
+        const ids=de(yo).length?de(yo):de(perfil.nombre); if(!ids.length) return;
+        ST.uids=new Set(ids);
       }
       const it=arr(await EYG.rpc("res.users","search_read",[[["share","=",false]]],{fields:["partner_id"],limit:500,context:{active_test:false}}));
       it.forEach(u=>u.partner_id&&ST.internos.add(u.partner_id[0])); ST.internos.add(4);
@@ -319,7 +336,8 @@
   box-shadow:0 4px 8px rgba(6,65,62,.06),0 24px 60px rgba(6,65,62,.22);transform-origin:bottom right;transform:translateY(14px) scale(.94);opacity:0;transition:transform .4s cubic-bezier(.2,1.2,.4,1),opacity .25s}
 #pv-win.in{transform:none;opacity:1}
 #pv-win header{display:flex;align-items:center;gap:10px;padding:13px 12px 13px 16px;background:linear-gradient(120deg,var(--pv-deep),var(--pv-teal));color:#fff}
-#pv-win h3{flex:1;margin:0;font-size:15px;font-weight:800;letter-spacing:.2px}
+#pv-win h3{flex:1;margin:0;font-size:15px;font-weight:800;letter-spacing:.2px;display:flex;flex-direction:column;line-height:1.15}
+#pv-win h3 .pv-alc{font-size:11px;font-weight:600;opacity:.8;letter-spacing:.2px} #pv-win h3 .pv-alc:empty{display:none}
 .pv-live{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:800;letter-spacing:1.4px;background:rgba(255,255,255,.16);border-radius:999px;padding:4px 9px}
 .pv-live i{width:7px;height:7px;border-radius:50%;background:#7BE0B0;animation:pv-late 1.8s infinite}
 .pv-mudo,.pv-x{border:0;background:rgba(255,255,255,.14);color:#fff;width:30px;height:30px;border-radius:9px;cursor:pointer;font-size:15px;line-height:1;font-family:inherit}
