@@ -223,6 +223,38 @@
   select,.mini-btn{font-family:inherit;font-size:13px;border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:9px 12px;color:var(--ink);cursor:pointer;font-weight:500}
   .count-line{font-size:13px;color:var(--gris);margin-bottom:10px}
   .count-line b{color:var(--ink)}
+  /* Franja de selección (recalcula en vivo) */
+  .selbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;background:var(--teal-deep);color:#fff;border-radius:12px;padding:12px 16px;margin-bottom:8px}
+  .selbar .selmain{font-size:13.5px;font-weight:600}
+  .selbar .selmain .sl{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--aqua);font-weight:700;margin-right:6px}
+  .selbar .selmain b{font-size:17px;font-weight:800;margin:0 2px}
+  .selbar .sdesc{color:rgba(255,255,255,.72);font-weight:500;margin-left:6px}
+  .selbar .selnums{display:flex;gap:22px;margin-left:auto;flex-wrap:wrap}
+  .selbar .sn{display:flex;flex-direction:column;line-height:1.15}
+  .selbar .sn span{font-size:10.5px;color:var(--aqua);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+  .selbar .sn b{font-size:18px;font-weight:800}
+  .selbar .sn.venc b{color:#FFD9A8}
+  .selbar .sn.prox b{color:#BEE3FF}
+  /* Tarjeta inteligente */
+  .cardsec.sec-smart{background:#fff;border:1px solid #E0D4F3;border-left:5px solid #7C3AED}
+  .smartbody{margin-top:4px}
+  .smart-reads{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:12px}
+  .smart-reads .sread{background:#FAF8FE;border:1px solid #ECE3F8;border-radius:10px;padding:10px 12px}
+  .smart-reads .sread b{display:block;font-size:19px;font-weight:800;line-height:1.1;color:#5B3FA6}
+  .smart-reads .sread span{font-size:11.5px;color:var(--gris);font-weight:600}
+  .smart-list{display:flex;flex-direction:column;gap:7px}
+  .srow{display:grid;grid-template-columns:30px 1fr auto auto;gap:12px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:10px;padding:9px 12px;cursor:pointer;transition:border-color .12s,box-shadow .12s}
+  .srow:hover{border-color:#B99BE6;box-shadow:0 2px 10px rgba(124,58,237,.1)}
+  .sr-rank{width:26px;height:26px;border-radius:50%;background:#7C3AED;color:#fff;font-weight:800;font-size:13px;display:flex;align-items:center;justify-content:center}
+  .sr-name{font-weight:700;font-size:13.5px}
+  .sr-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+  .sr-chips .mch,.sr-chips .rch{font-size:10.5px;font-weight:700;border:1px solid;border-radius:6px;padding:1px 7px;white-space:nowrap}
+  .sr-sub{font-size:11px;color:var(--gris);margin-top:4px}
+  .sr-amt{text-align:right;white-space:nowrap}
+  .sr-amt b{font-size:15px;font-weight:800;color:#C0403C;display:block}
+  .sr-amt span{font-size:10.5px;color:var(--gris)}
+  .sr-act{display:flex;gap:6px;align-items:center}
+  @media(max-width:760px){ .srow{grid-template-columns:26px 1fr;row-gap:8px} .sr-amt{grid-column:2;text-align:left} .sr-act{grid-column:2;justify-content:flex-start} .selbar .selnums{margin-left:0;width:100%;gap:18px} }
 
   .tablecard{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
   .thead,.row{display:grid;grid-template-columns:2.2fr 1.2fr 1fr 1.15fr 1fr 88px;gap:12px;align-items:center;padding:11px 16px}
@@ -401,7 +433,7 @@ const hoyStr=hoy.toISOString().slice(0,10);
 const diasMora=f=> f? Math.floor((hoy-new Date(f+"T00:00:00"))/86400000) : 0;
 const fmtFecha=f=> f? f.split("-").reverse().join("/") : "—";
 
-let CLI=[], EVO=[], BOVEDA={}, MIGARCH={}, DESEMP=null, filtro={tramo:"", comercial:"", rubro:"", q:"", orden:"prioridad", boveda:false, migrada:false};
+let CLI=[], EVO=[], BOVEDA={}, MIGARCH={}, PAGHIST={}, PAGHIST_OK=false, DESEMP=null, filtro={tramo:"", comercial:"", rubro:"", q:"", orden:"prioridad", boveda:false, migrada:false, prox:0};
 const BOV_TAG="[BOVEDA]"; // marcador en el chatter del contacto (fuente de verdad, con historial)
 const MIG_TAG="[MIG-ARCHIVADA]"; // deuda migrada archivada: sale de "lo adeudado" y del vencido (reversible)
 const BLK_TAG="[BLOQUEO]";       // gestión de cuentas bloqueadas por deuda (sale_warn de Odoo) desde Cobranzas
@@ -709,6 +741,20 @@ async function cargar(silent){
     if(comIds.length){
       try{ (await rpc("res.partner","read",[comIds,[RUBRO_FIELD]],{context:{lang:"es_AR"}})).forEach(p=>rubroByCom[p.id]=p[RUBRO_FIELD]||""); }catch(e){}
     }
+    // HISTORIAL DE PAGOS (ritmo y comportamiento) — solo de los deudores, 12 meses.
+    // Cobros reales posteados (no transferencias internas). Alimenta la tarjeta inteligente.
+    PAGHIST={}; PAGHIST_OK=false;
+    if(ids.length){
+      try{
+        const desdePag=new Date(hoy.getFullYear(),hoy.getMonth()-12,hoy.getDate()).toISOString().slice(0,10);
+        const pays=await rpc("account.payment","search_read",
+          [[["partner_type","=","customer"],["payment_type","=","inbound"],["state","=","posted"],
+            ["is_internal_transfer","=",false],["partner_id","in",ids],["date",">=",desdePag]]],
+          {fields:["partner_id","amount","date"],limit:0});
+        for(const pg of pays){ if(!pg.partner_id) continue; (PAGHIST[pg.partner_id[0]]=PAGHIST[pg.partner_id[0]]||[]).push({date:pg.date,amount:pg.amount||0}); }
+        PAGHIST_OK=true;   // la consulta trajo datos: "sin pagos" ahora SÍ significa que no pagó
+      }catch(e){ console.warn("No pude traer historial de pagos",e); }
+    }
     // Marcadores del chatter (bóveda / contacto / nota) en UNA sola query en vez de 3.
     // Cada mail.message body-like es un full-scan de la tabla más grande de Odoo; con
     // res_id acotado por la cartera igual conviene un solo round-trip (Odoo Online tarda
@@ -784,8 +830,34 @@ async function cargar(silent){
       const base=p.baseBruto; // monto original de facturas + saldo inicial abiertos
       const pctDebe = base>1 ? Math.max(0,Math.min(1, aCobrar/base)) : (aCobrar>1?1:0);
 
+      // ---- Comportamiento de pago (ritmo) a partir del historial de 12 meses ----
+      const hist=(PAGHIST[p.id]||[]).slice().sort((a,b)=>a.date<b.date?-1:1);
+      const nPagos=hist.length;
+      const totalPagado=hist.reduce((s,x)=>s+(x.amount||0),0);
+      const ticketMedio=nPagos?totalPagado/nPagos:0;
+      const ultPago=nPagos?hist[nPagos-1].date:null;
+      let intervalo=null;   // días promedio entre pagos
+      if(nPagos>=2){ let g=0; for(let i=1;i<nPagos;i++) g+=(new Date(hist[i].date)-new Date(hist[i-1].date))/86400000; intervalo=g/(nPagos-1); }
+      const diasSinPagar = ultPago ? Math.round((hoy-new Date(ultPago+"T00:00:00"))/86400000) : null;
+      // clasificación: bien (cumple su ritmo) / ojo (se empezó a atrasar) / mal (cortó pagos o nunca pagó)
+      let ritmo=null;
+      if(!PAGHIST_OK) ritmo=null;   // sin historial confiable: no inventamos comportamiento
+      else if(nPagos===0) ritmo={estado:"mal", txt:"sin pagos 12m"};
+      else if(intervalo!=null){
+        const atraso = diasSinPagar>intervalo+Math.max(14,intervalo*0.8);
+        const muyAtraso = diasSinPagar>intervalo*2+21;
+        ritmo = muyAtraso ? {estado:"mal", txt:`cortó: paga ~c/${Math.round(intervalo)}d, hace ${diasSinPagar}d que no`}
+              : atraso    ? {estado:"ojo", txt:`se atrasó: paga ~c/${Math.round(intervalo)}d, hace ${diasSinPagar}d`}
+              :             {estado:"bien", txt:`cumplidor: paga ~c/${Math.round(intervalo)}d`};
+      } else {
+        ritmo = diasSinPagar>75 ? {estado:"mal", txt:`1 solo pago, hace ${diasSinPagar}d`}
+                                : {estado:"ojo", txt:`1 pago, hace ${diasSinPagar}d`};
+      }
+
       return {
         id:p.id, nombre:p.nombre, movs:p.movs,
+        nPagos, totalPagado, ticketMedio, ultPago, intervalo, diasSinPagar, ritmo,
+        moraBucket: (vencidoReal>1 ? (mora>0?tramo.k:"d120") : "vencer"),
         saldoReal, deudaReal, deudaFac:p.deudaFac, saldoIni:p.saldoIni, base, pctDebe,
         cobradoSinImp:p.cobradoSinImp, borrador, gris, vencidoReal, migVenc, migArch, minMig:p.minMig, ncSinAplicar:p.ncSinAplicar, mora, tramo, situacion, tieneGris, prioridad,
         venc:p.minVencVenc||p.minVencAny, nfac:p.movs.filter(m=>m.tipo==="factura"&&m.r>0).length,
@@ -828,11 +900,32 @@ function visibles(){
       const moraKeys=["d1","d21","d30","d60","d90","d120"];
       const key = moraKeys.includes(filtro.tramo) ? (c.moraBucket||c.tramo.k) : c.tramo.k;
       if(key!==filtro.tramo) return false; }
+    if(filtro.prox){ if(venceEnN(c,filtro.prox)<1) return false; }
     if(filtro.comercial && c.comercial!==filtro.comercial) return false;
     if(filtro.rubro && c.rubro!==filtro.rubro) return false;
     if(filtro.q){const q=filtro.q.toLowerCase(); if(!c.nombre.toLowerCase().includes(q)) return false;}
     return true;
   });
+}
+// Lo que a un cliente le VENCE dentro de los próximos N días (facturas con vencimiento futuro ≤ hoy+N).
+// La migración sin fecha y lo ya vencido NO entran acá (eso va en antigüedad de mora).
+function venceEnN(c,N){
+  if(!c.movs||!N) return 0;
+  const lim=new Date(hoy); lim.setDate(lim.getDate()+N); const limS=lim.toISOString().slice(0,10);
+  let s=0; for(const m of c.movs){ if(m.r>0 && m.tipo==="factura" && m.venc && m.venc>=hoyStr && m.venc<=limS) s+=m.r; }
+  return s;
+}
+// Puntaje de URGENCIA de cobro: plata vencida ponderada por mora, días sin contacto y comportamiento.
+function urgencia(c){
+  if(c.boveda) return null;
+  const venc=c.vencidoReal||0;
+  if(venc<1) return null;                       // la tarjeta prioriza lo YA vencido
+  const mb=c.mora||0;
+  const moraF = mb<=0?0.35 : mb<21?1 : mb<31?1.25 : mb<61?1.55 : mb<91?1.85 : mb<121?2.1 : 2.35;
+  const contDias = c.contactado ? Math.round((hoy-new Date(String(c.contactado).replace(" ","T")+"Z"))/86400000) : 999;
+  const contactoF = contDias>=14?1.3 : contDias>=7?1.12 : contDias>=3?1.0 : contDias>=1?0.8 : 0.6;
+  let compF=1; if(c.ritmo){ if(c.ritmo.estado==="mal") compF=1.25; else if(c.ritmo.estado==="ojo") compF=1.1; else compF=0.92; }
+  return {score: venc*moraF*contactoF*compF, contDias, moraF, contactoF, compF};
 }
 function ordenar(l){
   const a=[...l];
@@ -1293,6 +1386,78 @@ async function openCobradoHoy(){
   }catch(e){ const b=document.getElementById("cobhoyBody"); if(b) b.innerHTML='<div class="errbox" style="margin:10px">No pude cargar la cobranza de hoy: '+esc(e.message||e)+'</div>'; }
 }
 
+/* ===================== Tarjeta inteligente "A quién cobrar hoy" ===================== */
+let smartAbierto=true;
+function toggleSmart(){ smartAbierto=!smartAbierto; render(); }
+window.toggleSmart=toggleSmart;
+function chipRitmo(c){
+  if(!c.ritmo) return '';
+  const col=c.ritmo.estado==='bien'?'#1B7F4C':c.ritmo.estado==='ojo'?'#B9770E':'#C0403C';
+  const bg =c.ritmo.estado==='bien'?'#ECF7F1':c.ritmo.estado==='ojo'?'#FBF3E3':'#FBEBEA';
+  return `<span class="rch" style="color:${col};background:${bg};border-color:${col}44">${esc(c.ritmo.txt)}</span>`;
+}
+function motivosUrg(c,u){
+  const out=[]; const mb=c.mora||0;
+  if(mb>=121) out.push(['+120 días','#C0403C']);
+  else if(mb>=91) out.push(['+90 días','#C0403C']);
+  else if(mb>=61) out.push(['+60 días','#D97706']);
+  else if(mb>=31) out.push(['+30 días','#D97706']);
+  else if(mb>=21) out.push(['+21 días','#B9770E']);
+  else if(mb>0) out.push([mb+' días de mora','#2A8C82']);
+  else out.push(['migración','#8B6D3F']);
+  if(u.contDias>=365) out.push(['nunca contactado','#7A5AA8']);
+  else if(u.contDias>=14) out.push(['sin contacto '+u.contDias+'d','#7A5AA8']);
+  else if(u.contDias>=7) out.push(['sin contacto '+u.contDias+'d','#7A5AA8']);
+  return out.map(([t,col])=>`<span class="mch" style="color:${col};border-color:${col}44;background:${col}11">${t}</span>`).join('');
+}
+function cardSmart(activos){
+  const cand=activos.map(c=>({c,u:urgencia(c)})).filter(x=>x.u).sort((a,b)=>b.u.score-a.u.score);
+  if(!cand.length) return '';
+  const totalVencGestion=activos.reduce((s,c)=>s+(c.vencidoReal>1?c.vencidoReal:0),0);
+  const TOP=12, top=cand.slice(0,TOP);
+  const topVenc=top.reduce((s,x)=>s+x.c.vencidoReal,0);
+  const pctTop=totalVencGestion>0?Math.round(topVenc/totalVencGestion*100):0;
+  const atrasados=cand.filter(x=>x.c.ritmo&&x.c.ritmo.estado!=='bien').length;
+  const sinContacto=cand.filter(x=>x.u.contDias>=14).length;
+  const filas=top.map(({c,u},i)=>{
+    const ultP=c.ultPago?('último pago '+fmtFecha(c.ultPago)):'sin pagos 12m';
+    const tk=c.ticketMedio>0?(' · ticket '+fmtM(c.ticketMedio)):'';
+    return `<div class="srow" onclick="abrir(${c.id})">
+      <div class="sr-rank">${i+1}</div>
+      <div class="sr-main">
+        <div class="sr-name">${esc(c.nombre)}${c.plazo?` <span class="plz">⏱ ${esc(c.plazo)}</span>`:''}</div>
+        <div class="sr-chips">${motivosUrg(c,u)}${chipRitmo(c)}</div>
+        <div class="sr-sub">${ultP}${tk} · ${esc(c.comercial)}${c.ciudad?' · '+esc(c.ciudad):''}</div>
+      </div>
+      <div class="sr-amt"><b>${money(c.vencidoReal)}</b><span>vencido${c.deudaReal>c.vencidoReal+1?' · total '+money(Math.max(0,c.deudaReal)):''}</span></div>
+      <div class="sr-act" onclick="event.stopPropagation()">
+        ${c.wa?`<a class="icobtn wa" href="https://api.whatsapp.com/send?phone=${c.wa}&text=${encodeURIComponent(mensajeCobro(c))}" target="_blank" onclick="marcarContacto(${c.id})" title="Recordar pago por WhatsApp"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2z"/></svg></a>`:`<span class="icobtn wa" data-off><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2z" opacity=".4"/></svg></span>`}
+        ${c.tellink?`<a class="icobtn call" href="tel:${c.tellink}" title="Llamar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3.1-8.7A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.3 1.8.6 2.6a2 2 0 0 1-.5 2.1L8.1 9.5a16 16 0 0 0 6 6l1.1-1.1a2 2 0 0 1 2.1-.5c.8.3 1.7.5 2.6.6a2 2 0 0 1 1.7 2z"/></svg></a>`:''}
+        <span class="icobtn" onclick="marcarContacto(${c.id})" title="Marcar contactado">📞</span>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="cardsec sec-smart">
+    <div class="pagohead" onclick="toggleSmart()">
+      <span class="pt"><span class="pip" style="background:#7C3AED"></span>🎯 A quién cobrar hoy</span>
+      <span class="pult">priorizado por plata vencida, mora, contacto y comportamiento</span>
+      <span class="pmonto">${money(topVenc)}</span>
+      <span class="pult">· top ${top.length} = ${pctTop}% del vencido</span>
+      <span class="pflecha">${smartAbierto?"▲ ocultar":"▼ ver"}</span>
+    </div>
+    ${smartAbierto?`<div class="smartbody">
+      <div class="smart-reads">
+        <div class="sread"><b>${money(totalVencGestion)}</b><span>vencido en gestión · ${cand.length} clientes</span></div>
+        <div class="sread"><b>${pctTop}%</b><span>se concentra en estos ${top.length}</span></div>
+        ${atrasados?`<div class="sread"><b style="color:#C0403C">${atrasados}</b><span>cambiaron su ritmo de pago</span></div>`:''}
+        ${sinContacto?`<div class="sread"><b style="color:#7A5AA8">${sinContacto}</b><span>sin contacto ≥ 14 días</span></div>`:''}
+      </div>
+      <div class="smart-list">${filas}</div>
+      <div class="hint" style="margin:12px 0 0;background:#F6F2FC;border-color:#E0D4F3;color:#5B3FA6">🎯 El orden combina <b>cuánto</b> deben vencido, <b>hace cuánto</b> venció, <b>hace cuánto</b> no los contactás y <b>cómo vienen pagando</b> (ritmo real de los últimos 12 meses). Tocá una fila para abrir la ficha.</div>
+    </div>`:''}
+  </div>`;
+}
+
 function render(){
   const app=document.getElementById("app");
   const activos=CLI.filter(c=>!c.boveda);      // en gestión (fuera de bóveda)
@@ -1303,13 +1468,28 @@ function render(){
   const totalCobradoSinImp=activos.reduce((s,c)=>s+c.cobradoSinImp,0);
   const totalBorrador=activos.reduce((s,c)=>s+c.borrador,0);
   const totalGris=totalCobradoSinImp+totalBorrador;
+  // ===== Faceted: cada grupo de tarjetas refleja las OTRAS facetas activas (recalcula bien) =====
+  function pasaBase(c,omit){
+    omit=omit||[];
+    if(c.boveda) return false;
+    if(!omit.includes('tramo') && filtro.tramo && !['gris','cubierto','afavor'].includes(filtro.tramo)){
+      const moraKeys=["d1","d21","d30","d60","d90","d120"];
+      const key = moraKeys.includes(filtro.tramo)?(c.moraBucket||c.tramo.k):c.tramo.k;
+      if(key!==filtro.tramo) return false;
+    }
+    if(!omit.includes('prox') && filtro.prox){ if(venceEnN(c,filtro.prox)<1) return false; }
+    if(!omit.includes('comercial') && filtro.comercial && c.comercial!==filtro.comercial) return false;
+    if(!omit.includes('rubro') && filtro.rubro && c.rubro!==filtro.rubro) return false;
+    if(!omit.includes('q') && filtro.q){ if(!c.nombre.toLowerCase().includes(filtro.q.toLowerCase())) return false; }
+    return true;
+  }
   const porTramo={}; TRAMOS.forEach(t=>porTramo[t.k]={n:0,m:0}); porTramo["cubierto"]={n:0,m:0};
   activos.forEach(c=>{ const k=(c.situacion==="cubierto")?"cubierto":c.tramo.k; const b=porTramo[k]||(porTramo[k]={n:0,m:0}); b.n++; b.m+=Math.max(0,c.deudaReal); });
-  // Vencido POR TRAMO (para las tarjetas de "antigüedad de mora"): suma la PORCIÓN VENCIDA de cada cliente,
-  // no la deuda total. La migración impaga (sin fecha, mora=0) va a +120. Σ tramos = Vencida (con mora) exacto.
+  // Vencido POR TRAMO (tarjetas de antigüedad): porción vencida, recalculada con las OTRAS facetas activas.
+  const baseAging=activos.filter(c=>pasaBase(c,['tramo','prox']));
   const porTramoV={}; TRAMOS.forEach(t=>porTramoV[t.k]={n:0,m:0});
-  activos.forEach(c=>{ c.moraBucket = c.vencidoReal>1 ? (c.mora>0?c.tramo.k:"d120") : "vencer";
-    if(c.vencidoReal>1){ const b=porTramoV[c.moraBucket]; b.n++; b.m+=c.vencidoReal; } });
+  baseAging.forEach(c=>{ if(c.vencidoReal>1){ const b=porTramoV[c.moraBucket]; b.n++; b.m+=c.vencidoReal; } });
+  const totalVencAging=baseAging.reduce((s,c)=>s+(c.vencidoReal>1?c.vencidoReal:0),0);
   const incob=porTramo["d120"];
   const grisN=activos.filter(c=>c.tieneGris).length;
   const cub=porTramo["cubierto"];
@@ -1319,13 +1499,25 @@ function render(){
   const migList=CLI.filter(c=>c.migVenc>1 && !c.migArch);
   const migN=migList.length, migM=migList.reduce((s,c)=>s+c.migVenc,0);
   const migArchN=CLI.filter(c=>c.migVenc>1 && c.migArch).length;
-  const comMap={}; activos.forEach(c=>comMap[c.comercial]=(comMap[c.comercial]||0)+1);
+  const comMap={}; activos.filter(c=>pasaBase(c,['comercial'])).forEach(c=>comMap[c.comercial]=(comMap[c.comercial]||0)+1);
   const comercialOpts=`<option value="">Todos los comerciales</option>`+Object.entries(comMap).sort((a,b)=>b[1]-a[1]).map(([n,c])=>`<option value="${esc(n)}" ${filtro.comercial===n?"selected":""}>${esc(n)} (${c})</option>`).join("");
-  // Deuda por RUBRO (tarjetas filtro)
+  // Deuda por RUBRO (recalculada con las otras facetas)
   const rubMap={};
-  activos.forEach(c=>{ if(!c.rubro) return; const b=(rubMap[c.rubro]=rubMap[c.rubro]||{n:0,m:0}); b.n++; b.m+=Math.max(0,c.deudaReal); });
+  activos.filter(c=>pasaBase(c,['rubro'])).forEach(c=>{ if(!c.rubro) return; const b=(rubMap[c.rubro]=rubMap[c.rubro]||{n:0,m:0}); b.n++; b.m+=Math.max(0,c.deudaReal); });
   const rubCards=RUBROS_TODOS.filter(r=>rubMap[r]).sort((a,b)=>rubMap[b].m-rubMap[a].m).map(r=>
       `<div class="kpi rub ${filtro.rubro===r?'on':''}" onclick="setRubro('${r.replace(/'/g,"\\'")}')"><div class="n">${rubMap[r].n}</div><div class="money">${money(rubMap[r].m)}</div><div class="l">${(EYG.RUBRO_META[r]||{}).ico||"🏷️"} ${esc((EYG.RUBRO_META[r]||{}).ab||r)}</div></div>`).join("");
+
+  // ===== Selección actual (lo que se ve ahora, recalculado en vivo) =====
+  const vis=visibles();
+  const selN=vis.length;
+  const selDeuda=vis.reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
+  const selVenc=vis.reduce((s,c)=>s+(c.vencidoReal>1?c.vencidoReal:0),0);
+  const selProx=filtro.prox?vis.reduce((s,c)=>s+venceEnN(c,filtro.prox),0):0;
+  const hayFiltro=!!(filtro.tramo||filtro.comercial||filtro.rubro||filtro.q||filtro.prox||filtro.boveda||filtro.migrada);
+  // ===== Próximos vencimientos (futuro) por ventana =====
+  const baseProx=activos.filter(c=>pasaBase(c,['prox','tramo']));
+  const PROXW=[7,15,30,60,90];
+  const proxTot={}; PROXW.forEach(N=>{ let m=0,n=0; baseProx.forEach(c=>{const v=venceEnN(c,N); if(v>=1){m+=v;n++;}}); proxTot[N]={m,n}; });
 
   const A={totalReal,totalVenc,totalGris,totalCobradoSinImp,totalBorrador,incobN:incob.n,incobM:incob.m};
   const _estados=['gris','cubierto','afavor'];
@@ -1335,14 +1527,25 @@ function render(){
   app.innerHTML=`
     ${healthCard(A)}
     ${cardPagos()}
+    ${cardSmart(activos)}
 
     <div class="cardsec sec-mora">
       <div class="sectitle"><span>⏱️ Vencido por antigüedad de mora</span>${agingActive?`<a class="secclr" onclick="setTramo(filtro.tramo)">✕ quitar filtro</a>`:''}</div>
       <div class="kpis">
-        <div class="kpi ${!filtro.tramo&&!filtro.boveda&&!filtro.migrada?'on':''}" onclick="setTramo('')"><div class="n">${activos.length}</div><div class="money">${money(totalVenc)}</div><div class="l">Todos · vencido</div></div>
+        <div class="kpi ${!filtro.tramo&&!filtro.prox&&!filtro.boveda&&!filtro.migrada?'on':''}" onclick="setTramo('')"><div class="n">${baseAging.filter(c=>c.vencidoReal>1).length}</div><div class="money">${money(totalVencAging)}</div><div class="l">Todos · vencido</div></div>
         ${TRAMOS.filter(t=>t.k!=="vencer").map(t=>`<div class="kpi ${filtro.tramo===t.k?'on':''}" onclick="setTramo('${t.k}')" style="${porTramoV[t.k].m>0?'':'opacity:.5'}">
           <div class="n">${porTramoV[t.k].n}</div><div class="money">${money(porTramoV[t.k].m)}</div>
           <div class="l"><span class="dot" style="background:var(--${t.t})"></span>${t.l}</div></div>`).join("")}
+      </div>
+    </div>
+
+    <div class="cardsec" style="background:#F3F7FC;border-color:#D4E2F0">
+      <div class="sectitle"><span>📅 Próximos vencimientos (lo que está por vencer)</span>${filtro.prox?`<a class="secclr" onclick="setProx(0)">✕ quitar filtro</a>`:''}
+        <span style="margin-left:auto;display:inline-flex;gap:6px;align-items:center;font-weight:600;font-size:12px;color:var(--gris)">a medida: <input id="proxDias" type="number" min="1" max="365" placeholder="días" value="${filtro.prox||''}" oninput="setProxDebounced(this.value)" style="width:78px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:13px"></span></div>
+      <div class="kpis">
+        ${PROXW.map(N=>`<div class="kpi ${filtro.prox===N?'on':''}" onclick="setProx(${N})" style="${proxTot[N].m>0?'':'opacity:.5'}">
+          <div class="n">${proxTot[N].n}</div><div class="money">${money(proxTot[N].m)}</div>
+          <div class="l">📅 Vence en ${N} días</div></div>`).join("")}
       </div>
     </div>
 
@@ -1401,7 +1604,25 @@ function renderLista(){
   if(!list.length){w.innerHTML='<div class="tablecard"><div class="empty">No hay clientes con ese filtro.</div></div>';return;}
   const banner=filtro.boveda?`<div class="bovbanner"><span>🔒 <b>Bóveda</b> — incobrables y clientes con acuerdo (fuera de la gestión activa)</span><a onclick="toggleBoveda()">← Volver a cobranzas</a></div>`
     :filtro.migrada?`<div class="bovbanner" style="background:#F3ECDD;border-color:#D8C9A8;color:#6E5527"><span>📦 <b>Deuda migrada</b> — saldos que venían del sistema anterior (sin factura, difíciles de cobrar). Podés <b>archivar</b> cada uno para sacarlo de lo adeudado; queda registrado y es reversible.</span><a onclick="toggleMigrada()" style="color:#6E5527">← Volver a cobranzas</a></div>`:'';
-  const head=banner+`<div class="count-line">Mostrando <b>${list.length}</b> cliente${list.length===1?"":"s"} · saldo al ${fmtFecha(hoyStr)} · <span style="color:var(--teal)">🔄 se actualiza solo</span></div>`;
+  const sD=list.reduce((s,c)=>s+Math.max(0,c.deudaReal),0);
+  const sV=list.reduce((s,c)=>s+(c.vencidoReal>1?c.vencidoReal:0),0);
+  const sP=filtro.prox?list.reduce((s,c)=>s+venceEnN(c,filtro.prox),0):0;
+  const fdesc=[];
+  if(filtro.tramo){ const tt=TRAMOS.find(t=>t.k===filtro.tramo); fdesc.push(tt?tt.l:(filtro.tramo==='gris'?'falta certificado/OP':filtro.tramo==='cubierto'?'cubierto':filtro.tramo==='afavor'?'saldo a favor':filtro.tramo)); }
+  if(filtro.prox) fdesc.push('vence en '+filtro.prox+' días');
+  if(filtro.rubro) fdesc.push(filtro.rubro);
+  if(filtro.comercial) fdesc.push(filtro.comercial);
+  if(filtro.q) fdesc.push('“'+filtro.q+'”');
+  if(filtro.boveda) fdesc.push('bóveda'); if(filtro.migrada) fdesc.push('deuda migrada');
+  const selLbl=fdesc.length?fdesc.join(' · '):'toda la cartera activa';
+  const head=banner+`<div class="selbar">
+      <div class="selmain"><span class="sl">Selección</span> <b>${list.length}</b> cliente${list.length===1?"":"s"} <span class="sdesc">${esc(selLbl)}</span></div>
+      <div class="selnums">
+        <div class="sn"><span>Deuda real</span><b>${money(sD)}</b></div>
+        <div class="sn venc"><span>Vencido</span><b>${money(sV)}</b></div>
+        ${filtro.prox?`<div class="sn prox"><span>Vence en ${filtro.prox}d</span><b>${money(sP)}</b></div>`:''}
+      </div></div>
+    <div class="count-line">saldo al ${fmtFecha(hoyStr)} · <span style="color:var(--teal)">🔄 se actualiza solo</span></div>`;
   const rows=list.map(c=>{
     const t=c.tramo;
     const aCobrar=Math.max(0,c.deudaReal);
@@ -1444,13 +1665,17 @@ function mensajeCobro(c){
 }
 
 window.onSearch = EYG.buscador(v => { filtro.q=v; renderLista(); });
-function setTramo(k){filtro.boveda=false;filtro.tramo=filtro.tramo===k?"":k;render();}
+function setTramo(k){filtro.boveda=false;filtro.prox=0;filtro.tramo=filtro.tramo===k?"":k;render();}
+let _proxT=null;
+function setProx(n){ n=+n||0; filtro.prox=(filtro.prox===n?0:n); if(filtro.prox){filtro.tramo="";filtro.boveda=false;filtro.migrada=false;} render(); }
+function setProxDebounced(v){ clearTimeout(_proxT); _proxT=setTimeout(()=>{ const n=Math.max(0,Math.min(365,Math.floor(+v||0))); filtro.prox=n; if(n){filtro.tramo="";filtro.boveda=false;filtro.migrada=false;} render(); const el=document.getElementById('proxDias'); if(el){ el.focus(); const L=String(el.value).length; try{el.setSelectionRange(L,L);}catch(e){} } }, 500); }
+window.setProx=setProx; window.setProxDebounced=setProxDebounced;
 window.resolverPago=resolverPago;
 window.verPago=verPago;
 window.togglePagos=togglePagos;
 function setRubro(v){filtro.rubro=filtro.rubro===v?"":v;render();}
-function toggleBoveda(){filtro.boveda=!filtro.boveda;filtro.migrada=false;filtro.tramo="";render();}
-function toggleMigrada(){filtro.migrada=!filtro.migrada;filtro.boveda=false;filtro.tramo="";render();}
+function toggleBoveda(){filtro.boveda=!filtro.boveda;filtro.migrada=false;filtro.tramo="";filtro.prox=0;render();}
+function toggleMigrada(){filtro.migrada=!filtro.migrada;filtro.boveda=false;filtro.tramo="";filtro.prox=0;render();}
 function limpiarEstado(){ filtro.boveda=false; filtro.migrada=false; if(['gris','cubierto','afavor'].includes(filtro.tramo)) filtro.tramo=""; render(); }
 async function archivarMig(id){
   const c=CLI.find(x=>x.id===id); if(!c) return;
