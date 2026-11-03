@@ -168,10 +168,18 @@ window.EYGV2 = (function(){
     let nuevo = conVars(val, n=>{ const t=VAR_FONDO[n]||({surface:"surface",agua:"agua",bg:"bg2",okbg:"okbg",badbg:"badbg",warnbg:"warnbg"})[n]; if(t) toks.push(t); return VAR_FONDO[n]; });
     nuevo = nuevo.replace(RXC, m=>{ const c=parse(m); const t=c&&tokenFondo(c); toks.push(t||(c&&c.a<1?"~":null)); return t?v(t):m; });
     if(/gradient/.test(val)){
+      /* Sólo se aplanan los degradados SIMPLES (una sola capa lineal o un brillo radial).
+         Los anillos de progreso son dos capas —un círculo radial color papel encima de un
+         cónico que dibuja el arco— y aplanarlos borraba el arco (3/11/2026: los anillos
+         de "Tus objetivos" del panel del comercial no se veían). */
+      const capas = (val.match(/gradient\(/g)||[]).length;
+      const simple = capas===1 && !/url\(/.test(val);
       const firmes = toks.filter(t=>t && t!=="~");
-      if(!firmes.length && toks.length) return {val:"none", tok:null};                                         // brillos decorativos: fuera
-      if(firmes.every(t=>OSC.has(t)) && firmes.length) return {val:v("brand"), tok:"brand"};                  // degradé petróleo → plano
-      if(firmes.every(t=>CLAROS.has(t)) && firmes.length) return {val:v(firmes[0]), tok:firmes[0]};          // degradé claro → plano
+      if(simple && /radial-gradient/.test(val) && !firmes.length && toks.length) return {val:"none", tok:null};   // brillos decorativos: fuera
+      if(simple && /^\s*linear-gradient/.test(val) && firmes.length){
+        if(firmes.every(t=>OSC.has(t))) return {val:v("brand"), tok:"brand"};                                   // degradé petróleo → plano
+        if(firmes.every(t=>CLAROS.has(t))) return {val:v(firmes[0]), tok:firmes[0]};                            // degradé claro → plano
+      }
       return {val:nuevo, tok:null};
     }
     return {val:nuevo, tok:toks.find(t=>t && t!=="~")||null};
@@ -425,7 +433,7 @@ window.EYGV2 = (function(){
       const el=n.parentElement; if(!el || el.closest(NO_TOCAR)) continue;
       if(SOLO.test(n.nodeValue) && el.childNodes.length===1 && el.tagName!=="SVG"){
         const i=iconoDe(n.nodeValue);
-        if(i) el.innerHTML = iconoHTML(i); else n.nodeValue="";
+        if(i){ el.innerHTML = iconoHTML(i); el.dataset.ic = i.k || "dot"; } else n.nodeValue="";   // data-ic: v2.css tiñe el casillero según el tema del ícono
         el.classList.add("v2ic");
         continue;
       }
