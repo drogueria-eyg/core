@@ -449,7 +449,22 @@ window.EYG = (function(){
     if(!ok){ gateMsg("⛔","No autorizado","Este módulo no está habilitado para tu rol ("+p.rol+").",true); return new Promise(()=>{}); }
     if(p.debe_cambiar_pwd){ showChangePwd({force:true}); return new Promise(()=>{}); }
     try{ rail(p); }catch(e){}   // admin: menú lateral siempre visible (módulos de chrome propio)
+    try{ portalVivo(p); }catch(e){}
     return p;
+  }
+
+  /* Portal en vivo (assets/portal-vivo.js): la plaquita que avisa a la comercial
+     cuando una farmacia de su cartera entra al portal y qué está mirando. Se carga
+     aparte y sólo para quien la usa, así no pesa en el resto de las pantallas. */
+  function portalVivo(p){
+    if(typeof document==="undefined" || window.__eygVivo) return;
+    if(!(esSuper(p._h) || ["admin","direccion","comercial","lider"].includes(p.rol))) return;
+    if(document.body && document.body.getAttribute("data-eyg-vivo")==="no") return;
+    window.__eygVivo=1;
+    const s=document.createElement("script");
+    s.src=BASE+"assets/portal-vivo.js?v=1"; s.async=true;
+    s.onload=()=>{ try{ window.EYGPortalVivo.start(p); }catch(e){} };
+    document.head.appendChild(s);
   }
 
   /* Mensaje del gate "Sin acceso" que dice el email exacto: si no hay perfil, es porque
