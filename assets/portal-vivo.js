@@ -144,6 +144,7 @@
   function avisar(v, tipo, d){
     sonar(tipo==="caliente");
     const pila=document.getElementById("pv-pila"); if(!pila) return;
+    apartar();
     const i=v.info, n=document.createElement("button");
     n.type="button"; n.className="pv-toast"+(tipo==="caliente"?" hot":"");
     n.setAttribute("aria-label",`${i.nom}: ${tipo==="caliente"?d.tx:"entró al portal"}. Abrir`);
@@ -170,7 +171,20 @@
     const txt=`Hola! ${yo?`Soy ${yo}, `:""}de Droguería EyG 👋 ¿Te puedo ayudar con tu pedido?`;
     return `https://api.whatsapp.com/send?phone=${d}&text=${encodeURIComponent(txt)}`;
   }
+  /* Algunas pantallas ya tienen su propio botón flotante en esa misma esquina (el carrito
+     de Stock, los botones del Líder): el aviso se sube por encima en vez de taparlo. */
+  const FLOTANTES=["#cartfab","#fabwrap"];
+  function apartar(){
+    const raiz=document.getElementById("pv-raiz"); if(!raiz) return;
+    let b=0;
+    for(const s of FLOTANTES){
+      const e=document.querySelector(s); if(!e) continue; const q=e.getBoundingClientRect();
+      if(q.width && q.height && q.top<innerHeight && getComputedStyle(e).visibility!=="hidden") b=Math.max(b, Math.round(innerHeight-q.top+12));
+    }
+    raiz.style.bottom = b ? b+"px" : "";
+  }
   function pintar(){
+    apartar();
     const dock=document.getElementById("pv-dock"); if(!dock) return;
     const L=enLinea();
     dock.classList.toggle("on", L.length>0 || ST.abierto);
@@ -226,6 +240,7 @@
       <button type="button" id="pv-dock" onclick="EYGPortalVivo.alternar()"></button>`;
     document.body.appendChild(raiz);
     document.addEventListener("keydown",e=>{ if(e.key==="Escape" && ST.abierto) cerrar(); });
+    addEventListener("resize",apartar,{passive:true});
   }
 
   /* ---------- arranque ---------- */
@@ -335,6 +350,14 @@
 #pv-win{width:380px;max-width:calc(100vw - 36px);max-height:min(640px,calc(100vh - 110px));display:flex;flex-direction:column;background:#fff;border:1px solid var(--pv-line);border-radius:18px;overflow:hidden;
   box-shadow:0 4px 8px rgba(6,65,62,.06),0 24px 60px rgba(6,65,62,.22);transform-origin:bottom right;transform:translateY(14px) scale(.94);opacity:0;transition:transform .4s cubic-bezier(.2,1.2,.4,1),opacity .25s}
 #pv-win.in{transform:none;opacity:1}
+/* Cerrada NO se dibuja: el display:flex de arriba le gana al atributo hidden y la ventanita
+   quedaba invisible pero encima de todo, comiéndose los toques de la esquina inferior
+   derecha (el botón "Confirmar venta" en tablet, 3/11/2026). Mientras se cierra, tampoco. */
+#pv-win[hidden]{display:none}
+#pv-win:not(.in){pointer-events:none}
+/* Mientras la pantalla muestra abajo una barra para confirmar o guardar ("¿Lo enviaste?" del
+   panel, el pie de la ficha del Líder, el de Usuarios), el aviso se aparta para no taparla. */
+body:has(.waconfirm.on) #pv-raiz,body:has(.cdrawer.on) #pv-raiz,body:has(.drawer .savebar) #pv-raiz{display:none}
 #pv-win header{display:flex;align-items:center;gap:10px;padding:13px 12px 13px 16px;background:linear-gradient(120deg,var(--pv-deep),var(--pv-teal));color:#fff}
 #pv-win h3{flex:1;margin:0;font-size:15px;font-weight:800;letter-spacing:.2px;display:flex;flex-direction:column;line-height:1.15}
 #pv-win h3 .pv-alc{font-size:11px;font-weight:600;opacity:.8;letter-spacing:.2px} #pv-win h3 .pv-alc:empty{display:none}
