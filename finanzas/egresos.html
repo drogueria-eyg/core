@@ -94,6 +94,39 @@
   .ph .plan{text-align:left;max-width:560px;margin:14px auto 0;font-size:12.5px;color:var(--gris);line-height:1.7}
   .ph .plan li{margin-left:18px}
 
+  /* Matriz de huecos: una fila por gasto recurrente, una columna por mes */
+  .hmat{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow-x:auto}
+  .hrow{display:grid;grid-template-columns:210px repeat(12,1fr) 58px;gap:3px;align-items:center;
+        padding:7px 14px;border-bottom:1px solid var(--line);min-width:780px}
+  .hrow:last-child{border-bottom:0}
+  .hhead{background:#F0F6F5;font-size:10px;font-weight:700;letter-spacing:.4px;
+         text-transform:uppercase;color:var(--gris);position:sticky;top:0}
+  .hn{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;gap:6px;align-items:center}
+  .hn .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+  .hc{height:21px;border-radius:4px}
+  .hc.ok{background:rgba(0,137,123,.16)}
+  .hc.no{background:rgba(198,40,40,.12);border:1px dashed rgba(198,40,40,.5)}
+  .hc.cur{background:repeating-linear-gradient(45deg,rgba(0,0,0,.05) 0 3px,transparent 3px 6px)}
+  .hf{text-align:right;font-size:12.5px;font-weight:800;color:#C62828}
+  .hmlbl{font-size:9.5px;text-align:center;color:var(--gris);font-weight:700}
+  .hnone{padding:22px;text-align:center;color:var(--gris);font-size:13px}
+
+  /* Detalle por cuenta de un rubro (Gastos operativos / Financieros / Impuestos) */
+  .grow{display:grid;grid-template-columns:1.8fr 132px 1fr 1fr 86px;gap:14px;align-items:center;
+        padding:10px 16px;border-bottom:1px solid var(--line);min-width:720px}
+  .grow:last-child{border-bottom:0}
+  .ghead{background:#F0F6F5;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--gris)}
+  .gn{font-size:13px;font-weight:600;display:flex;gap:7px;align-items:center;min-width:0}
+  .gn .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+  .gn .tx{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .gn .cod{font-size:10px;color:var(--gris);font-weight:500;flex:0 0 auto}
+  .spark{display:grid;grid-template-columns:repeat(12,1fr);gap:2px;align-items:end;height:28px}
+  .spark i{background:rgba(0,137,123,.4);border-radius:2px 2px 0 0;min-height:2px;display:block}
+  .spark i.cero{background:rgba(198,40,40,.22);height:3px}
+  .spark i.cur{background:rgba(0,0,0,.08);height:3px}
+  .gfalta{text-align:right;font-size:12px;font-weight:800;color:#C62828}
+  .gok{text-align:right;font-size:12px;font-weight:700;color:var(--gris)}
+
   /* Tramos de vencimiento (cuentas por pagar) */
   .t-vencer{--tc:#1E7D46;--tb:#E4F5E9} .t-d30{--tc:#B7791F;--tb:#FBE9CF}
   .t-d60{--tc:#C4602A;--tb:#FBE3D4} .t-d90{--tc:#B0413E;--tb:#FBE0DF}
@@ -137,7 +170,9 @@ const RPC="https://yxotopoklgjowcudveoj.supabase.co/functions/v1/odoo-rpc";
 const ODOO="https://drogueriaeyg.odoo.com";
 const money=n=>EYG.money(n);
 // Monto compacto para KPIs grandes: $1,7 MM / $850 mil
-function moneyK(n){ n=Math.abs(n||0); if(n>=1e9) return "$"+(n/1e9).toLocaleString("es-AR",{maximumFractionDigits:2})+" MM MM";
+function moneyK(n){ n=Math.abs(n||0);
+  // Siempre en millones: "MM MM" no lo lee nadie. $4.043.918.675 → "$4.044 MM".
+  if(n>=1e9) return "$"+Math.round(n/1e6).toLocaleString("es-AR")+" MM";
   if(n>=1e6) return "$"+(n/1e6).toLocaleString("es-AR",{maximumFractionDigits:1})+" MM";
   if(n>=1e3) return "$"+Math.round(n/1e3).toLocaleString("es-AR")+" mil"; return money(n); }
 const esc=s=>(s==null?"":String(s)).replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
@@ -191,9 +226,9 @@ let ST={ tab:"panorama", data:null };
 const TABS=[
   {k:"panorama",  ico:"📊", nom:"Panorama",        ready:true},
   {k:"compras",   ico:"🧾", nom:"Compras",         ready:false},
-  {k:"gastos",    ico:"💡", nom:"Gastos operativos",ready:false},
-  {k:"financ",    ico:"🏦", nom:"Financieros",     ready:false},
-  {k:"impuestos", ico:"🧮", nom:"Impuestos",       ready:false},
+  {k:"gastos",    ico:"💡", nom:"Gastos operativos",ready:true},
+  {k:"financ",    ico:"🏦", nom:"Financieros",     ready:true},
+  {k:"impuestos", ico:"🧮", nom:"Impuestos",       ready:true},
   {k:"pagos",     ico:"💸", nom:"Pagos y por pagar",ready:true},
   {k:"prov",      ico:"🏭", nom:"Proveedores",     ready:false},
 ];
@@ -207,10 +242,14 @@ function irTab(k){ ST.tab=k; renderTabs(); renderView(); }
 
 /* ===== Carga del Panorama (una sola pasada de consultas agregadas) ===== */
 async function cargarPanorama(){
-  // 1) Composición por cuenta: líneas de factura de proveedor posteadas (12m).
+  // 1) Composición por cuenta: TODAS las cuentas de resultado negativo (12m).
+  //    Antes miraba sólo facturas de proveedor y por eso el panorama no era real:
+  //    los sueldos, los impuestos al cheque y los costos bancarios entran por el
+  //    extracto, no por una factura, y quedaban afuera.
+  const GASTO=["expense","expense_direct_cost","expense_depreciation"];
   const porCuenta = await rpc("account.move.line","read_group",
-    [[["move_id.move_type","in",["in_invoice","in_refund"]],["move_id.state","=","posted"],
-      ["date",">=",desde12m],["display_type","=","product"]],
+    [[["account_id.account_type","in",GASTO],
+      ["parent_state","=","posted"],["date",">=",desde12m]],
      ["balance:sum"],["account_id"]],
     {lazy:false,limit:400});
 
@@ -240,6 +279,15 @@ async function cargarPanorama(){
      ["amount_total_signed:sum"],["partner_id"]],
     {lazy:false,limit:12,orderby:"amount_total_signed asc"});  // signed es negativo → asc = mayor gasto
 
+  // 7) Huecos: cuenta × mes. Un gasto recurrente al que le falta un mes es un
+  //    comprobante sin cargar — así se encontraron la luz (5 de 10 meses) y las
+  //    cargas sociales (4 de 10).
+  const porCtaMes = await rpc("account.move.line","read_group",
+    [[["account_id.account_type","in",GASTO],
+      ["parent_state","=","posted"],["date",">=",desde12m]],
+     ["balance:sum"],["account_id","date:month"]],
+    {lazy:false,limit:3000});
+
   // --- Bucketizar composición por naturaleza ---
   const comp={}; NAT.forEach(n=>comp[n.k]=0);
   let totalGasto=0;
@@ -257,7 +305,32 @@ async function cargarPanorama(){
   const cxpTotal=(cxp&&cxp[0]&&cxp[0].amount_residual)||0;
   const pagosTotal=(pagos||[]).reduce((a,g)=>a+(g.amount||0),0);
 
-  return { comp, totalGasto, ocTotal, cxpTotal, pagosTotal,
+  // --- Huecos por cuenta: qué meses tiene cada gasto y cuáles le faltan ---
+  const meses=[]; { const d=new Date(HOY); d.setDate(1);
+    for(let i=11;i>=0;i--){ const x=new Date(d); x.setMonth(x.getMonth()-i); meses.push(x.toISOString().slice(0,7)); } }
+  const porCta={};
+  for(const g of (porCtaMes||[])){
+    if(!g.account_id) continue;
+    const nombre=String(g.account_id[1]), code=nombre.split(" ")[0];
+    if(code.startsWith("1.1")) continue;
+    const ym=(g.__range && g.__range["date:month"] && g.__range["date:month"].from || "").slice(0,7);
+    if(!ym) continue;
+    porCta[code]=porCta[code]||{code, nom:nombre.split(" ").slice(1).join(" "), nat:natDe(code), tot:0, m:{}};
+    porCta[code].m[ym]=(porCta[code].m[ym]||0)+(g.balance||0);
+    porCta[code].tot+=(g.balance||0);
+  }
+  // Recurrente = aparece en 4 meses o más de los 12. Si además le falta alguno, es un hueco.
+  // El mes en curso no cuenta como hueco: todavía se está cargando.
+  const mesEnCurso=meses[meses.length-1];
+  const cerrados=meses.filter(m=>m!==mesEnCurso);
+  const huecos=Object.values(porCta)
+    .map(c=>{ const con=cerrados.filter(m=>Math.abs(c.m[m]||0)>0.5);
+              return {...c, con:con.length, falta:cerrados.filter(m=>Math.abs(c.m[m]||0)<=0.5)}; })
+    .filter(c=>c.tot>0 && c.con>=4 && c.falta.length>0)
+    .sort((a,b)=>b.falta.length-a.falta.length || b.tot-a.tot);
+
+  return { comp, totalGasto, ocTotal, cxpTotal, pagosTotal, meses, huecos, mesEnCurso,
+           ctas:Object.values(porCta).sort((a,b)=>b.tot-a.tot),
            compMes:(compMes||[]).map(g=>({ym:g.__range&&g.__range["invoice_date:month"]?g.__range["invoice_date:month"].from:"", v:Math.abs(g.amount_total_signed||0)})),
            topProv:(topProv||[]).filter(g=>g.partner_id).map(g=>({nom:g.partner_id[1], v:Math.abs(g.amount_total_signed||0), n:g.__count})).sort((a,b)=>b.v-a.v) };
 }
@@ -356,14 +429,69 @@ function renderPagos(){
   `;
 }
 
+/* ===== Detalle por cuenta de un rubro — misma data del panorama, otro filtro =====
+   Gastos operativos, Financieros e Impuestos son la misma vista con distinta
+   naturaleza: no hace falta volver a consultar Odoo. */
+function renderRubro(nats, titulo, bajada){
+  const v=document.getElementById("view"), d=ST.data;
+  const mesLbl=ym=>{ if(!ym) return ""; const [y,m]=ym.split("-"); return ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"][(+m)-1]+" "+y.slice(2); };
+  const L=(d.ctas||[]).filter(c=>nats.includes(c.nat) && c.tot>0);
+  const tot=L.reduce((s,c)=>s+c.tot,0);
+  const cerrados=d.meses.filter(m=>m!==d.mesEnCurso);
+  const ult=cerrados[cerrados.length-1];
+  const totUlt=L.reduce((s,c)=>s+Math.abs(c.m[ult]||0),0);
+  const mesesCon=cerrados.filter(m=>L.some(c=>Math.abs(c.m[m]||0)>0.5)).length||1;
+  const prom=tot/mesesCon;
+  const dif=prom?((totUlt-prom)/prom*100):0;
+  const faltanTot=L.reduce((s,c)=>s+cerrados.filter(m=>Math.abs(c.m[m]||0)<=0.5 && cerrados.filter(x=>Math.abs(c.m[x]||0)>0.5).length>=4).length,0);
+
+  v.innerHTML=`
+    <div class="kpis">
+      <div class="kpi"><div class="l">📤 Total 12 meses</div><div class="n num">${moneyK(tot)}</div><div class="s">${L.length} cuentas con movimiento</div></div>
+      <div class="kpi"><div class="l">📅 Promedio mensual</div><div class="n num">${moneyK(prom)}</div><div class="s">sobre ${mesesCon} meses con movimiento</div></div>
+      <div class="kpi"><div class="l">📌 ${esc(mesLbl(ult))}</div><div class="n num">${moneyK(totUlt)}</div><div class="s" style="color:${Math.abs(dif)<12?'var(--gris)':(dif>0?'#C62828':'var(--teal)')}">${dif>0?'+':''}${dif.toFixed(0)}% contra el promedio</div></div>
+      <div class="kpi"><div class="l">🕳️ Meses sin cargar</div><div class="n num" style="color:${faltanTot?'#C62828':'var(--teal)'}">${faltanTot}</div><div class="s">en cuentas recurrentes de este rubro</div></div>
+    </div>
+    <div class="panel"><h3>${esc(titulo)}</h3><div class="cap">${esc(bajada)}</div></div>
+    <div class="hmat" style="margin-top:-8px">
+      <div class="grow ghead"><div>Cuenta</div><div style="text-align:center">12 meses</div>
+        <div class="rt" style="text-align:right">Total</div><div class="rt" style="text-align:right">${esc(mesLbl(ult))}</div><div style="text-align:right">faltan</div></div>
+      ${L.length ? L.map(c=>{
+        const col=(NAT.find(n=>n.k===c.nat)||{}).col||"var(--gris)";
+        const mx=Math.max(1,...d.meses.map(m=>Math.abs(c.m[m]||0)));
+        const con=cerrados.filter(m=>Math.abs(c.m[m]||0)>0.5).length;
+        const falta=con>=4 ? cerrados.filter(m=>Math.abs(c.m[m]||0)<=0.5).length : 0;
+        return `<div class="grow">
+          <div class="gn"><span class="dot" style="background:${col}"></span><span class="tx" title="${esc(c.nom)}">${esc(c.nom)}</span><span class="cod">${esc(c.code)}</span></div>
+          <div class="spark">${d.meses.map(m=>{ const val=Math.abs(c.m[m]||0);
+             const cl = val>0.5 ? "" : (m===d.mesEnCurso?"cur":"cero");
+             const h = val>0.5 ? Math.max(3,Math.round(val/mx*26)) : 3;
+             return `<i class="${cl}" style="height:${h}px" title="${mesLbl(m)}: ${val>0.5?money(c.m[m]):'sin movimiento'}"></i>`; }).join("")}</div>
+          <div class="rt num" style="text-align:right">${moneyK(c.tot)}</div>
+          <div class="rt num" style="text-align:right">${Math.abs(c.m[ult]||0)>0.5?moneyK(c.m[ult]):'<span style="color:#C62828">—</span>'}</div>
+          <div class="${falta?'gfalta':'gok'}">${falta||'✓'}</div></div>`;
+      }).join("") : '<div class="hnone">Sin movimiento en este rubro en los últimos 12 meses</div>'}
+    </div>`;
+}
+
+const RUBROS={
+  gastos:   {nats:["admin","logis","comer"], t:"Gasto operativo por cuenta",
+             b:"Todo lo que no es mercadería, financiero ni impuesto: administración, depósito y comercial. La barra chica es el mes; la roja, un mes sin movimiento."},
+  financ:   {nats:["fin"], t:"Costo financiero por cuenta",
+             b:"Intereses de préstamos y descubierto, descuento de cheques, comisiones y planes de pago. En EyG es la segunda masa después de la mercadería."},
+  impuestos:{nats:["imp"], t:"Carga impositiva por cuenta",
+             b:"Impuesto al cheque, IIBB, tasas municipales y ganancias. No incluye el IVA, que no es gasto sino crédito fiscal."},
+};
+
 function renderView(){
   const v=document.getElementById("view");
   if(ST.tab==="pagos"){ renderPagos(); return; }
-  if(ST.tab!=="panorama"){ v.innerHTML=placeholder(ST.tab); return; }
+  if(ST.tab!=="panorama" && !RUBROS[ST.tab]){ v.innerHTML=placeholder(ST.tab); return; }
   if(!ST.data){ v.innerHTML=`<div class="loading"><div class="spinner"></div>Cargando egresos de los últimos 12 meses…</div>`;
     cargarPanorama().then(d=>{ ST.data=d; renderView(); }).catch(e=>{ v.innerHTML=`<div class="err">No se pudo cargar el panorama: ${esc(e.message||e)}</div>`; });
     return;
   }
+  if(RUBROS[ST.tab]){ const r=RUBROS[ST.tab]; renderRubro(r.nats,r.t,r.b); return; }
   const d=ST.data;
   const mesLbl=ym=>{ if(!ym) return ""; const [y,m]=ym.split("-"); return ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"][(+m)-1]+" "+y.slice(2); };
   const maxMes=Math.max(1,...d.compMes.map(x=>x.v));
@@ -374,7 +502,7 @@ function renderView(){
 
   v.innerHTML=`
     <div class="kpis">
-      <div class="kpi"><div class="l">🧾 Compras 12m</div><div class="n num">${moneyK(d.totalGasto)}</div><div class="s">gasto imputado en facturas de proveedor</div></div>
+      <div class="kpi"><div class="l">📤 Egreso total 12m</div><div class="n num">${moneyK(d.totalGasto)}</div><div class="s">todo lo imputado a cuentas de resultado</div></div>
       <div class="kpi"><div class="l">📦 OC abiertas</div><div class="n num">${moneyK(d.ocTotal)}</div><div class="s">órdenes confirmadas comprometidas</div></div>
       <div class="kpi"><div class="l">💸 Pagos 12m</div><div class="n num">${moneyK(d.pagosTotal)}</div><div class="s">salida de tesorería posteada</div></div>
       <div class="kpi"><div class="l">⏳ Por pagar hoy</div><div class="n num" style="color:var(--n-fin)">${moneyK(d.cxpTotal)}</div><div class="s">deuda con proveedores sin conciliar</div></div>
@@ -382,9 +510,30 @@ function renderView(){
 
     <div class="panel">
       <h3>Composición del egreso por naturaleza</h3>
-      <div class="cap">Facturas de proveedor posteadas · últimos 12 meses · total ${money(d.totalGasto)}</div>
+      <div class="cap">Todas las cuentas de egreso · últimos 12 meses · total ${money(d.totalGasto)}</div>
       <div class="cbar">${segs.map(s=>`<span title="${esc(s.nom)}: ${money(s.v)}" style="width:${(s.v/tot*100).toFixed(2)}%;background:${s.col}"></span>`).join("")}</div>
       <div class="cleg">${segs.map(s=>`<div class="it"><span class="dot" style="background:${s.col}"></span>${esc(s.nom)} <b>${moneyK(s.v)}</b> <span class="pct">${(s.v/tot*100).toFixed(1)}%</span></div>`).join("")}</div>
+    </div>
+
+    <div class="panel">
+      <h3>🕳️ Huecos: gastos recurrentes a los que les falta algún mes</h3>
+      <div class="cap">Cuentas con movimiento en 4 meses o más de los últimos 12. Una celda marcada es un mes sin movimiento, es decir un comprobante que todavía no se cargó.</div>
+    </div>
+    <div class="hmat" style="margin-top:-8px">
+      <div class="hrow hhead">
+        <div>Cuenta</div>
+        ${d.meses.map(m=>`<div class="hmlbl">${["E","F","M","A","M","J","J","A","S","O","N","D"][(+m.slice(5,7))-1]}</div>`).join("")}
+        <div style="text-align:right">faltan</div>
+      </div>
+      ${d.huecos.length ? d.huecos.map(c=>{
+        const col=(NAT.find(n=>n.k===c.nat)||{}).col||"var(--gris)";
+        return `<div class="hrow">
+          <div class="hn" title="${esc(c.code)} ${esc(c.nom)} · ${money(c.tot)} en 12 meses"><span class="dot" style="background:${col}"></span>${esc(c.nom)}</div>
+          ${d.meses.map(m=>{ const v=Math.abs(c.m[m]||0), curso=(m===d.mesEnCurso);
+            const cl = v>0.5 ? 'ok' : (curso?'cur':'no');
+            return `<div class="hc ${cl}" title="${mesLbl(m)}: ${v>0.5?money(c.m[m]):(curso?'mes en curso':'sin movimiento')}"></div>`; }).join("")}
+          <div class="hf">${c.falta.length}</div></div>`;
+      }).join("") : '<div class="hnone">Ningún gasto recurrente tiene meses sin cargar ✓</div>'}
     </div>
 
     <div class="panel">
