@@ -103,6 +103,11 @@
          text-transform:uppercase;color:var(--gris);position:sticky;top:0}
   .hn{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;gap:6px;align-items:center}
   .hn .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+  .hn .fle{font-size:10px;color:var(--gris);transition:transform .15s;display:inline-block;flex:0 0 auto}
+  .hn .fle.ab{transform:rotate(90deg)}
+  .hrow:not(.hhead){cursor:pointer;transition:background .12s}
+  .hrow:not(.hhead):hover{background:#FAFCFC}
+  .hrow.abierta{background:#F0F6F5;border-bottom:0}
   .hc{height:21px;border-radius:4px}
   .hc.ok{background:rgba(0,137,123,.16)}
   .hc.no{background:rgba(198,40,40,.12);border:1px dashed rgba(198,40,40,.5)}
@@ -126,6 +131,29 @@
   .spark i.cur{background:rgba(0,0,0,.08);height:3px}
   .gfalta{text-align:right;font-size:12px;font-weight:800;color:#C62828}
   .gok{text-align:right;font-size:12px;font-weight:700;color:var(--gris)}
+  .grow{cursor:pointer;transition:background .12s}
+  .grow:hover{background:#FAFCFC}
+  .grow.abierta{background:#F0F6F5;border-bottom:0}
+  .gn .fle{font-size:10px;color:var(--gris);transition:transform .15s;display:inline-block;flex:0 0 auto}
+  .gn .fle.ab{transform:rotate(90deg)}
+
+  /* Detalle desplegado de una cuenta */
+  .dwrap{background:#F7FBFB;border-bottom:1px solid var(--line);padding:12px 16px 16px 40px;min-width:720px}
+  .dtit{font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--gris);margin-bottom:8px}
+  .dq{display:grid;grid-template-columns:1.5fr 1fr 110px 44px 66px;gap:10px;align-items:center;padding:3px 0;font-size:12.5px}
+  .dqn{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dqb{height:7px;background:rgba(0,0,0,.05);border-radius:4px;overflow:hidden}
+  .dqb span{display:block;height:100%;background:var(--teal);opacity:.55;border-radius:4px}
+  .dqv{text-align:right;font-weight:700}
+  .dqp{text-align:right;color:var(--gris);font-size:11px}
+  .dqn2{text-align:right;color:var(--gris);font-size:11px}
+  .dm{display:grid;grid-template-columns:78px 1.1fr 1.5fr 110px;gap:10px;align-items:center;padding:3px 0;font-size:12px;color:var(--gris)}
+  .dm .dmq{font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dm .dmt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dm .dmv{text-align:right;font-weight:600;color:var(--ink)}
+  .dmas{font-size:11.5px;color:var(--gris);padding-top:5px;font-style:italic}
+  .dcarga{display:flex;gap:9px;align-items:center;font-size:12.5px;color:var(--gris);padding:4px 0}
+  .dcarga .spinner{width:15px;height:15px}
 
   /* Tramos de vencimiento (cuentas por pagar) */
   .t-vencer{--tc:#1E7D46;--tb:#E4F5E9} .t-d30{--tc:#B7791F;--tb:#FBE9CF}
@@ -221,7 +249,7 @@ function natDe(code){
 const HOY=new Date();
 const desde12m=(()=>{ const d=new Date(HOY); d.setFullYear(d.getFullYear()-1); d.setDate(1); return d.toISOString().slice(0,10); })();
 
-let ST={ tab:"panorama", data:null };
+let ST={ tab:"panorama", data:null, abierta:null, det:{} };
 
 const TABS=[
   {k:"panorama",  ico:"📊", nom:"Panorama",        ready:true},
@@ -315,7 +343,7 @@ async function cargarPanorama(){
     if(code.startsWith("1.1")) continue;
     const ym=(g.__range && g.__range["date:month"] && g.__range["date:month"].from || "").slice(0,7);
     if(!ym) continue;
-    porCta[code]=porCta[code]||{code, nom:nombre.split(" ").slice(1).join(" "), nat:natDe(code), tot:0, m:{}};
+    porCta[code]=porCta[code]||{code, id:g.account_id[0], nom:nombre.split(" ").slice(1).join(" "), nat:natDe(code), tot:0, m:{}};
     porCta[code].m[ym]=(porCta[code].m[ym]||0)+(g.balance||0);
     porCta[code].tot+=(g.balance||0);
   }
@@ -429,6 +457,59 @@ function renderPagos(){
   `;
 }
 
+/* ===== Abrir una cuenta: de quién es cada peso y qué movimientos la componen ===== */
+async function cargarDetalle(cta){
+  const [quien, movs] = await Promise.all([
+    rpc("account.move.line","read_group",
+      [[["account_id","=",cta.id],["parent_state","=","posted"],["date",">=",desde12m]],
+       ["balance:sum"],["partner_id"]], {lazy:false,limit:300}),
+    rpc("account.move.line","search_read",
+      [[["account_id","=",cta.id],["parent_state","=","posted"],["date",">=",desde12m]],
+       ["date","name","balance","partner_id","move_id"]], {limit:300,order:"date desc"})
+  ]);
+  return {
+    quien:(quien||[]).map(g=>({nom:g.partner_id?g.partner_id[1]:"(sin contacto)", v:g.balance||0, n:g.__count}))
+          .filter(x=>x.v>0.5).sort((a,b)=>b.v-a.v),
+    movs:(movs||[]).map(l=>({f:l.date, q:l.partner_id?l.partner_id[1]:"", t:l.name||"",
+                             v:l.balance||0, doc:l.move_id?l.move_id[1]:""})).filter(x=>x.v>0.5)
+  };
+}
+window.abrirCta=async function(code){
+  if(ST.abierta===code){ ST.abierta=null; renderView(); return; }
+  ST.abierta=code; renderView();
+  if(!ST.det[code]){
+    const cta=(ST.data.ctas||[]).find(c=>c.code===code);
+    if(!cta) return;
+    try{ ST.det[code]=await cargarDetalle(cta); }
+    catch(e){ ST.det[code]={error:(e&&e.message)||String(e)}; }
+    if(ST.abierta===code) renderView();
+  }
+};
+function detalleHTML(code){
+  const d=ST.det[code];
+  if(!d) return `<div class="dwrap"><div class="dcarga"><div class="spinner"></div>Buscando de quién es cada movimiento…</div></div>`;
+  if(d.error) return `<div class="dwrap"><div class="err">No se pudo abrir el detalle: ${esc(d.error)}</div></div>`;
+  const tot=d.quien.reduce((s,x)=>s+x.v,0)||1;
+  const mx=d.quien.length?d.quien[0].v:1;
+  return `<div class="dwrap">
+    <div class="dtit">De quién es · ${d.quien.length} ${d.quien.length===1?"contacto":"contactos"} en 12 meses</div>
+    ${d.quien.slice(0,25).map(q=>`<div class="dq">
+       <div class="dqn" title="${esc(q.nom)}">${esc(q.nom)}</div>
+       <div class="dqb"><span style="width:${(q.v/mx*100).toFixed(1)}%"></span></div>
+       <div class="dqv num">${moneyK(q.v)}</div>
+       <div class="dqp">${(q.v/tot*100).toFixed(0)}%</div>
+       <div class="dqn2">${q.n} mov</div></div>`).join("")}
+    ${d.quien.length>25?`<div class="dmas">y ${d.quien.length-25} contactos más</div>`:""}
+    <div class="dtit" style="margin-top:14px">Últimos movimientos</div>
+    ${d.movs.slice(0,12).map(m=>`<div class="dm">
+       <div class="dmf">${esc(m.f)}</div>
+       <div class="dmq" title="${esc(m.q)}">${esc(m.q||"—")}</div>
+       <div class="dmt" title="${esc(m.t)}">${esc(m.t||m.doc)}</div>
+       <div class="dmv num">${money(m.v)}</div></div>`).join("")}
+    ${d.movs.length>12?`<div class="dmas">y ${d.movs.length-12} movimientos más en los últimos 12 meses</div>`:""}
+  </div>`;
+}
+
 /* ===== Detalle por cuenta de un rubro — misma data del panorama, otro filtro =====
    Gastos operativos, Financieros e Impuestos son la misma vista con distinta
    naturaleza: no hace falta volver a consultar Odoo. */
@@ -461,15 +542,16 @@ function renderRubro(nats, titulo, bajada){
         const mx=Math.max(1,...d.meses.map(m=>Math.abs(c.m[m]||0)));
         const con=cerrados.filter(m=>Math.abs(c.m[m]||0)>0.5).length;
         const falta=con>=4 ? cerrados.filter(m=>Math.abs(c.m[m]||0)<=0.5).length : 0;
-        return `<div class="grow">
-          <div class="gn"><span class="dot" style="background:${col}"></span><span class="tx" title="${esc(c.nom)}">${esc(c.nom)}</span><span class="cod">${esc(c.code)}</span></div>
+        const ab=ST.abierta===c.code;
+        return `<div class="grow${ab?' abierta':''}" onclick="abrirCta('${esc(c.code)}')" title="Tocá para ver de quién es">
+          <div class="gn"><span class="fle${ab?' ab':''}">▸</span><span class="dot" style="background:${col}"></span><span class="tx" title="${esc(c.nom)}">${esc(c.nom)}</span><span class="cod">${esc(c.code)}</span></div>
           <div class="spark">${d.meses.map(m=>{ const val=Math.abs(c.m[m]||0);
              const cl = val>0.5 ? "" : (m===d.mesEnCurso?"cur":"cero");
              const h = val>0.5 ? Math.max(3,Math.round(val/mx*26)) : 3;
              return `<i class="${cl}" style="height:${h}px" title="${mesLbl(m)}: ${val>0.5?money(c.m[m]):'sin movimiento'}"></i>`; }).join("")}</div>
           <div class="rt num" style="text-align:right">${moneyK(c.tot)}</div>
           <div class="rt num" style="text-align:right">${Math.abs(c.m[ult]||0)>0.5?moneyK(c.m[ult]):'<span style="color:#C62828">—</span>'}</div>
-          <div class="${falta?'gfalta':'gok'}">${falta||'✓'}</div></div>`;
+          <div class="${falta?'gfalta':'gok'}">${falta||'✓'}</div></div>${ab?detalleHTML(c.code):""}`;
       }).join("") : '<div class="hnone">Sin movimiento en este rubro en los últimos 12 meses</div>'}
     </div>`;
 }
@@ -527,12 +609,13 @@ function renderView(){
       </div>
       ${d.huecos.length ? d.huecos.map(c=>{
         const col=(NAT.find(n=>n.k===c.nat)||{}).col||"var(--gris)";
-        return `<div class="hrow">
-          <div class="hn" title="${esc(c.code)} ${esc(c.nom)} · ${money(c.tot)} en 12 meses"><span class="dot" style="background:${col}"></span>${esc(c.nom)}</div>
+        const ab=ST.abierta===c.code;
+        return `<div class="hrow${ab?' abierta':''}" onclick="abrirCta('${esc(c.code)}')" title="Tocá para ver de quién es">
+          <div class="hn" title="${esc(c.code)} ${esc(c.nom)} · ${money(c.tot)} en 12 meses"><span class="fle${ab?' ab':''}">▸</span><span class="dot" style="background:${col}"></span>${esc(c.nom)}</div>
           ${d.meses.map(m=>{ const v=Math.abs(c.m[m]||0), curso=(m===d.mesEnCurso);
             const cl = v>0.5 ? 'ok' : (curso?'cur':'no');
             return `<div class="hc ${cl}" title="${mesLbl(m)}: ${v>0.5?money(c.m[m]):(curso?'mes en curso':'sin movimiento')}"></div>`; }).join("")}
-          <div class="hf">${c.falta.length}</div></div>`;
+          <div class="hf">${c.falta.length}</div></div>${ab?detalleHTML(c.code):""}`;
       }).join("") : '<div class="hnone">Ningún gasto recurrente tiene meses sin cargar ✓</div>'}
     </div>
 
