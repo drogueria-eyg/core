@@ -3252,10 +3252,6 @@ function tomar(id){
   ST._tomando=id;
   abrirForm(pseudo, true);
 }
-/* ===== Acceso al portal (web de Odoo) — replicado del módulo Contactos =====
-   Crea el usuario portal (grupo 10) SIN mandar mail (no_reset_password) y genera un link con
-   token (signup_url) para pasar por WhatsApp; el cliente pone su propia clave. Necesita EMAIL. */
-const GRUPO_PORTAL=10;
 const emailValido=e=>/^[^\s;,@]+@[^\s;,@]+\.[^\s;,@]+$/.test((e||"").trim());
 function fmtDiaHora(s){ if(!s) return ""; try{ const ap=EYG.argParts(s); return ap.date.slice(8,10)+"/"+ap.date.slice(5,7)+" "+ap.hm; }catch(e){ return String(s).slice(8,10)+"/"+String(s).slice(5,7)+" "+String(s).slice(11,16); } }
 // ícono de la fila (verde=ya ingresó · ámbar=tiene acceso pero no ingresó · nada=sin acceso)
@@ -3273,84 +3269,54 @@ async function cargarPortalEstado(){
     ST.portal=M; if(document.getElementById("lista")) lista();
   }catch(e){}
 }
+/* ===== Acceso al portal (web de Odoo): SOLO CONSULTA (Diego, 4/11/2026) =====
+   Desde el Core ya no se da, se cambia ni se revoca el acceso: había dos caminos y se
+   pisaban (un «Revocar acceso» del 3/11 dejó a Fcia. Alesso sin poder entrar ni recuperar
+   la contraseña). El único camino es el formulario /alta → bandeja «Altas de clientes»
+   (aprueban Germán o Bárbara: controla CUIT, habilitación y contacto contra intrusos), y la
+   contraseña la recupera la farmacia sola con «¿Olvidaste tu contraseña?». Acá se ve el
+   estado y se le pasa el link que corresponde. El correo de la ficha tampoco se cambia si
+   tiene acceso: es su usuario y adonde le llega el enlace de la contraseña. */
+const PORTAL_URL="https://drogueriaeyg.odoo.com";
+const mailNorm=s=>(s||"").trim().toLowerCase();
+async function correoPortal(pid){
+  try{ const u=await rpc("res.users","search_read",[[["partner_id","=",pid],["share","=",true]]],{fields:["login"],limit:1}); return u.length?u[0].login:""; }catch(e){ return ""; }
+}
 async function cargarPortal(id){
   const box=document.getElementById("portalbox"); if(!box) return;
   const c=ST.contactos.find(x=>x.id===id); if(!c) return;
-  if(!c.email){ box.innerHTML=`<p class="pmuted">Para el portal necesita un <b>email</b> (es su usuario). Cargalo abajo en la ficha con "Guardar".</p>`; return; }
-  if(!emailValido(c.email)){ box.innerHTML=`<p class="pmuted">El email <b>${esc(c.email)}</b> no parece válido. Corregilo antes de dar acceso.</p>`; return; }
   try{
-    const p=(await rpc("res.partner","read",[[id]],{fields:["user_ids"]}))[0];
-    const uids=(p&&p.user_ids)||[];
-    if(uids.length){
-      const us=await rpc("res.users","read",[uids],{fields:["id","login","share","active","login_date"]});
-      const interno=us.find(u=>!u.share);
-      if(interno){ box.innerHTML=`<p class="pmuted">Tiene un usuario <b>interno</b> de la empresa (no es cliente del portal). No se toca desde acá.</p>`; return; }
-      const share=us.find(u=>u.share);
-      if(share){
-        const estado = share.login_date
-          ? `<div class="palert ok">✅ <b>Ya ingresó y creó su clave.</b> Último ingreso: ${fmtDiaHora(share.login_date)}.</div>`
-          : `<div class="palert pend">⏳ <b>Todavía no ingresó.</b> Tiene el acceso creado pero aún no puso su clave — pasale el link.</div>`;
-        box.innerHTML=`<div class="plogin">👤 Usuario: <b>${esc(share.login)}</b>${share.active?'':' · <b style="color:var(--bad)">revocado</b>'}</div>
-          ${estado}
-          <button class="pbtn agua" onclick="linkPortal(${id})">🔗 Generar link de acceso</button>
-          <div id="portallink"></div>
-          <button class="pbtn gris" onclick="revocarPortal(${id},${share.id})">Revocar acceso</button>`;
-        return;
-      }
+    const us=await rpc("res.users","search_read",[[["partner_id","=",id]]],{fields:["login","share","active","login_date"],order:"id desc",context:{active_test:false}});
+    if(us.some(u=>!u.share)){ box.innerHTML=`<p class="pmuted">Tiene un usuario <b>interno</b> de la empresa (no es cliente del portal). No se toca desde acá.</p>`; return; }
+    const u=us.find(x=>x.active)||null, rev=u?null:(us[0]||null);
+    const fe=document.getElementById("f_email");
+    if(u&&fe){ fe.readOnly=true; fe.title="Es su usuario del portal: el cambio de correo lo pide la farmacia en el formulario de alta y lo aprueban Germán o Bárbara"; fe.style.opacity=".7"; }
+    let html;
+    if(u){
+      html=`<div class="plogin">👤 Usuario: <b>${esc(u.login)}</b></div>`+(u.login_date
+        ? `<div class="palert ok">✅ <b>Ya entró al portal.</b> Último ingreso: ${fmtDiaHora(u.login_date)}.</div>`
+        : `<div class="palert pend">⏳ <b>Tiene acceso pero todavía no entró.</b></div>`)+
+        `<p class="pmuted">¿No puede entrar? Que toque «¿Olvidaste tu contraseña?» en el ingreso y escriba <b>${esc(u.login)}</b>: le llega un enlace a ese correo. Si quiere entrar con otro correo, lo pide en el formulario de alta y lo aprueban Germán o Bárbara. El correo de esta ficha no se cambia desde acá.</p>`+
+        pasarLinkPortal(c, `${PORTAL_URL}/web/reset_password?login=${encodeURIComponent(u.login)}`, `Hola, te escribo de Droguería EyG. Para entrar al portal usá el correo ${u.login}. Si no recordás la contraseña, entrá a este enlace y te llega uno nuevo a tu correo para crearla: `);
+    } else if(rev){
+      html=`<div class="palert pend">🚫 <b>Acceso revocado</b> (usuario ${esc(rev.login)}).</div><p class="pmuted">Para volver a habilitarlo, la farmacia lo pide en el formulario de alta y lo aprueban Germán o Bárbara: si usa el mismo correo, se le reactiva el usuario.</p>`+
+        pasarLinkPortal(c, `${PORTAL_URL}/alta`, "Hola, te escribo de Droguería EyG. Para volver a tener acceso al portal, completá este formulario y te avisamos por correo cuando esté aprobado: ");
+    } else {
+      html=`<p class="pmuted">Todavía no tiene acceso. La farmacia lo pide en el formulario de alta (sus datos y la habilitación) y lo aprueban Germán o Bárbara; al aprobarse le llega un correo para entrar.</p>`+
+        pasarLinkPortal(c, `${PORTAL_URL}/alta`, "Hola, te escribo de Droguería EyG. Para tener acceso al portal (pedidos, precios y facturas), completá este formulario y te avisamos por correo cuando esté aprobado: ");
     }
-    box.innerHTML=`<p class="pmuted">Dale acceso a la web de Odoo (ve sus pedidos, facturas y saldo). Se crea su usuario y generás un link para que ponga su clave.</p>
-      <button class="pbtn teal" onclick="darAccesoPortal(${id})">🌐 Dar acceso al portal</button>`;
+    box.innerHTML=html;
   }catch(e){ box.innerHTML=`<p class="pmuted">No pude leer el estado del portal (${esc(e.message||e)}).</p>`; }
 }
-async function darAccesoPortal(id){
-  const c=ST.contactos.find(x=>x.id===id); if(!c||!emailValido(c.email)) return;
-  const box=document.getElementById("portalbox"); if(box) box.innerHTML='<p class="pmuted">Creando acceso…</p>';
-  try{
-    const p=(await rpc("res.partner","read",[[id]],{fields:["user_ids","name","email"]}))[0];
-    let reactivado="";
-    if(!(p.user_ids&&p.user_ids.length)){
-      // Si ya tuvo acceso y se lo revocaron, su usuario está archivado: se reactiva. Crear otro con el mismo correo choca en Odoo (caso Fcia. Alesso, 4/11).
-      const login=(p.email||"").trim();
-      const prev=await rpc("res.users","search_read",[["|",["partner_id","=",id],["login","=ilike",login]]],{fields:["partner_id","login"],order:"id desc",limit:10,context:{active_test:false}});
-      const mios=prev.filter(u=>u.partner_id&&u.partner_id[0]===id);
-      const mio=mios.find(u=>u.login.toLowerCase()===login.toLowerCase())||mios[0];
-      const ajeno=prev.find(u=>!(u.partner_id&&u.partner_id[0]===id));
-      if(mio){ await rpc("res.users","write",[[mio.id],{active:true}],{context:{lang:"es_AR"}}); reactivado=mio.login; }
-      else if(ajeno) throw new Error("el correo "+login+" ya es el usuario de otro contacto ("+(ajeno.partner_id?ajeno.partner_id[1]:"sin contacto")+")");
-      else await rpc("res.users","create",[{login,name:p.name||c.name,partner_id:id,groups_id:[[6,0,[GRUPO_PORTAL]]]}],{context:{no_reset_password:true,lang:"es_AR"}});
-    }
-    await rpc("res.partner","signup_prepare",[[id]]);
-    const p2=(await rpc("res.partner","read",[[id]],{fields:["signup_url"]}))[0];
-    toast(reactivado?"✅ Acceso reactivado · entra con "+reactivado:"✅ Acceso al portal creado");
-    if(ST.portal) ST.portal[id]={loggedIn:false};   // refleja el ícono al instante
-    await cargarPortal(id); mostrarLinkPortal(id, p2.signup_url);
-    if(document.getElementById("lista")) lista();
-  }catch(e){ toast("⚠ No se pudo dar acceso: "+(e.message||e)); await cargarPortal(id); }
+function pasarLinkPortal(c, url, texto){
+  const wa=waN(c.phone||c.mobile);
+  const waLink=wa?`https://api.whatsapp.com/send?phone=${wa}&text=${encodeURIComponent(texto+url)}`:"";
+  return `<div class="pbtns" style="margin-top:8px">
+      <button class="pbtn agua" onclick='copiarLinkPortal(${JSON.stringify(url)})'>📋 Copiar link</button>
+      ${waLink?`<a class="pbtn wa" href="${waLink}" target="_blank" rel="noopener">Enviar por WhatsApp</a>`:""}
+    </div>`;
 }
-async function linkPortal(id){
-  const cont=document.getElementById("portallink"); if(cont) cont.innerHTML='<p class="pmuted">Generando…</p>';
-  try{ await rpc("res.partner","signup_prepare",[[id]]); const p=(await rpc("res.partner","read",[[id]],{fields:["signup_url"]}))[0]; mostrarLinkPortal(id, p.signup_url); }
-  catch(e){ toast("⚠ No se pudo generar el link: "+(e.message||e)); }
-}
-function mostrarLinkPortal(id, url){
-  const box=document.getElementById("portallink"); if(!box||!url) return;
-  const c=ST.contactos.find(x=>x.id===id);
-  const wa=c?waN(c.phone||c.mobile):"";
-  const msg=`¡Hola! Te damos acceso a tu cuenta en Droguería EyG para ver tus pedidos, facturas y saldo. Entrá a este link y creá tu contraseña: ${url}`;
-  const waLink=wa?`https://api.whatsapp.com/send?phone=${wa}&text=${encodeURIComponent(msg)}`:"";
-  box.innerHTML=`<div class="plink">${esc(url)}</div>
-    <div class="pbtns">
-      <button class="pbtn agua" onclick='copiarPortal(${JSON.stringify(url)})'>📋 Copiar link</button>
-      ${waLink?`<a class="pbtn wa" href="${waLink}" target="_blank" rel="noopener">📱 Enviar por WhatsApp</a>`:'<span class="pmuted" style="align-self:center">Sin teléfono para WhatsApp</span>'}
-    </div>
-    <p class="pmuted" style="margin-top:6px">El cliente abre el link y crea su propia contraseña. Es de un solo uso.</p>`;
-}
-function copiarPortal(t){ try{ navigator.clipboard.writeText(t); toast("📋 Link copiado"); }catch(e){ toast("Copialo a mano del recuadro"); } }
-async function revocarPortal(id, uid){
-  if(!confirm("¿Revocar el acceso al portal de este contacto? Su usuario queda desactivado (reversible).")) return;
-  try{ await rpc("res.users","write",[[uid],{active:false}],{context:{lang:"es_AR"}}); toast("Acceso al portal revocado"); if(ST.portal) delete ST.portal[id]; await cargarPortal(id); if(document.getElementById("lista")) lista(); }
-  catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
-}
+function copiarLinkPortal(t){ try{ navigator.clipboard.writeText(t); toast("📋 Link copiado"); }catch(e){ toast("Copialo a mano: "+t); } }
 function setF(f){ST.filtro=f;render();}
 function tk(card){ card.classList.toggle('open'); }
 function hd(id,badge){ const el=document.getElementById(id); if(!el)return; const open=el.style.display==='none'; document.querySelectorAll('.hdetail').forEach(d=>d.style.display='none'); document.querySelectorAll('.hstat').forEach(b=>b.classList.remove('act')); if(open){ el.style.display='block'; badge.classList.add('act'); el.scrollIntoView({behavior:'smooth',block:'nearest'}); } }
@@ -4558,6 +4524,7 @@ async function guardar(){
      por "sin dato". */
   vals[EYG.FANT]=EYG.cartelNorm(val("f_fant"), val("f_rubro"))||false;
   if(!vals.name){ btn.disabled=false; btn.textContent=EDIT.isNew?"Crear contacto":"Guardar ficha"; toast("⚠️ Falta el nombre"); return; }
+  let mailFijo="";
   try{
     let id=EDIT.id;
     if(EDIT.isNew){
@@ -4575,6 +4542,8 @@ async function guardar(){
       }catch(_){ /* si falla la constancia, el contacto igual se creó */ }
     }
     else {
+      const lg=await correoPortal(id);
+      if(lg){ const cur=(await rpc("res.partner","read",[[id]],{fields:["email"]}))[0].email||""; if(mailNorm(cur)!==mailNorm(vals.email)){ vals.email=cur||false; mailFijo=lg; } }
       await rpc("res.partner","write",[[id],vals]);
       // CONSTANCIA DEL CAMBIO DE PLAZO, firmada por quien lo hizo: el plazo define cuándo
       // vence cada factura y cuánta deuda figura vencida, así que queda registrado.
@@ -4594,6 +4563,7 @@ async function guardar(){
     const pct=completar(fresh).pct;
     cerrar();
     if(EDIT&&EDIT.isNew){ toast("🎉 ¡Nuevo contacto creado! +1 nuevo",true); confetti(); }
+    else if(mailFijo) toast("Ficha guardada ✓ · el correo no se cambió: es su usuario del portal ("+mailFijo+")");
     else { toast(pct>=100?"🎉 ¡Ficha completa! ✨":"Ficha guardada ✓", pct>=100); if(pct>=100) confetti(); }
     render();
     // Situación crediticia: si el contacto tiene CUIT, calcularla y cachearla automáticamente
