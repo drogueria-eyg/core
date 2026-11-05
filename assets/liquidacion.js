@@ -356,7 +356,7 @@ function saludDe(g,neto,baseline,prop,cfg,mes,minimo){
 async function calcularMes(mes,{sellers,monthly,ticket,cfg,excluir},onPaso){
   const r=rango(mes,cfg);
   const ex=new Set(excluir||[]);
-  const esExterno=nm=>/Samanta/i.test(nm||"");
+  const esExterno=nm=>false;   // ya no hay externos; el externo real se decide por perfil==="externo" (EYG.perfilDe)
   const rates=EYG.reglasDe(mes,cfg).rates||cfg.rates||EYG.COMI_DEF.rates;   // las tasas que regían ESE mes
   /* Ofertas cuya vigencia toca este mes (para "ofertas vendidas", 17 de los 100 puntos
      del nivel, y el nivel multiplica la comisión).

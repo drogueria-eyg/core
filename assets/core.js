@@ -2608,7 +2608,6 @@ window.EYG = (function(){
     cfg=cfg||_comiCfg||COMI_DEF;
     const fijo=(cfg.rubros||{})[String(uid)];
     if(fijo) return fijo;
-    if(nombre && /Samanta/i.test(nombre)) return "externo";
     return ((+ticket||0) >= (cfg.perfilTicket||300000)) ? "inst" : "farm";
   }
   /* ÍNDICE DE MORA. tramos = {d30,d60,d90,d180,mas} con el saldo vencido de cada antigüedad. */
