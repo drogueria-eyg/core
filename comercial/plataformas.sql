@@ -70,3 +70,44 @@ create policy bxc_lectura on public.bionexo_cotizaciones
 drop policy if exists bxr_lectura on public.bionexo_renglones;
 create policy bxr_lectura on public.bionexo_renglones
   for select to authenticated using (true);
+
+-- ============================================================
+-- PORTADA SALUD · lo que ya se resolvió, para el próximo pedido
+-- ------------------------------------------------------------
+-- Portada se cotiza con su planilla (comercial/cotizar-plataforma.html).
+-- Cada vez que la comercial descarga la planilla completa, se guarda acá
+-- qué producto de EyG eligió para cada código del comprador y por cuánto
+-- dividió (el precio de Portada es por unidad, el de Odoo por envase).
+-- El próximo pedido con ese código lo propone primero. Es una sugerencia:
+-- el precio se vuelve a leer siempre de la tarifa.
+-- ============================================================
+
+create table if not exists public.plataforma_equivalencias (
+  plataforma          text not null,              -- 'portada' (después, otras)
+  cod_comprador       text not null,              -- el «V 100416» de la columna INTERNO
+  cod_externo         text,                       -- la columna EXTERNO
+  producto_comprador  text,                       -- cómo lo pidieron
+  cod_eyg             text not null,              -- default_code de Odoo
+  producto_eyg        text,
+  divisor             int,                        -- unidades por envase usadas
+  ultimo_pedido       text,
+  actualizado_en      timestamptz default now(),
+  actualizado_por     uuid default auth.uid(),
+  primary key (plataforma, cod_comprador)
+);
+
+-- La escriben las comerciales desde la pantalla: cualquier usuario logueado
+-- lee y guarda (no hay plata en juego, solo la sugerencia del producto).
+alter table public.plataforma_equivalencias enable row level security;
+
+drop policy if exists peq_lectura on public.plataforma_equivalencias;
+create policy peq_lectura on public.plataforma_equivalencias
+  for select to authenticated using (true);
+
+drop policy if exists peq_alta on public.plataforma_equivalencias;
+create policy peq_alta on public.plataforma_equivalencias
+  for insert to authenticated with check (true);
+
+drop policy if exists peq_cambio on public.plataforma_equivalencias;
+create policy peq_cambio on public.plataforma_equivalencias
+  for update to authenticated using (true) with check (true);

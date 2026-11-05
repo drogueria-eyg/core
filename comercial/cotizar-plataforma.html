@@ -73,6 +73,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="../assets/core.js?v=122"></script>
 <script>
 /* ============================================================
@@ -96,14 +97,34 @@
    EL ENVÍO LO HACE UNA PERSONA. Este módulo prepara y deja listo para
    copiar; cargar y enviar la oferta en Bionexo es a mano. Enviar una oferta
    es firmar un compromiso con un hospital.
+
+   PORTADA SALUD VA POR PLANILLA (3/11/2026). Portada deja bajar el pedido
+   como Excel (PC-<pedido>.xlsx), completarlo y volver a subirlo. Solo se
+   llenan dos columnas, las blancas: PRECIO y Observacion_y_o_Marca_Vendedor.
+   Dos cosas que no son como en Bionexo:
+     · Cantidad y precio van POR UNIDAD (comprimido, cápsula), no por caja.
+       La tarifa de Odoo es por unidad de venta, así que se divide por el
+       contenido del envase (x 10 comp → ÷ 10). El divisor se ve y se corrige
+       en cada renglón: si no se puede leer, el renglón no se cotiza.
+     · El archivo que se devuelve es EL MISMO que se bajó, tocando solo esas
+       dos celdas por fila. Nada de reescribirlo con una librería: Portada
+       pide no agregar columnas y no hay que darle motivos para rechazarlo.
+   El precio unitario va con 4 decimales (los de Odoo): 4941,18 ÷ 5 da
+   988,236, y 10 unidades tienen que dar 9.882,36, igual que la factura.
    ============================================================ */
 const esc = EYG.esc;
 const nf = n => Math.round(n||0).toLocaleString("es-AR");
 const money = n => EYG.money(n);
 const ES = {lang:"es_AR"};
-const LISTA_DEF = 3;
+/* Instituciones es la lista de Portada y Bionexo (mismo precio en las dos).
+   Su id es 5: el «(3)» de su nombre es el número de tier, no el id. Con 3
+   salía la de Farmacias. Verificado 5/11/2026 contra lo que Natividad cargó a
+   mano en Portada: Bisoprolol Eczane 1.811,76 = el precio fijo de la id 5. */
+const LISTA_DEF = 5;
 
-const ST = { lista:LISTA_DEF, listas:[], renglones:[], historial:{}, comprometido:{}, taxmap:{}, cargando:false };
+const ST = { lista:LISTA_DEF, listas:[], renglones:[], historial:{}, comprometido:{}, taxmap:{}, cargando:false,
+  modo:"bionexo",   // "portada" cuando se subió la planilla
+  portada:null };   // {nombre, buf, sheet, filas}
 
 function toast(m){ let t=document.getElementById("toast"); if(!t){t=document.createElement("div");t.id="toast";document.body.appendChild(t);} t.textContent=m; t.classList.add("on"); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove("on"),2600); }
 
@@ -118,6 +139,10 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(async perfil=>{
   }catch(e){}
   try{
     ST.listas = await EYG.rpc("product.pricelist","search_read",[[["active","=",true]]],{fields:["id","name"],limit:30,context:ES});
+    if(!ST.listas.some(l=>l.id===ST.lista)){
+      const inst = ST.listas.find(l=>/instituci/i.test(l.name||""));
+      if(inst) ST.lista = inst.id;
+    }
     const tx = await EYG.rpc("account.tax","search_read",[[["type_tax_use","=","sale"]]],{fields:["id","name","amount","amount_type","price_include"],limit:100});
     (tx||[]).forEach(t=>{ const inc = !!t.price_include || /imp\.?\s*inc|inclu/i.test(t.name||"");
       ST.taxmap[t.id] = { pct:(t.amount_type==="percent"?(t.amount||0):0), incluido:inc }; });
@@ -128,13 +153,23 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(async perfil=>{
 function pantalla(){
   return `
   <div class="nota">
-    <b>Para qué sirve.</b> Traés los renglones de un pedido de Bionexo y el Core busca qué producto de EyG
+    <b>Para qué sirve.</b> Traés los renglones de un pedido de Bionexo o Portada y el Core busca qué producto de EyG
     corresponde, con su precio de lista y el stock disponible. Vos revisás, corregís lo que haga falta y
-    copiás los precios a Bionexo. <b>La oferta la cargás y la enviás vos</b> — eso no se automatiza.
+    llevás los precios a la plataforma. <b>La oferta la cargás y la enviás vos</b> — eso no se automatiza.
   </div>
 
   <h2 class="sec">1 · Traé el pedido</h2>
+  <div class="card pad" style="margin-bottom:12px">
+    <p style="font-size:13px;color:var(--gris);margin:0 0 10px;line-height:1.6">
+      <b style="color:var(--ink)">Portada Salud:</b> bajá la planilla del pedido (<code>PC-…xlsx</code>) y subila acá, sin tocarla.
+      Al final te devuelvo la misma planilla con los precios puestos, lista para subir a Portada.
+    </p>
+    <label class="btn sec" style="display:inline-block">Elegir la planilla de Portada
+      <input type="file" id="filePortada" accept=".xlsx" style="display:none"></label>
+    <span id="portadaNombre" style="font-size:12.5px;color:var(--gris);margin-left:8px"></span>
+  </div>
   <div class="card pad">
+    <p style="font-size:13px;color:var(--ink);font-weight:700;margin:0 0 6px">Bionexo:</p>
     <p style="font-size:13px;color:var(--gris);margin:0 0 10px;line-height:1.6">
       En Bionexo, con el pedido abierto, tocá el favorito <b>Recolectar Bionexo</b> y después
       <b>Copiar renglones</b>. Volvé acá y pegá con Ctrl+V.
@@ -153,11 +188,13 @@ function pantalla(){
 function pintarListas(){
   const s=document.getElementById("lista"); if(!s) return;
   s.innerHTML = ST.listas.map(l=>`<option value="${l.id}" ${l.id===ST.lista?"selected":""}>${esc(l.name)}</option>`).join("");
-  s.onchange = ()=>{ ST.lista=+s.value; if(ST.renglones.length) analizar(); };
+  s.onchange = ()=>{ ST.lista=+s.value; if(ST.renglones.length) (ST.modo==="portada" ? resolver(ST.renglones) : analizar()); };
 }
 
 function enganchar(){
   const b=document.getElementById("analizar"); if(b) b.onclick=analizar;
+  const f=document.getElementById("filePortada");
+  if(f) f.onchange=()=>{ if(f.files[0]) leerPortada(f.files[0]); f.value=""; };
 }
 
 /* Viene de «Plataformas → Abiertos»: los renglones ya los trajo el favorito y
@@ -203,17 +240,121 @@ async function analizar(){
   const txt = document.getElementById("pegado").value;
   const rens = parsearPegado(txt);
   if(!rens.length){ toast("No encontré renglones en lo que pegaste"); return; }
+  ST.modo = "bionexo"; ST.portada = null;
+  const n = document.getElementById("portadaNombre"); if(n) n.textContent = "";
+  await resolver(rens);
+}
+
+async function resolver(rens){
   const res = document.getElementById("res");
   res.innerHTML = `<div class="spin"></div><p class="cargando">Buscando en el catálogo de EyG…</p>`;
   try{
     await cargarHistorial(rens.map(r=>r.cod).filter(Boolean));
-    for(const r of rens){ r.cands = await candidatos(r); r.elegido = r.cands.length ? 0 : -1; }
+    // De a tandas: EYG.rpc junta en un lote las llamadas que salen juntas, y
+    // un pedido de Portada trae 70 renglones.
+    for(let i=0;i<rens.length;i+=10){
+      await Promise.all(rens.slice(i,i+10).map(async r=>{ r.cands = await candidatos(r); r.elegido = r.cands.length ? 0 : -1; }));
+    }
     ST.renglones = rens;
     await preciar();
+    /* Se propone el primero que tiene precio en la lista y stock; si ninguno
+       tiene stock, el primero con precio. Proponer uno sin precio es dejar el
+       renglón sin cotizar aunque haya otro bueno en la lista. */
+    rens.forEach(r=>{
+      const cs = r.cands||[], bien = c=>mismaDosis(r,c) && !otraForma(r,c);
+      const pruebas = [c=>c._precio>0 && bien(c) && c._disp>0, c=>c._precio>0 && bien(c), c=>c._precio>0 && c._disp>0, c=>c._precio>0];
+      let i = -1;
+      for(const p of pruebas){ i = cs.findIndex(p); if(i>=0) break; }
+      r.elegido = cs.length ? Math.max(0,i) : -1;
+    });
     render();
   }catch(e){
     res.innerHTML = `<div class="nota aviso"><b>No pude completar la búsqueda.</b> ${esc(String(e.message||e))}</div>`;
   }
+}
+
+/* ---------------- Portada: leer la planilla ----------------
+   Se lee el xlsx por dentro (es un zip con XML) en vez de pasarlo por una
+   librería de planillas, porque después hay que devolverlo intacto. Las
+   columnas se buscan por el nombre del encabezado, no por la letra. */
+const NS_XL = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+const COLS_PORTADA = { pedido:"PEDIDO", interno:"INTERNO", externo:"EXTERNO", prod:"Producto",
+  cant:"Cantidad", precio:"PRECIO", marca:"Observacion_y_o_Marca_Vendedor" };
+
+async function leerPortada(file){
+  const res = document.getElementById("res");
+  res.innerHTML = `<div class="spin"></div><p class="cargando">Leyendo la planilla…</p>`;
+  try{
+    if(!window.JSZip) throw new Error("El lector de planillas no cargó. Recargá la página.");
+    const buf = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(buf);
+    const sheet = await rutaPrimeraHoja(zip);
+    const ss = await textosCompartidos(zip);
+    const doc = new DOMParser().parseFromString(await zip.file(sheet).async("string"), "application/xml");
+    const filas = [...doc.getElementsByTagNameNS(NS_XL,"row")];
+    if(!filas.length) throw new Error("La planilla está vacía.");
+    const valor = c => {
+      if(!c) return "";
+      const t = c.getAttribute("t");
+      if(t==="inlineStr") return [...c.getElementsByTagNameNS(NS_XL,"t")].map(x=>x.textContent).join("");
+      const v = c.getElementsByTagNameNS(NS_XL,"v")[0];
+      if(!v) return "";
+      return t==="s" ? (ss[+v.textContent]||"") : v.textContent;
+    };
+    const celdas = row => { const m={}; [...row.getElementsByTagNameNS(NS_XL,"c")].forEach(c=>{ m[c.getAttribute("r").replace(/\d+$/,"")]=c; }); return m; };
+    // encabezados → letra de columna
+    const cab = celdas(filas[0]), letra = {};
+    Object.entries(cab).forEach(([col,c])=>{ const t=valor(c).trim().toLowerCase();
+      Object.entries(COLS_PORTADA).forEach(([k,nom])=>{ if(t===nom.toLowerCase()) letra[k]=col; }); });
+    const faltan = Object.entries(COLS_PORTADA).filter(([k])=>!letra[k]).map(([,n])=>n);
+    if(faltan.length) throw new Error("No parece una planilla de Portada: le faltan las columnas "+faltan.join(", ")+".");
+    const rens = [];
+    let pedido = "";
+    filas.slice(1).forEach(row=>{
+      const m = celdas(row), prod = valor(m[letra.prod]).trim();
+      if(!prod) return;
+      pedido = pedido || valor(m[letra.pedido]).trim();
+      const pj = m[letra.precio];
+      rens.push({
+        fila: +row.getAttribute("r"),
+        cod: valor(m[letra.interno]).replace(/\s+/g," ").trim(),
+        externo: valor(m[letra.externo]).trim(),
+        prod: prod.replace(/\s+/g," "),
+        cant: Number(String(valor(m[letra.cant])).replace(",", "."))||0,
+        yaPrecio: Number(valor(pj))||0,
+        yaFormula: !!(pj && pj.getElementsByTagNameNS(NS_XL,"f")[0]),
+        yaMarca: valor(m[letra.marca]).trim()
+      });
+    });
+    if(!rens.length) throw new Error("No encontré renglones en la planilla.");
+    ST.modo = "portada";
+    ST.pedido = pedido;
+    ST.portada = { nombre:file.name, buf, sheet, letra, pisar:false };
+    document.getElementById("portadaNombre").textContent = `${file.name} · pedido ${pedido} · ${rens.length} renglones`;
+    await resolver(rens);
+  }catch(e){
+    res.innerHTML = `<div class="nota aviso"><b>No pude leer la planilla.</b> ${esc(String(e.message||e))}</div>`;
+  }
+}
+
+async function rutaPrimeraHoja(zip){
+  try{
+    const wb = new DOMParser().parseFromString(await zip.file("xl/workbook.xml").async("string"),"application/xml");
+    const rid = wb.getElementsByTagNameNS(NS_XL,"sheet")[0].getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships","id");
+    const rels = new DOMParser().parseFromString(await zip.file("xl/_rels/workbook.xml.rels").async("string"),"application/xml");
+    const rel = [...rels.getElementsByTagName("Relationship")].find(r=>r.getAttribute("Id")===rid);
+    const t = rel.getAttribute("Target").replace(/^\/?(xl\/)?/,"");
+    if(zip.file("xl/"+t)) return "xl/"+t;
+  }catch(e){}
+  if(zip.file("xl/worksheets/sheet1.xml")) return "xl/worksheets/sheet1.xml";
+  throw new Error("No encontré la hoja del pedido dentro del archivo.");
+}
+
+async function textosCompartidos(zip){
+  const f = zip.file("xl/sharedStrings.xml");
+  if(!f) return [];
+  const d = new DOMParser().parseFromString(await f.async("string"),"application/xml");
+  return [...d.getElementsByTagNameNS(NS_XL,"si")].map(si=>[...si.getElementsByTagNameNS(NS_XL,"t")].map(t=>t.textContent).join(""));
 }
 
 /* Lo que ya cotizamos antes para esos códigos. Vale oro: es una decisión que
@@ -221,6 +362,17 @@ async function analizar(){
 async function cargarHistorial(codigos){
   ST.historial = {};
   if(!codigos.length) return;
+  if(ST.modo==="portada"){
+    // Portada no tiene historial propio: lo que se va eligiendo se guarda al
+    // descargar la planilla (plataforma_equivalencias), divisor incluido.
+    try{
+      const { data } = await EYG.supa().from("plataforma_equivalencias")
+        .select("cod_comprador,cod_eyg,producto_eyg,divisor")
+        .eq("plataforma","portada").in("cod_comprador", codigos).limit(1000);
+      (data||[]).forEach(r=>{ (ST.historial[r.cod_comprador] = ST.historial[r.cod_comprador] || []).push(r); });
+    }catch(e){}
+    return;
+  }
   try{
     const { data } = await EYG.supa().from("bionexo_renglones")
       .select("cod_bionexo,cod_eyg,producto_eyg,marca")
@@ -247,26 +399,129 @@ async function candidatos(r){
         [[["default_code","in",codsPrev]]],{fields:campos,limit:5,context:ES});
       (ps||[]).forEach(p=>{ if(!vistos.has(p.id)){ vistos.add(p.id); out.push({...p, _fuente:"historial"}); } });
     }catch(e){}
+    const d = prev.find(x=>x.divisor>0);
+    if(d) r.divHist = +d.divisor;
   }
 
-  const palabras = (r.prod||"").toUpperCase()
+  /* Las palabras de forma (COMPRIMIDOS, CAPSULAS…) no distinguen nada y, por
+     largas, quedaban primeras: «ACIDO FOLICO 5 MG COMPRIMIDOS» terminaba
+     buscando sólo «COMPRIMIDOS». Se sacan, y la dosis va aparte como filtro. */
+  const txt = (r.prod||"").toUpperCase();
+  const palabras = txt
     .replace(/\(.*?\)/g," ").replace(/[^A-ZÁÉÍÓÚÑ0-9 ]/g," ")
-    .split(/\s+/).filter(w=>w.length>=4 && !/^(PARA|CON|SIN|POR|DEL|LOS|LAS|UNID|UNIDADES|COLOR)$/.test(w))
+    .split(/\s+/).filter(w=>w.length>=4
+      && !/^(PARA|CON|SIN|POR|DEL|LOS|LAS|UNID|UNIDADES|COLOR)$/.test(w)
+      && !/^(COMP|COMPRIMIDOS?|CAPS|CAPSULAS?|TABLETAS?|GRAGEAS?|RECUBIERTOS?|RANURADOS?|GRAMOS?)$/.test(w)
+      && !/^\d+(MG|MCG|ML|GR?|UI|CM|MM|MTS|LTS)?$/.test(w))
     .sort((a,b)=>b.length-a.length).slice(0,3);
+  const dosis = (txt.match(/(\d+(?:[.,]\d+)?)\s*(MG|MCG|ML|UI|GR?)\b/)||[])[1] || "";
+  r.dosis = dosis;
+  const filtroDosis = !dosis ? [] : /[.,]/.test(dosis)
+    ? ["|",["name","ilike",dosis.replace(",",".")],["name","ilike",dosis.replace(".",",")]]
+    : [["name","ilike",dosis]];
   /* En Odoo, una lista de condiciones se combina con Y sola: no hacen falta
-     operadores. Se empieza exigiendo las 3 palabras y, si no aparece nada, se
-     va aflojando hasta buscar sólo por la más larga — mejor traer de más y que
-     la persona elija, que no traer nada. */
-  for(let usar = palabras.length; usar >= 1 && !out.length; usar--){
-    const dom = [["active","=",true],["sale_ok","=",true]]
-      .concat(palabras.slice(0,usar).map(w=>["name","ilike",w]));
+     operadores. Se empieza exigiendo las 3 palabras (con la dosis, si hay) y,
+     si no aparece nada, se va aflojando hasta buscar sólo por la más larga —
+     mejor traer de más y que la persona elija, que no traer nada. */
+  const intentos = [];
+  for(let usar = palabras.length; usar >= 1; usar--){
+    if(filtroDosis.length) intentos.push(Object.assign(palabras.slice(0,usar).map(w=>["name","ilike",w]).concat(filtroDosis), {usar}));
+    intentos.push(Object.assign(palabras.slice(0,usar).map(w=>["name","ilike",w]), {usar}));
+  }
+  const antes = out.length;
+  /* Primero entre los que TIENEN precio en la lista elegida: en Instituciones
+     son ~2.600 de un catálogo enorme, y por orden alfabético salían primero
+     los de otra marca sin precio (la Amlodipina Savant en vez de la Rospaw).
+     Sin aflojar a una sola palabra: «ABSORBENTE» sola trae cualquier cosa con
+     precio antes que la bobina pedida; para eso sigue la búsqueda completa. */
+  for(const cond of intentos.filter(c=>c.usar >= Math.min(2, palabras.length))){
+    const dom = [["pricelist_id","=",ST.lista],["compute_price","=","fixed"],["fixed_price",">",0]]
+      .concat(cond.map(t=>Array.isArray(t) ? ["|",["product_id.name",t[1],t[2]],["product_tmpl_id.name",t[1],t[2]]] : [t]).flat(1));
+    try{
+      const its = await EYG.rpc("product.pricelist.item","search_read",[dom],
+        {fields:["product_id","product_tmpl_id"], limit:40, context:ES});
+      if(!(its||[]).length) continue;
+      const vids = [...new Set(its.filter(x=>x.product_id).map(x=>x.product_id[0]))];
+      const tids = [...new Set(its.filter(x=>!x.product_id && x.product_tmpl_id).map(x=>x.product_tmpl_id[0]))];
+      const ps = await EYG.rpc("product.product","search_read",
+        [[["active","=",true],["sale_ok","=",true],"|",["id","in",vids],["product_tmpl_id","in",tids]]],
+        {fields:campos, limit:12, context:ES, order:"name"});
+      (ps||[]).forEach(p=>{ if(!vistos.has(p.id)){ vistos.add(p.id); out.push({...p, _fuente:"busqueda"}); } });
+      if(out.length > antes) break;
+    }catch(e){}
+  }
+  for(const cond of intentos){
+    if(out.length > antes) break;
+    const dom = [["active","=",true],["sale_ok","=",true]].concat(cond);
     try{
       const ps = await EYG.rpc("product.product","search_read",[dom],
-        {fields:campos, limit:8, context:ES, order:"name"});
+        {fields:campos, limit:12, context:ES, order:"name"});
       (ps||[]).forEach(p=>{ if(!vistos.has(p.id)){ vistos.add(p.id); out.push({...p, _fuente:"busqueda"}); } });
     }catch(e){}
   }
+  // Entre los encontrados, primero los que tienen la misma dosis escrita.
+  if(dosis){
+    const hist = out.slice(0,antes), bus = out.slice(antes);
+    bus.sort((a,b)=>(mismaDosis(r,b)?1:0)-(mismaDosis(r,a)?1:0));
+    return hist.concat(bus);
+  }
   return out;
+}
+
+/* ¿El nombre del producto tiene la dosis que se pidió? Sin dosis pedida, sí. */
+function mismaDosis(r, c){
+  if(!r.dosis) return true;
+  return new RegExp("(^|[^0-9.,])"+r.dosis.replace(/[.,]/,"[.,]")+"\\s*(MG|MCG|ML|UI|GR?)\\b","i").test(c.name||"");
+}
+/* Pidieron algo oral sólido y el producto es inyectable, jarabe, gotas… */
+function otraForma(r, c){
+  if(!/\b(COMP|COMPRIMIDOS?|CAPS|CAPSULAS?|TAB|TABLETAS?|GRAGEAS?)\b/i.test(r.prod||"")) return false;
+  return /\b(amp|ampollas?|iny|inyectable|jbe|jarabe|gotas|gotero|susp|sol\.?|crema|ung|f\/a|frasco)\b/i.test(c.name||"");
+}
+/* Lo que hay que mirar antes de mandarlo: otra dosis u otra forma. */
+const avisos = (r, c) => (mismaDosis(r,c)?"":` <span class="pill warn">otra dosis</span>`)+(otraForma(r,c)?` <span class="pill warn">otra forma</span>`:"");
+
+/* ---------------- Portada: precio por unidad ----------------
+   Cuántas de las unidades que pide Portada trae la unidad de venta de Odoo.
+   El nombre de EyG dice a qué corresponde el precio, entre paréntesis:
+     «(Precio x unidad)» / «(Caja x 100 - Precio Unitario)» → 1
+     «(Precio x tira · Blister x 10 comp)»                 → la tira: 10
+     «(Precio x caja)» o nada                               → el «x 30» del nombre
+   Ojo: en los éticos «(Precio x unidad · Caja x 1 unidades)» y unidad de
+   venta «caja» quiere decir que la unidad ES la caja (Sidenar x 100).
+   El «Caja x 100 tiras» del paréntesis es el bulto, no lo que vale el precio:
+   el «x N» se toma del nombre sin esos paréntesis. Si no se puede leer, 0:
+   el renglón queda para revisar y no se le inventa un precio. */
+const X_N = /\bx\s*(\d{1,4})(?!\d)(?!\s*(mg|mcg|ml|gr?|%|cm|mm|lts?)\b)/i;
+function divisorDe(c){
+  const nom = String(c.name||""), pars = [];
+  const base = nom.replace(/\(([^()]*)\)/g, (t,dentro)=>{
+    if(/precio|caja\s*x|blister|tira|pack|bulto/i.test(dentro)){ pars.push(dentro); return " "; }
+    return t;
+  });
+  const par = pars.join(" · ");
+  const esCaja = /^caja$/i.test(c._unidad||"") || /caja\s*x\s*1\s*unid/i.test(par);
+  if(/^(comp|caps|amp|grag)$/i.test(c._unidad||"")) return {n:1, de:"se vende suelto"};
+  if(!esCaja && /precio\s*(x\s*)?unid|precio\s*unitario/i.test(par)) return {n:1, de:"el nombre dice precio por unidad"};
+  const m = base.match(X_N) || (/precio\s*x\s*(tira|blister)/i.test(par) && par.match(/blister\s*x\s*(\d{1,4})/i));
+  if(m && +m[1]>0) return {n:+m[1], de:"del nombre (x "+m[1]+")"};
+  return {n:0, de:"no lo pude leer del nombre"};
+}
+const r4 = n => Math.round(+((+n||0)*10000).toPrecision(15))/10000;
+
+/* El cálculo de un renglón, igual para la pantalla, el texto y la planilla.
+   En Portada el tramo de la escalera se elige por CAJAS (lo pedido ÷ divisor). */
+function calc(r){
+  const c = r.elegido>=0 ? r.cands[r.elegido] : null;
+  if(!c) return null;
+  if(ST.modo!=="portada") return { c, precio:c._precio, total:c._precio*r.cant, alcanza:c._disp>=r.cant };
+  const div = r.div || (c._fuente==="historial" && r.divHist) || (c._div && c._div.n) || 0;
+  if(!div) return { c, div:0, precio:0, total:0, alcanza:false };
+  const cajas = Math.max(1, Math.ceil(r.cant/div));
+  let t = (c._tramos||[])[0] || null;
+  (c._tramos||[]).forEach(x=>{ if(x.q <= cajas) t = x; });
+  const caja = t ? t.p : 0, precio = r4(caja/div);
+  return { c, div, cajas, caja, precio, total:EYG.r2(precio*r.cant), alcanza:c._disp*div >= r.cant };
 }
 
 /* Precio SIEMPRE de la tarifa, nunca del historial: un precio viejo es peor
@@ -316,9 +571,11 @@ async function preciar(){
     const t = c.product_tmpl_id && c.product_tmpl_id[0];
     const src = (porV[c.id] && porV[c.id].length) ? porV[c.id] : (porT[t]||[]);
     const arr = src.map(i=>({q:i.min_quantity||1, p:i.fixed_price})).sort((a,b)=>a.q-b.q);
-    // el tramo que corresponde a la cantidad pedida
+    // el tramo que corresponde a la cantidad pedida (en Portada, en envases)
+    c._div = ST.modo==="portada" ? divisorDe(c) : null;
+    const pide = c._div && c._div.n ? Math.ceil(r.cant/c._div.n) : r.cant;
     let tramo = arr[0]||null;
-    arr.forEach(x=>{ if(x.q <= Math.max(1, r.cant)) tramo = x; });
+    arr.forEach(x=>{ if(x.q <= Math.max(1, pide)) tramo = x; });
     c._precio = tramo ? tramo.p : 0;
     c._tramos = arr;
     c._disp = Math.round(((c.qty_available||0) - (ST.comprometido[c.id]||0))*100)/100;
@@ -331,8 +588,9 @@ async function preciar(){
 /* ---------------- pintado ---------------- */
 function render(){
   const R = ST.renglones;
-  const listos = R.filter(r=>r.elegido>=0 && (r.cands[r.elegido]||{})._precio>0);
-  const alcanza = listos.filter(r=>{ const c=r.cands[r.elegido]; return c._disp >= r.cant; });
+  const listos = R.filter(r=>{ const k=calc(r); return k && k.precio>0; });
+  const alcanza = listos.filter(r=>calc(r).alcanza);
+  const portada = ST.modo==="portada";
   document.getElementById("res").innerHTML = `
     <h2 class="sec">2 · Revisá cada renglón <span class="ayuda">verde = resuelto · amarillo = revisar · rojo = no encontré</span></h2>
     <div class="emb">
@@ -343,6 +601,7 @@ function render(){
     </div>
     ${R.map((r,i)=>renglon(r,i)).join("")}
 
+    ${portada ? pasoPortada(listos) : `
     <h2 class="sec">3 · Llevalo a Bionexo <span class="ayuda">el formulario se llena solo; enviar lo hacés vos</span></h2>
     <div class="card pad">
       <div class="nota" style="margin-bottom:14px">
@@ -361,10 +620,19 @@ function render(){
         <div class="acciones"><button class="btn sec" id="copiar">Copiar el texto</button></div>
       </details>
       <textarea id="paquete" readonly style="position:absolute;left:-9999px;top:0">${esc(paquete())}</textarea>
-    </div>`;
+    </div>`}`;
   document.querySelectorAll(".opt[data-r]").forEach(o=>o.onclick=()=>{
-    ST.renglones[+o.dataset.r].elegido = +o.dataset.c; render();
+    const r = ST.renglones[+o.dataset.r];
+    if(r.elegido !== +o.dataset.c) r.div = 0;   // el divisor corregido era del otro producto
+    r.elegido = +o.dataset.c; render();
   });
+  document.querySelectorAll("input[data-div]").forEach(inp=>inp.onchange=()=>{
+    ST.renglones[+inp.dataset.div].div = Math.max(0, parseInt(inp.value,10)||0); render();
+  });
+  const bp=document.getElementById("bajarPortada");
+  if(bp) bp.onclick=()=>descargarPortada(bp);
+  const pi=document.getElementById("pisar");
+  if(pi) pi.onchange=()=>{ ST.portada.pisar = pi.checked; render(); };
   document.querySelectorAll("input[data-buscar]").forEach(inp=>{
     inp.onkeydown = async ev=>{
       if(ev.key!=="Enter") return;
@@ -377,6 +645,7 @@ function render(){
           {fields:["id","default_code","name","product_tmpl_id","qty_available","taxes_id"],limit:8,context:ES,order:"name"});
         ST.renglones[i].cands = (ps||[]).map(p=>({...p,_fuente:"manual"}));
         ST.renglones[i].elegido = ST.renglones[i].cands.length?0:-1;
+        ST.renglones[i].div = 0;
         await preciar(); render();
       }catch(e){ toast("No encontré nada"); inp.disabled=false; }
     };
@@ -414,41 +683,196 @@ function paquete(){
    así que el laboratorio del Maestro manda y, si no está, se usa esa cola. */
 function marcaDe(c){
   if(c._lab) return c._lab;
-  const partes = String(c.name||"").split(" - ");
+  const partes = nombreParaComprador(c).split(" - ");
   return partes.length>1 ? partes[partes.length-1].trim() : "";
 }
 
 function renglon(r,i){
-  const c = r.elegido>=0 ? r.cands[r.elegido] : null;
-  const cls = !c || !(c._precio>0) ? "no" : (c._disp < r.cant ? "duda" : "ok");
+  const k = calc(r), c = k && k.c;
+  const portada = ST.modo==="portada";
+  const cls = !k || !(k.precio>0) ? "no" : (!k.alcanza || !mismaDosis(r,c) || otraForma(r,c) ? "duda" : "ok");
+  const conservado = portada && r.yaPrecio>0 && !ST.portada.pisar;
   return `<div class="ren ${cls}">
     <div class="top">
       <div class="pide">
         <div class="q">${esc(r.prod)}</div>
-        <div class="m">Código Bionexo ${esc(r.cod||"—")}${ST.historial[String(r.cod)]?` <span class="pill neu">ya cotizado antes</span>`:""}</div>
+        <div class="m">Código ${portada?"Portada":"Bionexo"} ${esc(r.cod||"—")}${ST.historial[String(r.cod)]?` <span class="pill neu">ya cotizado antes</span>`:""}
+          ${portada && r.yaPrecio>0 ? ` <span class="pill warn">en la planilla ya había ${money(r.yaPrecio)}${conservado?" · se deja como está":" · se reemplaza"}</span>`:""}</div>
       </div>
-      <div class="cant"><b>${nf(r.cant)}</b><span>piden</span></div>
+      <div class="cant"><b>${nf(r.cant)}</b><span>${portada?"unidades":"piden"}</span></div>
     </div>
     <div class="match">
       <div class="lbl">Nuestro producto</div>
       ${r.cands && r.cands.length ? `<div class="opts">${r.cands.map((x,j)=>{
-        const falta = x._disp < r.cant;
+        const dx = portada ? (j===r.elegido && k ? k.div : (x._div && x._div.n)) || 0 : 1;
+        const falta = portada ? (dx>0 && x._disp*dx < r.cant) : x._disp < r.cant;
         return `<div class="opt ${j===r.elegido?"on":""}" data-r="${i}" data-c="${j}">
-          <div class="nm">${esc(x.name||"")}
+          <div class="nm">${esc(x.name||"")}${avisos(r,x)}
             <small>${esc(x.default_code||"sin código")}${x._fuente==="historial"?' · <b>ya usado antes para este pedido</b>':""}</small></div>
           <div class="pr">
             ${x._precio>0 ? `<b>${money(x._precio)}</b>` : `<b style="color:var(--bad)">sin precio</b>`}
-            <span>${x._iva?("IVA "+x._iva+"%"):"exento"} · stock ${nf(x._disp)}${falta?` <span class="pill bad">falta</span>`:""}</span>
+            <span>${portada?"por "+esc(x._unidad||"unidad de venta")+" · ":""}${x._iva?("IVA "+x._iva+"%"):"exento"} · stock ${nf(x._disp)}${falta?` <span class="pill bad">falta</span>`:""}</span>
           </div>
         </div>`;}).join("")}</div>`
       : `<p style="font-size:13px;color:var(--bad);margin:0">No encontré ningún producto parecido.</p>`}
       <div class="buscar"><input data-buscar="${i}" placeholder="Buscar otro producto y apretar Enter…" autocomplete="off"></div>
-      ${c && c._precio>0 ? `<p style="font-size:12.5px;color:var(--gris);margin:10px 0 0">
+      ${portada && c && c._precio>0 ? `<p style="font-size:12.5px;color:var(--gris);margin:10px 0 0;line-height:1.9">
+        Para Portada, por unidad: ${money(k.caja||c._precio)} ÷
+        <input data-div="${i}" type="number" min="0" step="1" value="${k.div||""}" placeholder="?"
+          style="width:64px;border:1px solid ${k.div?"var(--line)":"var(--bad)"};border-radius:7px;padding:3px 6px;font-family:inherit;font-size:13px;text-align:right">
+        ${k.div ? `= <b style="color:var(--ink);font-size:14px">${money(k.precio)}</b> por unidad
+          <span style="color:var(--gris2)">(${String(k.precio).replace(".",",")} en la planilla)</span>
+          · ${nf(r.cant)} u. = <b style="color:var(--ink)">${money(k.total)}</b> sin IVA
+          · ${nf(k.cajas)} ${k.div>1?"envases":"u."}${!r.div && c._div ? ` · <span style="color:var(--gris2)">divisor ${esc(c._fuente==="historial"&&r.divHist?"de la vez anterior":c._div.de)}</span>`:""}`
+        : `<b style="color:var(--bad)">¿cuántas unidades trae el envase?</b> Escribilo para poder cotizarlo.`}
+      </p>`
+      : c && c._precio>0 ? `<p style="font-size:12.5px;color:var(--gris);margin:10px 0 0">
         Total del renglón: <b style="color:var(--ink)">${money(c._precio*r.cant)}</b> sin IVA
         ${c._tramos && c._tramos.length>1 ? ` · escalera de ${c._tramos.length} tramos` : ""}
       </p>`:""}
     </div>
   </div>`;
+}
+
+/* ---------------- Portada: devolver la planilla ---------------- */
+function pasoPortada(listos){
+  const P = ST.portada, R = ST.renglones;
+  const ya = R.filter(r=>r.yaPrecio>0).length;
+  const van = listos.filter(r=>!(r.yaPrecio>0) || P.pisar).length;
+  const sin = R.length - listos.length;
+  return `
+    <h2 class="sec">3 · Llevalo a Portada <span class="ayuda">bajás la planilla y la subís vos</span></h2>
+    <div class="card pad">
+      <div class="nota" style="margin-bottom:14px">
+        <b>Descargá la planilla y subila en Portada tal cual.</b> Es la misma que bajaste, con
+        <b>PRECIO</b> (por unidad, sin IVA) y <b>Marca</b> completos en los renglones resueltos.
+        Los que quedaron sin resolver no se tocan: siguen en 0, que para Portada es «no cotizo».<br>
+        <b style="color:var(--bad)">Subirla y confirmar la oferta lo hacés vos.</b>
+      </div>
+      ${ya ? `<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-bottom:12px;cursor:pointer">
+        <input type="checkbox" id="pisar" ${P.pisar?"checked":""}>
+        Reemplazar también los ${nf(ya)} precios que ya estaban cargados en la planilla</label>` : ""}
+      <div class="acciones" style="margin-top:0;margin-bottom:14px">
+        <button class="btn" id="bajarPortada" ${van?"":"disabled"}>Descargar planilla para Portada</button>
+        <span style="font-size:12.5px;color:var(--gris)">${nf(van)} renglones con precio nuevo${ya&&!P.pisar?` · ${nf(ya)} se dejan como estaban`:""}${sin?` · ${nf(sin)} sin resolver`:""}</span>
+      </div>
+      <p id="memo" style="font-size:12px;color:var(--gris2);margin:0 0 10px"></p>
+      <details>
+        <summary style="cursor:pointer;font-size:12.5px;font-weight:700;color:var(--gris)">Ver el detalle en texto</summary>
+        <textarea class="salida" id="salida" readonly style="margin-top:10px">${esc(textoSalida())}</textarea>
+        <div class="acciones"><button class="btn sec" id="copiar">Copiar el texto</button></div>
+      </details>
+    </div>`;
+}
+
+/* Se abre de nuevo el archivo ORIGINAL cada vez (no el de la descarga
+   anterior) y se cambian sólo PRECIO y Marca de las filas resueltas. */
+async function descargarPortada(btn){
+  const P = ST.portada; if(!P) return;
+  btn.disabled = true;
+  try{
+    const zip = await JSZip.loadAsync(P.buf);
+    const doc = new DOMParser().parseFromString(await zip.file(P.sheet).async("string"),"application/xml");
+    const filas = {};
+    [...doc.getElementsByTagNameNS(NS_XL,"row")].forEach(row=>filas[row.getAttribute("r")]=row);
+    // la marca que falta se crea con el estilo de las que ya existen (celda blanca)
+    let estiloMarca = null;
+    for(const row of Object.values(filas)){
+      if(+row.getAttribute("r")<2) continue;
+      const c = celdaDe(row, P.letra.marca+row.getAttribute("r"));
+      if(c && c.getAttribute("s")){ estiloMarca = c.getAttribute("s"); break; }
+    }
+    const escritos = [];
+    ST.renglones.forEach(r=>{
+      const k = calc(r);
+      if(!k || !(k.precio>0)) return;
+      if(r.yaPrecio>0 && !P.pisar) return;
+      const row = filas[String(r.fila)];
+      if(!row) return;
+      ponerCelda(doc, row, P.letra.precio+r.fila, {num:k.precio});
+      ponerCelda(doc, row, P.letra.marca+r.fila, {txt:nombreParaComprador(k.c)}, estiloMarca);
+      escritos.push({r,k});
+    });
+    if(!escritos.length){ toast("No hay renglones nuevos con precio para escribir"); return; }
+    zip.file(P.sheet, new XMLSerializer().serializeToString(doc));
+    await sacarCalcChain(zip);
+    const blob = await zip.generateAsync({type:"blob", compression:"DEFLATE",
+      mimeType:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = P.nombre;
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+    toast(`Planilla lista: ${escritos.length} renglones con precio. Subila en Portada.`);
+    guardarEquivalencias(escritos);
+  }catch(e){
+    toast("No pude armar la planilla: "+String(e.message||e));
+  }finally{ btn.disabled = false; }
+}
+
+/* Lo que lee el hospital en Marca: el nombre de EyG sin las notas internas
+   («(Precio x tira · Caja x 20 tiras)», «- SE VENDE POR CAJA CERRADA»). Es
+   como lo escribe la comercial a mano: «AMLODIPINA 10 mg x 10 comp - ROSPAW». */
+function nombreParaComprador(c){
+  return String(c.name||"")
+    .replace(/\(([^()]*)\)/g, (t,dentro)=>/precio|caja\s*x|blister|tira|pack|bulto/i.test(dentro) ? " " : t)
+    .replace(/-\s*SE VENDE POR CAJA CERRADA/ig, " ")
+    .replace(/\s+/g," ").replace(/\s+-\s*$/,"").trim();
+}
+
+const colNum = ref => String(ref).replace(/\d+$/,"").split("").reduce((n,ch)=>n*26+ch.charCodeAt(0)-64,0);
+function celdaDe(row, ref){
+  return [...row.getElementsByTagNameNS(NS_XL,"c")].find(x=>x.getAttribute("r")===ref) || null;
+}
+/* Pone un número o un texto en la celda, sacando la fórmula si había (las que
+   escribe la comercial a mano, tipo =505.88/10). Si la celda no existe se
+   crea en su lugar: dentro de la fila las celdas van en orden de columna. */
+function ponerCelda(doc, row, ref, val, estilo){
+  let c = celdaDe(row, ref);
+  if(!c){
+    c = doc.createElementNS(NS_XL,"c"); c.setAttribute("r",ref);
+    if(estilo) c.setAttribute("s",estilo);
+    const sig = [...row.getElementsByTagNameNS(NS_XL,"c")].find(x=>colNum(x.getAttribute("r"))>colNum(ref));
+    row.insertBefore(c, sig||null);
+  }
+  while(c.firstChild) c.removeChild(c.firstChild);
+  if(val.txt!=null){
+    c.setAttribute("t","inlineStr");
+    const is = doc.createElementNS(NS_XL,"is"), t = doc.createElementNS(NS_XL,"t");
+    t.textContent = val.txt; is.appendChild(t); c.appendChild(is);
+  }else{
+    c.removeAttribute("t");
+    const v = doc.createElementNS(NS_XL,"v"); v.textContent = String(val.num); c.appendChild(v);
+  }
+}
+/* calcChain es el orden de recálculo que guarda Excel. Si queda apuntando a
+   fórmulas que ya no están, Excel ofrece «reparar» el archivo; sin él, lo
+   arma de nuevo al abrir. */
+async function sacarCalcChain(zip){
+  if(!zip.file("xl/calcChain.xml")) return;
+  zip.remove("xl/calcChain.xml");
+  const ct = zip.file("[Content_Types].xml");
+  if(ct) zip.file("[Content_Types].xml", (await ct.async("string")).replace(/<Override[^>]*calcChain[^>]*\/>/g,""));
+  const rp = "xl/_rels/workbook.xml.rels", rl = zip.file(rp);
+  if(rl) zip.file(rp, (await rl.async("string")).replace(/<Relationship[^>]*calcChain[^>]*\/>/g,""));
+}
+
+/* Lo elegido queda guardado por código del comprador, con el divisor: el
+   próximo pedido de Portada propone el mismo producto. No frena la descarga
+   si falla, pero lo avisa. */
+async function guardarEquivalencias(escritos){
+  const memo = document.getElementById("memo");
+  const filas = escritos.filter(x=>x.r.cod && x.k.c.default_code).map(({r,k})=>({
+    plataforma:"portada", cod_comprador:r.cod, cod_externo:r.externo||null,
+    producto_comprador:r.prod, cod_eyg:k.c.default_code, producto_eyg:k.c.name||null,
+    divisor:k.div, ultimo_pedido:ST.pedido||null, actualizado_en:new Date().toISOString() }));
+  if(!filas.length) return;
+  try{
+    const { error } = await EYG.supa().from("plataforma_equivalencias").upsert(filas, {onConflict:"plataforma,cod_comprador"});
+    if(error) throw new Error(error.message);
+    if(memo) memo.textContent = `Guardé ${filas.length} elecciones: el próximo pedido de Portada las propone solas.`;
+  }catch(e){
+    if(memo) memo.textContent = "La planilla salió bien, pero no pude guardar las elecciones para la próxima ("+String(e.message||e)+").";
+  }
 }
 
 /* Lo que se copia: una línea por renglón, con lo que hay que escribir en el
@@ -457,14 +881,14 @@ function renglon(r,i){
 function textoSalida(){
   const ok=[], faltan=[];
   ST.renglones.forEach(r=>{
-    const c = r.elegido>=0 ? r.cands[r.elegido] : null;
-    if(c && c._precio>0){
-      ok.push(`${r.cod||"—"} · ${r.prod}\n   precio: ${String(c._precio).replace(".",",")}   marca: ${(c.name||"").split(" - ").pop()}   nuestro: ${c.default_code||""}   x${r.cant} = ${money(c._precio*r.cant)}${c._disp<r.cant?"   ⚠ stock "+nf(c._disp):""}`);
+    const k = calc(r), c = k && k.c;
+    if(k && k.precio>0){
+      ok.push(`${r.cod||"—"} · ${r.prod}\n   precio: ${String(k.precio).replace(".",",")}   marca: ${(c.name||"").split(" - ").pop()}   nuestro: ${c.default_code||""}   x${r.cant} = ${money(k.total)}${!k.alcanza?"   ⚠ stock "+nf(c._disp):""}`);
     } else {
       faltan.push(`${r.cod||"—"} · ${r.prod}`);
     }
   });
-  let t = ok.length ? "PARA CARGAR EN BIONEXO\n\n"+ok.join("\n\n") : "Todavía no hay renglones resueltos.";
+  let t = ok.length ? "PARA CARGAR EN "+(ST.modo==="portada"?"PORTADA (precio por unidad)":"BIONEXO")+"\n\n"+ok.join("\n\n") : "Todavía no hay renglones resueltos.";
   if(faltan.length) t += "\n\n\nSIN RESOLVER — revisar antes de enviar:\n"+faltan.map(x=>"   "+x).join("\n");
   return t;
 }
