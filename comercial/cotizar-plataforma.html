@@ -74,6 +74,7 @@
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="reconocer.js?v=3"></script>
 <script src="../assets/core.js?v=122"></script>
 <script>
 /* ============================================================
@@ -124,6 +125,7 @@ const LISTA_DEF = 5;
 
 const ST = { lista:LISTA_DEF, listas:[], renglones:[], historial:{}, comprometido:{}, taxmap:{}, cargando:false,
   modo:"bionexo",   // "portada" cuando se subió la planilla
+  incluirAmarillos:false,   // llevar a la plataforma también lo no confirmado (no recomendado)
   portada:null };   // {nombre, buf, sheet, filas}
 
 function toast(m){ let t=document.getElementById("toast"); if(!t){t=document.createElement("div");t.id="toast";document.body.appendChild(t);} t.textContent=m; t.classList.add("on"); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove("on"),2600); }
@@ -249,23 +251,41 @@ async function resolver(rens){
   const res = document.getElementById("res");
   res.innerHTML = `<div class="spin"></div><p class="cargando">Buscando en el catálogo de EyG…</p>`;
   try{
+    let rec = false;
+    try{ rec = await prepararReconocer(rens); }catch(e){ console.warn("reconocer", e); }
     await cargarHistorial(rens.map(r=>r.cod).filter(Boolean));
     // De a tandas: EYG.rpc junta en un lote las llamadas que salen juntas, y
     // un pedido de Portada trae 70 renglones.
     for(let i=0;i<rens.length;i+=10){
-      await Promise.all(rens.slice(i,i+10).map(async r=>{ r.cands = await candidatos(r); r.elegido = r.cands.length ? 0 : -1; }));
+      await Promise.all(rens.slice(i,i+10).map(async r=>{
+        r.confirmado = false;
+        const mismos = rec ? reconocidos(r) : [];
+        // si el reconocedor encontró el medicamento, la búsqueda por nombre sobra
+        const otros = await candidatos(r, mismos.length>0);
+        otros.forEach(c=>Object.assign(c, c._fuente==="historial" ? nivelHistorial(r,c) : nivelTexto(r,c)));
+        const vistos = new Set(otros.map(c=>c.id));
+        r.cands = otros.filter(c=>c._fuente==="historial").concat(mismos.filter(c=>!vistos.has(c.id)), otros.filter(c=>c._fuente!=="historial"));
+        r.elegido = r.cands.length ? 0 : -1;
+      }));
     }
     ST.renglones = rens;
     await preciar();
-    /* Se propone el primero que tiene precio en la lista y stock; si ninguno
-       tiene stock, el primero con precio. Proponer uno sin precio es dejar el
-       renglón sin cotizar aunque haya otro bueno en la lista. */
+    /* Entre los candidatos: primero los que tienen precio; después el más
+       confiable (confirmado antes, mismo medicamento, a revisar, por nombre);
+       entre iguales, el que tiene stock para lo pedido y el más barato por
+       unidad. Son licitaciones: gana el precio (pedido de Diego, 5/11/2026). */
     rens.forEach(r=>{
-      const cs = r.cands||[], bien = c=>mismaDosis(r,c) && !otraForma(r,c);
-      const pruebas = [c=>c._precio>0 && bien(c) && c._disp>0, c=>c._precio>0 && bien(c), c=>c._precio>0 && c._disp>0, c=>c._precio>0];
-      let i = -1;
-      for(const p of pruebas){ i = cs.findIndex(p); if(i>=0) break; }
-      r.elegido = cs.length ? Math.max(0,i) : -1;
+      const cs = r.cands||[];
+      const clave = c => {
+        const div = ST.modo==="portada" ? ((c._div&&c._div.n)||0) : 1;
+        const unit = c._precio>0 && div ? c._precio/div : Infinity;
+        const stock = c._disp*(div||1) >= r.cant ? 0 : c._disp>0 ? 1 : 2;
+        return [c._precio>0?0:1, NIVEL_ORDEN[c._nivel]??3, stock, unit];
+      };
+      cs.sort((a,b)=>{ const x=clave(a), y=clave(b); for(let i=0;i<x.length;i++) if(x[i]!==y[i]) return x[i]-y[i]; return 0; });
+      r.elegido = cs.length ? 0 : -1;
+      // lo que el reconocedor sabe que es OTRO medicamento (otra dosis, otra droga) no se propone solo
+      if(cs.length && cs[0]._nivel==="texto" && (cs[0]._motivos||[]).length) r.elegido = -1;
     });
     render();
   }catch(e){
@@ -387,9 +407,9 @@ async function cargarHistorial(codigos){
 
 /* Candidatos en Odoo. Primero el que ya usamos antes; después, búsqueda por
    las palabras más largas del nombre pedido (las cortas no distinguen nada). */
-async function candidatos(r){
+async function candidatos(r, soloHistorial){
   const out=[], vistos=new Set();
-  const campos=["id","default_code","name","product_tmpl_id","qty_available","taxes_id"];
+  const campos=["id","default_code","name","product_tmpl_id","qty_available","taxes_id","monodrug","categ_id"];
 
   const prev = ST.historial[String(r.cod)] || [];
   const codsPrev = [...new Set(prev.map(x=>x.cod_eyg).filter(Boolean))];
@@ -402,6 +422,7 @@ async function candidatos(r){
     const d = prev.find(x=>x.divisor>0);
     if(d) r.divHist = +d.divisor;
   }
+  if(soloHistorial) return out;
 
   /* Las palabras de forma (COMPRIMIDOS, CAPSULAS…) no distinguen nada y, por
      largas, quedaban primeras: «ACIDO FOLICO 5 MG COMPRIMIDOS» terminaba
@@ -473,13 +494,101 @@ function mismaDosis(r, c){
   if(!r.dosis) return true;
   return new RegExp("(^|[^0-9.,])"+r.dosis.replace(/[.,]/,"[.,]")+"\\s*(MG|MCG|ML|UI|GR?)\\b","i").test(c.name||"");
 }
-/* Pidieron algo oral sólido y el producto es inyectable, jarabe, gotas… */
-function otraForma(r, c){
-  if(!/\b(COMP|COMPRIMIDOS?|CAPS|CAPSULAS?|TAB|TABLETAS?|GRAGEAS?)\b/i.test(r.prod||"")) return false;
-  return /\b(amp|ampollas?|iny|inyectable|jbe|jarabe|gotas|gotero|susp|sol\.?|crema|ung|f\/a|frasco)\b/i.test(c.name||"");
+
+/* ---------------- reconocer: el mismo medicamento con otro nombre ----------------
+   La búsqueda por palabras no alcanza para confiar: con el pedido 84928 dejó en
+   verde Hidroclorotiazida 12,5 → Enromic D (losartán + hidroclorotiazida) y
+   Levotiroxina 100 mcg → un producto de «100 mg». comercial/reconocer.js compara
+   QUÉ ES cada cosa (droga, dosis, forma) y sólo da verde a un equivalente
+   farmacéutico. Medido el 5/11/2026 contra 769 pedidos de Bionexo que cotizaron
+   las comerciales: 306 verdes, ninguno equivocado (en 23 la comercial había
+   cotizado otra dosis u otra composición y el verde era el correcto).
+   El catálogo es lo que tiene precio en la lista elegida; cada producto lleva
+   la droga cargada en Odoo (monodrug), que es el dato curado. */
+const REC = { lista:null, mono:null, catalogo:null, dic:null, porDroga:null };
+const textoPedido = r => [r.prod, r.presComp, r.marcaComp].filter(Boolean).join(" ");
+
+async function prepararReconocer(rens){
+  if(!window.RECONOCER) return false;
+  const campos=["id","default_code","name","product_tmpl_id","qty_available","taxes_id","monodrug","categ_id"];
+  if(!REC.mono){
+    const md = await EYG.rpc("product.template.monodrug","search_read",[[]],{fields:["id","description"],limit:0,context:ES});
+    REC.mono = (md||[]).map(x=>[x.id, x.description]);
+  }
+  /* Las marcas que nombra el pedido (Plavix, Clexane, Aspirineta) se buscan en
+     Odoo en el momento, también entre los archivados: sólo las palabras que no
+     son drogas. No se guarda ningún dato de AlfaBeta en el repo. */
+  const base = RECONOCER.armarDiccionario(REC.mono, []);
+  const palabras = new Set();
+  rens.forEach(r=>RECONOCER.tokens(textoPedido(r)).forEach(w=>{ if(w.length>=5 && !/\d/.test(w) && !base.vocab.has(w)) palabras.add(w); }));
+  const ps = [...palabras].slice(0,150); let marcas=[];
+  for(let i=0;i<ps.length;i+=30){
+    const ws = ps.slice(i,i+30);
+    const dom = [["monodrug","!=",false]].concat(Array(ws.length-1).fill("|"), ws.map(w=>["name","=ilike",w+"%"]));
+    try{
+      const r = await EYG.rpc("product.product","search_read",[dom],{fields:["name","monodrug"],limit:3000,context:Object.assign({active_test:false},ES)});
+      marcas = marcas.concat((r||[]).map(p=>[p.name, p.monodrug[0]]));
+    }catch(e){}
+  }
+  REC.dic = RECONOCER.armarDiccionario(REC.mono, marcas);
+  if(REC.lista !== ST.lista){
+    const items = await EYG.rpc("product.pricelist.item","search_read",
+      [[["pricelist_id","=",ST.lista],["compute_price","=","fixed"],["fixed_price",">",0]]],{fields:["product_id","product_tmpl_id"],limit:0,context:ES});
+    const vids=[...new Set((items||[]).filter(x=>x.product_id).map(x=>x.product_id[0]))];
+    const tids=[...new Set((items||[]).filter(x=>!x.product_id&&x.product_tmpl_id).map(x=>x.product_tmpl_id[0]))];
+    const cat=[], vistos=new Set();
+    const traer = async dom => { const r = await EYG.rpc("product.product","search_read",[[["active","=",true],["sale_ok","=",true]].concat(dom)],{fields:campos,limit:0,context:ES});
+      (r||[]).forEach(p=>{ if(!vistos.has(p.id)){ vistos.add(p.id); cat.push(p); } }); };
+    for(let i=0;i<vids.length;i+=2000) await traer([["id","in",vids.slice(i,i+2000)]]);
+    for(let i=0;i<tids.length;i+=2000) await traer([["product_tmpl_id","in",tids.slice(i,i+2000)]]);
+    REC.catalogo = cat; REC.lista = ST.lista;
+  }
+  REC.porDroga = {};
+  REC.catalogo.forEach(p=>{
+    p._ficha = fichaProducto(p);
+    const k = p._ficha.drogas.join("+"); if(k) (REC.porDroga[k]=REC.porDroga[k]||[]).push(p);
+  });
+  return true;
 }
-/* Lo que hay que mirar antes de mandarlo: otra dosis u otra forma. */
-const avisos = (r, c) => (mismaDosis(r,c)?"":` <span class="pill warn">otra dosis</span>`)+(otraForma(r,c)?` <span class="pill warn">otra forma</span>`:"");
+const fichaProducto = p => RECONOCER.ficha(p.name, REC.dic, {monodrogaId:p.monodrug?p.monodrug[0]:null, categoria:p.categ_id?p.categ_id[1]:""});
+
+/* Los del catálogo que son el mismo medicamento (verde) o casi (a revisar). */
+function reconocidos(r){
+  r.ficha = RECONOCER.ficha(textoPedido(r), REC.dic);
+  const k = r.ficha.drogas.join("+");
+  if(!k) return [];
+  return (REC.porDroga[k]||[]).map(p=>{
+    const c = RECONOCER.comparar(r.ficha, p._ficha);
+    return c.nivel==="distinto" ? null : {...p, _ficha:undefined, _fuente:"reconocido", _nivel:c.nivel, _motivos:c.motivos};
+  }).filter(Boolean);
+}
+/* Lo que se usó antes para ese código se vuelve a comparar: si no es el mismo
+   medicamento (pasó: Hioscina cotizada con Hioscina + Dipirona) no va en verde. */
+function nivelHistorial(r, c){
+  if(!r.ficha || !REC.dic) return {_nivel:"confirmado", _motivos:[]};
+  const cmp = RECONOCER.comparar(r.ficha, fichaProducto(c));
+  return cmp.nivel==="distinto" ? {_nivel:"revisar", _motivos:["se usó antes, pero: "+cmp.motivos[0]]} : {_nivel:"confirmado", _motivos:[]};
+}
+/* Lo encontrado por parecido de nombre nunca es verde; si se puede, se dice por qué no es el mismo. */
+function nivelTexto(r, c){
+  if(!r.ficha || !r.ficha.drogas.length || !REC.dic) return {_nivel:"texto", _motivos:[]};
+  const cmp = RECONOCER.comparar(r.ficha, fichaProducto(c));
+  return cmp.nivel==="distinto" ? {_nivel:"texto", _motivos:cmp.motivos} : {_nivel:"revisar", _motivos:cmp.motivos.length?cmp.motivos:["no tiene precio en esta lista"]};
+}
+const NIVEL_ORDEN = {confirmado:0, igual:1, revisar:2, texto:3};
+/* Verde = confirmado antes o el mismo medicamento; también lo que la comercial tocó a mano. */
+function nivelRenglon(r){
+  const c = r.elegido>=0 ? r.cands[r.elegido] : null;
+  if(!c) return "no";
+  return (r.confirmado || c._nivel==="confirmado" || c._nivel==="igual") ? "ok" : "duda";
+}
+function pillNivel(x){
+  if(x._nivel==="confirmado") return ` <span class="pill ok">confirmado antes</span>`;
+  if(x._nivel==="igual") return ` <span class="pill ok">mismo medicamento</span>`;
+  if(x._nivel==="revisar") return (x._motivos||[]).map(m=>` <span class="pill warn">${esc(m)}</span>`).join("");
+  if(x._motivos && x._motivos.length) return ` <span class="pill bad">${esc(x._motivos[0])}</span>`;
+  return ` <span class="pill bad">no lo reconocí: parecido por el nombre</span>`;
+}
 
 /* ---------------- Portada: precio por unidad ----------------
    Cuántas de las unidades que pide Portada trae la unidad de venta de Odoo.
@@ -586,17 +695,30 @@ async function preciar(){
 }
 
 /* ---------------- pintado ---------------- */
+/* VERDE = va solo: es el mismo medicamento (o ya lo confirmó una comercial),
+   tiene precio y alcanza el stock. Todo lo demás espera que alguien toque el
+   producto para confirmarlo, y hasta entonces NO se lleva a la plataforma
+   (salvo que se tilde incluir los amarillos). Así se puede confiar en lo que
+   sale sin revisarlo renglón por renglón. */
+function vaSolo(r){
+  const k = calc(r);
+  if(!k || !(k.precio>0)) return false;
+  if(r.confirmado) return true;
+  return nivelRenglon(r)==="ok" && k.alcanza;
+}
+const seLleva = r => { const k=calc(r); return !!(k && k.precio>0) && (vaSolo(r) || !!ST.incluirAmarillos); };
+
 function render(){
   const R = ST.renglones;
   const listos = R.filter(r=>{ const k=calc(r); return k && k.precio>0; });
-  const alcanza = listos.filter(r=>calc(r).alcanza);
+  const verdes = R.filter(vaSolo);
   const portada = ST.modo==="portada";
   document.getElementById("res").innerHTML = `
-    <h2 class="sec">2 · Revisá cada renglón <span class="ayuda">verde = resuelto · amarillo = revisar · rojo = no encontré</span></h2>
+    <h2 class="sec">2 · Revisá los amarillos <span class="ayuda">verde = el mismo medicamento, va solo · amarillo = tocá el producto para confirmarlo · rojo = no lo encontré</span></h2>
     <div class="emb">
       <div class="e"><div class="n">${nf(R.length)}</div><div class="t">Renglones pedidos</div></div>
-      <div class="e"><div class="n t">${nf(listos.length)}</div><div class="t">Con producto y precio</div></div>
-      <div class="e"><div class="n ${alcanza.length<listos.length?"b":""}">${nf(alcanza.length)}</div><div class="t">Con stock suficiente</div></div>
+      <div class="e"><div class="n t">${nf(verdes.length)}</div><div class="t">Verdes: van solos</div></div>
+      <div class="e"><div class="n ${listos.length>verdes.length?"b":""}">${nf(listos.length-verdes.length)}</div><div class="t">Amarillos: a confirmar</div></div>
       <div class="e"><div class="n x">${nf(R.length-listos.length)}</div><div class="t">Sin resolver</div></div>
     </div>
     ${R.map((r,i)=>renglon(r,i)).join("")}
@@ -606,13 +728,14 @@ function render(){
     <div class="card pad">
       <div class="nota" style="margin-bottom:14px">
         <b>Copiá esto, volvé al pedido en Bionexo y tocá «Llenar formulario» en el favorito.</b>
-        Se completan precio, marca y presentación de cada renglón, y se tildan los que cotizamos.
-        Los que quedaron sin resolver <b>no se tocan</b>.<br>
+        Se completan precio, marca y presentación de los verdes y de los que confirmaste, y se tildan.
+        Los demás <b>no se tocan</b>.<br>
         <b style="color:var(--bad)">El botón de enviar no se aprieta solo.</b> Revisás en pantalla y enviás vos.
       </div>
+      ${checkAmarillos(listos.length-verdes.length)}
       <div class="acciones" style="margin-top:0;margin-bottom:14px">
         <button class="btn" id="copiarPaq">Copiar para llenar en Bionexo</button>
-        <span style="font-size:12.5px;color:var(--gris)">${nf(listos.length)} de ${nf(R.length)} renglones listos</span>
+        <span style="font-size:12.5px;color:var(--gris)">${nf(R.filter(seLleva).length)} de ${nf(R.length)} renglones van</span>
       </div>
       <details>
         <summary style="cursor:pointer;font-size:12.5px;font-weight:700;color:var(--gris)">Ver el detalle en texto (por si preferís cargarlo a mano)</summary>
@@ -624,8 +747,13 @@ function render(){
   document.querySelectorAll(".opt[data-r]").forEach(o=>o.onclick=()=>{
     const r = ST.renglones[+o.dataset.r];
     if(r.elegido !== +o.dataset.c) r.div = 0;   // el divisor corregido era del otro producto
-    r.elegido = +o.dataset.c; render();
+    r.elegido = +o.dataset.c;
+    r.confirmado = true;                         // tocarlo es confirmarlo: lo eligió una persona
+    render();
   });
+  document.querySelectorAll("button[data-desconf]").forEach(b=>b.onclick=()=>{ ST.renglones[+b.dataset.desconf].confirmado=false; render(); });
+  const am=document.getElementById("amarillos");
+  if(am) am.onchange=()=>{ ST.incluirAmarillos = am.checked; render(); };
   document.querySelectorAll("input[data-div]").forEach(inp=>inp.onchange=()=>{
     ST.renglones[+inp.dataset.div].div = Math.max(0, parseInt(inp.value,10)||0); render();
   });
@@ -642,10 +770,12 @@ function render(){
       try{
         const ps = await EYG.rpc("product.product","search_read",
           [[["name","ilike",q],["active","=",true]]],
-          {fields:["id","default_code","name","product_tmpl_id","qty_available","taxes_id"],limit:8,context:ES,order:"name"});
-        ST.renglones[i].cands = (ps||[]).map(p=>({...p,_fuente:"manual"}));
-        ST.renglones[i].elegido = ST.renglones[i].cands.length?0:-1;
-        ST.renglones[i].div = 0;
+          {fields:["id","default_code","name","product_tmpl_id","qty_available","taxes_id","monodrug","categ_id"],limit:8,context:ES,order:"name"});
+        const r = ST.renglones[i];
+        r.cands = (ps||[]).map(p=>{ const c={...p,_fuente:"manual"}; return Object.assign(c, nivelTexto(r,c)); });
+        r.elegido = r.cands.length?0:-1;
+        r.div = 0;
+        r.confirmado = false;                      // lo buscado a mano también se confirma tocándolo
         await preciar(); render();
       }catch(e){ toast("No encontré nada"); inp.disabled=false; }
     };
@@ -668,7 +798,7 @@ function paquete(){
   const r = {};
   ST.renglones.forEach(x=>{
     const c = x.elegido>=0 ? x.cands[x.elegido] : null;
-    if(!c || !(c._precio>0) || !x.cod) return;
+    if(!c || !(c._precio>0) || !x.cod || !seLleva(x)) return;
     r[x.cod] = {
       pr: String(Math.round(c._precio*10000)/10000).replace(".",","),
       ma: marcaDe(c),
@@ -690,8 +820,11 @@ function marcaDe(c){
 function renglon(r,i){
   const k = calc(r), c = k && k.c;
   const portada = ST.modo==="portada";
-  const cls = !k || !(k.precio>0) ? "no" : (!k.alcanza || !mismaDosis(r,c) || otraForma(r,c) ? "duda" : "ok");
+  const cls = !k || !(k.precio>0) ? "no" : vaSolo(r) ? "ok" : "duda";
   const conservado = portada && r.yaPrecio>0 && !ST.portada.pisar;
+  const estado = cls==="ok"
+    ? (r.confirmado ? `<span class="pill ok">confirmado por vos</span> <button class="btn sec" data-desconf="${i}" style="padding:2px 9px;font-size:11px">deshacer</button>` : `<span class="pill ok">va solo</span>`)
+    : cls==="duda" ? `<span class="pill warn">tocá el producto para confirmarlo${k && !k.alcanza ? " (falta stock)" : ""}</span>` : "";
   return `<div class="ren ${cls}">
     <div class="top">
       <div class="pide">
@@ -702,12 +835,12 @@ function renglon(r,i){
       <div class="cant"><b>${nf(r.cant)}</b><span>${portada?"unidades":"piden"}</span></div>
     </div>
     <div class="match">
-      <div class="lbl">Nuestro producto</div>
+      <div class="lbl">Nuestro producto ${estado}</div>
       ${r.cands && r.cands.length ? `<div class="opts">${r.cands.map((x,j)=>{
         const dx = portada ? (j===r.elegido && k ? k.div : (x._div && x._div.n)) || 0 : 1;
         const falta = portada ? (dx>0 && x._disp*dx < r.cant) : x._disp < r.cant;
         return `<div class="opt ${j===r.elegido?"on":""}" data-r="${i}" data-c="${j}">
-          <div class="nm">${esc(x.name||"")}${avisos(r,x)}
+          <div class="nm">${esc(x.name||"")}${pillNivel(x)}
             <small>${esc(x.default_code||"sin código")}${x._fuente==="historial"?' · <b>ya usado antes para este pedido</b>':""}</small></div>
           <div class="pr">
             ${x._precio>0 ? `<b>${money(x._precio)}</b>` : `<b style="color:var(--bad)">sin precio</b>`}
@@ -735,26 +868,34 @@ function renglon(r,i){
 }
 
 /* ---------------- Portada: devolver la planilla ---------------- */
+function checkAmarillos(n){
+  if(!n && !ST.incluirAmarillos) return "";
+  return `<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-bottom:12px;cursor:pointer">
+    <input type="checkbox" id="amarillos" ${ST.incluirAmarillos?"checked":""}>
+    Llevar también los ${nf(n)} amarillos sin confirmar <span style="color:var(--gris2)">(no recomendado: no son seguros)</span></label>`;
+}
 function pasoPortada(listos){
   const P = ST.portada, R = ST.renglones;
   const ya = R.filter(r=>r.yaPrecio>0).length;
-  const van = listos.filter(r=>!(r.yaPrecio>0) || P.pisar).length;
+  const van = listos.filter(r=>seLleva(r) && (!(r.yaPrecio>0) || P.pisar)).length;
+  const amar = listos.filter(r=>!vaSolo(r)).length;
   const sin = R.length - listos.length;
   return `
     <h2 class="sec">3 · Llevalo a Portada <span class="ayuda">bajás la planilla y la subís vos</span></h2>
     <div class="card pad">
       <div class="nota" style="margin-bottom:14px">
         <b>Descargá la planilla y subila en Portada tal cual.</b> Es la misma que bajaste, con
-        <b>PRECIO</b> (por unidad, sin IVA) y <b>Marca</b> completos en los renglones resueltos.
-        Los que quedaron sin resolver no se tocan: siguen en 0, que para Portada es «no cotizo».<br>
+        <b>PRECIO</b> (por unidad, sin IVA) y <b>Marca</b> completos en los verdes y en los que confirmaste.
+        El resto no se toca: sigue en 0, que para Portada es «no cotizo».<br>
         <b style="color:var(--bad)">Subirla y confirmar la oferta lo hacés vos.</b>
       </div>
+      ${checkAmarillos(amar)}
       ${ya ? `<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-bottom:12px;cursor:pointer">
         <input type="checkbox" id="pisar" ${P.pisar?"checked":""}>
         Reemplazar también los ${nf(ya)} precios que ya estaban cargados en la planilla</label>` : ""}
       <div class="acciones" style="margin-top:0;margin-bottom:14px">
         <button class="btn" id="bajarPortada" ${van?"":"disabled"}>Descargar planilla para Portada</button>
-        <span style="font-size:12.5px;color:var(--gris)">${nf(van)} renglones con precio nuevo${ya&&!P.pisar?` · ${nf(ya)} se dejan como estaban`:""}${sin?` · ${nf(sin)} sin resolver`:""}</span>
+        <span style="font-size:12.5px;color:var(--gris)">${nf(van)} renglones con precio nuevo${amar&&!ST.incluirAmarillos?` · ${nf(amar)} amarillos sin confirmar quedan afuera`:""}${ya&&!P.pisar?` · ${nf(ya)} se dejan como estaban`:""}${sin?` · ${nf(sin)} sin resolver`:""}</span>
       </div>
       <p id="memo" style="font-size:12px;color:var(--gris2);margin:0 0 10px"></p>
       <details>
@@ -785,7 +926,7 @@ async function descargarPortada(btn){
     const escritos = [];
     ST.renglones.forEach(r=>{
       const k = calc(r);
-      if(!k || !(k.precio>0)) return;
+      if(!k || !(k.precio>0) || !seLleva(r)) return;
       if(r.yaPrecio>0 && !P.pisar) return;
       const row = filas[String(r.fila)];
       if(!row) return;
@@ -815,7 +956,7 @@ async function descargarPortada(btn){
 function nombreParaComprador(c){
   return String(c.name||"")
     .replace(/\(([^()]*)\)/g, (t,dentro)=>/precio|caja\s*x|blister|tira|pack|bulto/i.test(dentro) ? " " : t)
-    .replace(/-\s*SE VENDE POR CAJA CERRADA/ig, " ")
+    .replace(/-?\s*(SE\s+)?VEN(DE|TA)\s+(POR\s+)?CAJA\s+CERRADA/ig, " ")
     .replace(/\s+/g," ").replace(/\s+-\s*$/,"").trim();
 }
 
@@ -857,11 +998,12 @@ async function sacarCalcChain(zip){
 }
 
 /* Lo elegido queda guardado por código del comprador, con el divisor: el
-   próximo pedido de Portada propone el mismo producto. No frena la descarga
-   si falla, pero lo avisa. */
+   próximo pedido de Portada propone el mismo producto. Sólo lo seguro (verde
+   o confirmado a mano): un amarillo llevado sin mirar no se aprende. No frena
+   la descarga si falla, pero lo avisa. */
 async function guardarEquivalencias(escritos){
   const memo = document.getElementById("memo");
-  const filas = escritos.filter(x=>x.r.cod && x.k.c.default_code).map(({r,k})=>({
+  const filas = escritos.filter(x=>x.r.cod && x.k.c.default_code && vaSolo(x.r)).map(({r,k})=>({
     plataforma:"portada", cod_comprador:r.cod, cod_externo:r.externo||null,
     producto_comprador:r.prod, cod_eyg:k.c.default_code, producto_eyg:k.c.name||null,
     divisor:k.div, ultimo_pedido:ST.pedido||null, actualizado_en:new Date().toISOString() }));
