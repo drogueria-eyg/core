@@ -2186,12 +2186,21 @@ async function darAccesoPortal(id){
   const box=document.getElementById("portalbox"); if(box) box.innerHTML='<span class="muted">Creando acceso…</span>';
   try{
     const p=(await rpc("res.partner","read",[[id]],{fields:["user_ids","name","email"]}))[0];
+    let reactivado="";
     if(!(p.user_ids&&p.user_ids.length)){
-      await rpc("res.users","create",[{login:(p.email||"").trim(),name:p.name||c.nombre,partner_id:id,groups_id:[[6,0,[GRUPO_PORTAL]]]}],{context:{no_reset_password:true,lang:"es_AR"}});
+      // Si ya tuvo acceso y se lo revocaron, su usuario está archivado: se reactiva. Crear otro con el mismo correo choca en Odoo (caso Fcia. Alesso, 4/11).
+      const login=(p.email||"").trim();
+      const prev=await rpc("res.users","search_read",[["|",["partner_id","=",id],["login","=ilike",login]]],{fields:["partner_id","login"],order:"id desc",limit:10,context:{active_test:false}});
+      const mios=prev.filter(u=>u.partner_id&&u.partner_id[0]===id);
+      const mio=mios.find(u=>u.login.toLowerCase()===login.toLowerCase())||mios[0];
+      const ajeno=prev.find(u=>!(u.partner_id&&u.partner_id[0]===id));
+      if(mio){ await rpc("res.users","write",[[mio.id],{active:true}],{context:{lang:"es_AR"}}); reactivado=mio.login; }
+      else if(ajeno) throw new Error("el correo "+login+" ya es el usuario de otro contacto ("+(ajeno.partner_id?ajeno.partner_id[1]:"sin contacto")+")");
+      else await rpc("res.users","create",[{login,name:p.name||c.nombre,partner_id:id,groups_id:[[6,0,[GRUPO_PORTAL]]]}],{context:{no_reset_password:true,lang:"es_AR"}});
     }
     await rpc("res.partner","signup_prepare",[[id]]);
     const p2=(await rpc("res.partner","read",[[id]],{fields:["signup_url"]}))[0];
-    toast("✅ Acceso al portal creado");
+    toast(reactivado?"✅ Acceso reactivado · entra con "+reactivado:"✅ Acceso al portal creado");
     await cargarPortal(id); mostrarLinkPortal(id, p2.signup_url);
   }catch(e){ toast("⚠ No se pudo dar acceso: "+(e.message||e)); await cargarPortal(id); }
 }
