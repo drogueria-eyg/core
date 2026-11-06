@@ -3274,19 +3274,24 @@ async function cargarPortalEstado(){
     ST.portal=M; if(document.getElementById("lista")) lista();
   }catch(e){}
 }
-/* ===== Acceso al portal (web de Odoo): SOLO CONSULTA (Diego, 4/11/2026) =====
-   Desde el Core ya no se da, se cambia ni se revoca el acceso: había dos caminos y se
-   pisaban (un «Revocar acceso» del 3/11 dejó a Fcia. Alesso sin poder entrar ni recuperar
-   la contraseña). El único camino es el formulario /alta → bandeja «Altas de clientes»
-   (aprueban Germán o Bárbara: controla CUIT, habilitación y contacto contra intrusos), y la
-   contraseña la recupera la farmacia sola con «¿Olvidaste tu contraseña?». Acá se ve el
-   estado y se le pasa el link que corresponde. El correo de la ficha tampoco se cambia si
-   tiene acceso: es su usuario y adonde le llega el enlace de la contraseña. */
+/* ===== Acceso al portal (web de Odoo) — Diego, 4/11 y 6/11/2026 =====
+   UN SOLO CAMINO para DAR acceso: el formulario /alta → bandeja «Altas de clientes» (aprueban
+   Germán o Bárbara: controla CUIT, habilitación y contacto contra intrusos). Desde acá no se
+   crea, no se revoca y no se cambia el correo de un usuario del portal (un «Revocar acceso» del
+   3/11 dejó a Fcia. Alesso sin poder entrar).
+   Lo que SÍ se hace desde acá (6/11): al cliente que YA tiene usuario se le manda por WhatsApp
+   un enlace para crear su contraseña nueva (signup_prepare tipo «reset» de Odoo: el mismo enlace
+   que manda «¿Olvidaste tu contraseña?», pero sin depender de que lea el correo). No toca el
+   usuario ni su correo; el enlace sirve una vez (deja de valer cuando entra) y vence solo. Queda
+   anotado en el chatter del contacto quién lo generó. Para el que no tiene acceso o se lo
+   revocaron: el link del formulario /alta, también por WhatsApp. */
 const PORTAL_URL="https://drogueriaeyg.odoo.com";
 const mailNorm=s=>(s||"").trim().toLowerCase();
 async function correoPortal(pid){
   try{ const u=await rpc("res.users","search_read",[[["partner_id","=",pid],["share","=",true]]],{fields:["login"],limit:1}); return u.length?u[0].login:""; }catch(e){ return ""; }
 }
+const _PORTAL={};   // id de contacto → {c, login, wa}
+function waPortal(wa,msg){ return wa?`https://api.whatsapp.com/send?phone=${wa}&text=${encodeURIComponent(msg)}`:""; }
 async function cargarPortal(id){
   const box=document.getElementById("portalbox"); if(!box) return;
   const c=ST.contactos.find(x=>x.id===id); if(!c) return;
@@ -3294,34 +3299,68 @@ async function cargarPortal(id){
     const us=await rpc("res.users","search_read",[[["partner_id","=",id]]],{fields:["login","share","active","login_date"],order:"id desc",context:{active_test:false}});
     if(us.some(u=>!u.share)){ box.innerHTML=`<p class="pmuted">Tiene un usuario <b>interno</b> de la empresa (no es cliente del portal). No se toca desde acá.</p>`; return; }
     const u=us.find(x=>x.active)||null, rev=u?null:(us[0]||null);
+    const wa=waN(c.phone||c.mobile);
+    _PORTAL[id]={c, login:u?u.login:"", wa};
     const fe=document.getElementById("f_email");
     if(u&&fe){ fe.readOnly=true; fe.title="Es su usuario del portal: el cambio de correo lo pide la farmacia en el formulario de alta y lo aprueban Germán o Bárbara"; fe.style.opacity=".7"; }
+    const sinTel=wa?"":`<p class="pmuted" style="margin-top:6px">📞 La ficha no tiene teléfono: copiá el mensaje y mandalo a mano.</p>`;
     let html;
     if(u){
+      const msgLogin=`Hola, te escribo de Droguería EyG 👋 Para entrar al portal (pedidos, precios y facturas) usá tu usuario ${u.login} en ${PORTAL_URL}/web/login`;
       html=`<div class="plogin">👤 Usuario: <b>${esc(u.login)}</b></div>`+(u.login_date
         ? `<div class="palert ok">✅ <b>Ya entró al portal.</b> Último ingreso: ${fmtDiaHora(u.login_date)}.</div>`
         : `<div class="palert pend">⏳ <b>Tiene acceso pero todavía no entró.</b></div>`)+
-        `<p class="pmuted">¿No puede entrar? Que toque «¿Olvidaste tu contraseña?» en el ingreso y escriba <b>${esc(u.login)}</b>: le llega un enlace a ese correo. Si quiere entrar con otro correo, lo pide en el formulario de alta y lo aprueban Germán o Bárbara. El correo de esta ficha no se cambia desde acá.</p>`+
-        pasarLinkPortal(c, `${PORTAL_URL}/web/reset_password?login=${encodeURIComponent(u.login)}`, `Hola, te escribo de Droguería EyG. Para entrar al portal usá el correo ${u.login}. Si no recordás la contraseña, entrá a este enlace y te llega uno nuevo a tu correo para crearla: `);
-    } else if(rev){
-      html=`<div class="palert pend">🚫 <b>Acceso revocado</b> (usuario ${esc(rev.login)}).</div><p class="pmuted">Para volver a habilitarlo, la farmacia lo pide en el formulario de alta y lo aprueban Germán o Bárbara: si usa el mismo correo, se le reactiva el usuario.</p>`+
-        pasarLinkPortal(c, `${PORTAL_URL}/alta`, "Hola, te escribo de Droguería EyG. Para volver a tener acceso al portal, completá este formulario y te avisamos por correo cuando esté aprobado: ");
+        `<p class="pmuted">¿No sabe la contraseña o no puede entrar? Mandale un enlace para que cree una <b>nueva</b>: le llega por WhatsApp, no hace falta que lea el correo. Su usuario sigue siendo <b>${esc(u.login)}</b>.</p>
+        <div class="pbtns" style="margin-top:8px">
+          <button class="${wa?"pbtn wa":"pbtn teal"}" style="flex:1" onclick="claveNuevaPortal(${id})">🔑 ${wa?"Contraseña nueva por WhatsApp":"Generar enlace de contraseña nueva"}</button>
+        </div>
+        <div id="portalclave"></div>
+        <div class="pbtns" style="margin-top:8px">
+          ${wa?`<a class="pbtn agua" style="flex:1" href="${waPortal(wa,msgLogin)}" target="_blank" rel="noopener">💬 Recordarle cómo entrar</a>`:""}
+          <button class="pbtn agua" style="flex:0 0 auto;width:auto;min-width:0;padding:11px 14px" onclick='copiarLinkPortal(${JSON.stringify(msgLogin)})'>📋 Copiar</button>
+        </div>
+        <p class="pmuted" style="margin-top:8px">Si quiere entrar con <b>otro correo</b>, lo pide en el formulario de alta y lo aprueban Germán o Bárbara: el correo de esta ficha no se cambia desde acá.</p>`+sinTel;
     } else {
-      html=`<p class="pmuted">Todavía no tiene acceso. La farmacia lo pide en el formulario de alta (sus datos y la habilitación) y lo aprueban Germán o Bárbara; al aprobarse le llega un correo para entrar.</p>`+
-        pasarLinkPortal(c, `${PORTAL_URL}/alta`, "Hola, te escribo de Droguería EyG. Para tener acceso al portal (pedidos, precios y facturas), completá este formulario y te avisamos por correo cuando esté aprobado: ");
+      const msgAlta=rev
+        ? `Hola, te escribo de Droguería EyG 👋 Para volver a tener acceso al portal completá este formulario; cuando esté aprobado te llega un correo para entrar: ${PORTAL_URL}/alta`
+        : `Hola, te escribo de Droguería EyG 👋 Para tener acceso al portal (pedidos, precios y facturas) completá este formulario con tus datos y la habilitación; cuando esté aprobado te llega un correo para entrar: ${PORTAL_URL}/alta`;
+      html=(rev
+        ? `<div class="palert pend">🚫 <b>Acceso revocado</b> (usuario ${esc(rev.login)}).</div><p class="pmuted">Para volver a habilitarlo, la farmacia completa el formulario de alta y lo aprueban Germán o Bárbara. Si usa el mismo correo, se le reactiva su usuario.</p>`
+        : `<p class="pmuted">Todavía no tiene acceso. La farmacia completa el formulario de alta (sus datos y la habilitación) y lo aprueban Germán o Bárbara; al aprobarse le llega un correo para entrar.</p>`)+
+        `<div class="pbtns" style="margin-top:8px">
+          ${wa?`<a class="pbtn wa" style="flex:1" href="${waPortal(wa,msgAlta)}" target="_blank" rel="noopener">💬 Mandar el formulario por WhatsApp</a>`:""}
+          <button class="pbtn agua" style="flex:0 0 auto;width:auto;min-width:0;padding:11px 14px" onclick='copiarLinkPortal(${JSON.stringify(msgAlta)})'>📋 Copiar</button>
+        </div>`+sinTel;
     }
     box.innerHTML=html;
   }catch(e){ box.innerHTML=`<p class="pmuted">No pude leer el estado del portal (${esc(e.message||e)}).</p>`; }
 }
-function pasarLinkPortal(c, url, texto){
-  const wa=waN(c.phone||c.mobile);
-  const waLink=wa?`https://api.whatsapp.com/send?phone=${wa}&text=${encodeURIComponent(texto+url)}`:"";
-  return `<div class="pbtns" style="margin-top:8px">
-      <button class="pbtn agua" onclick='copiarLinkPortal(${JSON.stringify(url)})'>📋 Copiar link</button>
-      ${waLink?`<a class="pbtn wa" href="${waLink}" target="_blank" rel="noopener">Enviar por WhatsApp</a>`:""}
-    </div>`;
+/* Enlace de contraseña nueva para un usuario que YA existe. La ventana de WhatsApp se abre en el
+   mismo toque (antes de esperar a Odoo) para que el celular no la bloquee como ventana emergente. */
+async function claveNuevaPortal(id){
+  const d=_PORTAL[id]; if(!d||!d.login) return;
+  const out=document.getElementById("portalclave");
+  const w=d.wa?window.open("","_blank"):null;
+  if(out) out.innerHTML=`<p class="pmuted" style="margin-top:8px">Generando el enlace…</p>`;
+  try{
+    await rpc("res.partner","signup_prepare",[[id]],{signup_type:"reset"});
+    const url=((await rpc("res.partner","read",[[id]],{fields:["signup_url"]}))[0]||{}).signup_url;
+    if(!url) throw new Error("Odoo no devolvió el enlace");
+    const msg=`Hola, te escribo de Droguería EyG 👋 Para crear tu contraseña nueva del portal entrá a este enlace (sirve una sola vez): ${url}\nTu usuario es ${d.login}. Después entrás siempre por ${PORTAL_URL}/web/login`;
+    const link=waPortal(d.wa,msg);
+    if(w&&link){ try{ w.location.href=link; }catch(e){} }
+    if(out) out.innerHTML=`<div class="palert ok" style="margin-top:8px">🔑 Enlace listo${w?" y abierto en WhatsApp":""}. Sirve una sola vez; si no lo usa, generá otro.</div>
+      <div class="pbtns">
+        ${link?`<a class="pbtn wa" style="flex:1" href="${link}" target="_blank" rel="noopener">💬 Abrir WhatsApp otra vez</a>`:""}
+        <button class="pbtn agua" style="flex:0 0 auto;width:auto;min-width:0;padding:11px 14px" onclick='copiarLinkPortal(${JSON.stringify(msg)})'>📋 Copiar</button>
+      </div>`;
+    rpc("res.partner","message_post",[[id]],{body:"🔑 Se generó un enlace para crear una contraseña nueva del portal (usuario "+d.login+")"+(d.wa?", para mandar por WhatsApp":"")+". No se cambió el usuario ni el correo.",message_type:"comment",subtype_xmlid:"mail.mt_note"}).catch(()=>{});
+  }catch(e){
+    if(w) try{ w.close(); }catch(_){}
+    if(out) out.innerHTML=`<p class="pmuted" style="margin-top:8px">⚠ No se pudo generar el enlace (${esc(e.message||e)}). Que use «¿Olvidaste tu contraseña?» en el ingreso con ${esc(d.login)}.</p>`;
+  }
 }
-function copiarLinkPortal(t){ try{ navigator.clipboard.writeText(t); toast("📋 Link copiado"); }catch(e){ toast("Copialo a mano: "+t); } }
+function copiarLinkPortal(t){ try{ navigator.clipboard.writeText(t); toast("📋 Copiado"); }catch(e){ toast("Copialo a mano: "+t); } }
 function setF(f){ST.filtro=f;render();}
 function tk(card){ card.classList.toggle('open'); }
 function hd(id,badge){ const el=document.getElementById(id); if(!el)return; const open=el.style.display==='none'; document.querySelectorAll('.hdetail').forEach(d=>d.style.display='none'); document.querySelectorAll('.hstat').forEach(b=>b.classList.remove('act')); if(open){ el.style.display='block'; badge.classList.add('act'); el.scrollIntoView({behavior:'smooth',block:'nearest'}); } }
