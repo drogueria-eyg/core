@@ -74,7 +74,7 @@
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="reconocer.js?v=3"></script>
+<script src="reconocer.js?v=4"></script>
 <script src="../assets/core.js?v=122"></script>
 <script>
 /* ============================================================
@@ -543,36 +543,49 @@ async function prepararReconocer(rens){
     for(let i=0;i<tids.length;i+=2000) await traer([["product_tmpl_id","in",tids.slice(i,i+2000)]]);
     REC.catalogo = cat; REC.lista = ST.lista;
   }
-  REC.porDroga = {};
+  REC.porDroga = {}; REC.porFamilia = {};
   REC.catalogo.forEach(p=>{
     p._ficha = fichaProducto(p);
     const k = p._ficha.drogas.join("+"); if(k) (REC.porDroga[k]=REC.porDroga[k]||[]).push(p);
+    // insumos (agujas, jeringas, sondas, guantes…): por familia y sus datos
+    p._ins = RECONOCER.fichaInsumo(p.name);
+    if(!k && p._ins.familia) (REC.porFamilia[p._ins.familia]=REC.porFamilia[p._ins.familia]||[]).push(p);
   });
   return true;
 }
 const fichaProducto = p => RECONOCER.ficha(p.name, REC.dic, {monodrogaId:p.monodrug?p.monodrug[0]:null, categoria:p.categ_id?p.categ_id[1]:""});
 
-/* Los del catálogo que son el mismo medicamento (verde) o casi (a revisar). */
+/* Compara el renglón con un producto por el camino que corresponda: droga
+   (medicamentos) o familia y datos (insumos). null = no se reconoció el pedido. */
+function cmpPedido(r, p){
+  if(!REC.dic) return null;
+  if(r.ficha && r.ficha.drogas.length) return RECONOCER.comparar(r.ficha, p._ficha || fichaProducto(p));
+  if(r.ins && r.ins.familia) return RECONOCER.compararInsumo(r.ins, p._ins || RECONOCER.fichaInsumo(p.name));
+  return null;
+}
+
+/* Los del catálogo que son el mismo producto (verde) o casi (a revisar). */
 function reconocidos(r){
   r.ficha = RECONOCER.ficha(textoPedido(r), REC.dic);
-  const k = r.ficha.drogas.join("+");
-  if(!k) return [];
-  return (REC.porDroga[k]||[]).map(p=>{
-    const c = RECONOCER.comparar(r.ficha, p._ficha);
-    return c.nivel==="distinto" ? null : {...p, _ficha:undefined, _fuente:"reconocido", _nivel:c.nivel, _motivos:c.motivos};
+  r.ins = r.ficha.drogas.length ? null : RECONOCER.fichaInsumo(textoPedido(r));
+  const pool = r.ficha.drogas.length ? (REC.porDroga[r.ficha.drogas.join("+")]||[])
+             : r.ins && r.ins.familia ? (REC.porFamilia[r.ins.familia]||[]) : [];
+  return pool.map(p=>{
+    const c = cmpPedido(r, p);
+    return !c || c.nivel==="distinto" ? null : {...p, _ficha:undefined, _ins:undefined, _fuente:"reconocido", _nivel:c.nivel, _motivos:c.motivos};
   }).filter(Boolean);
 }
 /* Lo que se usó antes para ese código se vuelve a comparar: si no es el mismo
-   medicamento (pasó: Hioscina cotizada con Hioscina + Dipirona) no va en verde. */
+   producto (pasó: Hioscina cotizada con Hioscina + Dipirona) no va en verde. */
 function nivelHistorial(r, c){
-  if(!r.ficha || !REC.dic) return {_nivel:"confirmado", _motivos:[]};
-  const cmp = RECONOCER.comparar(r.ficha, fichaProducto(c));
+  const cmp = cmpPedido(r, c);
+  if(!cmp) return {_nivel:"confirmado", _motivos:[]};
   return cmp.nivel==="distinto" ? {_nivel:"revisar", _motivos:["se usó antes, pero: "+cmp.motivos[0]]} : {_nivel:"confirmado", _motivos:[]};
 }
 /* Lo encontrado por parecido de nombre nunca es verde; si se puede, se dice por qué no es el mismo. */
 function nivelTexto(r, c){
-  if(!r.ficha || !r.ficha.drogas.length || !REC.dic) return {_nivel:"texto", _motivos:[]};
-  const cmp = RECONOCER.comparar(r.ficha, fichaProducto(c));
+  const cmp = cmpPedido(r, c);
+  if(!cmp) return {_nivel:"texto", _motivos:[]};
   return cmp.nivel==="distinto" ? {_nivel:"texto", _motivos:cmp.motivos} : {_nivel:"revisar", _motivos:cmp.motivos.length?cmp.motivos:["no tiene precio en esta lista"]};
 }
 const NIVEL_ORDEN = {confirmado:0, igual:1, revisar:2, texto:3};
@@ -584,7 +597,7 @@ function nivelRenglon(r){
 }
 function pillNivel(x){
   if(x._nivel==="confirmado") return ` <span class="pill ok">confirmado antes</span>`;
-  if(x._nivel==="igual") return ` <span class="pill ok">mismo medicamento</span>`;
+  if(x._nivel==="igual") return ` <span class="pill ok">es el mismo producto</span>`;
   if(x._nivel==="revisar") return (x._motivos||[]).map(m=>` <span class="pill warn">${esc(m)}</span>`).join("");
   if(x._motivos && x._motivos.length) return ` <span class="pill bad">${esc(x._motivos[0])}</span>`;
   return ` <span class="pill bad">no lo reconocí: parecido por el nombre</span>`;
@@ -714,7 +727,7 @@ function render(){
   const verdes = R.filter(vaSolo);
   const portada = ST.modo==="portada";
   document.getElementById("res").innerHTML = `
-    <h2 class="sec">2 · Revisá los amarillos <span class="ayuda">verde = el mismo medicamento, va solo · amarillo = tocá el producto para confirmarlo · rojo = no lo encontré</span></h2>
+    <h2 class="sec">2 · Revisá los amarillos <span class="ayuda">verde = el mismo producto, va solo · amarillo = tocá el producto para confirmarlo · rojo = no lo encontré</span></h2>
     <div class="emb">
       <div class="e"><div class="n">${nf(R.length)}</div><div class="t">Renglones pedidos</div></div>
       <div class="e"><div class="n t">${nf(verdes.length)}</div><div class="t">Verdes: van solos</div></div>

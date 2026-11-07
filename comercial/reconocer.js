@@ -429,7 +429,224 @@ function comparar(p, e){
   return { nivel: motivos.length ? "revisar" : "igual", motivos };
 }
 
-const API = { norm, tokens, armarDiccionario, drogasDeTexto, dosisDeTexto, formaDeTexto, ficha, comparar, componente };
+/* ============================================================
+   INSUMOS (agujas, jeringas, catéteres, sondas, guantes…)
+   No tienen droga: los definen unos pocos datos. Se reconoce la FAMILIA
+   y se leen sus datos; verde sólo si todo lo que pide el hospital está en
+   el producto y coincide. Agregado el 5/11/2026 con el historial de
+   Bionexo (858 pedidos de insumos con lo que eligió cada comercial).
+   ============================================================ */
+// Notación argentina de agujas «40/12» = 40 mm de largo y 1,2 mm de diámetro (18 G)
+const DIAM_A_G = {16:16, 14:17, 12:18, 11:19, 10:19, 9:20, 8:21, 7:22, 6:23, 55:24, 5:25, 45:26, 4:27, 3:30};
+const PULG_A_MM = {"1/2":13, "5/8":16, "3/4":19, "1":25, "1 1/4":32, "1 1/2":38, "2":50, "3":75};
+const largoStd = mm => mm>=36 && mm<=41 ? 38 : mm;          // 1 ½" se rotula 38 ó 40 mm
+
+// familia: [nombre, regex sobre el texto normalizado]. Lo más específico primero.
+const FAMILIAS = [
+  ["descartador", /\bdescartador|cortopunz|colector .*(agujas?|cortop)/],
+  ["butterfly", /\bbutterfly\b|\bmariposa\b|\bscalp\b/],
+  ["cateter central", /cateter.*(central|lumen|cvc|hemodialisis|dialisis)|\b(doble|triple) lumen\b/],
+  ["cateter iv", /\babbocath?\b|\bjelco\b|\babocath\b|cateter.*(intravenoso|periferico|\biv\b|\babb\b)|\bbranula\b|cateter n\D{0,3}\d{2}\b/],
+  // jeringa, equipo y llave antes que aguja: «JERINGA 5 ML S/AGUJA» es una jeringa
+  ["jeringa", /\bjeringas?\b/],
+  ["equipo suero", /\bequipo\b.*\b(suero|perfusion|venoclisis|macrogotero|microgotero|infusion|transfusion|v\s?\d+)\b|\b(macro|micro)gotero\b/],
+  ["llave 3 vias", /\bllaves?\b.*\b3\s*v/],
+  ["aguja", /\bagujas?\b/],
+  ["sonda foley", /\bfoley\b/],
+  ["sonda k", /\bsonda\b.*\bk\s?-?\s?\d|^k\s?-?\s?\d+\b/],
+  ["sonda", /\bsonda\b/],
+  ["guantes", /\bguantes?\b/],
+  ["venda", /\bvendas?\b/],
+  ["cinta", /\bcinta\b|\btela adhesiva\b|\bmicropore\b|\btranspore\b/],
+  ["alcohol", /\balcohol\b/],
+  ["vaselina", /\bvaselina\b/],
+  ["agua oxigenada", /\bagua oxigenada\b/],
+  ["barbijo", /\bbarbijos?\b|\btapabocas\b/],
+  ["especulo", /\bespeculos?\b/],
+  ["bajalengua", /\bbajalenguas?\b/],
+  ["bisturi", /\bbisturi|\bhojas? de bisturi/],
+  ["electrodo", /\belectrodos?\b/],
+  ["gasa", /\bgasas?\b/],
+  ["algodon", /\balgodon\b/],
+  ["cofia", /\bcofias?\b/],
+  ["aerocamara", /\baerocamaras?\b/],
+  ["mascara", /\bmascaras?\b/]
+];
+function familiaDe(s){ for(const [n,re] of FAMILIAS) if(re.test(s)) return n; return null; }
+
+function datosInsumo(texto){
+  let s = " "+norm(texto).replace(/(\d),(\d)/g,"$1.$2").replace(/[º°]/g," ").replace(/["'`´]/g," ").replace(/\s+/g," ")+" ";
+  s = s.replace(/\bx\s?11\/2\b/g,"x 1 1/2");                 // «21 G X 11/2» es 1 ½ mal tipeado
+  const d = {};
+  const num = re => { const m = s.match(re); return m ? m : null; };
+  // calibre G (14 a 30), sin confundir con gramos
+  let m = num(/\b(1[4-9]|2[0-9]|30)\s?g\b(?!r)/); if(m) d.G = +m[1];
+  // aguja argentina 40/12, 25x8, (38-8)
+  m = num(/\b(1[3-9]|[2-5]\d|75)\s?[\/x-]\s?(\d{1,2})\b(?!\s?(cm|mm|ml|cc))/);
+  if(m && DIAM_A_G[+m[2]]){ d.largo = d.largo || largoStd(+m[1]); d.G = d.G || DIAM_A_G[+m[2]]; d.Gnot = DIAM_A_G[+m[2]]; }
+  // largo en pulgadas «x 1 1/2», «1 1/2»
+  // (?<![\d\/]): el «2» de «1/2» no es un largo de 2 pulgadas
+  m = num(/(?<![\d\/])\bx?\s?(1 1\/[24]|1\/2|5\/8|3\/4|[123])\s?(pulg|"|\b)(?!\s?(cm|mm|ml|cc|l|lt|g|gr|mts?|v|vias|%|\/))/);
+  if(m && d.G && !d.largo) d.largo = largoStd(PULG_A_MM[m[1]]);
+  m = num(/\b(\d{2})\s?mm\b/); if(m && !d.largo && d.G) d.largo = largoStd(+m[1]);
+  m = num(/\b(\d{1,2})\s?(fr|f|ch)\b/); if(m) d.Fr = +m[1];
+  m = num(/\b(n|nro|no|num|numero|n\.)\s?\.?\s?(\d{1,2}(?:\.5)?)(\s1\/2)?\b/); if(m) d.num = +m[2] + (m[3]?0.5:0);
+  m = num(/\bk\s?-?\s?(\d{1,3})\s?(p\b)?/); if(m) d.K = m[1]+(m[2]?"P":"");
+  m = num(/\b(\d+(?:\.\d+)?)\s?(ml|cc)\b/); if(m) d.ml = +m[1];
+  m = num(/\b(\d+(?:\.\d+)?)\s?(l|lt|lts|litros?)\b/); if(m) d.ml = +m[1]*1000;
+  m = num(/\b(\d+(?:\.\d+)?)\s?cm\b/); if(m) d.cm = +m[1];
+  m = num(/\bx\s?(\d+(?:\.\d+)?)\s?(m|mt|mts|mtr|mtrs|metros?)\b/); if(m) d.metros = +m[1];
+  m = num(/\b(\d+(?:\.\d+)?)\s?(gr|g|grs|gramos)\b/); if(m && !d.G) d.gramos = +m[1];
+  m = num(/\b(\d+(?:\.\d+)?)\s?kg\b/); if(m) d.gramos = +m[1]*1000;
+  m = num(/\b(\d{1,3})(?:\s?\/\s?\d{1,3})?\s?%/); if(m) d.pct = +m[1];
+  m = num(/\b(\d{1,2})\s?vol(umenes)?\b/); if(m) d.vol = +m[1];
+  m = num(/\b(\d)\s?v(ias)?\b/); if(m) d.vias = +m[1];
+  m = num(/\b(simple|mono|uni|doble|bi|triple|tri|[123])\s?lumen/); if(m) d.lumen = ({simple:1,mono:1,uni:1,doble:2,bi:2,triple:3,tri:3})[m[1]] || +m[1];
+  m = num(/\btalle\s?(xxl|xl|xs|s|m|l)\b/) || num(/\b(xxl|xl|xs)\b/) || num(/\b(s|m|l)\b(?!\s?(\/|ml|cm|mm))/); if(m) d.talle = m[1];
+  m = num(/\b(\d)\s?\/\s?0\b|\b(\d)-0\b/); if(m) d.calibre = (m[1]||m[2])+"/0";
+  // palabras que distinguen
+  const hay = re => re.test(s);
+  if(hay(/\blatex\b/) && !hay(/\b(sin|libre de|s\/)\s?latex\b/)) d.material = "látex";
+  if(hay(/\bnitrilo\b/)) d.material = "nitrilo";
+  if(hay(/\bvinilo\b/)) d.material = "vinilo";
+  if(hay(/\bsilicona\b/)) d.material = "silicona";
+  if(hay(/\b(sintetico|sin latex|libre de latex|s\/latex)\b/)) d.material = d.material==="nitrilo" ? "nitrilo" : "sin látex";
+  if(hay(/\b(esteril|esteriles|cirugia|quirurgico)\b/) && !hay(/\bno esteril/)) d.esteril = true;
+  if(hay(/\b(examen|exam|procedimiento|no esteril)\b/)) d.esteril = false;
+  if(hay(/\bsin polvo|s\/polvo|libre de polvo\b/)) d.polvo = false;
+  if(hay(/\b(c\/|con)\s?aguja|\bc\/a\b/)) d.aguja = true;
+  if(hay(/\b(s\/|sin)\s?aguja|\bs\/a\b/)) d.aguja = false;
+  if(hay(/\b(pediatric[oa]s?|ped|infantil|neonatal|neo)\b/)) d.edad = "pediátrico";
+  else if(hay(/\badult[oa]s?\b/)) d.edad = "adulto";
+  const tipos = [["yeso",/\b(yeso|enyesada|yesada)\b/],["cambric",/\bcambric\b/],["ovata",/\b(ovata|algodon laminado)\b/],["elástica",/\belastica\b/],
+    ["autoadherente",/\bautoadherente|cohesiva\b/],["tubular",/\btubular\b/],["micropore",/\b(micropore|hipoalergenica|hipoaler|papel)\b/],
+    ["óxido de zinc",/\b(oxido de zinc|tela adhesiva|zinc)\b/],["transpore",/\btranspore\b/],["gel",/\bgel\b/],["líquido",/\bliquid[oa]\b/],
+    ["sólida",/\bsolid[oa]\b/],["tuberculina",/\btuberculina\b/],["insulina",/\binsulina\b/],["luer lock",/\bluer\s?lock\b/],
+    ["triple capa",/\btriple\s?capa|tricapa\b/],["n95",/\b(k?n\s?95|ffp2)\b/],["macrogotero",/\bmacro\s?gotero\b/],["microgotero",/\bmicro\s?gotero\b/],
+    ["reservorio",/\breservorio\b/],["nebulización",/\bnebuliz/],["nasogástrica",/\bnaso\s?gastrica|levin\b/],["aspiración",/\baspiracion|\basp\b/],
+    ["nelaton",/\bnelaton\b/],["prolongador",/\bprolongador/],["trozada",/\btrozad[oa]\b/],["hidrófilo",/\bhidrofilo\b/],
+    ["espinal",/\b(espinal|raquidea|quincke)\b/],["epidural",/\b(epidural|tuohy|peridural)\b/],["mascara",/\bmascara\b/]];
+  const t = tipos.filter(([,re])=>hay(re)).map(([n])=>n);
+  if(t.length) d.tipos = t;
+  return d;
+}
+
+/* Lo que define a cada familia: si el pedido no lo dice, hay que mirarlo;
+   si lo dice y el producto no coincide, no es el mismo. */
+const CLAVE_FAMILIA = {
+  "aguja":["G","largo"], "butterfly":["G"], "cateter iv":["G"], "cateter central":["Fr","lumen"], "jeringa":["ml"],
+  "sonda foley":["Fr|num"], "sonda k":["K"], "sonda":["Fr|num"], "guantes":["talle|num"], "venda":["cm"], "cinta":["cm"],
+  "descartador":["ml"], "alcohol":["ml"], "vaselina":["ml|gramos"], "agua oxigenada":["ml"], "especulo":["talle"],
+  "bisturi":["num"], "gasa":[], "algodon":["gramos"], "barbijo":[], "bajalengua":[], "llave 3 vias":[], "equipo suero":[],
+  "electrodo":[], "cofia":[], "aerocamara":[], "mascara":[]
+};
+/* Datos que cambian el producto aunque el pedido no los mencione: si el
+   producto los trae y el pedido no, va a revisar. */
+const QUE_CAMBIAN = ["aguja","edad","vias","material","esteril","lumen"];
+const DEFECTO = { vias:2, aguja:false };      // Foley de 2 vías y jeringa sin aguja: lo que se entiende si no se dice
+// …salvo las de tuberculina e insulina, que suelen venir con aguja: ahí no se supone nada
+function defecto(k, ...fichas){
+  if(k==="aguja" && fichas.some(d=>d && (d.tipos||[]).some(t=>t==="tuberculina"||t==="insulina"))) return null;
+  if(k==="material" && fichas.some(d=>d && d._fam==="sonda foley")) return "látex";   // la Foley común es de látex
+  return DEFECTO[k];
+}
+const NOMBRE_DATO = {G:"calibre", largo:"largo", Fr:"French", num:"número", K:"código K", ml:"volumen", cm:"medida en cm", metros:"largo",
+  gramos:"peso", pct:"%", vol:"volúmenes", vias:"vías", lumen:"lúmenes", talle:"talle", calibre:"calibre", material:"material",
+  esteril:"estéril", polvo:"polvo", aguja:"aguja", edad:"edad", tipos:"tipo"};
+const valor = (k,v) => k==="vias" ? v+" vías" : k==="lumen" ? v+" lúmenes" : k==="metros" ? v+" m" : k==="cm" ? v+" cm" : k==="esteril" ? (v?"estéril":"no estéril") : k==="aguja" ? (v?"con aguja":"sin aguja") : k==="polvo" ? (v?"con polvo":"sin polvo")
+  : Array.isArray(v) ? v.join(", ") : k==="ml" && v>=1000 ? (v/1000)+" L" : String(v);
+
+/* La familia sale SÓLO del nombre: la categoría de Odoo engaña («EQUIPO DE
+   CIRUGIA» vive en Barbijos, el papel de ECG junto a los electrodos). Las
+   notas de venta del nombre («(Caja x 6 – Precio x Caja)») no son datos. */
+function fichaInsumo(texto, categoria){
+  const limpio = String(texto||"").replace(/\(([^()]*)\)/g,(t,d)=>/precio|caja\s*x|blister|tira|pack|bulto|unidades/i.test(d)?" ":t)
+    .replace(/(SE\s+)?VEN(DE|TA)\s+(POR\s+)?CAJA\s+CERRADA/ig," ");
+  const fam = familiaDe(" "+norm(limpio).replace(/[^a-z0-9%\/ ]+/g," ")+" ");
+  const datos = fam ? datosInsumo(limpio) : {};
+  /* «ABBOCATH 20», «SONDA FOLEY 18»: el número suelto es el calibre o el French.
+     Sólo si hay UNO solo en el rango, para no tomar una cantidad por calibre. */
+  if(fam){
+    const sueltos = (" "+norm(limpio)+" ").replace(/\d+\s?(ml|cc|cm|mm|mts?|lts?|l|g|gr|fr|f|ch|v|vias|%|x)\b/g," ").match(/(?<![\d.\/])\b\d{1,2}\b(?![.\/]\d)/g) || [];
+    const en = (a,b) => sueltos.map(Number).filter(n=>n>=a && n<=b);
+    if((fam==="cateter iv"||fam==="butterfly") && datos.G==null){
+      const c = datos.num!=null ? [datos.num] : en(14,27);
+      if(c.length===1){ datos.G = c[0]; delete datos.num; }
+    }
+    if((fam==="sonda foley"||fam==="sonda") && datos.Fr==null && datos.num==null){
+      const c = en(6,30); if(c.length===1) datos.num = c[0];
+    }
+  }
+  return { texto:String(texto||""), familia:fam, datos };
+}
+
+function compararInsumo(p, e){
+  if(!p.familia) return {nivel:"distinto", motivos:["no reconozco el insumo del pedido"]};
+  if(p.familia!==e.familia) return {nivel:"distinto", motivos:["otro insumo ("+(e.familia||"sin familia")+")"]};
+  const pd=Object.assign({_fam:p.familia},p.datos), ed=Object.assign({_fam:e.familia},e.datos), motivos=[];
+  // lo que define la familia
+  for(const alt of (CLAVE_FAMILIA[p.familia]||[])){
+    const ks = alt.split("|");
+    const kp = ks.find(k=>pd[k]!=null), ke = ks.find(k=>ed[k]!=null);
+    if(!kp){ motivos.push("el pedido no dice el "+NOMBRE_DATO[ks[0]]); continue; }
+    if(!ke){ motivos.push("el producto no dice el "+NOMBRE_DATO[ks[0]]); continue; }
+    if(String(pd[kp])!==String(ed[ke])) return {nivel:"distinto", motivos:["otro "+NOMBRE_DATO[kp]+" ("+valor(ke,ed[ke])+" en vez de "+valor(kp,pd[kp])+")"]};
+  }
+  // todo lo demás que dice el pedido tiene que estar igual en el producto
+  for(const k of Object.keys(pd)){
+    if(k[0]==="_" || k==="Gnot" || (CLAVE_FAMILIA[p.familia]||[]).some(a=>a.split("|").includes(k))) continue;
+    if(k==="tipos"){
+      const faltan = pd.tipos.filter(t=>!(ed.tipos||[]).includes(t));
+      if(faltan.length) motivos.push("el pedido dice "+faltan.join(", ")+" y el producto no");
+      continue;
+    }
+    const ve = ed[k]!=null ? ed[k] : defecto(k, ed);
+    if(ve==null){ motivos.push("el producto no dice "+NOMBRE_DATO[k]+" ("+valor(k,pd[k])+")"); continue; }
+    if(String(ve)!==String(pd[k])) return {nivel:"distinto", motivos:["otro "+NOMBRE_DATO[k]+" ("+valor(k,ve)+" en vez de "+valor(k,pd[k])+")"]};
+  }
+  // lo que trae el producto y cambia el producto aunque el pedido no lo diga
+  for(const k of QUE_CAMBIAN){
+    if(ed[k]==null || pd[k]!=null) continue;
+    const df = defecto(k, ed, pd);
+    if(df!=null && String(ed[k])===String(df)) continue;
+    motivos.push("es "+valor(k,ed[k])+"; el pedido no lo dice");
+  }
+  // medidas que trae el producto y el pedido no dice (la llave «con prolongador de 30 cm»): a revisar.
+  // El largo de una venda o cinta (2,7 m, 9 m) no cambia lo que se pide.
+  const clave = (CLAVE_FAMILIA[p.familia]||[]).join("|").split("|");
+  for(const k of ["G","largo","Fr","num","K","ml","cm","gramos","pct","vol","lumen","talle","calibre"]){
+    if(ed[k]!=null && pd[k]==null && !clave.includes(k) && !(k==="G"&&pd.Gnot) ) motivos.push("es "+NOMBRE_DATO[k]+" "+valor(k,ed[k])+"; el pedido no lo dice");
+  }
+  const extraTipos = (ed.tipos||[]).filter(t=>!(pd.tipos||[]).includes(t) && !["hidrófilo","trozada"].includes(t));
+  if(extraTipos.length && p.familia!=="guantes") motivos.push("es "+extraTipos.join(", ")+"; el pedido no lo dice");
+  const nom = norm(e.texto);
+  const raras = rarasInsumo(p.texto).filter(w=>!new RegExp("\\b"+w+"\\b").test(nom));   // si el producto la tiene, es su marca
+  if(raras.length) motivos.push("el pedido dice «"+raras.join(" ").toUpperCase()+"» y no sé qué es");
+  return { nivel: motivos.length ? "revisar" : "igual", motivos };
+}
+
+/* Palabras del pedido de un insumo que no se entienden → a revisar (como en
+   los medicamentos: «ABBOCATH 14 - NO HARDSON - NO DEXAL»). */
+const CONOCIDAS_INSUMO = new Set(("aguja agujas jeringa jeringas cateter cateteres intravenoso periferico abbocath abocath abbocat jelco branula central lumen "+
+  "doble triple simple sonda sondas foley vias via latex silicona nelaton nasogastrica gastrica aspiracion intubacion levin mucus "+
+  "guante guantes nitrilo vinilo esteril esteriles examen cirugia quirurgico talle par pares venda vendas yeso enyesada cambric ovata elastica "+
+  "autoadherente tubular cinta tela adhesiva micropore hipoalergenica hipoaler papel transpore zinc oxido alcohol gel liquido vaselina solida "+
+  "agua oxigenada volumenes barbijo barbijos triple capa tricapa especulo especulos vaginal bajalengua bajalenguas llave llaves prolongador equipo "+
+  "suero perfusion macrogotero microgotero bisturi hoja hojas electrodo electrodos gasa gasas trozada algodon hidrofilo plegado cofia cofias "+
+  "aerocamara aerocamaras mascara mascaras reservorio nebulizacion oxigeno descartador descartadores cortopunzantes butterfly mariposa "+
+  "descartable descartables desc hipodermica uso unico unidad unidades caja cajas bolsa pote frasco fco fsco rollo rollos metros mts cm mm ml cc "+
+  "litro litros lts kg gr grs gramos pulg con sin para tipo adulto adultos pediatrico pediatrica neonatal infantil de del la el los las nro "+
+  "fraguado rapido comun puno manga larga tuberculina insulina luer lock pico vertedor dosificador valvula estandar mediano grande chico "+
+  "espinal raquidea quincke epidural peridural tuohy punta "+
+  // cortas que se entienden; las cortas que NO están acá suelen ser marcas («22-BD», «TRB», «KLF»)
+  "de cm ml con nro par fr cc no vol sin im al mts mtr mtrs ev ref lt gr fco gel abb del mm asp reg lts kg grs un est neb gs liq en kn "+
+  "uso adm env sc nsg iv ped cal ch nº mt").split(" "));
+function rarasInsumo(texto){
+  return [...new Set(tokens(texto))].filter(w=>w.length>=2 && !/\d/.test(w) && !CONOCIDAS_INSUMO.has(w) && !/^(xs|xl|xxl|s|m|l|g|f|x|v|y|o|a|p|t|k|n)$/.test(w));
+}
+
+const API = { norm, tokens, armarDiccionario, drogasDeTexto, dosisDeTexto, formaDeTexto, ficha, comparar, componente,
+  fichaInsumo, compararInsumo, rarasInsumo, datosInsumo, familiaDe };
 if(typeof module!=="undefined" && module.exports) module.exports = API;
 else raiz.RECONOCER = API;
 })(typeof window!=="undefined" ? window : globalThis);
