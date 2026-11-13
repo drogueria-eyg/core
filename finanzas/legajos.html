@@ -9,7 +9,7 @@
 <link id="v2-fuente-link" href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=122"></script>
+<script src="../assets/core.js?v=124"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -168,7 +168,7 @@ function fmtCuit(v){ const d=soloDig(v); if(d.length!==11) return v||"—"; retu
 const NORM=s=>(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toUpperCase().replace(/\s+/g," ").trim();
 function oracion(s){s=(s||"").trim().replace(/\s+/g," ");if(!s)return"";return s.charAt(0).toUpperCase()+s.slice(1).toLowerCase();}
 function fmtDoc(raw,idt){const d=soloDig(raw);if(!d)return"";if(idt===IDT.dni){if(d.length<7||d.length>8)return raw.trim();return d.replace(/\B(?=(\d{3})+(?!\d))/g,".");}if(idt===IDT.cuit||idt===IDT.cuil){if(d.length!==11)return raw.trim();return d.slice(0,2)+"-"+d.slice(2,10)+"-"+d.slice(10);}return raw.trim();}
-function fmtTel(raw){let d=soloDig(raw);if(!d)return"";if(d.startsWith("0054"))d=d.slice(4);if(d.startsWith("54"))d=d.slice(2);d=d.replace(/^0/,"");if(d.length>10)d=d.replace(/^(\d{2,4})15(\d{6,8})$/,"$1$2");if(d.length<8)return raw.trim();let area,local;if(d.length===10){if(d.startsWith("11")){area="11";local=d.slice(2);}else{area=d.slice(0,3);local=d.slice(3);}}else if(d.length===11){area=d.slice(0,4);local=d.slice(4);}else return"+54 "+d;const ls=local.length>=8?local.slice(0,4)+"-"+local.slice(4):local.slice(0,3)+"-"+local.slice(3);return"+54 "+area+" "+ls;}
+function fmtTel(raw){ return EYG.telVer(raw); }   // sólo para mostrar: entiende el 9 del celular (core.js)
 const optSel=(list,sel,ph)=>`<option value="">${esc(ph||"—")}</option>`+list.map(o=>`<option value="${o.id}" ${sel===o.id?'selected':''}>${esc(o.name.replace(/\s*\((AR|IT)\)$/,""))}</option>`).join("");
 const optCom=sel=>`<option value="">— sin asignar —</option>`+COMLIST.map(o=>`<option value="${o.id}" ${sel===o.id?'selected':''}>${esc(o.name)}</option>`).join("");
 const fmtFecha=f=> f? String(f).slice(0,10).split("-").reverse().join("/") : "—";
@@ -475,7 +475,7 @@ function abrirAlta(){
         <div class="fld"><label>Cond. fiscal (AFIP)</label><select id="a_fiscal">${optSel(CAT.fiscal,false,'— condición —')}</select></div>
       </div>
       <div class="grid2">
-        <div class="fld"><label>Teléfono</label><input id="a_phone" placeholder="0341 155033943"></div>
+        ${EYG.telCampos("a", {})}
         <div class="fld"><label>Email</label><input id="a_email" placeholder="nombre@dominio.com"></div>
       </div>
       <div class="fld"><label>Dirección</label><input id="a_street" placeholder="Av. Pellegrini 1234"></div>
@@ -554,10 +554,14 @@ async function crearCliente(){
     [RUBRO_FIELD]:valStr("a_rubro")||false,
     vat:tieneVat?fmtDoc(vat,IDT.cuit):false, l10n_latam_identification_type_id:tieneVat?IDT.cuit:false,
     l10n_ar_afip_responsibility_type_id:valId("a_fiscal"),
-    phone:valStr("a_phone")?fmtTel(valStr("a_phone")):false, email:valStr("a_email")||false,
+    email:valStr("a_email")||false,
     street:valStr("a_street")?oracion(valStr("a_street")):false,
     city:valStr("a_city")?oracion(valStr("a_city")):false, state_id:valId("a_state"), zip:valStr("a_zip")||false
   };
+  /* Celular en mobile con el 9 y fijo en phone (EYG.telLeer). */
+  const _tel=EYG.telLeer("a");
+  if(!_tel.ok){ btn.disabled=false; btn.textContent="Crear cliente"; toast(_tel.msg); return; }
+  Object.assign(vals,_tel.vals);
   try{
     const newId=await EYG.rpc("res.partner","create",[vals],{context:{lang:"es_AR"}});
     const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";

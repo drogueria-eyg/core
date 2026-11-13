@@ -258,7 +258,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=122"></script>
+<script src="../assets/core.js?v=124"></script>
 <script>
 /* ===== EyG Core · Contactos: la base única de contactos de EyG =====
    Una sola casa para TODOS los contactos: los que ya son nuestros (con la ficha completa,
@@ -277,7 +277,7 @@ const telLink=(m,p)=>{let d=soloDig(m||p);if(d.length<6)return"";if(!d.startsWit
 /* --- Formateadores para guardar en Odoo (teléfono/doc/oración) --- */
 const IDT={cuit:4,dni:5,cuil:6};
 function fmtDoc(raw,idtypeId){const d=soloDig(raw);if(!d)return"";if(idtypeId===IDT.dni){if(d.length<7||d.length>8)return raw.trim();return d.replace(/\B(?=(\d{3})+(?!\d))/g,".");}if(idtypeId===IDT.cuit||idtypeId===IDT.cuil){if(d.length!==11)return raw.trim();return d.slice(0,2)+"-"+d.slice(2,10)+"-"+d.slice(10);}return raw.trim();}
-function fmtTel(raw){let d=soloDig(raw);if(!d)return"";if(d.startsWith("0054"))d=d.slice(4);if(d.startsWith("54"))d=d.slice(2);d=d.replace(/^0/,"");if(d.length>10)d=d.replace(/^(\d{2,4})15(\d{6,8})$/,"$1$2");if(d.length<8)return raw.trim();let area,local;if(d.length===10){if(d.startsWith("11")){area="11";local=d.slice(2);}else{area=d.slice(0,3);local=d.slice(3);}}else if(d.length===11){area=d.slice(0,4);local=d.slice(4);}else return"+54 "+d;const ls=local.length>=8?local.slice(0,4)+"-"+local.slice(4):local.slice(0,3)+"-"+local.slice(3);return"+54 "+area+" "+ls;}
+function fmtTel(raw){ return EYG.telVer(raw); }   // sólo para mostrar: entiende el 9 del celular (core.js)
 function oracion(s){s=(s||"").trim().replace(/\s+/g," ");if(!s)return"";return s.charAt(0).toUpperCase()+s.slice(1).toLowerCase();}
 
 /* --- Nombres prolijos y cruce con el padrón: viven en core.js (EYG.pad*) para que el mapa del
@@ -1932,7 +1932,8 @@ function formPersonaF(pid){
     <div class="pform">
       <input id="np_name" placeholder="Nombre o etiqueta — ej: Celular de pagos" value="${ed?esc(ed.name||""):""}">
       <input id="np_func" placeholder="Cargo (compras, pagos, dueño…) — opcional" value="${ed?esc(ed.function||""):""}">
-      <input id="np_phone" placeholder="Teléfono / celular" value="${ed?esc(ed.mobile||ed.phone||""):""}">
+      <input id="np_phone" placeholder="Celular / WhatsApp" value="${ed?esc(ed.mobile||ed.phone||""):""}">
+      <label class="np-fijo" style="display:flex;gap:6px;align-items:center;font-size:12.5px"><input type="checkbox" id="np_fijo" ${ed&&!ed.mobile&&ed.phone?"checked":""}> Es un teléfono fijo (no tiene WhatsApp)</label>
       <input id="np_mail" placeholder="Email — opcional" value="${ed?esc(ed.email||""):""}">
       <div class="pform-b"><button class="fbtn" onclick="pintarLibretaF()">Cancelar</button>
         <button class="fbtn go" onclick="guardarPersonaF(${ed?ed.id:0})">Guardar</button></div>
@@ -1944,8 +1945,11 @@ async function guardarPersonaF(pid){
   const name=v("np_name"), func=v("np_func"), phone=v("np_phone"), mail=v("np_mail");
   if(!name && !phone){ toast("⚠ Poné al menos un nombre/etiqueta o un teléfono"); return; }
   try{
-    // El teléfono se guarda siempre en `phone` (y se limpia `mobile`) para que esté en un solo lugar.
-    const vals={name:name||"Contacto", function:func||false, phone:phone?fmtTel(phone):false, mobile:false, email:mail||false};
+    /* El celular va en mobile con el 9 (lo que compara WhatsApp); un fijo, en phone. */
+    const esFijo=!!(document.getElementById("np_fijo")||{}).checked;
+    const tel={phone:false, mobile:false};
+    if(phone){ if(esFijo) tel.phone=EYG.telFijo(phone); else { const c9=EYG.telCel(phone); if(c9===null){ toast("⚠️ Revisá el celular: va con código de área y número, 10 dígitos. Si es un fijo, marcá la casilla."); return; } tel.mobile=c9; } }
+    const vals=Object.assign({name:name||"Contacto", function:func||false, email:mail||false}, tel);
     let mailFijo="";
     if(pid){
       const lg=await correoPortal(pid);   // una persona de la ficha con acceso al portal: su correo es su usuario
@@ -2274,7 +2278,7 @@ function onRubroFant(){
   if(el&&r) el.placeholder=EYG.cartelEjemplo(r.value);
   prevFant();
 }
-function prevTel(){const el=document.getElementById("prev_phone");const v=document.getElementById("f_phone");if(el&&v)el.textContent=v.value?('Se guardará: '+fmtTel(v.value)):'';}
+function prevTel(){ EYG.telPrev("f"); }
 function prevDoc(){const t=parseInt(document.getElementById("f_idtype").value||0,10);const v=document.getElementById("f_vat");const el=document.getElementById("prev_doc");if(el&&v)el.textContent=v.value?('→ '+fmtDoc(v.value,t)):'';}
 const optSel=(cat,sel,ph)=>`<option value="">${ph||'— elegir —'}</option>`+(cat||[]).map(o=>`<option value="${o.id}" ${sel&&(Array.isArray(sel)?sel[0]===o.id:sel===o.id)?'selected':''}>${esc(o.name)}</option>`).join("");
 
@@ -2300,8 +2304,7 @@ function editarContacto(id){
         <div class="prev" id="prev_fant"></div>
         <div class="hint">El cartel del local. Arriba va el titular del CUIT; por acá lo encuentran igual los comerciales al buscar.</div></div>
       <div class="fld"><label>Rubro</label><select id="f_rubro" onchange="onRubroFant()">${rubroOpts}</select></div>
-      <div class="fld"><label>Teléfono</label><input id="f_phone" value="${esc(p.phone||p.mobile||'')}" oninput="prevTel()" placeholder="0341 155033943">
-        <div class="hint">Área sin 0, celular sin 15. Se guarda formateado.</div><div class="prev" id="prev_phone"></div></div>
+      ${EYG.telCampos("f", p)}
       <div class="fld"><label>Email</label><input id="f_email" value="${esc(p.email||'')}" placeholder="nombre@dominio.com"></div>
       <div class="fld"><label>Dirección</label><input id="f_street" value="${esc(p.street||'')}" placeholder="San martín 1234"><div class="hint">Se guarda tipo oración.</div></div>
       <div class="grid2">
@@ -2320,7 +2323,7 @@ function editarContacto(id){
     </div>
     <div class="dfoot"><button class="btn-save" id="btnSave" onclick="guardarContacto(${id})">Guardar y sincronizar con Odoo</button></div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
-  prevTel(); prevDoc(); prevFant();
+  EYG.telPrev("f"); prevDoc(); prevFant();
 }
 async function guardarContacto(id){
   const btn=document.getElementById("btnSave"); if(!btn) return;
@@ -2330,7 +2333,6 @@ async function guardarContacto(id){
   const idtype=num("f_idtype");
   const vals={
     user_id:num("f_comercial"), company_type:val("f_type"), name:val("f_name"),
-    phone: val("f_phone")?fmtTel(val("f_phone")):false, mobile:false,
     email: val("f_email")||false, street: val("f_street")?oracion(val("f_street")):false,
     zip: val("f_zip")||false, city: val("f_city")?oracion(val("f_city")):false,
     state_id: num("f_state"), l10n_latam_identification_type_id: idtype,
@@ -2343,6 +2345,10 @@ async function guardarContacto(id){
      "Fcia. Grandoli", "Distr. del Litoral". Misma regla que en el panel. */
   vals[EYG.FANT]=EYG.cartelNorm(val("f_fant"), val("f_rubro"))||false;
   if(!vals.name){ btn.disabled=false; btn.textContent="Guardar y sincronizar con Odoo"; toast("⚠ Falta el nombre"); return; }
+  /* Celular en mobile con el 9 y fijo en phone (EYG.telLeer). */
+  const _tel=EYG.telLeer("f");
+  if(!_tel.ok){ btn.disabled=false; btn.textContent="Guardar y sincronizar con Odoo"; toast("⚠ "+_tel.msg); return; }
+  Object.assign(vals,_tel.vals);
   let mailFijo="";
   try{
     const lg=await correoPortal(id);
@@ -2398,7 +2404,7 @@ function crearProspecto(idx){
       </div>
       <div class="fld"><label>Dirección</label><input id="np_street" value="${esc(e[3]?titulo(e[3]):'')}"></div>
       <div class="grid2">
-        <div class="fld"><label>Teléfono</label><input id="np_phone" value="${esc(PTEL[idx]||'')}" placeholder="0341 155033943"></div>
+        ${EYG.telCampos("npt", {mobile:PTEL[idx]||""})}
         <div class="fld"><label>Email</label><input id="np_email" placeholder="nombre@dominio.com"></div>
       </div>
       <div class="grid2">
@@ -2472,11 +2478,15 @@ async function guardarProspecto(idx){
   const tieneVat=!!val("np_vat");
   const vals={ name, company_type:"company", city:val("np_city")?oracion(val("np_city")):false,
     state_id:num("np_state"), street:val("np_street")?oracion(val("np_street")):false, user_id:num("np_com"),
-    phone:val("np_phone")?fmtTel(val("np_phone")):false, email:val("np_email")||false,
+    email:val("np_email")||false,
     vat:tieneVat?fmtDoc(val("np_vat"),IDT.cuit):false, l10n_latam_identification_type_id:tieneVat?IDT.cuit:false,
     l10n_ar_afip_responsibility_type_id:num("np_fiscal"),
     property_payment_term_id:num("np_plazo") };
   vals[RUBRO_FIELD]=val("np_rubro")||false;
+  /* Celular en mobile con el 9 y fijo en phone (EYG.telLeer). */
+  const _tel=EYG.telLeer("npt");
+  if(!_tel.ok){ btn.disabled=false; btn.textContent="Crear contacto en Odoo"; toast("⚠ "+_tel.msg); return; }
+  Object.assign(vals,_tel.vals);
   try{
     const newId=await rpc("res.partner","create",[vals],{context:{lang:"es_AR"}});
     // marca de "contacto nuevo" con el creador real (el create_uid de Odoo es el conector, no el usuario del Core)

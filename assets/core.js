@@ -2023,6 +2023,104 @@ window.EYG = (function(){
   /* Para buscar del lado de Odoo, cuando la lista no está cargada en memoria. */
   const domBusca = q => ["|","|",["name","ilike",q],[FANT,"ilike",q],["vat","ilike",q]];
   /* Chip para mostrar el cartel al lado del nombre del titular. */
+  /* ===== Teléfonos: celular (WhatsApp) y fijo =====
+     WhatsApp manda los celulares como +54 9 <área> <número>, y Odoo compara ese
+     número contra phone_sanitized, que toma el campo CELULAR (mobile) antes que el
+     fijo (phone). Hasta el 13/11/2026 el Core guardaba todo en phone, sin el 9, y
+     vaciaba mobile: cada vez que un cliente escribía, Odoo no lo reconocía y le
+     creaba una ficha fantasma (había 160). La regla ahora es una sola, para todas
+     las pantallas: el celular va en mobile y con el 9; el fijo va en phone. */
+  const _telDig = raw => { let d=String(raw==null?"":raw).replace(/\D/g,"");
+    if(d.startsWith("0054")) d=d.slice(4); else if(d.startsWith("54")) d=d.slice(2);
+    return d; };
+  /* área y número: 11 es Buenos Aires (2 dígitos); con 11 dígitos el área es de
+     4; si no, de 3. Es la misma partición que se venía usando: sólo cambia cómo
+     se ve, no los dígitos, que es lo que Odoo compara. */
+  function _telArmar(d){
+    let area, local;
+    if(d.startsWith("11")){ area="11"; local=d.slice(2); }
+    else if(d.length===11){ area=d.slice(0,4); local=d.slice(4); }
+    else { area=d.slice(0,3); local=d.slice(3); }
+    const ls = local.length>=8 ? local.slice(0,4)+"-"+local.slice(4) : local.slice(0,3)+"-"+local.slice(3);
+    return area+" "+ls;
+  }
+  /* Celular: "" si está vacío, null si no es un celular argentino (no llega a
+     área + número = 10 dígitos), o "+54 9 341 503-3943". Acepta como lo escriban:
+     con 0, con 15, con +54 9. */
+  function telCel(raw){
+    let d=_telDig(raw); if(!d) return "";
+    if(d.length===11 && d[0]==="9") d=d.slice(1);                       // el 9 internacional
+    d=d.replace(/^0/,"");                                                // el 0 de larga distancia
+    if(d.length===12) d=d.replace(/^(\d{2,4})15(\d{6,8})$/,"$1$2");     // el 15 local
+    if(d.length!==10) return null;
+    return "+54 9 "+_telArmar(d);
+  }
+  /* Fijo: igual que el formato de siempre (+54 341 491-0559). */
+  function telFijo(raw){
+    let d=_telDig(raw); if(!d) return "";
+    d=d.replace(/^0/,"");
+    if(d.length>10) d=d.replace(/^(\d{2,4})15(\d{6,8})$/,"$1$2");
+    if(d.length<8) return String(raw).trim();
+    if(d.length===10 || d.length===11) return "+54 "+_telArmar(d);
+    return "+54 "+d;
+  }
+  /* Para MOSTRAR cualquier número guardado: si es un celular con el 9 lo muestra
+     como celular; si no, como fijo. Antes, un celular bien guardado se veía
+     como "+54 9341 503-3943". */
+  function telVer(raw){
+    const d=_telDig(raw);
+    if(d.length===11 && d[0]==="9") return "+54 9 "+_telArmar(d.slice(1));
+    return telFijo(raw);
+  }
+  function telStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-tel-css")) return;
+    const s=document.createElement("style"); s.id="eyg-tel-css";
+    s.textContent=".tel-mover{font:inherit;font-size:12px;font-weight:600;border:1px solid currentColor;background:transparent;color:inherit;border-radius:5px;padding:1px 7px;margin-left:4px;cursor:pointer}"
+      +".tel-mal{color:#B4432E;font-weight:600}";
+    document.head.appendChild(s); }
+  /* Los dos campos, iguales en todas las pantallas. `p` es el prefijo de los ids:
+     p_cel (celular) y p_phone (fijo). `o.falta` marca que la ficha no tiene
+     ningún teléfono. */
+  function telCampos(p, c, o){
+    o=o||{}; telStyles();
+    const cel=(c&&c.mobile)||"", fijo=(c&&c.phone)||"";
+    const falta=o.falta?' <span class="miss">falta</span>':'';
+    return '<div class="fld"><label for="'+p+'_cel">Celular / WhatsApp'+falta+'</label>'
+      +'<input id="'+p+'_cel" value="'+esc(cel)+'" oninput="EYG.telPrev(\''+p+'\')" placeholder="341 155033943" inputmode="tel" autocomplete="off">'
+      +'<div class="hint">Con código de área. Se guarda con el 9 adelante, que es como WhatsApp reconoce al cliente.</div>'
+      +'<div class="prev" id="'+p+'_cel_prev"></div></div>'
+      +'<div class="fld"><label for="'+p+'_phone">Teléfono fijo</label>'
+      +'<input id="'+p+'_phone" value="'+esc(fijo)+'" oninput="EYG.telPrev(\''+p+'\')" placeholder="0341 4910559" inputmode="tel" autocomplete="off">'
+      +'<div class="prev" id="'+p+'_phone_prev"></div></div>';
+  }
+  /* Muestra cómo va a quedar cada número. Si la ficha tiene un número sólo como
+     fijo y el celular vacío, ofrece pasarlo: casi siempre es el celular que se
+     guardó mal antes de este cambio. */
+  function telPrev(p){
+    if(typeof document==="undefined") return;
+    const ci=document.getElementById(p+"_cel"), fi=document.getElementById(p+"_phone");
+    const cp=document.getElementById(p+"_cel_prev"), fp=document.getElementById(p+"_phone_prev");
+    if(ci && cp){ const v=ci.value.trim(), r=telCel(v); cp.textContent=""; cp.className="prev"+(r===null?" tel-mal":"");
+      if(v) cp.textContent = r===null ? "Le falta el código de área o sobran números: tienen que ser 10 dígitos." : "Se guardará: "+r; }
+    if(fi && fp){ const v=fi.value.trim(); fp.textContent="";
+      if(v){ fp.appendChild(document.createTextNode("Se guardará: "+telFijo(v)));
+        if(ci && !ci.value.trim()){
+          const b=document.createElement("button"); b.type="button"; b.className="tel-mover";
+          b.textContent="Es celular: pasarlo arriba";
+          b.addEventListener("click",()=>{ ci.value=fi.value; fi.value=""; telPrev(p); ci.focus(); });
+          fp.appendChild(document.createTextNode(" ")); fp.appendChild(b); } } }
+  }
+  /* Lee los dos campos para guardar. Sólo devuelve las claves de los campos que
+     existen en la pantalla: si una no muestra el celular, no lo borra. */
+  function telLeer(p){
+    if(typeof document==="undefined") return {ok:true, vals:{}};
+    const ci=document.getElementById(p+"_cel"), fi=document.getElementById(p+"_phone");
+    const vals={};
+    if(ci){ const v=ci.value.trim(), r=telCel(v);
+      if(v && r===null) return {ok:false, msg:"Revisá el celular: va con código de área y número, 10 dígitos (por ejemplo 341 155033943)."};
+      vals.mobile=r||false; }
+    if(fi){ const v=fi.value.trim(); vals.phone=v?telFijo(v):false; }
+    return {ok:true, vals};
+  }
   function fantStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-fant-css")) return; const s=document.createElement("style"); s.id="eyg-fant-css"; s.textContent=".eyg-fant{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:20px;background:#E2F1EF;color:#048782;font-size:11px;font-weight:700;vertical-align:middle;white-space:nowrap;max-width:230px;overflow:hidden;text-overflow:ellipsis}"; document.head.appendChild(s); }
   function chipFant(c, nombreMostrado){
     const v = typeof c==="string" ? c : fantasia(c);
@@ -2714,6 +2812,7 @@ window.EYG = (function(){
     bcraFull, bcraClasificar, bcraResumen, bcraCacheLeer, bcraCacheMerge, badgeBCRA, bcraStyles,
     creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
     FANT, fantasia, buscaTxt, buscaOk, domBusca, chipFant, fantStyles,
+    telCel, telFijo, telVer, telCampos, telPrev, telLeer,
     CARTEL_PREF, cartelPrefijo, cartelEjemplo, cartelNorm,
     RUBRO_FIELD, RUBROS, RUBROS_VIEJOS, RUBRO_META, RUBRO_ALIAS, TAG_RUBRO, rubroNorm, rubroDe, rubroOpts, rubroBadge,
     conquistarLeer, conquistarGuardar, conquistarAsignar, conquistarDeComercial, conquistarSetPartner, conquistarQuitar, conquistarPatch, notificarRoles,

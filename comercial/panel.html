@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="../assets/core.js?v=122"></script>
+<script src="../assets/core.js?v=124"></script>
 <script src="../assets/presupuesto.js?v=2"></script>
 <script src="../assets/ofertas-canal.js?v=20261014"></script>
 <style>
@@ -927,20 +927,7 @@ function fmtDoc(raw,idtypeId){
   if(idtypeId===IDT.cuit||idtypeId===IDT.cuil){ if(d.length!==11) return raw.trim(); return d.slice(0,2)+"-"+d.slice(2,10)+"-"+d.slice(10); } // 00-00000000-0
   return raw.trim();
 }
-function fmtTel(raw){
-  let d=digits(raw); if(!d) return "";
-  if(d.startsWith("0054")) d=d.slice(4);
-  if(d.startsWith("54")) d=d.slice(2);
-  d=d.replace(/^0/,"");                              // área sin 0
-  if(d.length>10) d=d.replace(/^(\d{2,4})15(\d{6,8})$/,"$1$2"); // celular sin 15 (solo si sobra largo)
-  if(d.length<8) return raw.trim();
-  let area,local;
-  if(d.length===10){ if(d.startsWith("11")){area="11";local=d.slice(2);} else {area=d.slice(0,3);local=d.slice(3);} }
-  else if(d.length===11){ area=d.slice(0,4);local=d.slice(4); }
-  else return "+54 "+d;
-  const ls = local.length>=8 ? local.slice(0,4)+"-"+local.slice(4) : local.slice(0,3)+"-"+local.slice(3);
-  return "+54 "+area+" "+ls;
-}
+function fmtTel(raw){ return EYG.telVer(raw); }   // sólo para mostrar: entiende el 9 del celular (core.js)
 function oracion(s){ s=(s||"").trim().replace(/\s+/g," "); if(!s) return ""; return s.charAt(0).toUpperCase()+s.slice(1).toLowerCase(); }
 function waN(tel){let d=digits(tel);if(d.length<8)return"";if(d.startsWith("54"))d=d.slice(2);if(d.startsWith("9")&&d.length>=11)d=d.slice(1);d=d.replace(/^0/,"");if(d.length>10)d=d.replace(/^(\d{2,4})15(\d{6,8})$/,"$1$2");if(d.length>=10)return"549"+d;return"";}
 
@@ -3299,7 +3286,7 @@ async function cargarPortal(id){
     const us=await rpc("res.users","search_read",[[["partner_id","=",id]]],{fields:["login","share","active","login_date"],order:"id desc",context:{active_test:false}});
     if(us.some(u=>!u.share)){ box.innerHTML=`<p class="pmuted">Tiene un usuario <b>interno</b> de la empresa (no es cliente del portal). No se toca desde acá.</p>`; return; }
     const u=us.find(x=>x.active)||null, rev=u?null:(us[0]||null);
-    const wa=waN(c.phone||c.mobile);
+    const wa=waN(c.mobile||c.phone);
     _PORTAL[id]={c, login:u?u.login:"", wa};
     const fe=document.getElementById("f_email");
     if(u&&fe){ fe.readOnly=true; fe.title="Es su usuario del portal: el cambio de correo lo pide la farmacia en el formulario de alta y lo aprueban Germán o Bárbara"; fe.style.opacity=".7"; }
@@ -4246,7 +4233,7 @@ function abrirForm(c,isNew){
       <div class="istat" id="intelStats"><div class="b"><div class="v">…</div><div class="l">cargando</div></div><div class="b"><div class="v">…</div><div class="l"></div></div><div class="b"><div class="v">…</div><div class="l"></div></div></div>
       <div id="intelProds"></div>
       ${ccBlock(c)}
-      ${(c.phone||c.mobile)?`<a class="wa-contact" href="https://api.whatsapp.com/send?phone=${waN(c.phone||c.mobile)}&text=${encodeURIComponent(msgPred(c))}" target="_blank" onclick="confirmarEnvio(${c.id},'contacto')"><svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2z"/></svg>Contactar por WhatsApp</a>`:`<div class="wa-contact" data-off>Sin teléfono — cargalo abajo para poder contactar</div>`}
+      ${(c.phone||c.mobile)?`<a class="wa-contact" href="https://api.whatsapp.com/send?phone=${waN(c.mobile||c.phone)}&text=${encodeURIComponent(msgPred(c))}" target="_blank" onclick="confirmarEnvio(${c.id},'contacto')"><svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2z"/></svg>Contactar por WhatsApp</a>`:`<div class="wa-contact" data-off>Sin teléfono — cargalo abajo para poder contactar</div>`}
       <div class="portalsec"><h4>🌐 Acceso al portal (web de Odoo)</h4><div id="portalbox"><span class="pmuted">Verificando…</span></div></div>
     </div>`;
   d.innerHTML=`
@@ -4272,9 +4259,7 @@ function abrirForm(c,isNew){
           <div class="hint">El cartel del local. Arriba va el titular del CUIT; por acá lo encontrás igual cuando buscás.</div>
           <div class="prev" id="prev_fant"></div></div>
         <div class="fld"><label>Rubro</label><select id="f_rubro" onchange="onRubro()">${rubroOpts}</select><div class="hint">Farmacia, sanatorio, veterinaria, etc.</div></div>
-        <div class="fld"><label>Teléfono ${comp.has.tel||isNew?'':'<span class="miss">falta</span>'}</label>
-          <input id="f_phone" value="${esc(c.phone||c.mobile||'')}" oninput="prevTel()" placeholder="0341 155033943">
-          <div class="hint">Área sin 0, celular sin 15. Se guarda formateado.</div><div class="prev" id="prev_phone"></div></div>
+        ${EYG.telCampos("f", c, {falta:!(comp.has.tel||isNew)})}
         <div class="fld"><label>Email ${comp.has.email||isNew?'':'<span class="miss">falta</span>'}</label><input id="f_email" value="${esc(c.email||'')}" placeholder="nombre@dominio.com"></div>
         <div class="fld"><label>Dirección ${comp.has.street||isNew?'':'<span class="miss">falta</span>'}</label><input id="f_street" value="${esc(c.street||'')}" placeholder="San martín 1234"><div class="hint">Se guarda tipo oración.</div></div>
         <div class="grid2">
@@ -4292,7 +4277,7 @@ function abrirForm(c,isNew){
     </div>
     <div class="dfoot">${isNew?'':`<button class="btn arch" onclick="pedirArchivar(${c.id})">🔒 Archivar</button>`}<button class="btn save" id="btnSave" onclick="guardar()">${isNew?'Crear contacto':'Guardar ficha'}</button></div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
-  prevTel(); prevDoc(); prevFant();
+  EYG.telPrev("f"); prevDoc(); prevFant();
   if(!isNew){ cargarIntel(c.id); cargarEntregasFicha(c.id); cargarContactos(c.id); credFichaFetch(c); cargarPortal(c.id); }
 }
 
@@ -4412,7 +4397,8 @@ function agregarPersona(pid){
     <div class="pform">
       <input id="np_name" placeholder="Nombre o etiqueta — ej: Celular de pagos" value="${ed?esc(ed.name||""):""}">
       <input id="np_func" placeholder="Cargo (compras, pagos, dueño…) — opcional" value="${ed?esc(ed.function||""):""}">
-      <input id="np_phone" placeholder="Teléfono / celular" value="${ed?esc(ed.mobile||ed.phone||""):""}">
+      <input id="np_phone" placeholder="Celular / WhatsApp" value="${ed?esc(ed.mobile||ed.phone||""):""}">
+      <label class="np-fijo" style="display:flex;gap:6px;align-items:center;font-size:12.5px"><input type="checkbox" id="np_fijo" ${ed&&!ed.mobile&&ed.phone?"checked":""}> Es un teléfono fijo (no tiene WhatsApp)</label>
       <div class="pform-b"><button class="fbtn" onclick="pintarLibreta()">Cancelar</button>
         <button class="fbtn go" onclick="guardarPersona(${ed?ed.id:0})">Guardar</button></div>
     </div>`;
@@ -4423,15 +4409,17 @@ async function guardarPersona(pid){
   const L=ST._libreta||{}; const v=id=>{const el=document.getElementById(id);return el?el.value.trim():"";};
   const name=v("np_name"), func=v("np_func"), phone=v("np_phone");
   if(!name && !phone){ toast("⚠️ Poné al menos un nombre/etiqueta o un teléfono"); return; }
+  /* El celular va en mobile con el 9 (lo que compara WhatsApp); un fijo, en phone. */
+  const esFijo=!!(document.getElementById("np_fijo")||{}).checked;
+  const tel={phone:false, mobile:false};
+  if(phone){ if(esFijo) tel.phone=EYG.telFijo(phone); else { const c9=EYG.telCel(phone); if(c9===null){ toast("⚠️ Revisá el celular: va con código de área y número, 10 dígitos. Si es un fijo, marcá la casilla."); return; } tel.mobile=c9; } }
   try{
     if(pid){
-      // El teléfono se consolida en `phone` (y se limpia `mobile`) para que quede en un solo lugar;
-      // el bot de WhatsApp busca en phone Y mobile, así que igual lo va a encontrar.
-      await rpc("res.partner","write",[[pid],{name:name||"Contacto", function:func||false, phone:phone||false, mobile:false}],{context:{lang:"es_AR"}});
+      await rpc("res.partner","write",[[pid],Object.assign({name:name||"Contacto", function:func||false}, tel)],{context:{lang:"es_AR"}});
       toast("✓ Contacto actualizado");
     }else{
       const vals={parent_id:L.parent, type:"contact", is_company:false, name:name||"Contacto"};
-      if(func) vals.function=func; if(phone) vals.phone=phone;
+      if(func) vals.function=func; Object.assign(vals, tel);
       await rpc("res.partner","create",[vals],{context:{lang:"es_AR"}});
       toast("👤 Contacto agregado");
     }
@@ -4466,7 +4454,7 @@ async function cargarIntel(id){
 function ccBlock(c){
   const dd=ST.cc.porP[c.id]; const deuda=dd?Math.max(0,dd.deuda):0; if(deuda<=1) return '';
   const dv=dd?Math.max(0,dd.vencido):0; const dias=dd&&dd.venc?diasDe(dd.venc):null;
-  const wa=waN(c.phone||c.mobile);
+  const wa=waN(c.mobile||c.phone);
   return `<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
     <h4>Cuenta corriente</h4>
     <div class="istat">
@@ -4515,7 +4503,7 @@ function onRubro(){
   if(el&&r) el.placeholder=EYG.cartelEjemplo(r.value);
   prevFant();
 }
-function prevTel(){const v=document.getElementById("f_phone").value;const el=document.getElementById("prev_phone");if(el)el.textContent=v?('Se guardará: '+fmtTel(v)):'';}
+function prevTel(){ EYG.telPrev("f"); }
 function prevDoc(){const t=parseInt(document.getElementById("f_idtype").value||0,10);const v=document.getElementById("f_vat").value;const el=document.getElementById("prev_doc");if(el)el.textContent=v?('→ '+fmtDoc(v,t)):'';}
 function cerrar(){document.getElementById("drawer").classList.remove("on");document.getElementById("scrim").classList.remove("on");EDIT=null;ST._tomando=null;}
 
@@ -4549,7 +4537,6 @@ async function guardar(){
   const idtype=num("f_idtype");
   const vals={
     company_type:val("f_type"), name:val("f_name"),
-    phone: val("f_phone")?fmtTel(val("f_phone")):false, mobile:false,
     email: val("f_email")||false, street: val("f_street")?oracion(val("f_street")):false,
     zip: val("f_zip")||false, city: val("f_city")?oracion(val("f_city")):false,
     state_id: num("f_state"), l10n_latam_identification_type_id: idtype,
@@ -4557,6 +4544,11 @@ async function guardar(){
     l10n_ar_afip_responsibility_type_id: num("f_fiscal"),
     property_payment_term_id: num("f_plazo")
   };
+  /* Celular en mobile con el 9 y fijo en phone (EYG.telLeer): así WhatsApp
+     reconoce al cliente y no le crea una ficha fantasma. */
+  const _tel=EYG.telLeer("f");
+  if(!_tel.ok){ btn.disabled=false; btn.textContent=EDIT.isNew?"Crear contacto":"Guardar ficha"; toast("⚠️ "+_tel.msg); return; }
+  Object.assign(vals,_tel.vals);
   // el plazo que tenía antes, para dejar constancia si cambia
   const _prevC=(ST.contactos||[]).find(x=>x.id===EDIT.id), _prevT=_prevC&&_prevC.property_payment_term_id;
   const plazoPrevId=_prevT?_prevT[0]:false, plazoPrevNom=_prevT?_prevT[1]:"sin plazo";
@@ -4758,7 +4750,7 @@ function pintarWAModal(keepFocus){
   let lista=(ST.contactos||[]).filter(c=>EYG.buscaOk(c,q));
   lista.sort((a,b)=>{ const pa=!!(a.phone||a.mobile), pb=!!(b.phone||b.mobile); if(pa!==pb) return pa?-1:1; return (a.name||"").localeCompare(b.name||""); });
   lista=lista.slice(0,60);
-  const row=c=>{ const tel=waN(c.phone||c.mobile), ya=yaSet.has(c.id);
+  const row=c=>{ const tel=waN(c.mobile||c.phone), ya=yaSet.has(c.id);
     return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 2px;border-bottom:1px solid #f0f3f2">
       <div style="min-width:0"><div style="font-weight:600;font-size:13.5px;color:#0E1F1D;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(c.name||"—")}</div>
         <div style="font-size:11px;color:${ya?'#1E7D46':'#8A9A97'}">${ya?'✓ ya enviado':(tel?'':'sin teléfono')}</div></div>

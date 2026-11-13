@@ -9,7 +9,7 @@
 <link id="v2-fuente-link" href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=122"></script>
+<script src="../assets/core.js?v=124"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
@@ -423,7 +423,7 @@ const RUBROS_TODOS=EYG.RUBROS.concat(EYG.RUBROS_VIEJOS).map(r=>r.v);
 const IDT={cuit:4,dni:5,cuil:6};
 const digits=soloDig;
 function fmtDoc(raw,idtypeId){const d=digits(raw);if(!d)return"";if(idtypeId===IDT.dni){if(d.length<7||d.length>8)return raw.trim();return d.replace(/\B(?=(\d{3})+(?!\d))/g,".");}if(idtypeId===IDT.cuit||idtypeId===IDT.cuil){if(d.length!==11)return raw.trim();return d.slice(0,2)+"-"+d.slice(2,10)+"-"+d.slice(10);}return raw.trim();}
-function fmtTel(raw){let d=digits(raw);if(!d)return"";if(d.startsWith("0054"))d=d.slice(4);if(d.startsWith("54"))d=d.slice(2);d=d.replace(/^0/,"");if(d.length>10)d=d.replace(/^(\d{2,4})15(\d{6,8})$/,"$1$2");if(d.length<8)return raw.trim();let area,local;if(d.length===10){if(d.startsWith("11")){area="11";local=d.slice(2);}else{area=d.slice(0,3);local=d.slice(3);}}else if(d.length===11){area=d.slice(0,4);local=d.slice(4);}else return"+54 "+d;const ls=local.length>=8?local.slice(0,4)+"-"+local.slice(4):local.slice(0,3)+"-"+local.slice(3);return"+54 "+area+" "+ls;}
+function fmtTel(raw){ return EYG.telVer(raw); }   // sólo para mostrar: entiende el 9 del celular (core.js)
 function oracion(s){s=(s||"").trim().replace(/\s+/g," ");if(!s)return"";return s.charAt(0).toUpperCase()+s.slice(1).toLowerCase();}
 const PFIELDS_COB=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","property_payment_term_id","x_studio_selection_field_6ui_1j42g6fu9","commercial_partner_id","total_due","total_overdue"];
 // Plazo de pago → badge corto: "30 días"→"30 d", "CONTADO"→"contado", etc.
@@ -1969,7 +1969,7 @@ document.addEventListener("keydown",e=>{if(e.key==="Escape"){cerrar();cerrarGraf
 
 // ===== Editar ficha del contacto y sincronizar con Odoo =====
 function onTipoCob(){const t=document.getElementById("f_type").value;const l=document.getElementById("lbl_name");if(l)l.textContent=(t==='company'?'Razón social':'Apellido y nombre');const n=document.getElementById("f_name");if(n)n.placeholder=(t==='company'?'Ej: Farmacia del Sol S.R.L.':'Ej: Pérez, Juan');}
-function prevTelCob(){const el=document.getElementById("prev_phone");const v=document.getElementById("f_phone");if(el&&v)el.textContent=v.value?('Se guardará: '+fmtTel(v.value)):'';}
+function prevTelCob(){ EYG.telPrev("f"); }
 function prevDocCob(){const t=parseInt(document.getElementById("f_idtype").value||0,10);const v=document.getElementById("f_vat");const el=document.getElementById("prev_doc");if(el&&v)el.textContent=v.value?('→ '+fmtDoc(v.value,t)):'';}
 
 function editarContacto(id){
@@ -1993,8 +1993,7 @@ function editarContacto(id){
       <div class="fld"><label id="lbl_name">${tipo==='company'?'Razón social':'Apellido y nombre'}</label>
         <input id="f_name" value="${esc(p.name||c.nombre||'')}" placeholder="${tipo==='company'?'Ej: Farmacia del Sol S.R.L.':'Ej: Pérez, Juan'}"></div>
       <div class="fld"><label>Rubro</label><select id="f_rubro">${rubroOpts}</select></div>
-      <div class="fld"><label>Teléfono</label><input id="f_phone" value="${esc(p.phone||p.mobile||'')}" oninput="prevTelCob()" placeholder="0341 155033943">
-        <div class="hint">Área sin 0, celular sin 15. Se guarda formateado.</div><div class="prev" id="prev_phone"></div></div>
+      ${EYG.telCampos("f", p)}
       <div class="fld"><label>Email</label><input id="f_email" value="${esc(p.email||'')}" placeholder="nombre@dominio.com"></div>
       <div class="fld"><label>Dirección</label><input id="f_street" value="${esc(p.street||'')}" placeholder="San martín 1234"><div class="hint">Se guarda tipo oración.</div></div>
       <div class="grid2">
@@ -2021,7 +2020,6 @@ async function guardarContacto(id){
   const idtype=num("f_idtype");
   const vals={
     company_type:val("f_type"), name:val("f_name"),
-    phone: val("f_phone")?fmtTel(val("f_phone")):false, mobile:false,
     email: val("f_email")||false, street: val("f_street")?oracion(val("f_street")):false,
     zip: val("f_zip")||false, city: val("f_city")?oracion(val("f_city")):false,
     state_id: num("f_state"), l10n_latam_identification_type_id: idtype,
@@ -2030,6 +2028,10 @@ async function guardarContacto(id){
   };
   vals[RUBRO_FIELD]=val("f_rubro")||false;
   if(!vals.name){ btn.disabled=false; btn.textContent="Guardar y sincronizar con Odoo"; toast("⚠ Falta el nombre"); return; }
+  /* Celular en mobile con el 9 y fijo en phone (EYG.telLeer). */
+  const _tel=EYG.telLeer("f");
+  if(!_tel.ok){ btn.disabled=false; btn.textContent="Guardar y sincronizar con Odoo"; toast("⚠ "+_tel.msg); return; }
+  Object.assign(vals,_tel.vals);
   try{
     await rpc("res.partner","write",[[id],vals],{context:{lang:"es_AR"}});
     const fresh=(await rpc("res.partner","read",[[id]],{fields:PFIELDS_COB,context:{lang:"es_AR"}}))[0];
