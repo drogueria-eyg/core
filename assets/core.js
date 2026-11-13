@@ -2121,6 +2121,92 @@ window.EYG = (function(){
     if(fi){ const v=fi.value.trim(); vals.phone=v?telFijo(v):false; }
     return {ok:true, vals};
   }
+  /* ===== Antes de crear un contacto: ¿ya está cargado? =====
+     13/11/2026: aparecieron farmacias cargadas DOS veces desde el Panel Comercial
+     (Cerino, Di Mauro, Lagreca, Libardi, Luraschi). La ficha nueva se creaba sin mirar
+     y, un minuto después, se le daba el acceso al portal: las compras, la deuda y el
+     WhatsApp del cliente quedaban partidos en dos fichas. Se escapaban porque el CUIT
+     estaba escrito distinto (con o sin guiones, o el DNI en lugar del CUIT) y nadie
+     miraba el teléfono. parecidos() busca por:
+       · CUIT o DNI: compara los 8 dígitos del documento, se escriba como se escriba;
+       · teléfono: los últimos 8 dígitos, en el fijo o en el celular (phone_mobile_search
+         de Odoo, que no mira guiones ni espacios);
+       · correo;
+       · nombre o cartel en la misma localidad.
+     Dos CUIT completos sólo coinciden si son iguales; el DNI se compara contra el
+     documento del medio del CUIT (así se encuentra al que lo cargó con DNI).
+     Sólo fichas principales (no contactos hijos ni direcciones), también archivadas.
+     Si la búsqueda falla, devuelve [] : nunca frena el alta. */
+  const _parDni = v => { const d=String(v||"").replace(/\D/g,""); if(d.length===11) return d.slice(2,10); if(d.length>=7&&d.length<=8) return d.padStart(8,"0"); return ""; };
+  const _parN = s => String(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase();
+  const _PAR_GEN = new Set(["farmacia","fcia","frmacia","farm","drogueria","distr","distribuidora","sanatorio","clinica","veterinaria","perfumeria","sociedad","responsabilidad","limitada","contacto"]);
+  function _parClave(s){ return _parN(s).replace(/[^a-z0-9ñ ]+/g," ").split(/\s+/).filter(w=>w.length>=4&&!_PAR_GEN.has(w)).sort((a,b)=>b.length-a.length)[0]||""; }
+  async function parecidos(d){
+    d=d||{}; const ex=new Set((d.excluir||[]).map(Number));
+    const K={fields:["id","name","city","street","user_id","active","vat","sale_order_count","x_studio_nombre_de_fantasia"],limit:12,context:{lang:"es_AR",active_test:false}};
+    const base=[["parent_id","=",false]], q=[];
+    const dni=_parDni(d.vat);
+    if(dni){ const pl=dni.replace(/^0+/,""), pun=pl.replace(/\B(?=(\d{3})+(?!\d))/g,".");
+      q.push(["mismo CUIT o DNI", ["|",["vat","ilike",pl],["vat","ilike",pun]], x=>{ const v1=String(d.vat||"").replace(/\D/g,""), v2=String(x.vat||"").replace(/\D/g,""); return (v1.length===11&&v2.length===11) ? v1===v2 : _parDni(x.vat)===dni; }]); }
+    [d.mobile,d.phone].map(t=>String(t||"").replace(/\D/g,"").slice(-8)).filter((t,i,a)=>t.length===8&&a.indexOf(t)===i)
+      .forEach(t=>q.push(["mismo teléfono", [["phone_mobile_search","ilike",t]], null]));
+    const mail=String(d.email||"").trim(); if(/@/.test(mail)) q.push(["mismo correo", [["email","=ilike",mail]], null]);
+    const cl=_parClave(d.fant)||_parClave(d.name);
+    const ci=_parN(d.city).replace(/[^a-z ]+/g," ").split(/\s+/).sort((a,b)=>b.length-a.length)[0]||"";
+    if(cl && ci.length>=3){ const w=cl.replace(/[aeiou]/g,"_"), wc=ci.replace(/[aeiou]/g,"_");
+      q.push(["mismo nombre y localidad", ["|",["name","ilike",w],["x_studio_nombre_de_fantasia","ilike",w],["city","ilike",wc]], null]); }
+    if(!q.length) return [];
+    const res=await Promise.all(q.map(([m,dom,ok])=>rpc("res.partner","search_read",[base.concat(dom)],K)
+      .then(r=>(r||[]).filter(x=>!ok||ok(x)).map(x=>[m,x])).catch(()=>[])));
+    const por={};
+    res.flat().forEach(([m,x])=>{ if(ex.has(x.id)) return; const o=por[x.id]||(por[x.id]=Object.assign({},x,{motivos:[]})); if(!o.motivos.includes(m)) o.motivos.push(m); });
+    const peso=x=>x.motivos.reduce((s,m)=>s+(m==="mismo CUIT o DNI"?4:m==="mismo nombre y localidad"?1:2),0);
+    return Object.values(por).sort((a,b)=>peso(b)-peso(a)).slice(0,10);
+  }
+  function _parStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-par-css")) return; const s=document.createElement("style"); s.id="eyg-par-css";
+    s.textContent=".eyg-par-scrim{position:fixed;inset:0;z-index:100000;background:rgba(15,30,28,.45);display:flex;align-items:center;justify-content:center;padding:16px}"
+      +".eyg-par{background:#fff;border-radius:14px;max-width:520px;width:100%;max-height:88vh;overflow:auto;padding:18px 18px 14px;box-shadow:0 18px 50px rgba(0,0,0,.25);font-family:inherit;color:#173C39}"
+      +".eyg-par h3{margin:0 0 6px;font-size:17px;color:#8A2E2B}.eyg-par p{margin:0 0 12px;font-size:13.5px;line-height:1.45}"
+      +".eyg-par-it{border:1px solid #DCE4DE;border-radius:10px;padding:10px 12px;margin-bottom:8px}.eyg-par-it .n{font-weight:800;font-size:14px}"
+      +".eyg-par-it .m{font-size:12.5px;color:#5b6b68;margin-top:2px}.eyg-par-it .c{margin-top:6px;display:flex;flex-wrap:wrap;gap:5px}"
+      +".eyg-par-it .c span{background:#FBE4E3;color:#8A2E2B;border-radius:20px;padding:1px 8px;font-size:11px;font-weight:700}.eyg-par-it .t{background:#EEF1F0;color:#5b6b68;border-radius:20px;padding:1px 7px;font-size:10.5px;font-weight:700}"
+      +".eyg-par-it .h{font-size:12px;color:#9a6a0b;margin-top:6px}.eyg-par-it button{margin-top:8px;border:0;border-radius:8px;padding:7px 12px;background:#E2F1EF;color:#047a75;font-weight:800;cursor:pointer;font-family:inherit}"
+      +".eyg-par-pie{display:flex;gap:8px;margin-top:12px}.eyg-par-pie button{flex:1;border:0;border-radius:9px;padding:11px 10px;font-weight:800;cursor:pointer;font-family:inherit;background:#EEF1F0;color:#5b6b68}"
+      +".eyg-par-pie button.otro{background:#FBE4E3;color:#B0322F}";
+    document.head.appendChild(s); }
+  /* Muestra lo que encontró parecidos() y espera la decisión. Devuelve true sólo si la
+     persona confirma que es OTRO negocio; con "Abrir esta ficha" o "Cancelar", false.
+     o = { abrir(id), puedeAbrir(x) → bool, miUid } */
+  function avisoParecidos(lista, o){
+    o=o||{};
+    return new Promise(res=>{
+      _parStyles();
+      const fuerte=lista.some(x=>x.motivos.includes("mismo CUIT o DNI"));
+      const item=x=>{ const abre=!!o.abrir&&(!o.puedeAbrir||o.puedeAbrir(x)), ajena=!abre&&o.miUid&&x.user_id&&x.user_id[0]!==o.miUid;
+        return '<div class="eyg-par-it"><div class="n">'+esc(x.name)+(x.active?'':' <span class="t">archivada</span>')+'</div>'
+          +'<div class="m">'+esc([x.city,x.street].filter(Boolean).join(" · ")||"sin dirección")+' · '+(x.user_id?'de '+esc(x.user_id[1]):'sin comercial')+' · '+(x.sale_order_count?'<b>compró</b> ('+x.sale_order_count+' pedido'+(x.sale_order_count>1?'s':'')+')':'nunca compró')+'</div>'
+          +'<div class="c">'+x.motivos.map(m=>'<span>'+esc(m)+'</span>').join("")+'</div>'
+          +(abre?'<button type="button" data-abrir="'+x.id+'">Abrir esta ficha</button>':ajena?'<div class="h">Es de otra cartera: pedí que te la pasen, no la cargues de nuevo.</div>':'')
+          +'</div>'; };
+      const w=document.createElement("div"); w.className="eyg-par-scrim";
+      w.innerHTML='<div class="eyg-par" role="dialog" aria-modal="true"><h3>⚠ Puede estar ya cargado</h3>'
+        +'<p>Encontré '+lista.length+(lista.length>1?' fichas parecidas':' ficha parecida')+'. Si es el mismo cliente, <b>no lo crees de nuevo</b>: con dos fichas se parten las compras, la deuda, el acceso al portal y el WhatsApp.</p>'
+        +lista.map(item).join("")
+        +'<div class="eyg-par-pie"><button type="button" data-r="0">Cancelar</button><button type="button" data-r="1" class="otro">'+(fuerte?'Es otro local (mismo CUIT): crear igual':'Es otro negocio: crear igual')+'</button></div></div>';
+      const fin=v=>{ w.remove(); res(v); };
+      w.addEventListener("click",e=>{ const b=e.target.closest("button");
+        if(!b){ if(e.target===w) fin(false); return; }
+        if(b.dataset.abrir){ fin(false); try{ o.abrir(Number(b.dataset.abrir)); }catch(_){} return; }
+        fin(b.dataset.r==="1"); });
+      document.body.appendChild(w);
+    });
+  }
+  /* Constancia en la ficha nueva cuando se creó igual, para poder revisarlo después. */
+  async function parecidosNota(id, lista, quien){
+    if(!id||!(lista||[]).length) return;
+    try{ await rpc("res.partner","message_post",[[id]],{message_type:"comment",subtype_xmlid:"mail.mt_note",
+      body:"⚠ Se creó aunque se parecía a "+lista.map(x=>"["+x.id+"] "+x.name+" ("+x.motivos.join(", ")+")").join("; ")+". Confirmó que es otro negocio: "+(quien||"—")}); }catch(_){}
+  }
   function fantStyles(){ if(typeof document==="undefined"||document.getElementById("eyg-fant-css")) return; const s=document.createElement("style"); s.id="eyg-fant-css"; s.textContent=".eyg-fant{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:20px;background:#E2F1EF;color:#048782;font-size:11px;font-weight:700;vertical-align:middle;white-space:nowrap;max-width:230px;overflow:hidden;text-overflow:ellipsis}"; document.head.appendChild(s); }
   function chipFant(c, nombreMostrado){
     const v = typeof c==="string" ? c : fantasia(c);
@@ -2813,6 +2899,7 @@ window.EYG = (function(){
     creditoConfig, evalCredito, badgeCredito, credStyles, credLeyendaHTML, CRED_NIV,
     FANT, fantasia, buscaTxt, buscaOk, domBusca, chipFant, fantStyles,
     telCel, telFijo, telVer, telCampos, telPrev, telLeer,
+    parecidos, avisoParecidos, parecidosNota,
     CARTEL_PREF, cartelPrefijo, cartelEjemplo, cartelNorm,
     RUBRO_FIELD, RUBROS, RUBROS_VIEJOS, RUBRO_META, RUBRO_ALIAS, TAG_RUBRO, rubroNorm, rubroDe, rubroOpts, rubroBadge,
     conquistarLeer, conquistarGuardar, conquistarAsignar, conquistarDeComercial, conquistarSetPartner, conquistarQuitar, conquistarPatch, notificarRoles,

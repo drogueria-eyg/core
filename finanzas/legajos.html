@@ -9,7 +9,7 @@
 <link id="v2-fuente-link" href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=124"></script>
+<script src="../assets/core.js?v=125"></script>
 <style>
   :root{
     --teal:#048782; --teal-deep:#04635F; --teal-med:#0AA89F; --aqua:#5FC8BF;
@@ -539,11 +539,15 @@ async function crearCliente(){
   const btn=document.getElementById("btnAlta"); if(!btn) return;
   const name=valStr("a_name"); if(!name){ toast("Falta el nombre"); return; }
   const vat=valStr("a_vat");
+  let _par=[];
   if(!_forzarCrear){
     btn.disabled=true; btn.textContent="Buscando duplicados…";
     const dups=await buscarDupCliente(name, vat);
     btn.disabled=false; btn.textContent="Crear cliente";
     if(dups.length){ mostrarDupsAlta(dups); return; }
+    /* además: mismo CUIT o DNI, teléfono o correo, escritos como sea (EYG.parecidos) */
+    try{ const _t0=EYG.telLeer("a"); _par=await EYG.parecidos(Object.assign({vat,email:valStr("a_email"),name,city:valStr("a_city")},(_t0&&_t0.vals)||{})); }catch(_){ _par=[]; }
+    if(_par.length && !(await EYG.avisoParecidos(_par,{abrir:pid=>abrirDup(pid)}))) return;
   }
   btn.disabled=true; btn.textContent="Creando…";
   const tieneVat=!!vat;
@@ -566,6 +570,7 @@ async function crearCliente(){
     const newId=await EYG.rpc("res.partner","create",[vals],{context:{lang:"es_AR"}});
     const quien=(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
     try{ await EYG.rpc("res.partner","message_post",[[newId]],{body:"👤 "+NUEVO_TAG+" por="+quien+" origen=administracion",message_type:"comment"}); }catch(_){}
+    if(_par.length) await EYG.parecidosNota(newId,_par,quien);
     _forzarCrear=false;
     // sumar a la lista y abrir su legajo para cargar la documentación enseguida
     const leg={docs:{},estado:"vacio",falta:DOCS.slice(),vencidos:[],porVencer:[]}; LEG[newId]=leg;
