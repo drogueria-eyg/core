@@ -171,7 +171,7 @@
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=125"></script>
+<script src="../assets/core.js?v=126"></script>
 <script src="../assets/presupuesto.js?v=2"></script>
 <script>
 /* ============================================================
@@ -302,7 +302,7 @@ function proxTramo(pid,q){ const t=ST.tiers[pid]||[]; const cur=tramoDe(pid,q);
 function descPct(pid,tier){
   const t=ST.tiers[pid]||[]; if(!t.length||!tier) return 0;
   const pvp=ST.pvp[pid]||0; const base = pvp>1 ? pvp : t[0].p;
-  return base>0 ? Math.round((1-tier.p/base)*100) : 0;
+  return base>0 ? EYG.pctDe(tier.p,base) : 0;   // como Odoo (4 decimales), no entero: es lo que se manda al cliente
 }
 /* Descuento que está aplicado AHORA en esa línea (0 si está en el primer tramo). */
 function descAplicado(it){ return descPct(it.id, tramoDe(it.id, it.cant)); }
@@ -509,7 +509,7 @@ function pintarRes(){
     const tt=ST.tiers[p.id]||[];
     // Que se sepa que tiene escalera antes de sumarlo, en un renglón y nada más.
     const maxD = tt.length>1 ? Math.max(...tt.map(x=>descPct(p.id,x))) : 0;
-    const escP = maxD>0 ? `<div class="escmini">Por cantidad, hasta −${maxD}%</div>` : "";
+    const escP = maxD>0 ? `<div class="escmini">Por cantidad, hasta −${EYG.pct(maxD)}</div>` : "";
     return `<div class="row">
       <div class="nm"><b>${esc(limpiaNom(p.name))}</b>
         <span>${p.default_code?esc(p.default_code)+" · ":""}${t?esc(t.label):""}${p.qty_available>0?` · ${nf(p.qty_available)} en stock`:" · sin stock"}</span>${escP}
@@ -530,19 +530,19 @@ function escaleraHTML(it, soloPrecios){
   const pu=x=> ST.conIva ? x.p*(1+tasaDe(it)) : x.p;
   const maxD=Math.max(...t.map(x=>descPct(it.id,x)));
   // En “Solo precios” no hay cantidad ni botones: alcanza con una línea.
-  if(soloPrecios) return maxD>0 ? `<div class="escmini">Por cantidad, hasta −${maxD}%</div>` : "";
+  if(soloPrecios) return maxD>0 ? `<div class="escmini">Por cantidad, hasta −${EYG.pct(maxD)}</div>` : "";
   const dp=descAplicado(it);
   const abierto = ST.escAbierta===it.id;
   const cur=tramoDe(it.id, it.cant);
-  const lbl = dp>0 ? `−${dp}%` : `hasta −${maxD}%`;
+  const lbl = dp>0 ? `−${EYG.pct(dp)}` : `hasta −${EYG.pct(maxD)}`;
   return `<span class="escwrap">
     <button class="escbtn ${dp>0?"":"plano"}" onclick="togEsc(${it.id})"
-      title="${dp>0?`Estás cotizando con −${dp}%. `:""}Ver la escalera por cantidad y elegir un tramo">🏷️ ${lbl} ▾</button>
+      title="${dp>0?`Estás cotizando con −${EYG.pct(dp)}. `:""}Ver la escalera por cantidad y elegir un tramo">🏷️ ${lbl} ▾</button>
     ${abierto?`<div class="pop" onclick="event.stopPropagation()">
       <div class="ph">Precio por cantidad</div>
       ${t.map(x=>{ const d=descPct(it.id,x); const on=cur&&cur.q===x.q;
         return `<button class="pl ${on?"on":""}" onclick="setCant(${it.id},${x.q});togEsc(null)">
-          <span class="q">desde ${nf(x.q)} u</span><span class="p">${money(pu(x))}</span>${d>0?`<span class="d">−${d}%</span>`:""}</button>`;
+          <span class="q">desde ${nf(x.q)} u</span><span class="p">${money(pu(x))}</span>${d>0?`<span class="d">−${EYG.pct(d)}</span>`:""}</button>`;
       }).join("")}
     </div>`:""}
   </span>`;
@@ -663,7 +663,7 @@ function textoDe(tipo){
   ST.items.forEach(it=>{
     const u=unitDe(it); const sub=subDe(it);
     const dp=descAplicado(it);
-    const marca = dp>0 ? ` (−${dp}%)` : "";   // que el cliente vea que le hicimos precio
+    const marca = dp>0 ? ` (−${EYG.pct(dp)})` : "";   // que el cliente vea que le hicimos precio
     t += (tipo==="detalle")
       ? `• ${it.name}\n   ${nf(it.cant)} × ${u!=null?money(u):"—"}${marca} = ${sub!=null?money(sub):"—"}\n`
       : `• ${nf(it.cant)}× ${it.name} — ${sub!=null?money(sub):"—"}${marca}\n`;
@@ -696,7 +696,7 @@ function escaleraTexto(it, sangria){
   const t=ST.tiers[it.id]||[]; if(t.length<2) return "";
   const pu=x=> ST.conIva ? x.p*(1+tasaDe(it)) : x.p;
   return t.map(x=>{ const d=descPct(it.id,x);
-    return `${sangria}desde ${nf(x.q)} u: ${money(pu(x))}${d>0?` (−${d}%)`:""}`; }).join("\n")+"\n";
+    return `${sangria}desde ${nf(x.q)} u: ${money(pu(x))}${d>0?` (−${EYG.pct(d)})`:""}`; }).join("\n")+"\n";
 }
 async function copiar(tipo){
   const txt=textoDe(tipo);

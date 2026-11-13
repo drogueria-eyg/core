@@ -9,7 +9,7 @@
 <link id="v2-fuente-link" href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../assets/core.css?v=83">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../assets/core.js?v=125"></script>
+<script src="../assets/core.js?v=126"></script>
 <script src="../assets/presupuesto.js?v=2"></script>
 <script src="../assets/ofertas-canal.js?v=20261014"></script>
 <style>
@@ -1572,7 +1572,7 @@ async function cargarPrecios(prods){
     let arr=src.filter(i=>i.compute_price==="fixed"&&i.fixed_price>0)
       .map(i=>({q:i.min_quantity||1, p:i.fixed_price})).sort((a,b)=>a.q-b.q);
     // Quirk EyG: el 1er tramo (min≤1) que DUPLICA el precio del 2do es el "precio general" oculto → se fusiona.
-    if(arr.length>=2 && arr[0].q<=1 && Math.round(arr[0].p)===Math.round(arr[1].p)){ arr=arr.slice(1); arr[0]={...arr[0], q:1}; }
+    if(arr.length>=2 && arr[0].q<=1 && EYG.r2(arr[0].p)===EYG.r2(arr[1].p)){ arr=arr.slice(1); arr[0]={...arr[0], q:1}; }
     if(arr.length && arr[0].q<1) arr[0]={...arr[0], q:1};
     ST.tiers[p.id]=arr;
     ST.precios[p.id] = arr.length ? arr[0].p : (p.list_price>1?p.list_price:null);
@@ -1659,7 +1659,7 @@ window.verLotes=(pid,ev)=>{
 function tramoDe(pid,q){ const t=ST.tiers[pid]||[]; let r=t[0]||null; for(const x of t){ if(x.q<=Math.max(1,q)) r=x; } return r; }
 // % de descuento SOBRE EL PVP (como la web): base = list_price (PVP Alfabeta en éticos). Si el
 // producto no tiene PVP real (hospitalarios, list_price 0/1) usamos el 1er tramo de la lista.
-function descPct(pid,tier){ const t=ST.tiers[pid]||[]; if(!t.length||!tier) return 0; const pvp=(ST.pvp&&ST.pvp[pid])||0; const base=pvp>1?pvp:t[0].p; return base>0?Math.round((1-tier.p/base)*100):0; }
+function descPct(pid,tier){ const t=ST.tiers[pid]||[]; if(!t.length||!tier) return 0; const pvp=(ST.pvp&&ST.pvp[pid])||0; const base=pvp>1?pvp:t[0].p; return base>0?EYG.pctDe(tier.p,base):0; }   // el % como lo muestra Odoo (4 decimales), no entero
 // próximo tramo con mejor precio a partir de q → {need, tier, pct}
 function proxTramo(pid,q){ const t=ST.tiers[pid]||[]; const cur=tramoDe(pid,q); for(const x of t){ if(x.q>Math.max(1,q) && (!cur||x.p<cur.p)){ return {need:x.q-Math.max(0,q), tier:x, pct:descPct(pid,x)}; } } return null; }
 // precio normal (para tacharlo) de un producto en oferta. El precio ACTUAL (cur) es el de oferta.
@@ -1704,7 +1704,7 @@ function escHtml(pid){
   // (hospitalarios: el 1er tramo ES la base), arrancamos en el 2do para no mostrar un −0%.
   const start = descPct(pid,t[0])>0 ? 0 : 1;
   const n=pasoDe(pid);   // en caja cerrada la escalera también se rotula en cajas
-  const segs=t.slice(start,start+3).map(x=>`<span class="tg"><i>x${n>1?Math.max(1,Math.round(x.q/n)):x.q}</i> <b>−${descPct(pid,x)}%</b></span>`).join("");
+  const segs=t.slice(start,start+3).map(x=>`<span class="tg"><i>x${n>1?Math.max(1,Math.round(x.q/n)):x.q}</i> <b>−${EYG.pct(descPct(pid,x))}</b></span>`).join("");
   return `<div class="esc" title="Descuentos sobre el PVP">${segs}</div>`;
 }
 // aviso de salto de tramo
@@ -1718,7 +1718,7 @@ function txtTramo(pid,nx){
   const n=pasoDe(pid);
   const falta = n>1 ? `＋${Math.ceil(nx.need/n)} ${Math.ceil(nx.need/n)===1?"caja":"cajas"}` : `＋${nx.need} u`;
   const precio = n>1 ? `${money(nx.tier.p*n)} la caja` : `${money(nx.tier.p)} c/u`;
-  return `${falta} → ${precio}${nx.pct>0?` (−${nx.pct}%)`:""}`;
+  return `${falta} → ${precio}${nx.pct>0?` (−${EYG.pct(nx.pct)})`:""}`;
 }
 
 function renderGrid(){
@@ -1893,7 +1893,7 @@ async function aplicarDescuentos(){
     const l=ST.lines[pid]; if(!l) continue;
     const base=(ST.baseUnit[pid]!=null)?ST.baseUnit[pid]:l.price_unit;
     const disc=Math.max(0, Math.min(ST.maxDescT2||5, ST.desc[pid]||0));
-    const target=Math.round(base*(1-disc/100)*100)/100;
+    const target=EYG.r2(base*(1-disc/100));   // como Odoo: Math.round solo erraba centavos (955,984999… daba 955,98 y la pantalla 955,99)
     if(Math.abs((l.price_unit||0)-target)>0.005 || (l.discount||0)!==0) cambios.push({id:l.lineId, price_unit:target});
   }
   if(cambios.length){
@@ -1999,7 +1999,7 @@ function quitarCombo(cod){ delete ST.combos[cod]; renderGrid(); marcarDirty(); r
 // y se imprime en la tarjeta. Y uno anidado adentro de otro rompe el archivo entero.
 function cardCombo(c){
   const n=ST.combos[c.codigo]||0;
-  const ahorro=(c.precioAntes>c.precio)?Math.round((1-c.precio/c.precioAntes)*100):0;
+  const ahorro=(c.precioAntes>c.precio)?EYG.pctDe(c.precio,c.precioAntes):0;
   const det=c.lineas.map(l=>l.qty+" × "+String(l.nombre||"").split(" (")[0].replace(/^\[[^\]]*\]\s*/,"")).join(" · ");
   return `<div class="card combo${n?" on":""}">
     <div class="cb-tag">🎁 COMBO · ${esc(c.codigo)}</div>
@@ -2010,7 +2010,7 @@ function cardCombo(c){
     ${c.placa?"":`<div class="cb-det">${esc(det)}</div>`}
     ${c.nota?`<div class="cb-nota">${esc(c.nota)}</div>`:""}
     <div class="cb-pie">
-      <div><div class="cb-pr">${money(c.precio)}</div>${ahorro>0?`<div class="cb-ah" title="contra lo que pagaria comprando los productos sueltos">−${ahorro}% vs. suelto</div>`:""}</div>
+      <div><div class="cb-pr">${money(c.precio)}</div>${ahorro>0?`<div class="cb-ah" title="contra lo que pagaria comprando los productos sueltos">−${EYG.pct(ahorro)} vs. suelto</div>`:""}</div>
       <div class="cb-st">${c.armables>0?("se arman "+c.armables):"<b>sin stock</b>"}</div>
     </div>
     ${c.armables>0 ? (n
@@ -2324,7 +2324,7 @@ function renderCart(){
     const q=ST.want[pid], l=ST.lines[pid];
     const base = (ST.baseUnit[pid]!=null) ? ST.baseUnit[pid] : (l?l.price_unit:ST.precios[pid]);
     const desc = esTier2() ? (ST.desc[pid]||0) : 0;
-    const unit = (base!=null) ? base*(1-desc/100) : (l?l.price_unit:ST.precios[pid]);
+    const unit = (base!=null) ? EYG.r2(base*(1-desc/100)) : (l?l.price_unit:ST.precios[pid]);   // el unitario que guarda Odoo (al centavo) × cantidad
     const sub = (unit!=null && q) ? EYG.r2(unit*q) : (l?l.subtotal:null);   // al centavo, como el renglón de Odoo
     return {desc, unit, sub};
   };

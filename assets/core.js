@@ -239,6 +239,15 @@ window.EYG = (function(){
      lo guarda 7629,68 — sin esto mostraríamos 7629,67. */
   const r2 = n => { n=+n||0; const s=n<0?-1:1; return s*Math.round(+(Math.abs(n)*100).toPrecision(15))/100; };
   const money = n => "$"+r2(n).toLocaleString("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2});
+  /* % de descuento IGUAL que Odoo (13/11/2026, Diego: "lo que se muestra debe ser lo que se cobra al cliente").
+     Odoo guarda el descuento con 4 decimales (decimal.precision "Discount" = 4): r4 redondea igual, pct lo
+     muestra así y sin ceros de más ("40%", "40,3571%"), pctDe saca el % de un precio contra su base (PVP o
+     precio de lista). pctIn es el valor EXACTO para un campo editable (fracción → %): nunca recortado, porque
+     lo que se lee del campo es lo que se vuelve a guardar. NUNCA Math.round para un % que ve el cliente. */
+  const r4 = n => { n=+n||0; const s=n<0?-1:1; return s*Math.round(+(Math.abs(n)*10000).toPrecision(15))/10000; };
+  const pct = n => r4(n).toLocaleString("es-AR",{minimumFractionDigits:0,maximumFractionDigits:4})+"%";
+  const pctDe = (precio, base) => (+base>0) ? r4((1-(+precio||0)/(+base))*100) : 0;
+  const pctIn = f => +((+f||0)*100).toPrecision(12);
   /* Totales de un pedido IGUAL que Odoo (EyG usa "round_globally", verificado
      contra 600 pedidos el 20/10/2026): cada renglón neto = precio × cant al
      centavo; el IVA se calcula UNA vez por alícuota sobre la suma de los netos de
@@ -1053,14 +1062,14 @@ window.EYG = (function(){
     const fD=s=>s?(s.slice(8,10)+"/"+s.slice(5,7)):"";
     const card=o=>{
       const items=(o.items||[]).map(i=>i.nombre).join(" + ");
-      const ah=(o.precioAntes>o.precio)?Math.round((1-o.precio/o.precioAntes)*100):0;
+      const ah=(o.precioAntes>o.precio)?pctDe(o.precio,o.precioAntes):0;   // el % como Odoo, no entero
       const s=stat[o.id]||{env:0,ven:0}; const hot=esHot(o); const rendPct=s.env>0?Math.round(s.conv*100):null;
       const rc=rendPct==null?'':(rendPct>=40?'alta':rendPct>=15?'media':'baja');
       return `<div class="lof-card${hot?' hot':''}">
         <div class="lof-tag">${o.tipo==='combo'?'🎁 Combo':'🏷️ Oferta'}${o.hasta?' · hasta '+fD(o.hasta):''}</div>
         <div class="lof-name">${esc(o.titulo||items)}</div>
         <div class="lof-prod">${(o.titulo&&items&&items!==o.titulo)?esc(items):'&nbsp;'}</div>
-        <div class="lof-price">${o.precioAntes>o.precio?`<span class="lof-old">${money(o.precioAntes)}</span>`:""}<span class="lof-new">${money(o.precio)}</span>${ah?`<span class="lof-off">−${ah}%</span>`:""}</div>
+        <div class="lof-price">${o.precioAntes>o.precio?`<span class="lof-old">${money(o.precioAntes)}</span>`:""}<span class="lof-new">${money(o.precio)}</span>${ah?`<span class="lof-off">−${pct(ah)}</span>`:""}</div>
         <div class="lof-perf" title="Rendimiento en toda la droguería (120 días)"><span>📤 <b>${s.env}</b></span><span>🛒 <b>${s.ven}</b></span>${rendPct!=null?`<span class="lof-rend ${rc}">${rendPct}%</span>`:''}</div>
         <div class="lof-extra">${o.stock?('📦 '+o.stock+' disp.'+(o.nota?' · 📝 '+esc(o.nota):'')):(o.nota?('📝 '+esc(o.nota)):'&nbsp;')}</div>
         ${hot?'<div class="lof-hot"><span class="of-fire">🔥</span> Mejor rendimiento — ofrecela</div>':''}
@@ -2891,7 +2900,7 @@ window.EYG = (function(){
     return m>0 && Math.abs(m-c)<0.01;
   }
 
-  return { supa, rpc, rpcExacto, rpcHead, rpcReintentable, recalcularPreciosTodo, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, r2, money, totalesOdoo, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, ofPids, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
+  return { supa, rpc, rpcExacto, rpcHead, rpcReintentable, recalcularPreciosTodo, gate, VENTA_REAL, CAT_OCULTAS, SIN_OCULTAS, TRI_PARTNERS, TRI_CUENTA, TRI_DOM_FACT, TRI_DOM_PED, TRI_COLOR, tasasVenta, vendeExento, costoEfectivo, costoEsManual, BASE, abs, r2, money, r4, pct, pctDe, pctIn, totalesOdoo, esc, hace, argToday, argParts, argNowFrac, huella, esSuper, session, perfil, login, logout, requireAuth, guard, showLogin, showChangePwd, markPwdChanged, gateMsg, topbar, DEPTS, MODULOS, puedeVer, T, sidebar, layout, homeMain, rail, railActiveKey, cardOfertasSemana, ofStockMap, ofAgotada, ofPids, debounce, repintar, buscador, BUSCA_MS, presenciaPing, startPresencia, cacheOdoo, cacheOlvidar,
     COMI_KEY, COMI_DEF, comisionesConfig, comisionesGuardar, metaDesde, minimoDeVenta, semanasDelMes, semanasDetalle, perfilDe, paqueteRige, reglasDe, tasasDe, moraIndice, moraResta,
     LEGAJO_DOCS, LEGAJO_TAG, LEGAJO_ESTADO_META, legajoParse, legajoMarker, evaluarLegajo, legajoEstado, legajoStyles, badgeLegajo,
     riesgoCartera, riesgoNivel, riesgoMotivo, badgeRiesgo, marcarRiesgo, sacarRiesgo, riesgoBCRA, RIESGO_TAG,
