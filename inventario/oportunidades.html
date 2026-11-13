@@ -1132,7 +1132,8 @@ function filaCapa(e){
     +(e.tier===1&&e.perforar?`<span class="chip c-bad" title="Se confirmó vender por debajo del piso de margen (o del costo)">perforación autorizada</span>`:"")
     +capaChipOferta(e)
     +(e.tier===1&&e.tmpl?grpChip("motor:"+e.tmpl):"")
-    +pcChip("motor:"+e.tmpl);
+    +pcChip("motor:"+e.tmpl)
+    +(e.tier===1&&e.tmpl?pvpChip("motor:"+e.tmpl):"");
   const k=esc(capaClave(e));
   const acts=`<button class="btn ghost sm" onclick="capaEditar(${e.tier},'${k}')">Editar</button>`
     +(e.tier===1&&e.tmpl?`<button class="btn ghost sm" onclick="capaPlacaSubirOp(${e.tmpl})">🖼️ ${CAPA_PLM[String(e.tmpl)]?"Cambiar placa":"Subir placa"}</button>`:"")
@@ -1162,6 +1163,7 @@ window.capaTab=t=>{ CAPA_TIER=t; render(); };
 /* ---------- acciones de fila (se aplican al toque, como el resto de las ofertas) ---------- */
 window.capaPausar=async(tier,clave)=>{
   const e=CAPA[tier].find(x=>capaClave(x)===String(clave)); if(!e) return;
+  if(e.pausado && tier===1 && e.tmpl && pvpAl("motor:"+e.tmpl)){ abrirPvpAl(); return; }   // la pausó el cambio de PVP: se elige cómo vuelve
   if(e.pausado && tier===1 && e.tmpl && pcAlerta("motor:"+e.tmpl)){ pcPlacaBien("motor:"+e.tmpl); return; }   // la pausó el control de placas
   toast(e.pausado?"▶ Reanudando…":"⏸ Pausando…");
   try{ await EYGCapa.escribir(tier, L=>L.map(x=>capaClave(x)===String(clave)?Object.assign({},x,{pausado:!x.pausado}):x));
@@ -2200,7 +2202,65 @@ function asPintarTodas(){
 const PLACAS_CRON=102;
 let PC=null, PCAbierto=false;
 async function placasCtlLeer(){ try{ PC=JSON.parse(await getParam("eyg.placas_control","{}")||"{}")||{}; }catch(e){ PC={}; }
-  try{ PCAV=JSON.parse(await getParam(PCAV_KEY,"{}")||"{}")||{}; }catch(e){ PCAV={}; } }
+  try{ PCAV=JSON.parse(await getParam(PCAV_KEY,"{}")||"{}")||{}; }catch(e){ PCAV={}; }
+  await pvpAlLeer(); }
+/* PAUSA POR CAMBIO DE PVP (13/11/2026, Diego: "si German crea una oferta de un producto con pvp y le pone precio
+   fijo, si el pvp cambia ... que pause inmediatamente la oferta y avise"). La pausa la hace Odoo solo, en el momento
+   en que AlfaBeta escribe el PVP (automatización "EyG · Pausa por cambio de PVP", código en
+   eyg-core-cron/accion_pausa_por_pvp.py): ofertas a PRECIO FIJO de esta pantalla y precios únicos de la capa, sobre
+   éticos. Deja el aviso en eyg.ofertas_pvp_alertas {clave:{tm,t,tipo,precio,pvp_antes,pvp_hoy,pct_antes,pct_hoy,desde}}.
+   Acá se decide cómo vuelve: con el MISMO % (precio nuevo, al centavo) o con el MISMO precio (% nuevo). Al
+   reactivarla, Odoo toma el PVP de ese momento como referencia (eyg.ofertas_pvp_ref) y el aviso se va solo. */
+const PVPAL_KEY="eyg.ofertas_pvp_alertas";
+let PVPAL={}, PVPAbierto=false;
+async function pvpAlLeer(){ try{ PVPAL=JSON.parse(await getParam(PVPAL_KEY,"{}")||"{}")||{}; }catch(e){ PVPAL={}; } }
+const pvpAl=k=>PVPAL&&PVPAL[k];
+const pvpPct=n=>(+n||0).toLocaleString("es-AR",{minimumFractionDigits:0,maximumFractionDigits:2})+"%";
+const pvpNuevoPrecio=a=>EYG.r2(a.pvp_hoy*(1-a.pct_antes/100));   // el mismo % sobre el PVP nuevo, AL CENTAVO
+function pvpChip(k){ const a=pvpAl(k); if(!a) return "";
+  return `<span class="chip c-bad" title="AlfaBeta cambió el PVP de ${money(a.pvp_antes)} a ${money(a.pvp_hoy)}: el ${pvpPct(a.pct_antes)} pasó a ${pvpPct(a.pct_hoy)}">⏸ pausada: cambió el PVP</span>`; }
+function pvpBanner(){ const n=Object.keys(PVPAL||{}).length; if(!n) return "";
+  return `<div class="ofalerta costo" style="margin:0 0 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">⏸ <span><b>${n} oferta${n===1?"":"s"} a precio fijo pausada${n===1?"":"s"}</b> porque AlfaBeta cambió el PVP y el descuento dejó de ser el que se cargó.</span> <button class="btn sm" onclick="abrirPvpAl()">Revisar y reactivar</button></div>`; }
+window.abrirPvpAl=async()=>{ PVPAbierto=true; pintarPvpAl(); await pvpAlLeer(); pintarPvpAl(); };
+window.cerrarPvpAl=()=>{ PVPAbierto=false; document.getElementById("modal").innerHTML=""; };
+function pintarPvpAl(){
+  const L=Object.entries(PVPAL||{});
+  const filas=L.length?L.map(([k,a])=>{ const nuevo=pvpNuevoPrecio(a), placa=pcPlacaUrl(k);
+    return `<tr><td><b>${esc(String(a.t||k).slice(0,70))}</b><div class="rend-quien">${a.tipo==='capa'?"capa · precio único":"Oportunidades · precio fijo"} · pausada el ${esc(String(a.desde||"").replace(/^(\d{4})-(\d\d)-(\d\d)/,"$3/$2"))}${placa?" · tiene placa":""}</div></td>
+      <td class="num">${money(a.pvp_antes)} → <b>${money(a.pvp_hoy)}</b></td>
+      <td class="num">${money(a.precio)}<div class="rend-quien">era ${pvpPct(a.pct_antes)} · hoy ${pvpPct(a.pct_hoy)}</div></td>
+      <td><button class="btn sm" onclick="pvpReactivar('${esc(k)}',true)">Mismo ${pvpPct(a.pct_antes)} → ${money(nuevo)}</button>
+        <button class="btn ghost sm" onclick="pvpReactivar('${esc(k)}',false)">Mismo precio ${money(a.precio)} (${pvpPct(a.pct_hoy)})</button></td></tr>`; }).join("")
+    :`<tr><td colspan="4"><div class="empty">No hay ofertas pausadas por cambio de PVP.</div></td></tr>`;
+  document.getElementById("modal").innerHTML=
+    '<div class="scrim" onclick="if(event.target===this)cerrarPvpAl()"><div class="modal" style="max-width:1000px">'+
+    '<div class="mh"><h3>⏸ Pausadas por cambio de PVP</h3><span style="margin-left:auto"><button class="btn ghost sm" onclick="cerrarPvpAl()">Cerrar</button></span></div>'+
+    '<div class="mb"><div class="hint2" style="margin:0 0 10px">Son ofertas a <b>precio fijo</b> de productos con PVP de AlfaBeta. Cuando cambia el PVP, el mismo precio da otro % de descuento, y por eso Odoo las pausa en el momento. Elegí cómo vuelven: con el <b>mismo %</b> (cambia el precio) o con el <b>mismo precio</b> (cambia el %). Si tiene placa, subí la nueva: la de ahora muestra el PVP y el % de antes.</div>'+
+    '<table class="rend-tabla"><thead><tr><th>Oferta</th><th class="num">PVP</th><th class="num">Precio fijo</th><th>Reactivar</th></tr></thead><tbody>'+filas+'</tbody></table></div></div></div>';
+}
+window.pvpReactivar=async(k,mismoPct)=>{
+  const a=pvpAl(k); if(!a) return;
+  const nuevo=mismoPct?pvpNuevoPrecio(a):a.precio;
+  if(nuevo<a.precio-0.004 && !confirm("El precio baja de "+money(a.precio)+" a "+money(nuevo)+". Revisá que el margen siga sirviendo.\n\n¿Reactivar igual?")) return;
+  toast("▶ Reactivando…");
+  try{
+    if(k.startsWith("sync:")){
+      const o=SYNC_OF.find(x=>x.id===k.slice(5)); if(!o) throw new Error("no encontré la oferta");
+      o.valor=nuevo; o._precio=nuevo; o._pvp=a.pvp_hoy; o.pausada=false; delete o.pausa_pvp;
+      o.reanudada=new Date().toISOString().slice(0,19).replace("T"," ");
+      await rgSave(o.target);
+    }else{
+      const tm=+k.slice(6);
+      await EYGCapa.escribir(1, L=>L.map(x=>(x.tmpl===tm&&!x.lab&&x.tramos===1)?Object.assign({},x,{precio:nuevo,pausado:false}):x));
+      const e=(CAPA[1]||[]).find(x=>x.tmpl===tm&&!x.lab);
+      if(e) await EYGCapa.recalcular(Object.assign({},e,{precio:nuevo,pausado:false}));
+      await capaCargar(); cargarCapaKPI();
+    }
+    await pvpAlLeer();
+    toast("▶ Reactivada a "+money(nuevo)+(pcPlacaUrl(k)?" · subí la placa nueva":"")+" ✓");
+    render(); if(PVPAbierto) pintarPvpAl();
+  }catch(err){ toast("No se pudo: "+(err.message||err)); }
+};
 /* DETALLES DE PLACA QUE NO PAUSAN (2/11/2026, Diego: "cuando son detalles así ponelas dentro de la tarjeta
    con alguna advertencia"). El precio de la placa es el de hoy, pero algo menor no coincide: la fecha
    ("válido hasta 31/10" cuando se extendió al 30/11), falta "IVA incluido", etc. El control automático
@@ -2636,7 +2696,7 @@ function render(){
   const agot=[...combosT,...singlesT].filter(o=>o._agotada).length
     + rulesT.filter(o=>o.tipo==='p'&&STOCK_T[o.target]!=null&&STOCK_T[o.target]<=0).length;
   const nOfTot=ofActivas.length+reglasAct.length;
-  const kpis=`<div class="kpiw"><div class="kpigrp">Ofertas</div><div class="kpis">
+  const kpis=pvpBanner()+`<div class="kpiw"><div class="kpigrp">Ofertas</div><div class="kpis">
     ${kpi("ofertas","🏷️ Ofertas activas",
       (CAPA_KPI&&!CAPA_KPI.error)?nOfTot+CAPA_KPI.conStock:nOfTot,
       nOfTot+" de Oportunidades · "+(!CAPA_KPI?"… de la capa":CAPA_KPI.error?"capa sin leer":(CAPA_KPI.conStock+" de la capa ("+CAPA_KPI.placa+" con placa)")),"")}
@@ -3009,7 +3069,7 @@ function filaRegla(o){
   const acts=`<button class="btn ghost sm" onclick="rgEditar('${esc(o.id)}')">Editar</button>`
     +placaBtns("rg",o)
     +`<button class="btn warn sm" onclick="rgEliminar('${esc(o.id)}')">Eliminar</button>`;
-  const sub=(o.tipo==='p'?catBadge(o._cat)+(o._sku?`<span>${esc(o._sku)}</span>`:""):"")+pcChip("sync:"+o.id)+grpChip("sync:"+o.id)+capaChipRegla(o)+ofAlertaFila(o);
+  const sub=(o.tipo==='p'?catBadge(o._cat)+(o._sku?`<span>${esc(o._sku)}</span>`:""):"")+pcChip("sync:"+o.id)+pvpChip("sync:"+o.id)+grpChip("sync:"+o.id)+capaChipRegla(o)+ofAlertaFila(o);
   return filaOf((m!=null&&m<0?" mala":"")+((ag||st.c!=='act')?" gris":""), esc(o.targetName||("#"+o.target)), sub, chips, cols, acts,
     `<div class="ppcol">${botonPausa(o)}${destacarBtn("sync:"+o.id)}</div>`+`<div class="fplaca">${placaThumb("rg",o)}</div>`);
 }
@@ -3847,6 +3907,7 @@ const RG_GUARDANDO=new Set();
 let _rgCola=Promise.resolve();
 window.rgPausar=id=>{
   const o=SYNC_OF.find(x=>x.id===id); if(!o || RG_GUARDANDO.has(id)) return;
+  if(o.pausada && pvpAl("sync:"+id)){ abrirPvpAl(); return; }   // la pausó el cambio de PVP: se elige cómo vuelve
   if(o.pausada && pcAlerta("sync:"+id)){ pcPlacaBien("sync:"+id); return; }   // si no, el control la vuelve a pausar
   o.pausada=!o.pausada; RG_GUARDANDO.add(id);
   // al reanudarla vuelve a ser "nueva" para la rotación del panel de las comerciales
