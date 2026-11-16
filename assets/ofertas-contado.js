@@ -70,26 +70,31 @@ window.EYGContado = (function(){
       <td><b>${esc(p.name)}</b><div class="ctsub">${esc(String(p.date_order||"").slice(0,16))}</div></td>
       <td>${esc(p.partner_id?p.partner_id[1]:"")}<div class="ctsub">${esc(p.user_id?p.user_id[1]:"sin comercial")}</div></td>
       <td class="n"><b>${c2(p.amount_total)}</b></td>
-      <td>${pend?'<span class="chip" style="background:#F5E4DD;color:#A6453A;font-weight:700">ESPERANDO PAGO · no preparar</span>':'<span class="chip" style="background:#E3EEDD;color:#2E7A4E;font-weight:700">PAGADO · '+(p.state==="sale"?"confirmado":"sin confirmar")+'</span>'}</td>
+      <td>${pend?'<span class="chip" style="background:#F5E4DD;color:#A6453A;font-weight:700">ESPERANDO PAGO · '+(p.state==="sale"?"confirmado, entrega trabada":"sin confirmar")+'</span>':'<span class="chip" style="background:#E3EEDD;color:#2E7A4E;font-weight:700">PAGADO · '+(p.state==="sale"?"confirmado":"sin confirmar")+'</span>'}</td>
       <td class="n">${pend?`<button class="btn sm" ${OCUPADO?"disabled":""} onclick="EYGContado.pagoRecibido(${p.id})">Pago recibido</button>`:""}</td></tr>`;
     return `<div class="ctped">
       <div class="ctpedt">Pedidos de superofertas <span class="ctsub">· últimos 30 días · se pagan por transferencia antes de prepararse</span></div>
       ${PED.length?`<div class="cttw"><table class="cttab"><thead><tr><th>Pedido</th><th>Cliente</th><th class="n">Total</th><th>Estado</th><th></th></tr></thead><tbody>${esp.map(p=>fila(p,true)).join("")}${pag.map(p=>fila(p,false)).join("")}</tbody></table></div>`
         :'<div class="ctsub" style="padding:6px 0">Todavía no hay pedidos de superofertas.</div>'}
-      <div class="ctsub">Cuando llegue el comprobante por WhatsApp, verificá la acreditación en Mercado Pago (alias eyg.mpago) y tocá <b>Pago recibido</b>: el pedido se confirma y recién ahí pasa al depósito.</div>
+      <div class="ctsub">Cuando llegue el comprobante por WhatsApp, verificá la acreditación en Mercado Pago (alias eyg.mpago) y tocá <b>Pago recibido</b>: se libera la entrega (hasta ahí está en gris y trabada en Odoo) y el depósito lo puede armar. Cobranzas también puede hacerlo desde Odoo: en el pedido, Acción → "💵 Superoferta: pago recibido".</div>
     </div>`;
   }
   async function pagoRecibido(id){
     const p=PED.find(x=>x.id===id); if(!p||OCUPADO) return;
-    if(!confirm("¿Registrar el pago de "+c2(p.amount_total)+" del pedido "+p.name+" ("+(p.partner_id?p.partner_id[1]:"")+")?\n\nConfirmalo sólo si ya viste la plata acreditada en Mercado Pago. El pedido se confirma y pasa al depósito.")) return;
+    if(!confirm("¿Registrar el pago de "+c2(p.amount_total)+" del pedido "+p.name+" ("+(p.partner_id?p.partner_id[1]:"")+")?\n\nConfirmalo sólo si ya viste la plata acreditada en Mercado Pago. Se libera la entrega y el depósito lo puede armar.")) return;
     OCUPADO=true; MSG="Registrando el pago de "+p.name+"…"; repintar();
     try{
       await rpc("sale.order","write",[[id],{tag_ids:[[3,TAGS.esp],[4,TAGS.pag]]}]);
-      try{ await rpc("sale.order","action_confirm",[[id]]); }
-      catch(e){ await rpc("sale.order","write",[[id],{tag_ids:[[3,TAGS.pag],[4,TAGS.esp]]}]).catch(()=>{}); throw e; }
+      if(p.state!=="sale"){
+        try{ await rpc("sale.order","action_confirm",[[id]]); }
+        catch(e){ await rpc("sale.order","write",[[id],{tag_ids:[[3,TAGS.pag],[4,TAGS.esp]]}]).catch(()=>{}); throw e; }
+      }
+      // Odoo libera la entrega solo al ver PAGADO (automatización); esto es por las dudas
+      const pk=await rpc("stock.picking","search",[[["sale_id","=",id],["picking_type_code","=","outgoing"],["state","not in",["done","cancel"]]]]).catch(()=>[]);
+      if(pk&&pk.length) await rpc("stock.picking","write",[pk,{x_eyg_espera_pago:false}]).catch(()=>{});
       const quien=(window.EYG&&EYG.perfil&&EYG.perfil.nombre)||"el Core";
-      await rpc("sale.order","message_post",[[id]],{body:"Superofertas de contado: pago por transferencia registrado en el Core ("+quien+"). Pedido confirmado para preparar.",message_type:"comment",subtype_xmlid:"mail.mt_note"}).catch(()=>{});
-      MSG="Pago registrado: "+p.name+" quedó confirmado y pasa al depósito.";
+      await rpc("sale.order","message_post",[[id]],{body:"Superofertas de contado: pago por transferencia registrado en el Core ("+quien+"). Entrega liberada para preparar.",message_type:"comment",subtype_xmlid:"mail.mt_note"}).catch(()=>{});
+      MSG="Pago registrado: "+p.name+" quedó liberado; el depósito ya lo puede armar.";
     }catch(e){ MSG="No se pudo confirmar "+p.name+": "+String(e.message||e).slice(0,300)+"\nEl pedido sigue esperando pago."; }
     await cargarPedidos(); OCUPADO=false; repintar();
   }

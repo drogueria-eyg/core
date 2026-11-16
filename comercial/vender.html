@@ -663,6 +663,7 @@ async function cargar(){
     ]);
     ST.cartera = cartera.sort((a,b)=>(a.name||"").localeCompare(b.name||""));
     ST.drafts = drafts;
+    ctCargarEspera().then(()=>{ if(ST.view==="inicio") render(); });   // superofertas confirmadas que esperan el pago
     cargarListas();          // precargar las listas (para que el paso de selección salga al toque)
     cargarCajasCerradas();   // qué productos se venden por caja cerrada (dos consultas chicas, una vez)
     precargarCatalogo();     // precargar productos de Hospitalarios en 2º plano → entrar a la venta es instantáneo
@@ -729,6 +730,7 @@ function vInicio(){
   }).join("");
   return `<div class="hero"><h1>Cargar venta 🛒</h1><p>Elegí el cliente y armá el pedido desde el catálogo. Se guarda solo como presupuesto en Odoo hasta que lo confirmes.</p></div>
     <button class="btn teal big" onclick="abrirPicker()">＋ Nueva venta</button>
+    ${ctEsperaHTML()}
     ${d.length?`<div class="sect-t">Presupuestos en curso (${d.length})
         <button class="dbtn" style="float:right;font-size:12px;padding:5px 10px;width:auto;border-radius:8px"
                 title="Borra tus presupuestos sin tocar hace más de 90 días. Te dice cuántos son antes de borrar nada."
@@ -1403,7 +1405,7 @@ function ctReglasHTML(){
   return `<ul class="ct-reglas">
     <li>Se paga <b>por transferencia ANTES de prepararse</b> (Mercado Pago, alias <b>${esc(al)}</b>). <b>No se acepta efectivo ni plazo.</b></li>
     <li><b>No se mezcla</b> con productos comunes: va siempre en un <b>pedido aparte</b>.</li>
-    <li>El pedido queda <b>esperando pago</b>; el depósito lo prepara recién cuando se registra el pago.</li>
+    <li>Se confirma como siempre, pero la <b>entrega queda trabada</b> hasta que se registra el pago: recién ahí el depósito lo arma.</li>
   </ul>`;
 }
 // Intercepta el ＋ Agregar. Devuelve true si se hizo cargo (el producto no entra a este pedido).
@@ -1526,71 +1528,149 @@ function ctBanner(){
   if(CT.aparte) h+=`<div class="ct-banner ap"><div class="t">${CT.aparte.tipo==="contado"?"💵 <b>Pedido aparte de superofertas</b>":"🛒 <b>Pedido aparte común</b>"} para este cliente: <b>${esc(CT.aparte.name)}</b> · ${CT.aparte.n} renglón${CT.aparte.n===1?"":"es"} · ${money(CT.aparte.total)}</div><button onclick="ctAbrirAparte()">Abrir ›</button></div>`;
   return h;
 }
+/* Pedido de superofertas (Diego, 16/11): se CONFIRMA como cualquier venta (reserva la mercadería y el
+   depósito lo ve), pero Odoo deja la ENTREGA trabada y en gris hasta que se registra el pago. La comercial le
+   pasa al cliente los datos de la transferencia y, cuando llega el comprobante, toca "Pago recibido"
+   (Cobranzas puede hacerlo también desde Odoo: Acción → "💵 Superoferta: pago recibido"). */
 function ctConfirmarModal(){
   modal(`<div class="ct-modal-h"><span class="k">💵 SUPEROFERTAS DE CONTADO</span>
-      <h3>Enviar a pagar</h3><p>${esc(ST.order.partnerName)} · ${money(ST.amount.total)}</p></div>
-    <p style="font-size:13.5px">Este pedido <b>no se confirma todavía</b>: queda <b>ESPERANDO PAGO</b> y el depósito no lo prepara.
-    En la pantalla siguiente tenés los datos de la transferencia para pasarle al cliente. Cuando llega el comprobante y se acredita, se registra el <b>Pago recibido</b> en el Core y el pedido se confirma solo.</p>
+      <h3>Confirmar pedido de contado</h3><p>${esc(ST.order.partnerName)} · ${money(ST.amount.total)}</p></div>
+    <ul class="ct-reglas">
+      <li>El pedido se <b>confirma</b> y la mercadería queda reservada.</li>
+      <li>La <b>entrega queda trabada</b> (en gris para el depósito) hasta que se registre el pago.</li>
+      <li>En la pantalla siguiente tenés los <b>datos de la transferencia</b> para pasarle al cliente.</li>
+      <li>Cuando te manda el comprobante, tocás <b>Pago recibido</b> (en el inicio de Cargar venta) y el depósito ya lo puede armar.</li>
+    </ul>
     <div class="mb" style="flex-direction:column;align-items:stretch;gap:9px">
-      <button class="btn grn" onclick="ctEnviarAPagar()">💵 Dejar esperando pago</button>
+      <button class="btn grn" onclick="ctEnviarAPagar()">💵 Confirmar pedido de contado</button>
       <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
     </div>`);
 }
 async function ctEnviarAPagar(){
   cerrarModal();
   if(ST.dirty||ST.syncing){ await syncOrder(); }
-  document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Dejando el pedido esperando pago…</div>';
+  document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Confirmando el pedido de contado…</div>';
   let faltantes=null;
   try{ faltantes=await chequearDisponibilidad(); }catch(e){ faltantes=null; }
   if(faltantes && faltantes.length){ ST.view="venta"; render(); mostrarBloqueoStock(faltantes); return; }
   try{
+    // la etiqueta va ANTES de confirmar: así la entrega nace trabada
     const vals={};
     if(CT.esp) vals.tag_ids=[[4,CT.esp]];
     if(ST.order.origin!==undefined && String(ST.order.origin||"").indexOf(CT_ORIGEN)!==0) vals.origin=CT_ORIGEN+(ST.order.origin?" · "+ST.order.origin:"");
     if(Object.keys(vals).length) await rpc("sale.order","write",[[ST.order.id],vals],{context:ES});
-    // cotización enviada = esperando pago (así aparece en la lista "Pedidos de superofertas" del Core)
-    try{ await rpc("sale.order","action_quotation_sent",[[ST.order.id]],{context:ES}); }
-    catch(e){ await rpc("sale.order","write",[[ST.order.id],{state:"sent"}],{context:ES}); }
+    await rpc("sale.order","action_confirm",[[ST.order.id]],{context:ES});
+    await copiarEntregaAlRemito(ST.order.id);
     const [o]=await rpc("sale.order","read",[[ST.order.id]],{fields:["name","amount_total","state"],context:ES});
     ST.order.name=o.name; ST.amount.total=o.amount_total;
     CT.enviado=true; ST.view="success"; render();
-  }catch(e){ toast("No pude dejarlo esperando pago: "+String(e.message||e).slice(0,200)); ST.view="venta"; render(); }
+  }catch(e){ toast("No pude confirmar: "+String(e.message||e).slice(0,200)); ST.view="venta"; render(); }
 }
-function ctTextoPago(){
+function ctTextoPago(nombre, total){
   const p=CT.pago||{};
   const wa=String(p.whatsapp||"").replace(/^549(\d{3})(\d{3})(\d+)$/,"+54 9 $1 $2-$3");
-  return ["Pedido "+(ST.order.name||"")+" · Superofertas de contado · Droguería EyG",
-    "Total a transferir: "+money(ST.amount.total),
+  return ["Pedido "+(nombre||"")+" · Superofertas de contado · Droguería EyG",
+    "Total a transferir: "+money(total),
     "Mercado Pago · alias "+(p.alias||"eyg.mpago"),
     "Titular: "+(p.titular||"DROGUERIA EYG SRL")+" · CUIT "+(p.cuit||""),
     p.cvu?("CVU: "+p.cvu):"",
-    "Enviá el comprobante por WhatsApp"+(wa?" al "+wa:"")+". El pedido se prepara cuando se acredita el pago. No se acepta efectivo."].filter(Boolean).join("\n");
+    "En el concepto poné el número de pedido. Mandame el comprobante por acá"+(wa?" o al WhatsApp "+wa:"")+": el pedido se prepara cuando se acredita el pago. No se acepta efectivo."].filter(Boolean).join("\n");
 }
-function ctCopiarPago(btn){
-  const t=ctTextoPago();
-  const ok=()=>{ btn.textContent="✓ Copiado"; setTimeout(()=>btn.textContent="📋 Copiar datos para el cliente",1600); };
+function ctCopiarPago(btn, nombre, total){
+  const t=ctTextoPago(nombre, total);
+  const orig=btn.textContent;
+  const ok=()=>{ btn.textContent="✓ Copiado"; setTimeout(()=>btn.textContent=orig,1600); };
   if(navigator.clipboard) navigator.clipboard.writeText(t).then(ok,()=>window.prompt("Copiá:",t)); else window.prompt("Copiá:",t);
 }
-function ctSuccess(){
+function ctWaHref(nombre, total){ return "https://wa.me/?text="+encodeURIComponent(ctTextoPago(nombre, total)); }
+function ctPagoHTML(nombre, total){
   const p=CT.pago||{};
-  return `<div class="success">
-    <div class="big">💵</div>
-    <h2>Esperando pago</h2>
-    <p>Pedido <b>${esc(ST.order.name||"")}</b> de <b>${esc(ST.order.partnerName)}</b> quedó <b>esperando pago</b>. El depósito lo prepara cuando se registra el pago.</p>
-    <div class="ct-pago">
-      Total a transferir: <b>${money(ST.amount.total)}</b><br>
+  return `<div class="ct-pago">
+      Total a transferir: <b>${money(total)}</b><br>
       Mercado Pago · alias <span class="al">${esc(p.alias||"eyg.mpago")}</span><br>
       Titular ${esc(p.titular||"DROGUERIA EYG SRL")} · CUIT ${esc(p.cuit||"")}<br>
       ${p.cvu?"CVU "+esc(p.cvu)+"<br>":""}
-      El cliente manda el comprobante por WhatsApp. <b>No se acepta efectivo.</b>
-    </div>
+      Concepto: <b>${esc(nombre||"")}</b> · <b>No se acepta efectivo.</b>
+    </div>`;
+}
+function ctSuccess(){
+  const n=ST.order.name||"", t=ST.amount.total;
+  return `<div class="success">
+    <div class="big">💵</div>
+    <h2>Pedido confirmado · esperando pago</h2>
+    <p>Pedido <b>${esc(n)}</b> de <b>${esc(ST.order.partnerName)}</b>. La mercadería quedó reservada y la <b>entrega trabada</b>: el depósito lo arma cuando registres el pago. Pasale estos datos al cliente:</p>
+    ${ctPagoHTML(n,t)}
     <div class="btns">
-      <button class="btn grn big" onclick="ctCopiarPago(this)">📋 Copiar datos para el cliente</button>
-      ${CT.aparte?`<button class="btn teal big" onclick="CT.enviado=false;reanudar(${CT.aparte.id})">${CT.aparte.tipo==="comun"?"🛒 Seguir con el pedido común "+esc(CT.aparte.name):"Abrir "+esc(CT.aparte.name)}</button>`:""}
+      <button class="btn grn big" onclick="ctCopiarPago(this,'${esc(n)}',${+t||0})">📋 Copiar datos para el cliente</button>
+      <a class="btn teal big" style="text-decoration:none;text-align:center" target="_blank" rel="noopener" href="${ctWaHref(n,t)}">💬 Mandarlos por WhatsApp</a>
+      ${CT.aparte?`<button class="btn ghost big" onclick="CT.enviado=false;reanudar(${CT.aparte.id})">${CT.aparte.tipo==="comun"?"🛒 Seguir con el pedido común "+esc(CT.aparte.name):"Abrir "+esc(CT.aparte.name)}</button>`:""}
       <button class="btn ghost big" onclick="CT.enviado=false;abrirPicker()">＋ Cargar otra venta</button>
       <button class="btn ghost" onclick="CT.enviado=false;volverInicio()">Volver al inicio</button>
     </div>
   </div>`;
+}
+/* ---- Inicio: superofertas confirmadas que esperan el pago (las de este comercial) ---- */
+CT.espera=[];
+async function ctCargarEspera(){
+  CT.espera=[];
+  try{
+    if(!CT.esp){ await cargarContado(); }
+    if(!CT.esp || !ST.userId) return;
+    const desde=new Date(Date.now()-60*864e5).toISOString().slice(0,10);
+    CT.espera=await rpc("sale.order","search_read",[[["user_id","=",ST.userId],["tag_ids","in",[CT.esp]],["state","in",["sale","sent","draft"]],["date_order",">=",desde]]],
+      {fields:["id","name","partner_id","amount_total","state","date_order","tag_ids"],order:"date_order desc",limit:50,context:ES})||[];
+    CT.espera=CT.espera.filter(o=>!(CT.pag && o.tag_ids.includes(CT.pag)) && o.state==="sale");
+  }catch(e){ console.warn("contado espera:",e); }
+}
+function ctEsperaHTML(){
+  if(!CT.espera||!CT.espera.length) return "";
+  const rows=CT.espera.map(o=>{
+    let f=""; if(o.date_order){ const ap=EYG.argParts(o.date_order); f=ap.date.slice(8,10)+"/"+ap.date.slice(5,7); }
+    return `<div class="draft ct-esp" style="cursor:default">
+      <div class="di"><div class="cli">${esc(o.partner_id?o.partner_id[1]:"")}<span class="chip-ct pend">💵 ESPERANDO PAGO · entrega trabada</span></div>
+        <div class="meta">${esc(o.name)}${f?" · "+f:""}</div></div>
+      <div class="tot">${money(o.amount_total)}</div>
+      <div class="acts" style="gap:6px">
+        <button class="ibtn" title="Datos de pago para el cliente" aria-label="Datos de pago" onclick="ctVerDatos(${o.id})">💵</button>
+        <button class="btn grn" style="width:auto;padding:8px 12px;font-size:13px" onclick="ctPedirPago(${o.id})">✓ Pago recibido</button>
+      </div>
+    </div>`; }).join("");
+  return `<div class="sect-t">💵 Superofertas esperando pago (${CT.espera.length})</div>
+    <div class="ctsub" style="font-size:12.5px;color:var(--gris);margin:-4px 0 8px">Confirmadas: la mercadería está reservada pero el depósito no las arma hasta que registres el pago.</div>
+    <div class="draft-list">${rows}</div>`;
+}
+function ctVerDatos(id){
+  const o=(CT.espera||[]).find(x=>x.id===id); if(!o) return;
+  modal(`<div class="ct-modal-h"><span class="k">💵 DATOS DE PAGO</span><h3>${esc(o.partner_id?o.partner_id[1]:"")}</h3><p>Pedido ${esc(o.name)}</p></div>
+    ${ctPagoHTML(o.name,o.amount_total)}
+    <div class="mb" style="flex-direction:column;align-items:stretch;gap:9px">
+      <button class="btn grn" onclick="ctCopiarPago(this,'${esc(o.name)}',${+o.amount_total||0})">📋 Copiar datos para el cliente</button>
+      <a class="btn teal" style="text-decoration:none;text-align:center" target="_blank" rel="noopener" href="${ctWaHref(o.name,o.amount_total)}">💬 Mandarlos por WhatsApp</a>
+      <button class="btn ghost" onclick="cerrarModal()">Cerrar</button>
+    </div>`);
+}
+function ctPedirPago(id){
+  const o=(CT.espera||[]).find(x=>x.id===id); if(!o) return;
+  modal(`<div class="ct-modal-h"><span class="k">✓ PAGO RECIBIDO</span><h3>${esc(o.partner_id?o.partner_id[1]:"")}</h3><p>Pedido ${esc(o.name)} · ${money(o.amount_total)}</p></div>
+    <p style="font-size:13.5px">Confirmalo sólo si <b>ya tenés el comprobante</b> de la transferencia por <b>${money(o.amount_total)}</b>. Se libera la entrega y el depósito lo puede armar. Queda anotado a tu nombre en el pedido.</p>
+    <div class="mb" style="flex-direction:column;align-items:stretch;gap:9px">
+      <button class="btn grn" onclick="ctPagoRecibido(${o.id})">✓ Sí, ya me mandó el comprobante</button>
+      <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
+    </div>`);
+}
+async function ctPagoRecibido(id){
+  cerrarModal();
+  const o=(CT.espera||[]).find(x=>x.id===id); if(!o) return;
+  try{
+    await rpc("sale.order","write",[[id],{tag_ids:[[3,CT.esp],[4,CT.pag]]}],{context:ES});
+    // Odoo libera la entrega solo al ver PAGADO; esto es por las dudas
+    const pk=await rpc("stock.picking","search",[[["sale_id","=",id],["picking_type_code","=","outgoing"],["state","not in",["done","cancel"]]]],{context:ES});
+    if(pk&&pk.length) await rpc("stock.picking","write",[pk,{x_eyg_espera_pago:false}],{context:ES});
+    const quien=(ST.perfil&&ST.perfil.nombre)||COMERCIAL||"el Core";
+    await rpc("sale.order","message_post",[[id]],{body:"Superofertas de contado: pago por transferencia registrado en el Core por "+quien+" (comprobante recibido). Entrega liberada para preparar.",message_type:"comment",subtype_xmlid:"mail.mt_note"}).catch(()=>{});
+    toast("✓ Pago registrado: "+o.name+" ya lo puede armar el depósito", true);
+  }catch(e){ modal(`<h3>⛔ No pude registrar el pago</h3><p>${esc(String(e.message||e).slice(0,300))}</p><div class="mb"><button class="btn ghost" onclick="cerrarModal()">Entendido</button></div>`); }
+  await ctCargarEspera(); if(ST.view==="inicio") render();
 }
 
 // ¿este producto está en oferta? (por variante o por plantilla)
@@ -2643,7 +2723,7 @@ function _cartFoot(){
     <div class="row tot"><span>Total</span><span>${money(ST.amount.total)}</span></div>
     ${ocHTML()}
     <div class="btns">
-      <button class="btn grn big" onclick="confirmarVenta()" ${ST.syncing?"disabled":""}>${tipoPedido()==="contado"?"💵 Enviar a pagar (contado)":"✓ Confirmar venta"}</button>
+      <button class="btn grn big" onclick="confirmarVenta()" ${ST.syncing?"disabled":""}>${tipoPedido()==="contado"?"💵 Confirmar pedido de contado":"✓ Confirmar venta"}</button>
       <button class="descartar" onclick="pedirDescartar()" title="Borra el presupuesto entero. Te va a pedir confirmación.">Descartar presupuesto</button>
     </div>`;
 }
@@ -3079,7 +3159,7 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
    recargan, y desde adentro parece que "el botón no anda" (pasó con el borrado de
    presupuestos, arreglado el 4/9 y todavía fallando en las tablets el 9/9).
    Se compara la versión del archivo publicado con la que está corriendo. */
-const VERSION_MODULO = "2026-11-16-ct";
+const VERSION_MODULO = "2026-11-16-ct2";
 async function chequearVersion(){
   try{
     const r = await fetch(location.pathname + "?_v=" + Date.now(), {cache:"no-store"});
