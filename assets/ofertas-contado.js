@@ -53,7 +53,7 @@ window.EYGContado = (function(){
 
   function html(){
     if(ERR) return `<div class="empty">${esc(ERR)}</div>`;
-    if(!DOC||!DOC.items||!DOC.items.length) return `<div class="empty">No hay ofertas de contado cargadas.</div>`;
+    if(!DOC||!DOC.items||!DOC.items.length) return `<div class="empty">No hay superofertas de contado cargadas.</div>`;
     const it=DOC.items, act=activa();
     const tot=it.reduce((a,i)=>{ const st=(VIVO[i.tmpl]&&VIVO[i.tmpl].stock)||i.stock||0; a.st+=st; a.v+=st*i.precio; a.c+=st*i.costo; return a; },{st:0,v:0,c:0});
     const nOk=act?it.filter(publicadoOK).length:0;
@@ -135,13 +135,13 @@ window.EYGContado = (function(){
   function cerrar(){ const m=document.getElementById("modal"); if(m) m.innerHTML=""; }
   async function pedirActivar(){
     try{ await cargar(); if(activa()){ repintar(); return; } const p=await plan();
-      modal(`<h3 style="margin:0 0 8px">Activar las ofertas de contado</h3>
+      modal(`<h3 style="margin:0 0 8px">Activar las superofertas de contado</h3>
         <p style="margin:0 0 10px">Se van a publicar <b>${DOC.items.length} precios</b> en la lista de Farmacias y en el portal. Esto es lo que cambia:</p>
         <ul style="margin:0 0 10px;padding-left:18px;font-size:14px">
           <li>${DOC.items.length} ofertas nuevas de precio único, con el margen por debajo del piso <b>autorizado</b>.</li>
           <li>Se pausan <b>${p.pausarOf.length}</b> ofertas anteriores de estos productos y <b>${p.pausarCapa.length}</b> escaleras de la capa.</li>
           <li>Se sacan <b>${p.sacarCong.length}</b> precios congelados por placa (si no, Odoo seguiría publicando el de la placa).</li>
-          <li>Los productos entran a la categoría <b>Ofertas de contado</b> del portal.</li></ul>
+          <li>Se prenden en el portal: la página Superofertas de contado, su lugar en la barra y la diapositiva del inicio.</li></ul>
         <p style="margin:0 0 12px;font-size:13px;color:#607570">Antes se guarda un respaldo de todo; "Desactivar" lo vuelve atrás. Después de activar se verifica al centavo lo que publica Odoo.</p>
         <label style="display:flex;gap:8px;align-items:center;font-size:14px;margin-bottom:12px"><input type="checkbox" id="ct-conf"> Confirmo que quiero publicar estos precios ahora</label>
         <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn ghost" onclick="EYGContado.cerrar()">Cancelar</button><button class="btn" onclick="EYGContado.activar()">Activar</button></div>`);
@@ -149,10 +149,10 @@ window.EYGContado = (function(){
   }
 
   async function catContado(crear){
-    const r=await rpc("product.public.category","search_read",[[["name","=","Ofertas de contado"]]],{fields:["id"],limit:1});
+    const r=await rpc("product.public.category","search_read",[[["name","=","Superofertas de contado"]]],{fields:["id"],limit:1});
     if(r&&r[0]) return r[0].id;
     if(!crear) return 0;
-    return await rpc("product.public.category","create",[{name:"Ofertas de contado", sequence:1}]);
+    return await rpc("product.public.category","create",[{name:"Superofertas de contado", sequence:1}]);
   }
   async function correrMotor(tmpls, avance){
     const T=await rpc("product.template","read",[tmpls,["product_variant_id"]]);
@@ -200,7 +200,7 @@ window.EYGContado = (function(){
   }
   async function verificar(){ OCUPADO=true; MSG="Leyendo lo publicado en Odoo…"; repintar(); await cargar(); const mal=DOC.items.filter(i=>!publicadoOK(i)); MSG=mal.length?(mal.length+" precios no coinciden:\n"+mal.map(i=>"· "+i.nombre.slice(0,50)+" → oferta "+c2(i.precio)+" · Odoo "+((VIVO[i.tmpl]&&VIVO[i.tmpl].lista.map(x=>c2(x[1])).join(" / "))||"—")).join("\n")):"Los "+DOC.items.length+" precios coinciden al centavo con Odoo."; OCUPADO=false; repintar(); }
   function pedirDesactivar(){
-    modal(`<h3 style="margin:0 0 8px">Desactivar las ofertas de contado</h3>
+    modal(`<h3 style="margin:0 0 8px">Desactivar las superofertas de contado</h3>
       <p style="margin:0 0 12px">Se sacan las ${DOC.items.length} ofertas de contado, vuelven las ofertas y escaleras que se habían pausado y los productos salen de la categoría del portal. Los precios congelados por placa no vuelven: el control de placas los arma de nuevo.</p>
       <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn ghost" onclick="EYGContado.cerrar()">Cancelar</button><button class="btn" style="background:#A6453A" onclick="EYGContado.desactivar()">Desactivar</button></div>`);
   }
