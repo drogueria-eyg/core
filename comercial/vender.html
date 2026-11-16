@@ -1619,7 +1619,8 @@ async function ctCargarEspera(){
     const desde=new Date(Date.now()-60*864e5).toISOString().slice(0,10);
     CT.espera=await rpc("sale.order","search_read",[[["user_id","=",ST.userId],["tag_ids","in",[CT.esp]],["state","in",["sale","sent","draft"]],["date_order",">=",desde]]],
       {fields:["id","name","partner_id","amount_total","state","date_order","tag_ids"],order:"date_order desc",limit:50,context:ES})||[];
-    CT.espera=CT.espera.filter(o=>!(CT.pag && o.tag_ids.includes(CT.pag)) && o.state==="sale");
+    // "sent" = cargados antes del 16/11 con el mecanismo viejo (sin confirmar): Pago recibido los confirma
+    CT.espera=CT.espera.filter(o=>!(CT.pag && o.tag_ids.includes(CT.pag)) && (o.state==="sale"||o.state==="sent"));
   }catch(e){ console.warn("contado espera:",e); }
 }
 function ctEsperaHTML(){
@@ -1627,7 +1628,7 @@ function ctEsperaHTML(){
   const rows=CT.espera.map(o=>{
     let f=""; if(o.date_order){ const ap=EYG.argParts(o.date_order); f=ap.date.slice(8,10)+"/"+ap.date.slice(5,7); }
     return `<div class="draft ct-esp" style="cursor:default">
-      <div class="di"><div class="cli">${esc(o.partner_id?o.partner_id[1]:"")}<span class="chip-ct pend">💵 ESPERANDO PAGO · entrega trabada</span></div>
+      <div class="di"><div class="cli">${esc(o.partner_id?o.partner_id[1]:"")}<span class="chip-ct pend">💵 ESPERANDO PAGO · ${o.state==="sale"?"entrega trabada":"sin confirmar"}</span></div>
         <div class="meta">${esc(o.name)}${f?" · "+f:""}</div></div>
       <div class="tot">${money(o.amount_total)}</div>
       <div class="acts" style="gap:6px">
@@ -1663,6 +1664,10 @@ async function ctPagoRecibido(id){
   const o=(CT.espera||[]).find(x=>x.id===id); if(!o) return;
   try{
     await rpc("sale.order","write",[[id],{tag_ids:[[3,CT.esp],[4,CT.pag]]}],{context:ES});
+    if(o.state!=="sale"){
+      try{ await rpc("sale.order","action_confirm",[[id]],{context:ES}); await copiarEntregaAlRemito(id); }
+      catch(e){ await rpc("sale.order","write",[[id],{tag_ids:[[3,CT.pag],[4,CT.esp]]}],{context:ES}).catch(()=>{}); throw e; }
+    }
     // Odoo libera la entrega solo al ver PAGADO; esto es por las dudas
     const pk=await rpc("stock.picking","search",[[["sale_id","=",id],["picking_type_code","=","outgoing"],["state","not in",["done","cancel"]]]],{context:ES});
     if(pk&&pk.length) await rpc("stock.picking","write",[pk,{x_eyg_espera_pago:false}],{context:ES});
@@ -3159,7 +3164,7 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
    recargan, y desde adentro parece que "el botón no anda" (pasó con el borrado de
    presupuestos, arreglado el 4/9 y todavía fallando en las tablets el 9/9).
    Se compara la versión del archivo publicado con la que está corriendo. */
-const VERSION_MODULO = "2026-11-16-ct2";
+const VERSION_MODULO = "2026-11-16-ct3";
 async function chequearVersion(){
   try{
     const r = await fetch(location.pathname + "?_v=" + Date.now(), {cache:"no-store"});
