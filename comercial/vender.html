@@ -479,6 +479,25 @@
     html.v2 body:has(#eygRailApp) .cart:not(.max){left:248px}
   }
   @media(max-width:520px){ .grid{grid-template-columns:1fr 1fr;gap:8px} .prod .thumb{width:44px;height:44px} }
+  /* ---- Superofertas de contado ---- */
+  .prod.contado,.rprod.contado{background:#F6FBE8;border-color:#8DB600;animation:none;box-shadow:0 0 0 1px #8DB600}
+  .ctbadge{display:inline-flex;align-items:center;gap:5px;margin:4px 0 2px;padding:3px 8px;border-radius:6px;background:#0F3D33;color:#D7F75B;font-size:10.5px;font-weight:800;letter-spacing:.04em;line-height:1.25}
+  .ct-banner{margin:0 0 8px;padding:10px 12px;border-radius:10px;font-size:12.5px;line-height:1.4}
+  .ct-banner.es{background:#0F3D33;color:#fff}
+  .ct-banner.es b{color:#D7F75B}
+  .ct-banner.ap{background:#F6FBE8;border:1.5px dashed #8DB600;color:#1F2A24;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .ct-banner.ap .t{flex:1;min-width:180px}
+  .ct-banner.ap button{border:0;border-radius:8px;padding:7px 12px;font-weight:700;background:#0F3D33;color:#D7F75B;cursor:pointer}
+  .ct-modal-h{margin:-4px -4px 12px;padding:14px 16px;border-radius:12px;background:#0F3D33;color:#fff}
+  .ct-modal-h .k{display:inline-block;padding:3px 9px;border-radius:6px;background:#D7F75B;color:#0F3D33;font-weight:900;font-size:12px;letter-spacing:.05em}
+  .ct-modal-h h3{color:#fff;margin:8px 0 2px;font-size:19px}
+  .ct-modal-h p{color:#E6EFE9;margin:0;font-size:13px}
+  .ct-reglas{margin:0 0 12px;padding-left:18px;font-size:13.5px;line-height:1.5}
+  .ct-reglas li{margin:2px 0}
+  .ct-pago{background:#F6FBE8;border:1px solid #CFE3A0;border-radius:12px;padding:12px 14px;text-align:left;font-size:13.5px;line-height:1.55;margin:0 0 16px}
+  .ct-pago .al{font-size:20px;font-weight:900;color:#0F3D33}
+  .chip-ct{display:inline-block;margin-left:6px;padding:2px 7px;border-radius:6px;background:#0F3D33;color:#D7F75B;font-size:10.5px;font-weight:800;vertical-align:middle}
+  .chip-ct.pend{background:#F5E4DD;color:#A6453A}
 </style>
 <!-- Visual nueva (la del Portal) para todo el Core: ver assets/v2.js -->
 <link rel="stylesheet" href="../assets/v2.css?v=5">
@@ -640,7 +659,7 @@ async function cargar(){
       rpc("res.partner","search_read",[[["user_id","=",ST.userId],["parent_id","=",false]]],
         {fields:["id","name","property_product_pricelist","property_payment_term_id","city","vat",AFIP_FIELD,EYG.FANT], limit:0, context:ES}),
       rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["draft","sent"]]]],
-        {fields:["id","name","partner_id","amount_total","order_line","write_date"], order:"write_date desc", limit:50}),
+        {fields:["id","name","partner_id","amount_total","order_line","write_date","origin","state","tag_ids"], order:"write_date desc", limit:50}),
     ]);
     ST.cartera = cartera.sort((a,b)=>(a.name||"").localeCompare(b.name||""));
     ST.drafts = drafts;
@@ -697,7 +716,7 @@ function vInicio(){
     let f=""; if(o.write_date){ const ap=EYG.argParts(o.write_date); f=ap.date.slice(8,10)+"/"+ap.date.slice(5,7)+" "+ap.hm; }
     return `<div class="draft" onclick="reanudar(${o.id})" title="Tocá para retomar">
       <div class="di">
-        <div class="cli">${esc(cli)}</div>
+        <div class="cli">${esc(cli)}${String(o.origin||"").indexOf(CT_ORIGEN)===0?(o.state==="sent"?'<span class="chip-ct pend">💵 CONTADO · esperando pago</span>':'<span class="chip-ct">💵 CONTADO</span>'):""}</div>
         <div class="meta">${esc(o.name||"")} · ${n} producto${n===1?"":"s"}${f?" · "+f:""}</div>
       </div>
       <div class="tot">${money(o.amount_total)}</div>
@@ -1273,6 +1292,8 @@ async function entrarVenta(){
   if(esTier2()) cargarMaxDescT2();   // tope de descuento comercial según el piso de margen
   cargarFiscal();           // ¿se le puede facturar a este cliente? (cartel en el encabezado, no frena nada)
   cargarOfertas();          // en paralelo: marca los productos en oferta (no bloquea el catálogo)
+  CT.enviado=false; CT.aparte=null;
+  cargarContado().then(()=>{ if(ST.view==="venta"){ renderGrid(); renderCart(); } }).then(ctLeerAparte);   // superofertas de contado + pedido aparte enlazado
   cargarCombos();           // y los combos armados en Oportunidades, para la pestaña 🎁
   ocCargar().then(()=>{ if(ST.view==="venta") renderCart(); });   // OC ya adjuntas (al reanudar)
   await cargarCatalogo();
@@ -1337,6 +1358,241 @@ async function ofertasDelCliente(){
   tm.forEach(t=>{ const d=EYGCanal.destino(ST.ofertaRule[t]||{}, ct[t]&&ct[t].canal); if(!va(d)) ST.ofertaTmpls.delete(t); });
   pv.forEach(p=>{ const d=cv[p]&&cv[p].canal; if(!va(d)) ST.ofertaPids.delete(p); });
 }
+/* ============================================================
+   SUPEROFERTAS DE CONTADO (Oportunidades y Ofertas → Superofertas de contado)
+   Reglas (Diego, 16/11/2026): se pagan SIEMPRE por transferencia ANTES de prepararse (nunca
+   efectivo ni plazo) y NUNCA van mezcladas con productos comunes. Por eso:
+   - la tarjeta lleva el cartel SOLO CONTADO;
+   - si el pedido ya tiene productos comunes y se agrega una superoferta (o al revés), el
+     producto va a un PEDIDO APARTE del mismo cliente y sucursal; los dos quedan enlazados por
+     el origen ("… · aparte de 0000XXXX") y el carrito muestra el otro con un botón para abrirlo;
+   - el pedido de superofertas no se confirma desde acá: queda ESPERANDO PAGO (cotización
+     enviada + etiqueta) con los datos de la transferencia para pasarle al cliente. Lo confirma
+     "Pago recibido" en el Core cuando se acredita. Odoo además lo traba (automatizaciones
+     "EyG · Superofertas…"): sin pago no se confirma, y un pedido mezclado tampoco.
+   Rige sólo con la oferta ACTIVA y en la lista Farmacias (3): es la única que tiene ese precio.
+   ============================================================ */
+const CT_LISTA = 3;
+const CT_ORIGEN = "Core · superofertas de contado";
+const CT_ORIGEN_COMUN = "Core · carga del comercial";
+const CT = {activa:false, pids:new Set(), esp:0, pag:0, pago:null, aparte:null, enviado:false};
+async function cargarContado(){
+  CT.activa=false; CT.pids=new Set();
+  try{
+    const gp=k=>rpc("ir.config_parameter","get_param",[k]);
+    const [raw,tg,pg]=await Promise.all([gp("eyg.ofertas_contado"),gp("eyg.ofertas_contado_tags"),gp("eyg.ofertas_contado_pago")]);
+    const d=JSON.parse(raw||"null");
+    const hoy=EYG.argToday();
+    if(d && d.estado==="activa" && (!d.hasta || d.hasta>=hoy)){ CT.activa=true; (d.items||[]).forEach(i=>{ if(i&&i.pid) CT.pids.add(+i.pid); }); }
+    const t=String(tg||"").split(","); CT.esp=parseInt(t[0],10)||0; CT.pag=parseInt(t[1],10)||0;
+    try{ CT.pago=JSON.parse(pg||"null"); }catch(e){ CT.pago=null; }
+  }catch(e){ console.warn("contado:",e); }
+}
+const ctAplica=()=>!!(CT.activa && ST.order && ST.order.pricelistId===CT_LISTA);
+const esContado=pid=>ctAplica() && CT.pids.has(+pid);
+// qué es el pedido abierto: null (vacío) · "contado" · "comun" · "mezcla"
+function tipoPedido(){
+  let c=0, n=0;
+  Object.keys(ST.want).forEach(pid=>{ if(ST.want[pid]>0){ if(esContado(pid)) c++; else n++; } });
+  if(nCombos()) n++;
+  return c&&n ? "mezcla" : c ? "contado" : n ? "comun" : null;
+}
+function ctBadge(p){ return esContado(p.id)?'<div class="ctbadge">💵 SUPEROFERTA · SOLO CONTADO</div>':""; }
+function ctReglasHTML(){
+  const al=(CT.pago&&CT.pago.alias)||"eyg.mpago";
+  return `<ul class="ct-reglas">
+    <li>Se paga <b>por transferencia ANTES de prepararse</b> (Mercado Pago, alias <b>${esc(al)}</b>). <b>No se acepta efectivo ni plazo.</b></li>
+    <li><b>No se mezcla</b> con productos comunes: va siempre en un <b>pedido aparte</b>.</li>
+    <li>El pedido queda <b>esperando pago</b>; el depósito lo prepara recién cuando se registra el pago.</li>
+  </ul>`;
+}
+// Intercepta el ＋ Agregar. Devuelve true si se hizo cargo (el producto no entra a este pedido).
+function ctInterceptar(pid){
+  if(!ctAplica()) return false;
+  const esC=CT.pids.has(+pid), tipo=tipoPedido();
+  if(!tipo){
+    // pedido vacío: una superoferta lo convierte en pedido de contado → se avisa una vez y se acepta
+    if(esC && ST._ctOk!==ST.order.id){ ctAvisoPrimero(pid); return true; }
+    return false;
+  }
+  if(tipo==="mezcla") return false;   // ya viene mezclado (presupuesto viejo): lo frena el Confirmar
+  if((tipo==="contado")===esC) return false;
+  ctPedirAparte(pid, esC?"contado":"comun");
+  return true;
+}
+function nombreProd(pid){ const p=(ST.prods||[]).find(x=>x.id==pid)||(ST.prodCache&&ST.prodCache[pid]); return (p&&p.name)||((ST.lines[pid]||{}).name)||"Este producto"; }
+function ctAvisoPrimero(pid){
+  modal(`<div class="ct-modal-h"><span class="k">💵 SUPEROFERTA · SOLO CONTADO</span>
+      <h3>${esc(nombreProd(pid))}</h3><p>Este pedido de ${esc(ST.order.partnerName)} queda como <b>pedido de Superofertas de contado</b>.</p></div>
+    ${ctReglasHTML()}
+    <div class="mb" style="flex-direction:column;align-items:stretch;gap:9px">
+      <button class="btn grn" onclick="ST._ctOk=ST.order.id;cerrarModal();addProd(${+pid})">💵 Entendido, agregar</button>
+      <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
+    </div>`);
+}
+function ctPedirAparte(pid, destino){
+  const ap=CT.aparte && CT.aparte.tipo===destino ? CT.aparte : null;
+  const cab = destino==="contado"
+    ? `<div class="ct-modal-h"><span class="k">💵 SUPEROFERTA · SOLO CONTADO</span>
+         <h3>${esc(nombreProd(pid))}</h3><p>No puede ir en este pedido: tiene productos comunes.</p></div>
+       ${ctReglasHTML()}
+       <p style="font-size:13.5px">Lo cargo en ${ap?`el pedido aparte de superofertas <b>${esc(ap.name)}</b>`:"un <b>pedido aparte</b> de superofertas"} para <b>${esc(ST.order.partnerName)}</b>. Este pedido sigue como está.</p>`
+    : `<div class="ct-modal-h"><span class="k">💵 PEDIDO DE SUPEROFERTAS DE CONTADO</span>
+         <h3>${esc(nombreProd(pid))}</h3><p>Este pedido es sólo de superofertas: los productos comunes van en otro.</p></div>
+       <p style="font-size:13.5px">Lo cargo en ${ap?`el pedido común <b>${esc(ap.name)}</b>`:"un <b>pedido aparte</b> común"} para <b>${esc(ST.order.partnerName)}</b>, con sus condiciones de siempre. Este pedido de superofertas sigue como está.</p>`;
+  modal(cab+`<div class="mb" style="flex-direction:column;align-items:stretch;gap:9px">
+      <button class="btn grn" onclick="ctAgregarAparte(${+pid},'${destino}')">${destino==="contado"?"💵 Cargar en el pedido de superofertas":"🛒 Cargar en el pedido común"}</button>
+      <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
+    </div>`);
+}
+// Busca el pedido enlazado a este (en las dos direcciones). Sólo borradores del mismo comercial.
+async function ctLeerAparte(){
+  CT.aparte=null;
+  if(!ST.order||!ST.order.id) return null;
+  try{
+    const [yo]=await rpc("sale.order","read",[[ST.order.id]],{fields:["name","origin"],context:ES});
+    if(yo&&yo.name) ST.order.name=yo.name;
+    ST.order.origin=(yo&&yo.origin)||"";
+    const dom=[["state","=","draft"],["user_id","=",ST.userId],["id","!=",ST.order.id],["partner_id","=",ST.order.partnerId]];
+    const m=/aparte de (\S+)/.exec(ST.order.origin);
+    const or = m ? ["|",["name","=",m[1]],["origin","ilike","aparte de "+ST.order.name]] : [["origin","ilike","aparte de "+ST.order.name]];
+    const r=await rpc("sale.order","search_read",[dom.concat(or)],{fields:["id","name","origin","amount_total","order_line"],order:"id desc",limit:1,context:ES});
+    if(r.length){ const o=r[0]; CT.aparte={id:o.id, name:o.name, total:o.amount_total||0, n:(o.order_line||[]).length,
+      tipo:(String(o.origin||"").indexOf(CT_ORIGEN)===0)?"contado":"comun"}; }
+  }catch(e){ console.warn("contado aparte:",e); }
+  if(ST.view==="venta") renderCart();
+  return CT.aparte;
+}
+async function ctCrearAparte(destino){
+  const CREAR={...ES, mail_auto_subscribe_no_notify:true, mail_create_nolog:true};
+  const vals={partner_id:ST.order.partnerId, user_id:ST.userId,
+    origin:(destino==="contado"?CT_ORIGEN:CT_ORIGEN_COMUN)+" · aparte de "+(ST.order.name||"")};
+  if(ST.order.shipId && ST.order.shipId!==ST.order.partnerId) vals.partner_shipping_id=ST.order.shipId;
+  if(ST.order.pricelistId) vals.pricelist_id=ST.order.pricelistId;
+  if(destino==="comun" && ST.order.plazoId) vals.payment_term_id=ST.order.plazoId;
+  if(destino==="contado" && CT.esp) vals.tag_ids=[[4,CT.esp]];
+  const id=await rpc("sale.order","create",[vals],{context:CREAR});
+  const [o]=await rpc("sale.order","read",[[id]],{fields:["name","partner_shipping_id"],context:ES});
+  if(vals.partner_shipping_id && (!o.partner_shipping_id || o.partner_shipping_id[0]!==vals.partner_shipping_id)){
+    try{ await rpc("sale.order","write",[[id],{partner_shipping_id:vals.partner_shipping_id}],{context:ES}); }catch(e){}
+  }
+  CT.aparte={id, name:o.name, total:0, n:0, tipo:destino};
+  return CT.aparte;
+}
+async function ctSumarEn(orderId, pid, qty){
+  const [o]=await rpc("sale.order","read",[[orderId]],{fields:["order_line"],context:ES});
+  const ls=(o.order_line||[]).length?await rpc("sale.order.line","read",[o.order_line],{fields:["product_id","product_uom_qty"],context:ES}):[];
+  const l=ls.find(x=>x.product_id&&x.product_id[0]===+pid);
+  const pk=pkgDe(+pid);
+  const cmd=l?[1,l.id,{product_uom_qty:l.product_uom_qty+qty}]:[0,0,pk?{product_id:+pid,product_uom_qty:qty,product_packaging_id:pk}:{product_id:+pid,product_uom_qty:qty}];
+  await rpc("sale.order","write",[[orderId],{order_line:[cmd]}],{context:ES});
+}
+async function ctAgregarAparte(pid, destino){
+  cerrarModal();
+  if(ST.dirty||ST.syncing) await syncOrder();
+  try{
+    let ap=CT.aparte && CT.aparte.tipo===destino ? CT.aparte : null;
+    if(!ap) ap=await ctCrearAparte(destino);
+    await ctSumarEn(ap.id, pid, pasoDe(pid));
+    await ctLeerAparte();
+    toast((destino==="contado"?"💵 Cargado en el pedido de superofertas ":"🛒 Cargado en el pedido común ")+(CT.aparte?CT.aparte.name:""), true);
+  }catch(e){ modal(`<h3>⛔ No pude armar el pedido aparte</h3><p>${esc(String(e.message||e).slice(0,300))}</p><p>El producto NO se cargó. Probá de nuevo.</p><div class="mb"><button class="btn ghost" onclick="cerrarModal()">Entendido</button></div>`); }
+}
+// Presupuesto viejo que ya viene mezclado: pasa las superofertas a su pedido aparte.
+async function ctSeparar(){
+  cerrarModal();
+  if(ST.dirty||ST.syncing) await syncOrder();
+  const sup=Object.keys(ST.want).filter(pid=>ST.want[pid]>0 && esContado(pid));
+  if(!sup.length) return;
+  try{
+    let ap=CT.aparte && CT.aparte.tipo==="contado" ? CT.aparte : null;
+    if(!ap) ap=await ctCrearAparte("contado");
+    for(const pid of sup){ await ctSumarEn(ap.id, pid, ST.want[pid]); delete ST.want[pid]; refrescarCelda(+pid); }
+    await syncOrder();          // las saca de este pedido
+    await ctLeerAparte();
+    toast("💵 "+sup.length+" superoferta"+(sup.length===1?"":"s")+" pasadas al pedido "+(CT.aparte?CT.aparte.name:""), true);
+  }catch(e){ toast("No pude separar: "+String(e.message||e).slice(0,160)); }
+}
+async function ctAbrirAparte(){
+  if(!CT.aparte) return;
+  if(ST.dirty||ST.syncing) await syncOrder();
+  reanudar(CT.aparte.id);
+}
+function ctBanner(){
+  let h="";
+  const t=tipoPedido();
+  if(t==="contado") h+=`<div class="ct-banner es">💵 <b>PEDIDO DE SUPEROFERTAS DE CONTADO.</b> Se paga por transferencia <b>antes</b> de prepararse; sin efectivo ni plazo. Sólo lleva superofertas.</div>`;
+  if(t==="mezcla") h+=`<div class="ct-banner es" style="background:#A6453A">⛔ <b style="color:#fff">Este pedido mezcla superofertas de contado con productos comunes.</b> Así no se puede confirmar. <button style="margin-left:6px;border:0;border-radius:7px;padding:5px 10px;font-weight:700;cursor:pointer" onclick="ctSeparar()">Separar ahora</button></div>`;
+  if(CT.aparte) h+=`<div class="ct-banner ap"><div class="t">${CT.aparte.tipo==="contado"?"💵 <b>Pedido aparte de superofertas</b>":"🛒 <b>Pedido aparte común</b>"} para este cliente: <b>${esc(CT.aparte.name)}</b> · ${CT.aparte.n} renglón${CT.aparte.n===1?"":"es"} · ${money(CT.aparte.total)}</div><button onclick="ctAbrirAparte()">Abrir ›</button></div>`;
+  return h;
+}
+function ctConfirmarModal(){
+  modal(`<div class="ct-modal-h"><span class="k">💵 SUPEROFERTAS DE CONTADO</span>
+      <h3>Enviar a pagar</h3><p>${esc(ST.order.partnerName)} · ${money(ST.amount.total)}</p></div>
+    <p style="font-size:13.5px">Este pedido <b>no se confirma todavía</b>: queda <b>ESPERANDO PAGO</b> y el depósito no lo prepara.
+    En la pantalla siguiente tenés los datos de la transferencia para pasarle al cliente. Cuando llega el comprobante y se acredita, se registra el <b>Pago recibido</b> en el Core y el pedido se confirma solo.</p>
+    <div class="mb" style="flex-direction:column;align-items:stretch;gap:9px">
+      <button class="btn grn" onclick="ctEnviarAPagar()">💵 Dejar esperando pago</button>
+      <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
+    </div>`);
+}
+async function ctEnviarAPagar(){
+  cerrarModal();
+  if(ST.dirty||ST.syncing){ await syncOrder(); }
+  document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Dejando el pedido esperando pago…</div>';
+  let faltantes=null;
+  try{ faltantes=await chequearDisponibilidad(); }catch(e){ faltantes=null; }
+  if(faltantes && faltantes.length){ ST.view="venta"; render(); mostrarBloqueoStock(faltantes); return; }
+  try{
+    const vals={};
+    if(CT.esp) vals.tag_ids=[[4,CT.esp]];
+    if(ST.order.origin!==undefined && String(ST.order.origin||"").indexOf(CT_ORIGEN)!==0) vals.origin=CT_ORIGEN+(ST.order.origin?" · "+ST.order.origin:"");
+    if(Object.keys(vals).length) await rpc("sale.order","write",[[ST.order.id],vals],{context:ES});
+    // cotización enviada = esperando pago (así aparece en la lista "Pedidos de superofertas" del Core)
+    try{ await rpc("sale.order","action_quotation_sent",[[ST.order.id]],{context:ES}); }
+    catch(e){ await rpc("sale.order","write",[[ST.order.id],{state:"sent"}],{context:ES}); }
+    const [o]=await rpc("sale.order","read",[[ST.order.id]],{fields:["name","amount_total","state"],context:ES});
+    ST.order.name=o.name; ST.amount.total=o.amount_total;
+    CT.enviado=true; ST.view="success"; render();
+  }catch(e){ toast("No pude dejarlo esperando pago: "+String(e.message||e).slice(0,200)); ST.view="venta"; render(); }
+}
+function ctTextoPago(){
+  const p=CT.pago||{};
+  const wa=String(p.whatsapp||"").replace(/^549(\d{3})(\d{3})(\d+)$/,"+54 9 $1 $2-$3");
+  return ["Pedido "+(ST.order.name||"")+" · Superofertas de contado · Droguería EyG",
+    "Total a transferir: "+money(ST.amount.total),
+    "Mercado Pago · alias "+(p.alias||"eyg.mpago"),
+    "Titular: "+(p.titular||"DROGUERIA EYG SRL")+" · CUIT "+(p.cuit||""),
+    p.cvu?("CVU: "+p.cvu):"",
+    "Enviá el comprobante por WhatsApp"+(wa?" al "+wa:"")+". El pedido se prepara cuando se acredita el pago. No se acepta efectivo."].filter(Boolean).join("\n");
+}
+function ctCopiarPago(btn){
+  const t=ctTextoPago();
+  const ok=()=>{ btn.textContent="✓ Copiado"; setTimeout(()=>btn.textContent="📋 Copiar datos para el cliente",1600); };
+  if(navigator.clipboard) navigator.clipboard.writeText(t).then(ok,()=>window.prompt("Copiá:",t)); else window.prompt("Copiá:",t);
+}
+function ctSuccess(){
+  const p=CT.pago||{};
+  return `<div class="success">
+    <div class="big">💵</div>
+    <h2>Esperando pago</h2>
+    <p>Pedido <b>${esc(ST.order.name||"")}</b> de <b>${esc(ST.order.partnerName)}</b> quedó <b>esperando pago</b>. El depósito lo prepara cuando se registra el pago.</p>
+    <div class="ct-pago">
+      Total a transferir: <b>${money(ST.amount.total)}</b><br>
+      Mercado Pago · alias <span class="al">${esc(p.alias||"eyg.mpago")}</span><br>
+      Titular ${esc(p.titular||"DROGUERIA EYG SRL")} · CUIT ${esc(p.cuit||"")}<br>
+      ${p.cvu?"CVU "+esc(p.cvu)+"<br>":""}
+      El cliente manda el comprobante por WhatsApp. <b>No se acepta efectivo.</b>
+    </div>
+    <div class="btns">
+      <button class="btn grn big" onclick="ctCopiarPago(this)">📋 Copiar datos para el cliente</button>
+      ${CT.aparte?`<button class="btn teal big" onclick="CT.enviado=false;reanudar(${CT.aparte.id})">${CT.aparte.tipo==="comun"?"🛒 Seguir con el pedido común "+esc(CT.aparte.name):"Abrir "+esc(CT.aparte.name)}</button>`:""}
+      <button class="btn ghost big" onclick="CT.enviado=false;abrirPicker()">＋ Cargar otra venta</button>
+      <button class="btn ghost" onclick="CT.enviado=false;volverInicio()">Volver al inicio</button>
+    </div>
+  </div>`;
+}
+
 // ¿este producto está en oferta? (por variante o por plantilla)
 function esOferta(p){ return (ST.ofertaPids&&ST.ofertaPids.has(p.id)) || (ST.ofertaTmpls&&p.product_tmpl_id&&ST.ofertaTmpls.has(p.product_tmpl_id[0])); }
 
@@ -1743,9 +1999,10 @@ function rowProd(p){
   const pr=ST.precios[p.id];
   const stk=p.qty_available||0;
   const oferta=esOferta(p);
-  return `<div class="rprod ${q>0?"incart":""} ${oferta?"oferta":""}" id="prod-${p.id}">
+  return `<div class="rprod ${q>0?"incart":""} ${oferta?"oferta":""} ${esContado(p.id)?"contado":""}" id="prod-${p.id}">
     ${thumbHtml(p)}
     <div class="rinfo">
+      ${ctBadge(p)}
       <div class="pn">${esc(p.name)}</div>
       <div class="pm">${p.default_code?("["+esc(p.default_code)+"] "):""}${esc(catCorta(p.categ_id&&p.categ_id[1]))}</div>
       <div class="rmeta">${stockHtml(p)}${escHtml(p.id)}</div>
@@ -1769,10 +2026,11 @@ function cardProd(p){
   const pr=ST.precios[p.id];
   const stk=p.qty_available||0;
   const oferta=esOferta(p);
-  return `<div class="prod ${q>0?"incart":""} ${oferta?"oferta":""}" id="prod-${p.id}">
+  return `<div class="prod ${q>0?"incart":""} ${oferta?"oferta":""} ${esContado(p.id)?"contado":""}" id="prod-${p.id}">
     <div class="top">
       ${thumbHtml(p)}
       <div class="ti">
+        ${ctBadge(p)}
         <div class="pn">${esc(p.name)}</div>
         <div class="pm">${p.default_code?("["+esc(p.default_code)+"] "):""}${esc(catCorta(p.categ_id&&p.categ_id[1]))}</div>
         <div class="stkline">${stockHtml(p)}</div>
@@ -1854,7 +2112,7 @@ function _avisarTope(pid,n){
 }
 // En caja cerrada todo se mueve de a UNA CAJA (paso = unidades por caja), así nunca queda una
 // fracción de caja: es la regla del producto, no una preferencia del vendedor.
-function addProd(pid){ if(dispDe(pid)<=0){ reponerProd(pid); return; }  /* sin stock: no cotiza, va a reposición */ ST.want[pid]=(ST.want[pid]||0)+pasoDe(pid); _avisarTope(pid,ST.want[pid]); refrescarCelda(pid); marcarDirty(); }
+function addProd(pid){ if(dispDe(pid)<=0){ reponerProd(pid); return; }  /* sin stock: no cotiza, va a reposición */ if(ctInterceptar(pid)) return;  /* superofertas de contado: nunca mezcladas */ ST.want[pid]=(ST.want[pid]||0)+pasoDe(pid); _avisarTope(pid,ST.want[pid]); refrescarCelda(pid); marcarDirty(); }
 // Cuenta EN CAJAS y vuelve a unidades, así una cantidad partida que venga de afuera (un
 // presupuesto viejo, o una línea cargada a mano en Odoo) queda entera apenas la tocan.
 function chgQty(pid,d){
@@ -2310,7 +2568,7 @@ function renderCart(){
     </div>`;
   }).join("");
   const num=document.getElementById("cartNum");
-  if(!pids.length && !cbsTodos.length){ if(num) num.textContent=""; items.innerHTML='<div class="cart-empty">Todavía no cargaste productos.<br>Tocá ＋ en el catálogo.</div>'; foot.innerHTML=""; return; }
+  if(!pids.length && !cbsTodos.length){ if(num) num.textContent=""; items.innerHTML=ctBanner()+'<div class="cart-empty">Todavía no cargaste productos.<br>Tocá ＋ en el catálogo.</div>'; foot.innerHTML=""; return; }
   // El nombre se resuelve UNA vez por producto: ordenar 66 renglones llamaría a
   // buscar en el catálogo miles de veces si no se guarda.
   const _nom={};
@@ -2376,7 +2634,7 @@ function renderCart(){
       </div>
     </div>`;
   }).join("");
-  items.innerHTML = cbHTML + items.innerHTML;
+  items.innerHTML = ctBanner() + cbHTML + items.innerHTML;
   foot.innerHTML=_cartFoot();
 }
 function _cartFoot(){
@@ -2385,7 +2643,7 @@ function _cartFoot(){
     <div class="row tot"><span>Total</span><span>${money(ST.amount.total)}</span></div>
     ${ocHTML()}
     <div class="btns">
-      <button class="btn grn big" onclick="confirmarVenta()" ${ST.syncing?"disabled":""}>✓ Confirmar venta</button>
+      <button class="btn grn big" onclick="confirmarVenta()" ${ST.syncing?"disabled":""}>${tipoPedido()==="contado"?"💵 Enviar a pagar (contado)":"✓ Confirmar venta"}</button>
       <button class="descartar" onclick="pedirDescartar()" title="Borra el presupuesto entero. Te va a pedir confirmación.">Descartar presupuesto</button>
     </div>`;
 }
@@ -2537,6 +2795,15 @@ async function copiarEntregaAlRemito(pedidoId){
 }
 function confirmarVenta(){
   if(!nItems()) return toast("Cargá al menos un producto");
+  const _t=tipoPedido();
+  if(_t==="mezcla") return modal(`<div class="ct-modal-h"><span class="k">⛔ NO SE PUEDE CONFIRMAR</span>
+      <h3>El pedido mezcla superofertas de contado con productos comunes</h3><p>Las superofertas van siempre en un pedido aparte.</p></div>
+    ${ctReglasHTML()}
+    <div class="mb" style="flex-direction:column;align-items:stretch;gap:9px">
+      <button class="btn grn" onclick="ctSeparar()">💵 Separar las superofertas en su pedido</button>
+      <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
+    </div>`);
+  if(_t==="contado") return ctConfirmarModal();
   if(!ST.order.plazo && !ST._sinPlazoOk){
     return modal(`<h3>🕐 Este pedido no tiene plazo de pago</h3>
       <p>Sin plazo, la factura <b>vence el mismo día en que se emite</b> y el cliente figura con deuda vencida enseguida.</p>
@@ -2620,6 +2887,7 @@ async function doDescartar(){
 }
 
 function vSuccess(){
+  if(CT.enviado) return ctSuccess();
   return `<div class="success">
     <div class="big">✅</div>
     <h2>¡Venta confirmada!</h2>
@@ -2811,7 +3079,7 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
    recargan, y desde adentro parece que "el botón no anda" (pasó con el borrado de
    presupuestos, arreglado el 4/9 y todavía fallando en las tablets el 9/9).
    Se compara la versión del archivo publicado con la que está corriendo. */
-const VERSION_MODULO = "2026-09-15-a";
+const VERSION_MODULO = "2026-11-16-ct";
 async function chequearVersion(){
   try{
     const r = await fetch(location.pathname + "?_v=" + Date.now(), {cache:"no-store"});
