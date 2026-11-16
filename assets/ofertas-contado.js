@@ -26,7 +26,7 @@ window.EYGContado = (function(){
   const nf=n=>Math.round(n||0).toLocaleString("es-AR");
   const esc=s=>EYG.esc(s);
   const precioDe=(ref,d)=>Math.floor(ref*(1-d/100)*100+0.5)/100;   // la cuenta del motor
-  let DOC=null, VIVO={}, ERR="", OCUPADO=false, MSG="";
+  let DOC=null, VIVO={}, ERR="", OCUPADO=false, MSG="", PED=[], TAGS={esp:0,pag:0};
   try{ MSG=sessionStorage.getItem("ct_msg")||""; sessionStorage.removeItem("ct_msg"); }catch(e){}
   /* después de activar o desactivar se recarga la página: así el módulo relee las ofertas y su sincronización
      de listas institucionales saca las copias de las ofertas que se pausaron */
@@ -46,7 +46,52 @@ window.EYGContado = (function(){
       (PL||[]).forEach(i=>{ const v=VIVO[i.product_tmpl_id[0]]; if(v) v.lista.push([i.min_quantity,i.fixed_price]); });
       Object.values(VIVO).forEach(v=>v.lista.sort((a,b)=>a[0]-b[0]));
     }catch(e){ console.warn("contado vivo:",e); }
+    await cargarPedidos();
     return DOC;
+  }
+  /* Pedidos del portal con superofertas. Odoo les pone sola la etiqueta ESPERANDO PAGO (automatización
+     "EyG · Superofertas: etiquetar pedido esperando pago") y no deja confirmarlos hasta que tengan PAGADO
+     ("EyG · Superofertas: no confirmar sin pago"): así no se genera la entrega y el depósito no los prepara. */
+  async function cargarPedidos(){
+    PED=[];
+    try{
+      const t=String(await gp("eyg.ofertas_contado_tags")||"").split(",").map(x=>parseInt(x,10)||0);
+      TAGS={esp:t[0]||0, pag:t[1]||0}; if(!TAGS.esp) return;
+      const desde=new Date(Date.now()-30*864e5).toISOString().slice(0,10);
+      PED=await rpc("sale.order","search_read",[[["tag_ids","in",[TAGS.esp,TAGS.pag].filter(Boolean)],["state","in",["sent","sale"]],["date_order",">=",desde]]],
+        {fields:["name","partner_id","amount_total","state","date_order","tag_ids","user_id"],order:"date_order desc",limit:200})||[];
+    }catch(e){ console.warn("contado pedidos:",e); }
+  }
+  function pedidosHTML(){
+    if(!TAGS.esp) return "";
+    const esp=PED.filter(p=>p.tag_ids.includes(TAGS.esp)&&!p.tag_ids.includes(TAGS.pag));
+    const pag=PED.filter(p=>p.tag_ids.includes(TAGS.pag));
+    const fila=(p,pend)=>`<tr>
+      <td><b>${esc(p.name)}</b><div class="ctsub">${esc(String(p.date_order||"").slice(0,16))}</div></td>
+      <td>${esc(p.partner_id?p.partner_id[1]:"")}<div class="ctsub">${esc(p.user_id?p.user_id[1]:"sin comercial")}</div></td>
+      <td class="n"><b>${c2(p.amount_total)}</b></td>
+      <td>${pend?'<span class="chip" style="background:#F5E4DD;color:#A6453A;font-weight:700">ESPERANDO PAGO · no preparar</span>':'<span class="chip" style="background:#E3EEDD;color:#2E7A4E;font-weight:700">PAGADO · '+(p.state==="sale"?"confirmado":"sin confirmar")+'</span>'}</td>
+      <td class="n">${pend?`<button class="btn sm" ${OCUPADO?"disabled":""} onclick="EYGContado.pagoRecibido(${p.id})">Pago recibido</button>`:""}</td></tr>`;
+    return `<div class="ctped">
+      <div class="ctpedt">Pedidos de superofertas <span class="ctsub">· últimos 30 días · se pagan por transferencia antes de prepararse</span></div>
+      ${PED.length?`<div class="cttw"><table class="cttab"><thead><tr><th>Pedido</th><th>Cliente</th><th class="n">Total</th><th>Estado</th><th></th></tr></thead><tbody>${esp.map(p=>fila(p,true)).join("")}${pag.map(p=>fila(p,false)).join("")}</tbody></table></div>`
+        :'<div class="ctsub" style="padding:6px 0">Todavía no hay pedidos de superofertas.</div>'}
+      <div class="ctsub">Cuando llegue el comprobante por WhatsApp, verificá la acreditación en Mercado Pago (alias eyg.mpago) y tocá <b>Pago recibido</b>: el pedido se confirma y recién ahí pasa al depósito.</div>
+    </div>`;
+  }
+  async function pagoRecibido(id){
+    const p=PED.find(x=>x.id===id); if(!p||OCUPADO) return;
+    if(!confirm("¿Registrar el pago de "+c2(p.amount_total)+" del pedido "+p.name+" ("+(p.partner_id?p.partner_id[1]:"")+")?\n\nConfirmalo sólo si ya viste la plata acreditada en Mercado Pago. El pedido se confirma y pasa al depósito.")) return;
+    OCUPADO=true; MSG="Registrando el pago de "+p.name+"…"; repintar();
+    try{
+      await rpc("sale.order","write",[[id],{tag_ids:[[3,TAGS.esp],[4,TAGS.pag]]}]);
+      try{ await rpc("sale.order","action_confirm",[[id]]); }
+      catch(e){ await rpc("sale.order","write",[[id],{tag_ids:[[3,TAGS.pag],[4,TAGS.esp]]}]).catch(()=>{}); throw e; }
+      const quien=(window.EYG&&EYG.perfil&&EYG.perfil.nombre)||"el Core";
+      await rpc("sale.order","message_post",[[id]],{body:"Superofertas de contado: pago por transferencia registrado en el Core ("+quien+"). Pedido confirmado para preparar.",message_type:"comment",subtype_xmlid:"mail.mt_note"}).catch(()=>{});
+      MSG="Pago registrado: "+p.name+" quedó confirmado y pasa al depósito.";
+    }catch(e){ MSG="No se pudo confirmar "+p.name+": "+String(e.message||e).slice(0,300)+"\nEl pedido sigue esperando pago."; }
+    await cargarPedidos(); OCUPADO=false; repintar();
   }
   const activa=()=>DOC&&DOC.estado==="activa";
   function publicadoOK(it){ const v=VIVO[it.tmpl]; return !!(v&&v.lista.length===1&&Math.abs(v.lista[0][1]-it.precio)<0.005); }
@@ -75,6 +120,7 @@ window.EYGContado = (function(){
         <td class="n">${act?"":`<button class="btn ghost sm" title="Sacar de la oferta de contado" onclick="EYGContado.quitar(${ix})">✕</button>`}</td></tr>`; }).join("");
     return `<div class="ctbox">
       <div class="cthead">${estado}</div>
+      ${pedidosHTML()}
       <div class="ctkpis">
         <div><span>Productos</span><b>${it.length}</b></div>
         <div><span>Unidades en stock</span><b>${nf(tot.st)}</b></div>
@@ -101,11 +147,16 @@ window.EYGContado = (function(){
   .cttab td{padding:7px 9px;border-bottom:1px solid var(--line,#DCE4DE);vertical-align:top}.cttab tr:last-child td{border-bottom:0}.cttab .n{text-align:right;white-space:nowrap}
   .ctsub{font-size:11.5px;color:var(--muted,#607570)}.ctdesc{font-weight:700;color:#064E4D;background:#E8EEDD;border-radius:6px;padding:1px 7px}
   .ctbtns{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:flex-end}.ctvig{font-size:13px;display:flex;gap:6px;align-items:center;margin-right:auto}
+  .ctped{display:grid;gap:8px;border:1px solid var(--line,#DCE4DE);border-radius:10px;padding:10px 12px;background:var(--surface,#FFFDF7)}.ctpedt{font-weight:700;font-size:14px}
   .ctmsg{font-size:13px;padding:9px 12px;border-radius:10px;background:#F3EBD2;color:#5d430c;white-space:pre-line}`;
   function css(){ if(!document.getElementById("ct-css")){ const s=document.createElement("style"); s.id="ct-css"; s.textContent=CSS; document.head.appendChild(s); } }
 
   const repintar=()=>{ try{ window.render&&window.render(); }catch(e){} };
-  async function guardarDoc(){ await sp(KEY, JSON.stringify(DOC)); }
+  async function guardarDoc(){
+    await sp(KEY, JSON.stringify(DOC));
+    const flat=[DOC.estado||"", (DOC.items||[]).map(i=>i.tmpl).join(","), "4132"].join("|");   // 4132 = partner de prueba (Diego)
+    await sp("eyg.ofertas_contado_flat", flat);
+  }
   async function quitar(ix){
     if(activa()) return;
     const it=DOC.items[ix]; if(!it) return;
@@ -224,6 +275,6 @@ window.EYGContado = (function(){
     }catch(e){ MSG="Error al desactivar: "+e.message; }
     OCUPADO=false; repintar();
   }
-  return { KEY, cargar, html, css, activa, quitar, vigencia, plan, pedirActivar, activar, verificar, pedirDesactivar, desactivar, cerrar, precioDe,
+  return { KEY, cargar, html, pagoRecibido, css, activa, quitar, vigencia, plan, pedirActivar, activar, verificar, pedirDesactivar, desactivar, cerrar, precioDe,
            n:()=>DOC&&DOC.items?DOC.items.length:0, estado:()=>DOC&&DOC.estado };
 })();
