@@ -790,7 +790,9 @@ async function generar(){
   if(!todoOk()||ST.guardando) return;
   ST.guardando=true; repintarPreview();
   const creados=[], fallos=[];
-  let prox = await proximoRecibo();
+  let prox;
+  try{ prox = await proximoRecibo(); }
+  catch(e){ ST.guardando=false; repintarPreview(); alert("No se generó nada: "+(e.message||e)+". Probá de nuevo en un momento."); return; }
   const chq = chequesReales(), rets = retencionesReales();
 
   /* Las retenciones son líneas del recibo. Si hay cheques, van todas en el
@@ -821,6 +823,8 @@ async function generar(){
     if(i===0 && rets.length) vals.l10n_ar_withholding_line_ids = lineasRet();
     try{
       const id = await R("account.payment","create",[vals]);
+      // Odoo puede borrar el tipo de comprobante al crear el pago: se reescribe antes de publicar
+      await R("account.payment","write",[[id],{l10n_latam_document_type_id:DOCTYPE, l10n_latam_document_number:vals.l10n_latam_document_number}]);
       await R("account.payment","action_post",[[id]]);
       creados.push(id); prox++;
     }catch(e){ fallos.push({n:c.numero, e:String(e.message||e).slice(0,140)}); }
@@ -836,6 +840,7 @@ async function generar(){
         l10n_latam_document_number:POS+"-"+String(prox).padStart(8,"0"),
         l10n_ar_withholding_line_ids: lineasRet()
       }]);
+      await R("account.payment","write",[[id],{l10n_latam_document_type_id:DOCTYPE, l10n_latam_document_number:POS+"-"+String(prox).padStart(8,"0")}]);
       await R("account.payment","action_post",[[id]]);
       creados.push(id);
     }catch(e){ fallos.push({n:"retención", e:String(e.message||e).slice(0,140)}); }
@@ -847,16 +852,21 @@ async function generar(){
   render();
 }
 
+/* Número del próximo RE-X (16/11/2026). Antes miraba sólo el último recibo CON tipo "RECIBOS X":
+   hay más de 500 RE-X cargados a mano en Odoo que quedaron sin el tipo (Odoo lo borra al crear el pago en
+   algunos diarios), y si el último era uno de esos se repetía el número en otro diario (Odoo sólo impide
+   repetirlo dentro del mismo diario). Ahora es el mayor entre los recibos con tipo y los asientos que se
+   llaman "RE-X 0001-…". Si no se puede leer, NO se inventa un número: se corta con error (antes daba 1). */
 async function proximoRecibo(){
-  try{
-    const ult = await R("account.payment","search_read",
-      [[["l10n_latam_document_type_id","=",DOCTYPE]],["l10n_latam_document_number"]],{limit:1, order:"id desc"});
-    if(ult.length && ult[0].l10n_latam_document_number){
-      const n=parseInt(String(ult[0].l10n_latam_document_number).split("-").pop(),10);
-      if(!isNaN(n)) return n+1;
-    }
-  }catch(e){}
-  return 1;
+  const [ult, movs] = await Promise.all([
+    R("account.payment","search_read",[[["l10n_latam_document_type_id","=",DOCTYPE]],["l10n_latam_document_number"]],{limit:60, order:"id desc"}),
+    R("account.move","search_read",[[["name","=like","RE-X "+POS+"-%"]],["name"]],{limit:5, order:"name desc"})
+  ]);
+  let n=0;
+  (ult||[]).forEach(u=>{ const k=parseInt(String(u.l10n_latam_document_number||"").split("-").pop(),10); if(k>n) n=k; });
+  (movs||[]).forEach(m=>{ const k=parseInt(String(m.name||"").split("-").pop(),10); if(k>n) n=k; });
+  if(!n) throw new Error("no pude leer el último número de recibo");
+  return n+1;
 }
 
 /* Imputa los cheques a las facturas pendientes, de la más vieja a la más nueva. */
