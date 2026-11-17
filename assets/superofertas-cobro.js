@@ -12,7 +12,7 @@ window.EYGSuperCobro = (function(){
   const rpc=(m,me,a,k)=>EYG.rpc(m,me,a,k||{});
   const esc=s=>EYG.esc(s);
   const money=n=>"$ "+Number(n||0).toLocaleString("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2});
-  let EL=null, PERFIL=null, T={esp:0,pag:0,efe:0,inf:0}, PED=[], ADJ={}, MSG="", OCUP=false;
+  let EL=null, PERFIL=null, T={esp:0,pag:0,efe:0,inf:0,dif:0}, PED=[], DIFS=[], ADJ={}, MSG="", OCUP=false;
   /* Cruce con Mercado Pago (17/11/2026): la función mp-transferencias lee los cobros que entran a la cuenta
      (sólo lectura). Mercado Pago no dice quién transfirió, así que se cruza por IMPORTE (±$1: hay clientes
      que redondean) y por fecha (desde dos días antes del pedido). Cada transferencia se usa una sola vez: al
@@ -55,7 +55,7 @@ window.EYGSuperCobro = (function(){
 .sc .c-esp{background:#F5E4DD;color:#A6453A}.sc .c-inf{background:#FFF1C9;color:#7A5500}.sc .c-efe{background:#E3EEDD;color:#2E7A4E}
 .sc button.as{border:0;border-radius:8px;padding:7px 12px;font-weight:800;cursor:pointer;background:#0F3D33;color:#D7F75B;white-space:nowrap}
 .sc button.as[disabled]{opacity:.5;cursor:default}.sc .msg{white-space:pre-wrap;font-size:13px;margin:8px 0 0;padding:8px 10px;border-radius:8px;background:#fff;border:1px solid #DCE4DE}
-.sc a{color:#0F6E56}.sc .mpok{margin-top:4px;font-size:12px;color:#1F6B3A;font-weight:700}.sc .mpdu{margin-top:4px;font-size:12px;color:#8A5A00;font-weight:700}.sc .mpno{margin-top:4px;font-size:11.5px;color:#8A9690}
+.sc a{color:#0F6E56}.sc .scdif{margin-top:12px;border-top:1px dashed #E3C9A0;padding-top:10px}.sc .scdif h4{margin:0 0 4px;font-size:14.5px;color:#8A5A00}.sc .dfila{font-size:13px;padding:5px 0;border-bottom:1px dashed #EFE3CF}.sc button.as.sm{padding:4px 9px;font-size:12px;margin-left:6px}.sc .mpok{margin-top:4px;font-size:12px;color:#1F6B3A;font-weight:700}.sc .mpdu{margin-top:4px;font-size:12px;color:#8A5A00;font-weight:700}.sc .mpno{margin-top:4px;font-size:11.5px;color:#8A9690}
 .sc details.mpsin{margin-top:10px;font-size:13px}.sc details.mpsin summary{cursor:pointer;font-weight:700;color:#0F3D33}.sc .mpfila{padding:3px 0;border-bottom:1px dashed #E1E8E3}.sc .vacio{font-size:13px;color:#5C6B64;padding:4px 0}
 .sc-modal{position:fixed;inset:0;z-index:3000;background:rgba(10,30,26,.5);display:flex;align-items:center;justify-content:center;padding:16px}
 .sc-modal .bx{background:#fff;border-radius:14px;max-width:460px;width:100%;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
@@ -68,7 +68,7 @@ window.EYGSuperCobro = (function(){
     PED=[]; ADJ={};
     try{
       const t=String(await rpc("ir.config_parameter","get_param",["eyg.ofertas_contado_tags"])||"").split(",").map(x=>parseInt(x,10)||0);
-      T={esp:t[0]||0,pag:t[1]||0,efe:t[2]||0,inf:t[3]||0}; if(!T.esp) return;
+      T={esp:t[0]||0,pag:t[1]||0,efe:t[2]||0,inf:t[3]||0,dif:t[4]||0}; if(!T.esp) return;
       const desde=new Date(Date.now()-90*864e5).toISOString().slice(0,10);
       PED=(await rpc("sale.order","search_read",[[["tag_ids","in",[T.esp,T.efe,T.inf].filter(Boolean)],["state","in",["sale","sent"]],["date_order",">=",desde]]],
         {fields:["id","name","partner_id","user_id","amount_total","state","date_order","tag_ids"],order:"date_order asc",limit:200}))||[];
@@ -79,6 +79,30 @@ window.EYGSuperCobro = (function(){
       }
     }catch(e){ MSG="No pude leer los pedidos de superofertas: "+String(e.message||e).slice(0,200); }
     await leerMP();
+    // pedidos ya cobrados cuya factura no dio igual a lo pagado (más que un redondeo): los marca Odoo al facturar
+    DIFS=[];
+    try{
+      if(T.dif) DIFS=(await rpc("sale.order","search_read",[[["tag_ids","in",[T.dif]],["state","in",["sale","done"]]]],
+        {fields:["id","name","partner_id","user_id","amount_total","date_order"],order:"date_order desc",limit:100}))||[];
+    }catch(e){}
+  }
+  function difsHTML(){
+    if(!DIFS.length) return "";
+    return '<div class="scdif"><h4>⚠ Diferencias al facturar ('+DIFS.length+')</h4>'+
+      '<div class="sub">Superofertas cobradas cuya factura no dio igual a lo pagado (por ejemplo, porque no se entregó todo). No se ajustan solas: el detalle (saldo a favor o falta cobrar) está en la nota del pedido. Decidí si se aplica al próximo pedido, se devuelve o se cobra, y marcalo como resuelto.</div>'+
+      DIFS.map(p=>'<div class="dfila"><b>'+esc(p.name)+'</b> · '+esc(p.partner_id?p.partner_id[1]:"")+' · '+esc(p.user_id?p.user_id[1]:"")+' · <a href="'+ODOO+'/web#id='+p.id+'&model=sale.order&view_type=form" target="_blank" rel="noopener">ver la nota en Odoo ↗</a>'+
+        (puede()?' <button class="as sm" '+(OCUP?"disabled":"")+' onclick="EYGSuperCobro.resuelto('+p.id+')">Ya está resuelto</button>':'')+'</div>').join("")+'</div>';
+  }
+  async function resuelto(id){
+    const p=DIFS.find(x=>x.id===id); if(!p||OCUP) return;
+    if(!confirm("¿Marcar resuelta la diferencia del pedido "+p.name+"? Se saca el aviso (la imputación en Odoo la hacés vos).")) return;
+    OCUP=true;
+    try{
+      await rpc("sale.order","write",[[id],{tag_ids:[[3,T.dif]]}]);
+      await rpc("sale.order","message_post",[[id]],{body:"Superofertas de contado: diferencia al facturar marcada como resuelta por "+((PERFIL&&PERFIL.nombre)||"Cobranzas")+".",message_type:"comment",subtype_xmlid:"mail.mt_note"}).catch(()=>{});
+      MSG="Diferencia de "+p.name+" marcada como resuelta.";
+    }catch(e){ MSG="No pude marcarla: "+String(e.message||e).slice(0,200); }
+    await cargar(); OCUP=false; pintar();
   }
   const tipo=p=>(T.efe&&p.tag_ids.includes(T.efe))?"efe":(T.inf&&p.tag_ids.includes(T.inf))?"inf":"esp";
   function mpHTML(p){
@@ -118,6 +142,7 @@ window.EYGSuperCobro = (function(){
       <h3>💵 Superofertas a asentar <span style="font-weight:400;font-size:13px;color:#5C6B64">(${ls.length})</span></h3>
       <div class="sub">Transferencias a <b>Mercado Pago</b> (alias eyg.mpago): verificá la acreditación y tocá <b>Asentar y liberar</b> — se crea el recibo RE-X, se imputa a la factura (o queda a cuenta y se imputa sola al facturar) y se libera la entrega. Efectivo (proforma): cuando el repartidor trae la plata, <b>Asentar efectivo</b> (Efectivo B).<br><b>Cruce automático:</b> cada 5 minutos el sistema lee Mercado Pago y, si una transferencia coincide sin dudas con un solo pedido, lo asienta y libera solo (queda firmado \"Mercado Pago (cruce automático)\"). Acá quedan los que no se pudieron cruzar solos.</div>
       ${ls.length?`<div style="overflow-x:auto"><table><thead><tr><th>Pedido</th><th>Cliente · comercial</th><th class="n">Total</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>`:'<div class="vacio">No hay superofertas pendientes de asentar.</div>'}
+      ${difsHTML()}
       ${sinAsignarHTML()}
       ${MSG?`<div class="msg">${esc(MSG)}</div>`:""}
     </div>`;
@@ -150,7 +175,7 @@ window.EYGSuperCobro = (function(){
     try{
       const quien=(PERFIL&&PERFIL.nombre)||"el Core";
       const c=cruce(p); const ctx={active_model:"sale.order",active_id:id,active_ids:[id],eyg_quien:quien};
-      if(c&&c.n===1&&c.unico){ ctx.eyg_mp_id=String(c.t.id); ctx.eyg_mp_importe=Number(c.t.importe); if(c.t.neto!=null) ctx.eyg_mp_neto=Number(c.t.neto); }   // recibo por lo transferido; comisión a gastos
+      if(c&&c.n===1&&c.unico){ ctx.eyg_mp_id=String(c.t.id); ctx.eyg_mp_importe=Number(c.t.importe); if(c.t.neto!=null) ctx.eyg_mp_neto=Number(c.t.neto); ctx.eyg_mp_fecha=c.t.fecha_aprobado||c.t.fecha_creado; }   // recibo por lo transferido; comisión a gastos
       await rpc("ir.actions.server","run",[[ACCION]],{context:ctx});
       const pg=await rpc("account.payment","search_read",[[["ref","=","Superoferta "+p.name],["state","=","posted"]]],{fields:["name","journal_id"],limit:1});
       MSG="✓ "+p.name+": recibo "+(pg[0]?pg[0].name+" ("+pg[0].journal_id[1]+")":"creado")+(tipo(p)==="efe"?".":". Entrega liberada.");
@@ -158,5 +183,5 @@ window.EYGSuperCobro = (function(){
     await cargar(); OCUP=false; pintar();
   }
   async function montar(el, perfil){ EL=el; PERFIL=perfil; if(!EL) return; css(); await cargar(); pintar(); }
-  return { montar, pedir, asentar, cerrar, recargar:async()=>{ await cargar(); pintar(); } };
+  return { montar, pedir, asentar, cerrar, resuelto, recargar:async()=>{ await cargar(); pintar(); } };
 })();
