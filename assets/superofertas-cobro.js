@@ -116,7 +116,7 @@ window.EYGSuperCobro = (function(){
     }).join("");
     return `<div class="sc">
       <h3>💵 Superofertas a asentar <span style="font-weight:400;font-size:13px;color:#5C6B64">(${ls.length})</span></h3>
-      <div class="sub">Transferencias a <b>Mercado Pago</b> (alias eyg.mpago): verificá la acreditación y tocá <b>Asentar y liberar</b> — se crea el recibo RE-X, se imputa a la factura (o queda a cuenta y se imputa sola al facturar) y se libera la entrega. Efectivo (proforma): cuando el repartidor trae la plata, <b>Asentar efectivo</b> (Efectivo B).</div>
+      <div class="sub">Transferencias a <b>Mercado Pago</b> (alias eyg.mpago): verificá la acreditación y tocá <b>Asentar y liberar</b> — se crea el recibo RE-X, se imputa a la factura (o queda a cuenta y se imputa sola al facturar) y se libera la entrega. Efectivo (proforma): cuando el repartidor trae la plata, <b>Asentar efectivo</b> (Efectivo B).<br><b>Cruce automático:</b> cada 5 minutos el sistema lee Mercado Pago y, si una transferencia coincide sin dudas con un solo pedido, lo asienta y libera solo (queda firmado \"Mercado Pago (cruce automático)\"). Acá quedan los que no se pudieron cruzar solos.</div>
       ${ls.length?`<div style="overflow-x:auto"><table><thead><tr><th>Pedido</th><th>Cliente · comercial</th><th class="n">Total</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>`:'<div class="vacio">No hay superofertas pendientes de asentar.</div>'}
       ${sinAsignarHTML()}
       ${MSG?`<div class="msg">${esc(MSG)}</div>`:""}
