@@ -1699,8 +1699,16 @@ function pedMetricas(arr){
        hace una sola vez por texto+período y queda cacheado mientras no cambien.
    Un pedido entra si coincide por cualquiera de las dos vías. */
 const pedNrm=s=>(s||"").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+// Nombre de fantasía del cliente del pedido, sacado de la cartera que ya está cargada (el pedido
+// trae solo la razón social). Se arma una vez por cartera y se rehace si la cartera cambia.
+let _pedFant={src:null,map:null};
+function pedFantasiaDe(o){
+  const pid=o.partner_id?o.partner_id[0]:null; if(!pid) return "";
+  if(_pedFant.src!==ST.contactos){ const m=new Map(); for(const c of (ST.contactos||[])){ const f=EYG.fantasia?EYG.fantasia(c):""; if(f) m.set(c.id,f); } _pedFant={src:ST.contactos,map:m}; }
+  return _pedFant.map.get(pid)||"";
+}
 function pedCoincideLocal(o,q){
-  const donde=pedNrm(o.partner_id?o.partner_id[1]:"")+" "+pedNrm(o.name);
+  const donde=pedNrm(o.partner_id?o.partner_id[1]:"")+" "+pedNrm(pedFantasiaDe(o))+" "+pedNrm(o.name);
   return q.split(/\s+/).filter(Boolean).every(t=>donde.includes(t));   // todas las palabras, en cualquier orden
 }
 function pedFiltrarBusqueda(arr){
@@ -1730,7 +1738,16 @@ async function pedBuscarProductos(){
 window.pedBuscar = (EYG.buscador
   ? EYG.buscador(v=>{ ST.pedQ=v; ST.pedOrigen=null; pedBuscarProductos(); render(); }, 320)
   : (v=>{ ST.pedQ=v; ST.pedOrigen=null; pedBuscarProductos(); render(); }));
-function pedLimpiarBusqueda(){ ST.pedQ=""; ST.pedProd=null; render(); }
+function pedLimpiarBusqueda(){ ST.pedQ=""; ST.pedProd=null; render(); pedEnfocar("pedQ"); }
+// Después de borrar, el cursor vuelve a la caja: lo normal es escribir otra búsqueda.
+function pedEnfocar(id){ try{ const n=document.getElementById(id); if(n) n.focus(); }catch(e){} }
+
+/* ===== BÚSQUEDA en Presupuestos en curso =====
+   Misma caja y mismo criterio que la de Pedidos (cliente, nombre de fantasía, número; todas las
+   palabras en cualquier orden y sin acentos), pero todo en el navegador: los presupuestos ya
+   están cargados, así que filtra al tipear sin ir a Odoo. */
+window.presBuscar=(EYG.buscador?EYG.buscador(v=>{ ST.presQ=v; render(); },200):(v=>{ ST.presQ=v; render(); }));
+function presLimpiarBusqueda(){ ST.presQ=""; render(); pedEnfocar("presQ"); }
 
 /* ---- Alta y edición (ventanita propia: no toca el drawer de la ficha del cliente) ---- */
 let NT_EDIT=null;   // {id?, tipo, texto, cliente_id, cliente_nombre, pedido_id, pedido_nombre, recordar_el, reposicion_orden_id}
@@ -2197,7 +2214,7 @@ function ppSectionHTML(){
 // Vista COMPLETA (pantalla aparte dentro del panel)
 function mostrarVista(v){ ST.vista=v; if(v==="ped"&&!ST.pedPer) ST.pedPer="mes"; try{window.scrollTo(0,0);}catch(e){} render(); }
 function volverDeNotas(){ ST.ntPedido=null; ST.ntQ=""; ST.ntTipo=null; ST.vista=null; render(); }
-function volverDash(){ ST.vista=null; render(); }
+function volverDash(){ ST.vista=null; ST.presQ=""; render(); }
 function pintarVista(){
   const app=document.getElementById("app"), t=ST.vista;
   if(t==="conq"){ return pintarConquistar(app); }
@@ -2205,17 +2222,25 @@ function pintarVista(){
   if(t==="plan"){ return pintarPlan(app); }
   if(t==="ped"){ return pintarVistaPed(app); }
   if(t==="notas"){ return pintarVistaNotas(app); }
-  const arr=ppArr(t);
+  const todos=ppArr(t);
+  const busq=(ST.presQ||"").trim(), qn=pedNrm(busq);
+  const arr=qn?todos.filter(o=>pedCoincideLocal(o,qn)):todos;
   const titulo="🧾 Presupuestos en curso";
+  const caja=todos.length?`<div class="pedbusca">
+      <span class="pb-ic">🔎</span>
+      <input id="presQ" type="search" autocomplete="off" placeholder="Buscar por cliente o número de presupuesto…"
+             value="${esc(ST.presQ||"")}" oninput="presBuscar(this.value)">
+      ${busq?`<button class="pb-x" onclick="presLimpiarBusqueda()" title="Borrar la búsqueda">✕</button>`:""}
+    </div>${busq&&arr.length?`<div class="pedhint"><b>${arr.length}</b> de ${todos.length} presupuesto${todos.length===1?"":"s"} con “${esc(busq)}”.</div>`:""}`:"";
   const cuerpo=arr.length
     ? `<div class="pplist">${arr.map(o=>ppRow(o,t)).join("")}</div>`
-    : `<div class="ppempty">No tenés presupuestos en curso.</div>`;
+    : `<div class="ppempty">${busq?`No encontré presupuestos en curso con “${esc(busq)}”. Probá con otra parte del nombre o el número.`:"No tenés presupuestos en curso."}</div>`;
   app.innerHTML=`<div class="vhead">
       <button class="vback" onclick="volverDash()">← Volver</button>
       <h1>${titulo} <span class="vcount">${arr.length}</span></h1>
       <a class="cta-venta" href="${venderURL('nuevo=1')}">🛒 Cargar una venta</a>
       <a class="cta-cot" href="cotizador.html" title="Pasar precios o armar una cotización sin elegir cliente ni crear presupuesto">🧮 Cotizar</a>
-    </div>${ppAlertaHTML()}${cuerpo}`;
+    </div>${ppAlertaHTML()}${caja}${cuerpo}`;
 }
 
 /* ===== VISTA DE PEDIDOS: filtro por período + métricas =====

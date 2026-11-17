@@ -60,6 +60,17 @@
   .hero p{color:var(--gris);font-size:14px;margin-top:3px}
   .sect-t{font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--gris);margin:22px 2px 10px}
   .draft-list{display:flex;flex-direction:column;gap:8px}
+  /* buscador del inicio: misma caja que la de Pedidos del panel */
+  .ibusca{display:flex;align-items:center;gap:9px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:0 13px;margin:16px 0 2px;box-shadow:var(--shadow)}
+  .ibusca:focus-within{border-color:var(--teal-med)}
+  .ibusca .pb-ic{font-size:15px;line-height:1;opacity:.75}
+  .ibusca input{flex:1;min-width:0;border:0;outline:0;background:none;font-family:inherit;font-size:15px;color:var(--ink);padding:13px 0}
+  .ibusca input::placeholder{color:var(--gris2)}
+  .ibusca input::-webkit-search-cancel-button{display:none}
+  .ibusca .pb-x{background:none;border:0;color:var(--gris2);font-family:inherit;font-size:16px;font-weight:800;cursor:pointer;padding:6px 4px;line-height:1}
+  .ibusca .pb-x:hover{color:var(--bad)}
+  .ihint{font-size:12.5px;color:var(--gris2);margin:6px 2px 0;line-height:1.45}
+  .ihint b{color:var(--teal-deep)}
   .draft{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;box-shadow:var(--shadow);transition:.12s;cursor:pointer}
   .draft:hover{border-color:var(--teal-med)}
   .draft:active{background:var(--agua)}
@@ -663,7 +674,7 @@ async function cargar(){
     ]);
     ST.cartera = cartera.sort((a,b)=>(a.name||"").localeCompare(b.name||""));
     ST.drafts = drafts;
-    ctCargarEspera().then(()=>{ if(ST.view==="inicio") render(); });   // superofertas confirmadas que esperan el pago
+    ctCargarEspera().then(()=>{ if(ST.view==="inicio") EYG.repintar(()=>render()); });   // superofertas que esperan el pago (repintar: no le saca el cursor si ya está tipeando)
     cargarListas();          // precargar las listas (para que el paso de selección salga al toque)
     cargarCajasCerradas();   // qué productos se venden por caja cerrada (dos consultas chicas, una vez)
     precargarCatalogo();     // precargar productos de Hospitalarios en 2º plano → entrar a la venta es instantáneo
@@ -711,9 +722,40 @@ function render(){
 }
 
 /* ---------- INICIO: presupuestos en curso + nueva venta ---------- */
+/* Buscador del inicio: filtra a la vez "Presupuestos en curso" y "Superofertas a cobrar" mientras
+   se tipea, todo en el navegador (no va a Odoo). Busca por cliente, nombre de fantasía y número;
+   todas las palabras en cualquier orden, sin acentos — el mismo criterio que Pedidos en el panel. */
+const iNrm=s=>(s||"").toString().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"");
+let _iFant={src:null,map:null};
+function iFantasiaDe(o){
+  const pid=o.partner_id?o.partner_id[0]:null; if(!pid) return "";
+  if(_iFant.src!==ST.cartera){ const m=new Map(); for(const c of (ST.cartera||[])){ const f=EYG.fantasia?EYG.fantasia(c):""; if(f) m.set(c.id,f); } _iFant={src:ST.cartera,map:m}; }
+  return _iFant.map.get(pid)||"";
+}
+function iCoincide(o){
+  const q=iNrm(ST.qInicio||"").trim(); if(!q) return true;
+  const donde=iNrm(o.partner_id?o.partner_id[1]:"")+" "+iNrm(iFantasiaDe(o))+" "+iNrm(o.name);
+  return q.split(/\s+/).filter(Boolean).every(t=>donde.includes(t));
+}
+window.buscarInicio = EYG.buscador(v=>{ ST.qInicio=v; if(ST.view==="inicio") render(); }, 200);
+function limpiarBuscarInicio(){ ST.qInicio=""; render(); const n=document.getElementById("iniQ"); if(n) n.focus(); }
+function iBuscadorHTML(nPres, nCt){
+  if(!nPres && !nCt) return "";
+  const busq=(ST.qInicio||"").trim();
+  return `<div class="ibusca">
+      <span class="pb-ic">🔎</span>
+      <input id="iniQ" type="search" autocomplete="off" placeholder="Buscar presupuesto o pedido por cliente o número…"
+             value="${esc(ST.qInicio||"")}" oninput="buscarInicio(this.value)">
+      ${busq?`<button class="pb-x" onclick="limpiarBuscarInicio()" title="Borrar la búsqueda" aria-label="Borrar la búsqueda">✕</button>`:""}
+    </div>`;
+}
+
 function vInicio(){
   // Más nuevo → más antiguo (la consulta ya ordena por write_date desc; reforzamos por las dudas)
-  const d = (ST.drafts||[]).slice().sort((a,b)=>String(b.write_date||"").localeCompare(String(a.write_date||"")));
+  const dTodos = (ST.drafts||[]).slice().sort((a,b)=>String(b.write_date||"").localeCompare(String(a.write_date||"")));
+  const busq = (ST.qInicio||"").trim();
+  const d = busq ? dTodos.filter(iCoincide) : dTodos;
+  const ctTodos = CT.espera||[], ct = busq ? ctTodos.filter(iCoincide) : ctTodos;
   const rows = d.map(o=>{
     const cli = o.partner_id ? o.partner_id[1] : "Sin cliente";
     const n = (o.order_line||[]).length;
@@ -733,8 +775,12 @@ function vInicio(){
   }).join("");
   return `<div class="hero"><h1>Cargar venta 🛒</h1><p>Elegí el cliente y armá el pedido desde el catálogo. Se guarda solo como presupuesto en Odoo hasta que lo confirmes.</p></div>
     <button class="btn teal big" onclick="abrirPicker()">＋ Nueva venta</button>
-    ${ctEsperaHTML()}
-    ${d.length?`<div class="sect-t">Presupuestos en curso (${d.length})
+    ${iBuscadorHTML(dTodos.length, ctTodos.length)}
+    ${busq?`<div class="ihint">${(d.length+ct.length)
+        ?`Con “${esc(busq)}”: <b>${d.length}</b> de ${dTodos.length} presupuesto${dTodos.length===1?"":"s"}${ctTodos.length?` · <b>${ct.length}</b> de ${ctTodos.length} superoferta${ctTodos.length===1?"":"s"} a cobrar`:""}.`
+        :`No encontré nada con “${esc(busq)}”. Probá con otra parte del nombre o el número. Acá se busca entre tus últimos 50 presupuestos; los pedidos ya confirmados se buscan en el panel, en 📦 Pedidos.`}</div>`:""}
+    ${ctEsperaHTML(ct, ctTodos.length)}
+    ${busq&&!d.length?"":d.length?`<div class="sect-t">Presupuestos en curso (${busq?d.length+" de "+dTodos.length:d.length})
         <button class="dbtn" style="float:right;font-size:12px;padding:5px 10px;width:auto;border-radius:8px"
                 title="Borra tus presupuestos sin tocar hace más de 90 días. Te dice cuántos son antes de borrar nada."
                 onclick="limpiarViejos()">🧹 Limpiar abandonados</button></div>
@@ -1654,9 +1700,11 @@ async function ctCargarEspera(){
 }
 const ctEsEfectivo=o=>!!(CT.efe && o.tag_ids.includes(CT.efe));
 const ctInformado=o=>!!(CT.inf && o.tag_ids.includes(CT.inf));
-function ctEsperaHTML(){
-  if(!CT.espera||!CT.espera.length) return "";
-  const rows=CT.espera.map(o=>{
+function ctEsperaHTML(lista, total){
+  // lista = lo que queda después del buscador del inicio; total = cuántas hay sin filtrar
+  const L=lista||CT.espera||[], T=(total!=null?total:L.length);
+  if(!L.length) return "";
+  const rows=L.map(o=>{
     let f=""; if(o.date_order){ const ap=EYG.argParts(o.date_order); f=ap.date.slice(8,10)+"/"+ap.date.slice(5,7); }
     const ef=ctEsEfectivo(o), inf=ctInformado(o);
     const chip = ef ? '<span class="chip-ct">💵 EFECTIVO · a cobrar en la entrega</span>'
@@ -1671,7 +1719,7 @@ function ctEsperaHTML(){
         ${(!ef && !inf)?`<button class="btn grn" style="width:auto;padding:8px 12px;font-size:13px" onclick="ctPedirPago(${o.id})">📨 Avisar pago</button>`:""}
       </div>
     </div>`; }).join("");
-  return `<div class="sect-t">💵 Superofertas a cobrar (${CT.espera.length})</div>
+  return `<div class="sect-t">💵 Superofertas a cobrar (${L.length===T?T:L.length+" de "+T})</div>
     <div class="ctsub" style="font-size:12.5px;color:var(--gris);margin:-4px 0 8px">Transferencia: cuando el cliente te mande el comprobante, tocá <b>Avisar pago</b> y adjuntalo. Cobranzas verifica en Mercado Pago, asienta el cobro y recién ahí se libera la entrega. Efectivo: la entrega sale y el repartidor cobra; Cobranzas lo asienta cuando llega la plata.</div>
     <div class="draft-list">${rows}</div>`;
 }
@@ -3208,7 +3256,7 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
    recargan, y desde adentro parece que "el botón no anda" (pasó con el borrado de
    presupuestos, arreglado el 4/9 y todavía fallando en las tablets el 9/9).
    Se compara la versión del archivo publicado con la que está corriendo. */
-const VERSION_MODULO = "2026-11-16-ct6";
+const VERSION_MODULO = "2026-11-16-busca1";
 async function chequearVersion(){
   try{
     const r = await fetch(location.pathname + "?_v=" + Date.now(), {cache:"no-store"});
