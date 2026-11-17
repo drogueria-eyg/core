@@ -614,6 +614,16 @@ window.EYG = (function(){
     {key:"plataformas", dept:"comercial", cat:"Comercial", ico:"🏥", titulo:"Plataformas",
       desc:"Cómo nos va en los portales donde los hospitales piden cotización: cuánto cotizamos, cuánto ganamos, a quién y en qué productos.",
       roles:["lider"], ready:true, path:()=>"comercial/plataformas.html"},
+    /* Mercado Libre: la cuenta de ML de EyG (BG20241203094615) al centavo — cada venta con lo
+       que descontó ML, cada publicación con su costo del MOTOR DE PRECIOS y su ganancia. Los datos
+       vienen de Vendra (donde está conectada la cuenta) por la función ml-vendra; el vínculo
+       publicación → producto de Odoo se guarda en el parámetro eyg.ml_vinculos. En pruebas:
+       sólo Diego y Germán (17/11/2026). */
+    {key:"mercadolibre", dept:"comercial", cat:"Comercial", ico:"🛒", titulo:"Mercado Libre",
+      desc:"La cuenta de Mercado Libre al centavo: cada venta con lo que descontó ML y cada publicación con su costo y su ganancia.",
+      roles:["direccion"], ready:true,
+      pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122","53ab45c75c97fc80109dddf425c8343ca47287b95bcad8ee868cad8fd3d171bd"],
+      path:()=>"comercial/mercadolibre.html"},
     {key:"comunicaciones", dept:"direccion", cat:"Dirección", ico:"📣",
       titulo:p=>(p.rol==="admin"||p.rol==="direccion"||p.rol==="lider")?"Comunicaciones":"Novedades",
       desc:p=>(p.rol==="admin"||p.rol==="direccion")?"Bajá novedades a toda la empresa o a un área y seguí quién las leyó."
