@@ -790,8 +790,8 @@ async function generar(){
   if(!todoOk()||ST.guardando) return;
   ST.guardando=true; repintarPreview();
   const creados=[], fallos=[];
-  let prox;
-  try{ prox = await proximoRecibo(); }
+  let TB;
+  try{ TB = await talonario(); }
   catch(e){ ST.guardando=false; repintarPreview(); alert("No se generó nada: "+(e.message||e)+". Probá de nuevo en un momento."); return; }
   const chq = chequesReales(), rets = retencionesReales();
 
@@ -807,12 +807,14 @@ async function generar(){
 
   for(let i=0;i<chq.length;i++){
     const c = chq[i];
+    let nro;
+    try{ nro = await numeroTalonario(TB); }catch(e){ fallos.push({n:c.numero, e:"sin número de talonario: "+String(e.message||e).slice(0,120)}); continue; }
     const vals={
       journal_id:J_CHEQUES, payment_type:"inbound", partner_type:"customer",
       partner_id:ST.cliente.id, amount:num(c.importe), date:ST.fecha||HOY,
       payment_method_line_id:PML_NUEVO,
       l10n_latam_document_type_id:DOCTYPE,
-      l10n_latam_document_number:POS+"-"+String(prox).padStart(8,"0"),
+      l10n_latam_document_number:nro, receiptbook_id:TB.id,
       /* Federico los carga siempre a 8 dígitos con ceros adelante (00019239) */
       l10n_latam_check_number:String(c.numero).replace(/\D/g,"").padStart(8,"0"),
       l10n_latam_check_issuer_vat:cuitLimpio(c.cuit),
@@ -826,21 +828,22 @@ async function generar(){
       // Odoo puede borrar el tipo de comprobante al crear el pago: se reescribe antes de publicar
       await R("account.payment","write",[[id],{l10n_latam_document_type_id:DOCTYPE, l10n_latam_document_number:vals.l10n_latam_document_number}]);
       await R("account.payment","action_post",[[id]]);
-      creados.push(id); prox++;
+      creados.push(id);
     }catch(e){ fallos.push({n:c.numero, e:String(e.message||e).slice(0,140)}); }
   }
 
   if(!chq.length && rets.length){
     try{
+      const nro = await numeroTalonario(TB);
       const id = await R("account.payment","create",[{
         journal_id:J_EFECTIVO, payment_type:"inbound", partner_type:"customer",
         partner_id:ST.cliente.id, amount:0, date:ST.fecha||HOY,
         payment_method_line_id:PML_MANUAL,
         l10n_latam_document_type_id:DOCTYPE,
-        l10n_latam_document_number:POS+"-"+String(prox).padStart(8,"0"),
+        l10n_latam_document_number:nro, receiptbook_id:TB.id,
         l10n_ar_withholding_line_ids: lineasRet()
       }]);
-      await R("account.payment","write",[[id],{l10n_latam_document_type_id:DOCTYPE, l10n_latam_document_number:POS+"-"+String(prox).padStart(8,"0")}]);
+      await R("account.payment","write",[[id],{l10n_latam_document_type_id:DOCTYPE, l10n_latam_document_number:nro}]);
       await R("account.payment","action_post",[[id]]);
       creados.push(id);
     }catch(e){ fallos.push({n:"retención", e:String(e.message||e).slice(0,140)}); }
@@ -852,21 +855,19 @@ async function generar(){
   render();
 }
 
-/* Número del próximo RE-X (16/11/2026). Antes miraba sólo el último recibo CON tipo "RECIBOS X":
-   hay más de 500 RE-X cargados a mano en Odoo que quedaron sin el tipo (Odoo lo borra al crear el pago en
-   algunos diarios), y si el último era uno de esos se repetía el número en otro diario (Odoo sólo impide
-   repetirlo dentro del mismo diario). Ahora es el mayor entre los recibos con tipo y los asientos que se
-   llaman "RE-X 0001-…". Si no se puede leer, NO se inventa un número: se corta con error (antes daba 1). */
-async function proximoRecibo(){
-  const [ult, movs] = await Promise.all([
-    R("account.payment","search_read",[[["l10n_latam_document_type_id","=",DOCTYPE]],["l10n_latam_document_number"]],{limit:60, order:"id desc"}),
-    R("account.move","search_read",[[["name","=like","RE-X "+POS+"-%"]],["name"]],{limit:5, order:"name desc"})
-  ]);
-  let n=0;
-  (ult||[]).forEach(u=>{ const k=parseInt(String(u.l10n_latam_document_number||"").split("-").pop(),10); if(k>n) n=k; });
-  (movs||[]).forEach(m=>{ const k=parseInt(String(m.name||"").split("-").pop(),10); if(k>n) n=k; });
-  if(!n) throw new Error("no pude leer el último número de recibo");
-  return n+1;
+/* Número del RE-X = el TALONARIO de recibos de clientes de Odoo ("Customer Receipts", módulo de talonarios
+   de ADHOC), el mismo que le da el número a Cobranzas cuando carga un recibo en Odoo. (17/11/2026: antes se
+   calculaba "último + 1" a mano; eso no movía el contador del talonario y Odoo después repetía el número.)
+   Si no se encuentra el talonario no se genera nada. */
+async function talonario(){
+  const r=await R("account.payment.receiptbook","search_read",[[["partner_type","=","customer"],["document_type_id","=",DOCTYPE],["active","=",true]],["id","sequence_id"]],{limit:1});
+  if(!r||!r[0]||!r[0].sequence_id) throw new Error("no encontré el talonario de recibos de clientes");
+  return {id:r[0].id, seq:r[0].sequence_id[0]};
+}
+async function numeroTalonario(tb){
+  const n=await R("ir.sequence","next_by_id",[[tb.seq]]);
+  if(!/^\d{4}-\d{8}$/.test(String(n||""))) throw new Error("número de talonario inesperado: "+n);
+  return n;
 }
 
 /* Imputa los cheques a las facturas pendientes, de la más vieja a la más nueva. */
