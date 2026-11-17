@@ -142,7 +142,8 @@
              aparte) − Costo = Te queda. Verificado 17/11 en las 86 ventas
              liquidadas: el neto de Vendra cierra exacto con esa resta.
    ============================================================ */
-const esc = EYG.esc, money = EYG.money;
+const esc = EYG.esc;
+const money = n => (+n<0 ? "−" : "") + EYG.money(Math.abs(+n||0));
 const FN = "https://yxotopoklgjowcudveoj.supabase.co/functions/v1/ml-vendra";
 const VINC_KEY = "eyg.ml_vinculos";
 const r2 = n => Math.round((+n||0)*100)/100;
@@ -193,6 +194,14 @@ async function leerProductos(){
   for(const r of (rows||[])){ D.odoo.byId[r.id]=r; if(r.default_code) D.odoo.bySku[String(r.default_code).trim()]=r; if(r.barcode) D.odoo.byBar[String(r.barcode).trim()]=r; }
 }
 const costoProd = pr => pr ? r2(EYG.costoEfectivo(pr.x_costo_motor || pr.standard_price || 0, pr.x_iva_compra, pr.taxes_id, D.tasas)) : 0;
+/* Cuántas unidades trae la publicación según su título ("Caja x 20", "x100", "100 Parches", "10pz").
+   Sólo SUGIERE el factor: si Odoo lleva el costo por unidad y ML vende la caja, el factor es ese número. */
+function factorTitulo(t){
+  const s = String(t||"").toLowerCase();
+  const m = s.match(/(?:caja|pack|bolsa|display|blister)\s*(?:x|por|de)?\s*(\d{1,4})\b/) || s.match(/\bx\s*(\d{2,4})\s*(?:u\b|un\b|unid|pz|piezas|parches|sobres|tiras)/) || s.match(/\b(\d{2,4})\s*(?:u\b|un\b|unid\w*|pz|piezas|parches|sobres|tiras)\b/);
+  const n = m ? +m[1] : 0;
+  return n>=2 && n<=2000 ? n : 0;
+}
 /* Para un item de ML: {pr, factor, via, unit} — unit = costo por unidad vendida en ML (0 si no hay) */
 function costoItem(itemId){
   const pub = (D.pubs||[]).find(p=>p.id===itemId);
@@ -202,7 +211,13 @@ function costoItem(itemId){
   else if(pub && pub.sku && D.odoo.bySku[String(pub.sku).trim()]){ pr=D.odoo.bySku[String(pub.sku).trim()]; via="por SKU"; }
   else if(pub && pub.gtin && D.odoo.byBar[String(pub.gtin).trim()]){ pr=D.odoo.byBar[String(pub.gtin).trim()]; via="por código de barras"; }
   const base = costoProd(pr);
-  return {pr, factor, via, unit: r2(base*factor), base};
+  const sug = factorTitulo(pub ? pub.titulo : "");
+  // revisar = el título dice que se vende una caja de N, el vínculo es automático (factor 1) y
+  // multiplicar el costo por N todavía entra en el precio (si no, Odoo ya lo lleva por caja:
+  // guantes "caja x 100" a $4.600 en Odoo no pueden costar $460.000)
+  const revisar = !!pr && base>0 && via!=="a mano" && sug>1 && !!pub && base*sug <= (+pub.precio||0);
+  const estado = !pr ? "sin-vincular" : (base>0 ? "ok" : "sin-costo-odoo");
+  return {pr, factor, via, unit: r2(base*factor), base, sug, revisar, estado};
 }
 
 /* ---------------- carga ---------------- */
@@ -313,9 +328,12 @@ function avisoPubs(){
 function pintarResumen(cu, R){
   const g = D.g, cp = costoPeriodo();
   const ventas = +g.facturacion||0;
-  const cargos = r2((+g.cargosML||0)+(+g.fullCosto||0));
+  /* Vendra deja las retenciones de Mercado Pago DENTRO de los cargos (salen del pago); acá van
+     a Impuestos, que es lo que son. La suma no cambia. */
+  const ret = +((g.cargosDesglose||{}).retenido)||0;
+  const cargos = r2((+g.cargosML||0)+(+g.fullCosto||0)-ret);
   const publi = r2((+g.publicidad||0)+(+g.cuponesVendedor||0));
-  const imp = +g.impuestos||0;
+  const imp = r2((+g.impuestos||0)+ret);
   const costo = cp.costo;
   const gan = r2(ventas-cargos-publi-imp-costo);
   const kp = (k,lb,vl,sub,tip,cls)=>`<div class="kpi ${cls||""}" data-k="${k}" title="${esc(tip)}"><div class="lb">${lb}</div><div class="vl ${vl<0?"neg":""}">${money(vl)}</div><div class="sub">${sub}</div></div>`;
@@ -327,7 +345,7 @@ function pintarResumen(cu, R){
       ${kp("ventas","Ventas",ventas,`${g.ventas||0} ventas · ${g.unidades||0} unidades`,"Lo que pagaron los compradores en el período (ventas pagadas, sin las canceladas). Tocá para ver cada venta.")}
       ${kp("cargos","Cargos de ML",-cargos,pctTxt(cargos,ventas)+" de lo vendido","Comisión, costo fijo por unidad, cuotas, envíos y demás cargos que factura Mercado Libre (sin la publicidad). Tocá para el detalle.")}
       ${kp("publi","Publicidad",-publi,pctTxt(publi,ventas)+" de lo vendido","Product Ads + Display que factura ML, más los cupones que ponemos nosotros. Tocá para el detalle.")}
-      ${kp("imp","Impuestos",-imp,`percep. ${money(g.percepciones||0)} · ret. ${money(g.retencionIIBB||0)}`,"Percepciones y retenciones que ML y Mercado Pago se quedan a cuenta de impuestos. La cuenta no está inscripta en IVA: no hay IVA a pagar ni crédito. Tocá para el detalle.")}
+      ${kp("imp","Impuestos",-imp,`percep. ${money(g.percepciones||0)} · ret. ${money(ret)}`,"Percepciones y retenciones que ML y Mercado Pago se quedan a cuenta de impuestos. La cuenta no está inscripta en IVA: no hay IVA a pagar ni crédito. Tocá para el detalle.")}
       ${kp("costo","Costo (motor)",-costo,sinCostoTxt,"Unidades vendidas × el costo que usa el motor de precios de Odoo (costo 3 fuentes, + IVA de compra si se vende exento). Tocá para verlo por publicación.")}
     </div>
     <h2 class="sec">Ventas por día <span class="ayuda">${esc(R.label)} · pasá el mouse por cada barra</span></h2>
@@ -339,9 +357,9 @@ function pintarResumen(cu, R){
     if(k==="ventas"){ ST.tab="ventas"; pintar(); return; }
     if(k==="costo"){ ST.tab="pubs"; ST.ordP={k:"costo",d:-1}; pintar(); return; }
     if(k==="ganancia") return ventana("La cuenta del período", cascada({ventas,cargos,publi,imp,costo,gan}, g));
-    if(k==="cargos") return ventana("Cargos de Mercado Libre", detalleObj(g.cargosDesglose, cargos, "Total cargos"));
+    if(k==="cargos"){ const d=g.cargosDesglose||{}; return ventana("Cargos de Mercado Libre", detalleObj({"Comisión de venta":d.comision,"Costo fijo por unidad":d.costoFijo,"Costo por ofrecer cuotas":d.cuotas,"Envíos a nuestro cargo":d.envios,"Costo de Full":g.fullCosto,"Cobro de Mercado Pago":d.cobroMP,"Cheque / otros medios":d.cheque,"Cupones":d.cupones,"Cargos facturados aparte":d.facturaAparte,"Otros":d.otros,"Bonificaciones (a favor)":-(+d.bonificaciones||0),"Diferencia sin explicar":d.descuadre}, cargos, "Total cargos") + (d.envioComprador?`<p style="font-size:12px;color:var(--gris);margin-top:10px">Envíos: ML cobró ${money(d.enviosBruto)} y el comprador puso ${money(d.envioComprador)}; acá va sólo lo nuestro.</p>`:"")); }
     if(k==="publi") return ventana("Publicidad", detalleObj(Object.assign({}, g.publicidadDesglose||{}, {"Cupones que ponemos nosotros": g.cuponesVendedor||0}), publi, "Total publicidad"));
-    if(k==="imp") return ventana("Impuestos", detalleObj({"Percepciones de IVA":g.percepIVA,"Percepciones de Ingresos Brutos":g.percepIIBB,"Retenciones de Ingresos Brutos (Mercado Pago)":g.retencionIIBB,"Otras retenciones":g.retencionOtros,"Impuesto a los débitos y créditos":g.impDebCred,"IVA (no corresponde: cuenta no inscripta)":g.iva}, imp, "Total impuestos"));
+    if(k==="imp") return ventana("Impuestos", detalleObj({"Percepciones de IVA":g.percepIVA,"Percepciones de Ingresos Brutos":g.percepIIBB,"Retenciones de Mercado Pago al cobrar":ret,"Otras retenciones":g.retencionOtros,"Impuesto a los débitos y créditos":g.impDebCred,"IVA (no corresponde: cuenta no inscripta)":g.iva}, imp, "Total impuestos"));
   });
   cu.querySelectorAll("[data-pub]").forEach(el=>el.onclick=()=>{ ST.tab="pubs"; ST.abiertaP=el.dataset.pub; pintar(); });
 }
@@ -356,7 +374,7 @@ function topPubs(){
   const L = pubsCalc(ventasCalc()).filter(x=>x.ventas>0).sort((a,b)=>b.ganancia-a.ganancia);
   if(!L.length) return `<div class="vacio">Sin ventas en el período.</div>`;
   return `<div class="tw"><table class="t"><thead><tr><th title="La publicación de Mercado Libre">Publicación</th><th class="n" title="Unidades vendidas en el período">Unid.</th><th class="n" title="Lo que pagaron los compradores">Vendido</th><th class="n" title="Lo que deposita ML (neto + reintegro Flex) menos el costo del motor. Sólo ventas ya liquidadas.">Ganancia</th><th class="n" title="Ganancia sobre lo vendido">Margen</th></tr></thead><tbody>
-    ${L.map(x=>`<tr class="fila" data-pub="${esc(x.id)}"><td class="tit">${esc(x.titulo)}</td><td class="n">${x.unidades}</td><td class="n">${money(x.precio)}</td><td class="n ${x.ganancia<0?"neg":""}">${x.sinCosto?`<span class="pill warn" title="Hay unidades sin costo cargado: esta ganancia no descuenta su costo">sin costo</span> `:""}${money(x.ganancia)}</td><td class="n">${x.margen==null?"—":pctTxt(x.ganancia,x.precio)}</td></tr>`).join("")}
+    ${L.map(x=>`<tr class="fila" data-pub="${esc(x.id)}"><td class="tit">${esc(x.titulo)}</td><td class="n">${x.unidades}</td><td class="n">${money(x.precio)}</td><td class="n ${x.ganancia<0?"neg":""}">${x.sinCosto?costoPill(x.c)+" ":""}${x.c.revisar?`<span class="pill warn" title="El título dice ${x.c.sug} por publicación: si Odoo lleva el costo por unidad, falta el factor">¿factor ${x.c.sug}?</span> `:""}${money(x.ganancia)}</td><td class="n">${x.margen==null?"—":pctTxt(x.ganancia,x.precio)}</td></tr>`).join("")}
   </tbody></table></div>`;
 }
 function cascada(c, g){
@@ -429,7 +447,7 @@ function filaVenta(v){
 }
 function detalleVenta(v){
   const L = (t,x,tip)=> (+x) ? `<div title="${esc(tip||"")}">${t}</div><div class="m">${money(x)}</div>` : "";
-  const items = (v.items||[]).map(i=>{ const c=costoItem(i.id); return `<div>• ${esc(i.t)} × ${i.q} <small style="color:var(--gris2)">${esc(i.id)}</small></div><div class="m">${c.unit>0?`costo ${money(c.unit)} c/u <small style="color:var(--gris2)">(${esc(c.pr.display_name)}${c.factor!==1?" × "+c.factor:""}, ${c.via})</small>`:`<span class="pill warn">sin producto de Odoo</span>`}</div>`; }).join("");
+  const items = (v.items||[]).map(i=>{ const c=costoItem(i.id); return `<div>• ${esc(i.t)} × ${i.q} <small style="color:var(--gris2)">${esc(i.id)}</small></div><div class="m">${c.unit>0?`costo ${money(c.unit)} c/u <small style="color:var(--gris2)">(${esc(c.pr.display_name)}${c.factor!==1?" × "+c.factor:""}, ${c.via})</small>${c.revisar?` <span class="pill warn">¿factor ${c.sug}?</span>`:""}`:costoPill(c)}</div>`; }).join("");
   if(!v.liq) return `<div class="desg">${items}<div class="tot">Precio</div><div class="m tot">${money(v.precio)}</div></div><p style="font-size:12px;color:var(--gris);margin-top:10px">Todavía sin liquidar: cuando Mercado Pago acredite el pago aparece el desglose completo.</p>`;
   const otros = r2((+v.cheque||0)+(+v.cobro_mp||0)+(+v.otros||0));
   return `<div class="desg">${items}
@@ -457,7 +475,7 @@ function pintarPubs(cu, R){
   let L = todas.slice();
   const q = ST.qP.trim().toLowerCase();
   if(q) L = L.filter(x=>(x.titulo+" "+x.id+" "+(x.pub&&x.pub.sku||"")+" "+(x.c.pr?x.c.pr.display_name:"")).toLowerCase().includes(q));
-  const F = { vendieron:x=>x.ventas>0, activas:x=>x.pub&&x.pub.estado==="active", pausadas:x=>x.pub&&x.pub.estado!=="active", sincosto:x=>!(x.c.unit>0), pierden:x=>x.ganancia<0, todas:()=>true };
+  const F = { vendieron:x=>x.ventas>0, activas:x=>x.pub&&x.pub.estado==="active", pausadas:x=>x.pub&&x.pub.estado!=="active", sincosto:x=>!(x.c.unit>0), revisar:x=>x.c.revisar, pierden:x=>x.ganancia<0, todas:()=>true };
   L = L.filter(F[ST.fP]||F.todas);
   const o=ST.ordP; const val=(x,k)=> k==="precioHoy"? (x.pub?x.pub.precio:null) : k==="stock"?(x.pub?x.pub.stock:null) : k==="visitas"?(x.pub?x.pub.visitas_30d:null) : k==="costoU"? x.c.unit : x[k];
   L.sort((a,b)=>{ const x=val(a,o.k), y=val(b,o.k); return (x==null)-(y==null) || (typeof x==="string"? x.localeCompare(y): (x-y))*o.d; });
@@ -468,7 +486,7 @@ function pintarPubs(cu, R){
     <div class="tbar">
       <input type="search" id="qP" placeholder="Buscar publicación, SKU o producto de Odoo…" value="${esc(ST.qP)}">
       <div class="chips">
-        ${[["vendieron","Vendieron en el período","Publicaciones con al menos una venta en el período elegido"],["activas","Activas","Publicaciones activas hoy en ML"],["pausadas","Pausadas / cerradas","Publicaciones que hoy no están a la venta"],["sincosto","Sin costo","Publicaciones sin producto de Odoo vinculado: su ganancia no descuenta el costo. Tocá una para vincularla"],["pierden","Pierden plata","Lo recibido no cubre el costo"],["todas","Todas","Todas las publicaciones de la cuenta"]].map(([k,t,h])=>`<button class="chip ${ST.fP===k?"on":""}" data-f="${k}" title="${esc(h)}">${t} (${cnt(k)})</button>`).join("")}
+        ${[["vendieron","Vendieron en el período","Publicaciones con al menos una venta en el período elegido"],["activas","Activas","Publicaciones activas hoy en ML"],["pausadas","Pausadas / cerradas","Publicaciones que hoy no están a la venta"],["sincosto","Sin costo","Publicaciones sin producto de Odoo vinculado: su ganancia no descuenta el costo. Tocá una para vincularla"],["revisar","¿Factor?","Publicaciones que por el título venden una caja de varias unidades pero toman el costo de UNA unidad de Odoo: revisá el factor"],["pierden","Pierden plata","Lo recibido no cubre el costo"],["todas","Todas","Todas las publicaciones de la cuenta"]].map(([k,t,h])=>`<button class="chip ${ST.fP===k?"on":""}" data-f="${k}" title="${esc(h)}">${t} (${cnt(k)})</button>`).join("")}
       </div>
       <button class="btn" id="csvP" style="margin-left:auto" title="Baja TODAS las publicaciones filtradas, para abrir en Excel">Descargar Excel</button>
     </div>
@@ -485,6 +503,11 @@ function pintarPubs(cu, R){
   document.getElementById("csvP").onclick=()=>bajarCsv("publicaciones-ml",["ID","Publicación","Estado","SKU","GTIN","Producto Odoo","Vinculado","Factor","Costo motor u.","Precio hoy","Stock","Visitas 30d","Ventas","Unidades","Vendido","Descuentos ML","Recibido","Costo","Ganancia","Margen %"],
     L.map(x=>[x.id,x.titulo,x.pub?x.pub.estado:"",x.pub?x.pub.sku:"",x.pub?x.pub.gtin:"",x.c.pr?x.c.pr.display_name:"",x.c.via,x.c.factor,x.c.unit,x.pub?x.pub.precio:"",x.pub?x.pub.stock:"",x.pub?x.pub.visitas_30d:"",x.ventas,x.unidades,x.precio,x.cargos,x.recibe,x.costo,x.ganancia,x.margen==null?"":r2(x.margen*100)]));
 }
+function costoPill(c){
+  if(c.estado==="sin-vincular") return `<span class="pill warn" title="No encontré el producto de Odoo (ni por SKU ni por código de barras): vinculalo para tomar su costo">sin vincular</span>`;
+  if(c.estado==="sin-costo-odoo") return `<span class="pill warn" title="El producto de Odoo (${esc(c.pr.display_name)}) no tiene costo cargado: ni el motor ni esta pantalla pueden calcular su margen">sin costo en Odoo</span>`;
+  return "";
+}
 function estadoPill(p){
   if(!p) return `<span class="pill neu" title="ML no devolvió esta publicación (puede estar borrada)">sin datos</span>`;
   const m={active:["ok","activa"],paused:["warn","pausada"],closed:["neu","finalizada"],under_review:["bad","en revisión"]}[p.estado]||["neu",p.estado];
@@ -497,7 +520,7 @@ function filaPub(x){
   let h = `<tr class="fila" data-id="${esc(x.id)}"><td>${p&&p.foto?`<img class="foto" src="${esc(p.foto)}" alt="" loading="lazy">`:""}</td>
     <td class="tit">${p?`<a href="${esc(p.link)}" target="_blank" rel="noopener" title="Abrir la publicación en Mercado Libre">${esc(x.titulo)}</a>`:esc(x.titulo)} ${estadoPill(p)}${x.pendientes?` <span class="pill neu" title="Ventas del período que ML todavía no liquidó: no entran en la ganancia">${x.pendientes} sin liquidar</span>`:""}${odoo}</td>
     <td class="n">${p?money(p.precio):"—"}</td><td class="n">${p?p.stock:"—"}</td><td class="n">${p&&p.visitas_30d!=null?p.visitas_30d.toLocaleString("es-AR"):"—"}</td>
-    <td class="n">${x.unidades||"—"}</td><td class="n">${x.precio?money(x.precio):"—"}</td><td class="n">${x.c.unit>0?money(x.c.unit):`<span class="pill warn">sin costo</span>`}</td>
+    <td class="n">${x.unidades||"—"}</td><td class="n">${x.precio?money(x.precio):"—"}</td><td class="n">${x.c.unit>0?money(x.c.unit):costoPill(x.c)}${x.c.revisar?`<br><span class="pill warn" title="El título dice que la publicación vende ${x.c.sug} unidades y el costo es de 1 unidad de Odoo (${money(x.c.base)}). Si es así, el costo real es ${money(x.c.base*x.c.sug)}. Tocá la fila → Cambiar vínculo para poner el factor.">¿factor ${x.c.sug}?</span>`:""}</td>
     <td class="n ${x.ganancia<0?"neg":""}">${x.ventas?money(x.ganancia):"—"}</td><td class="n">${x.margen==null?"—":pctTxt(x.ganancia,x.precio)}</td></tr>`;
   if(ab) h += `<tr class="det"><td colspan="10">${detallePub(x)}</td></tr>`;
   return h;
@@ -534,15 +557,16 @@ function detallePub(x){
 /* ---------- vincular publicación → producto de Odoo ---------- */
 function abrirVincular(itemId){
   const x = (D.pubs||[]).find(p=>p.id===itemId) || {id:itemId, titulo:itemId};
-  const v = D.vinc[itemId]||{};
+  const v = D.vinc[itemId]||{}; const cAct = costoItem(itemId);
+  const fIni = +v.factor || (cAct.revisar ? cAct.sug : 1);
   ventana("Vincular con Odoo", `
     <p style="font-size:13px;margin:0 0 10px"><b>${esc(x.titulo)}</b><br><small style="color:var(--gris2)">${esc(itemId)}${x.sku?" · SKU "+esc(x.sku):""}${x.gtin?" · GTIN "+esc(x.gtin):""}</small></p>
     <input type="search" id="vq" placeholder="Buscar producto en Odoo (nombre, código o código de barras)…" style="width:100%;font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:9px">
     <div class="res" id="vres"><div style="cursor:default;color:var(--gris2)">Escribí al menos 3 letras.</div></div>
-    <p style="font-size:13px;margin:14px 0 6px" title="Si la publicación vende una caja de 20 y en Odoo el producto se lleva por unidad, el factor es 20">Unidades de Odoo por cada unidad vendida en ML: <input type="number" id="vf" min="0.001" step="any" value="${+v.factor||1}" style="width:90px;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px"></p>
-    <p id="vsel" style="font-size:13px;color:var(--gris)">${v.pid&&D.odoo.byId[v.pid]?"Vinculado hoy a: <b>"+esc(D.odoo.byId[v.pid].display_name)+"</b>":"Elegí un producto de la lista."}</p>
+    <p style="font-size:13px;margin:14px 0 6px" title="Si la publicación vende una caja de 20 y en Odoo el producto se lleva por unidad, el factor es 20">Unidades de Odoo por cada unidad vendida en ML: <input type="number" id="vf" min="0.001" step="any" value="${fIni}" style="width:90px;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px"></p>
+    <p id="vsel" style="font-size:13px;color:var(--gris)">${cAct.pr?"Vinculado hoy a: <b>"+esc(cAct.pr.display_name)+"</b> ("+esc(cAct.via)+") · costo motor "+money(cAct.base)+" por unidad de Odoo"+(cAct.sug>1?"<br>El título dice <b>"+cAct.sug+"</b> por publicación: si Odoo lleva el costo por unidad, el factor es "+cAct.sug+".":""):"Elegí un producto de la lista."}</p>
     <p style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">${v.pid?`<button class="btn" id="vdel" title="Borra el vínculo a mano; vuelve a buscar por SKU o código de barras">Quitar vínculo</button>`:""}<button class="btn pri" id="vok" disabled>Guardar</button></p>`);
-  let elegido = v.pid ? D.odoo.byId[v.pid] : null;
+  let elegido = cAct.pr || null;
   const ok = document.getElementById("vok"); if(elegido) ok.disabled=false;
   const buscar = EYG.debounce(async()=>{
     const q = document.getElementById("vq").value.trim(); const box=document.getElementById("vres");
