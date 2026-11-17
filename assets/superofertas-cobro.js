@@ -13,6 +13,36 @@ window.EYGSuperCobro = (function(){
   const esc=s=>EYG.esc(s);
   const money=n=>"$ "+Number(n||0).toLocaleString("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2});
   let EL=null, PERFIL=null, T={esp:0,pag:0,efe:0,inf:0}, PED=[], ADJ={}, MSG="", OCUP=false;
+  /* Cruce con Mercado Pago (17/11/2026): la función mp-transferencias lee los cobros que entran a la cuenta
+     (sólo lectura). Mercado Pago no dice quién transfirió, así que se cruza por IMPORTE (±$1: hay clientes
+     que redondean) y por fecha (desde dos días antes del pedido). Cada transferencia se usa una sola vez: al
+     asentar queda en el recibo como "MP <operación>" (Referencia de pago) y ya no se ofrece. */
+  const MP_URL="https://yxotopoklgjowcudveoj.supabase.co/functions/v1/mp-transferencias";
+  let MP=[], MPERR="", USADOS=new Set();
+  const fmtFH=d=>{ try{ return new Date(d).toLocaleString("es-AR",{timeZone:"America/Argentina/Buenos_Aires",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch(e){ return String(d||"").slice(0,16); } };
+  async function leerMP(){
+    MP=[]; MPERR=""; USADOS=new Set();
+    try{
+      const ses=await EYG.supa().auth.getSession(); const tok=ses&&ses.data&&ses.data.session&&ses.data.session.access_token;
+      const h={"Content-Type":"application/json"}; if(tok) h.Authorization="Bearer "+tok;
+      const r=await fetch(MP_URL,{method:"POST",headers:h,body:JSON.stringify({dias:20})});
+      const j=await r.json();
+      if(!j.ok) throw new Error(j.error||("HTTP "+r.status));
+      MP=(j.cobros||[]).filter(c=>c.estado==="approved");
+      const desde=new Date(Date.now()-60*864e5).toISOString().slice(0,10);
+      const us=await rpc("account.payment","search_read",[[["payment_reference","=like","MP %"],["date",">=",desde]]],{fields:["payment_reference"],limit:500});
+      (us||[]).forEach(u=>USADOS.add(String(u.payment_reference||"").replace(/^MP\s+/,"")));
+    }catch(e){ MPERR=String(e.message||e).slice(0,160); }
+  }
+  const libres=()=>MP.filter(t=>!USADOS.has(String(t.id)));
+  const coincide=(t,p)=>Math.abs(Number(t.importe)-Number(p.amount_total))<=1.0 && new Date(t.fecha_aprobado||t.fecha_creado).getTime() >= new Date(String(p.date_order||"").replace(" ","T")+"Z").getTime()-2*864e5;
+  function cruce(p){
+    if(tipo(p)==="efe") return null;
+    const cands=libres().filter(t=>coincide(t,p));
+    if(!cands.length) return {n:0};
+    if(cands.length===1){ const otros=PED.filter(q=>q.id!==p.id && tipo(q)!=="efe" && coincide(cands[0],q)).length; return {n:1, t:cands[0], unico:!otros}; }
+    return {n:cands.length};
+  }
   const puede=()=>PERFIL && ["finanzas","cobranzas","admin","direccion"].includes(PERFIL.rol);
   function css(){
     if(document.getElementById("eyg-sc-css")) return;
@@ -25,7 +55,8 @@ window.EYGSuperCobro = (function(){
 .sc .c-esp{background:#F5E4DD;color:#A6453A}.sc .c-inf{background:#FFF1C9;color:#7A5500}.sc .c-efe{background:#E3EEDD;color:#2E7A4E}
 .sc button.as{border:0;border-radius:8px;padding:7px 12px;font-weight:800;cursor:pointer;background:#0F3D33;color:#D7F75B;white-space:nowrap}
 .sc button.as[disabled]{opacity:.5;cursor:default}.sc .msg{white-space:pre-wrap;font-size:13px;margin:8px 0 0;padding:8px 10px;border-radius:8px;background:#fff;border:1px solid #DCE4DE}
-.sc a{color:#0F6E56}.sc .vacio{font-size:13px;color:#5C6B64;padding:4px 0}
+.sc a{color:#0F6E56}.sc .mpok{margin-top:4px;font-size:12px;color:#1F6B3A;font-weight:700}.sc .mpdu{margin-top:4px;font-size:12px;color:#8A5A00;font-weight:700}.sc .mpno{margin-top:4px;font-size:11.5px;color:#8A9690}
+.sc details.mpsin{margin-top:10px;font-size:13px}.sc details.mpsin summary{cursor:pointer;font-weight:700;color:#0F3D33}.sc .mpfila{padding:3px 0;border-bottom:1px dashed #E1E8E3}.sc .vacio{font-size:13px;color:#5C6B64;padding:4px 0}
 .sc-modal{position:fixed;inset:0;z-index:3000;background:rgba(10,30,26,.5);display:flex;align-items:center;justify-content:center;padding:16px}
 .sc-modal .bx{background:#fff;border-radius:14px;max-width:460px;width:100%;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
 .sc-modal h4{margin:0 0 8px;font-size:17px;color:#0F3D33}.sc-modal p{font-size:13.5px;line-height:1.5;margin:0 0 10px}
@@ -47,8 +78,25 @@ window.EYGSuperCobro = (function(){
         (ad||[]).forEach(a=>{ (ADJ[a.res_id]=ADJ[a.res_id]||[]).push(a); });
       }
     }catch(e){ MSG="No pude leer los pedidos de superofertas: "+String(e.message||e).slice(0,200); }
+    await leerMP();
   }
   const tipo=p=>(T.efe&&p.tag_ids.includes(T.efe))?"efe":(T.inf&&p.tag_ids.includes(T.inf))?"inf":"esp";
+  function mpHTML(p){
+    if(MPERR || tipo(p)==="efe") return "";
+    const c=cruce(p); if(!c) return "";
+    if(c.n===1 && c.unico) return '<div class="mpok">✓ Acreditado en Mercado Pago: <b>'+money(c.t.importe)+'</b> · '+fmtFH(c.t.fecha_aprobado)+' · op. '+esc(String(c.t.id))+'</div>';
+    if(c.n>=1) return '<div class="mpdu">⚠ '+(c.n>1?'Hay '+c.n+' transferencias de ese importe':'La transferencia de ese importe también coincide con otro pedido')+': verificá en Mercado Pago</div>';
+    return '<div class="mpno">Sin transferencia de ese importe en Mercado Pago (últimos 20 días)</div>';
+  }
+  function sinAsignarHTML(){
+    if(MPERR) return '<div class="vacio">No pude leer Mercado Pago: '+esc(MPERR)+'</div>';
+    const asign=new Set(); PED.forEach(p=>{ const c=cruce(p); if(c&&c.t) asign.add(c.t.id); });
+    const ls=libres().filter(t=>!asign.has(t.id) && (Date.now()-new Date(t.fecha_aprobado).getTime())<7*864e5);
+    if(!ls.length) return "";
+    return '<details class="mpsin"><summary>Cobros de Mercado Pago de los últimos 7 días sin pedido de superofertas ('+ls.length+')</summary>'+
+      '<div style="font-size:12.5px;color:#5C6B64;margin:4px 0">Pueden ser superofertas pagadas con otro importe, o cobros que no son superofertas. Mercado Pago no informa quién transfirió.</div>'+
+      ls.slice(0,15).map(t=>'<div class="mpfila">'+fmtFH(t.fecha_aprobado)+' · <b>'+money(t.importe)+'</b> · op. '+esc(String(t.id))+(t.descripcion&&t.descripcion!=="Varios"?' · '+esc(t.descripcion):'')+'</div>').join("")+'</details>';
+  }
   function html(){
     if(!T.esp && !MSG) return "";
     const orden={inf:0,efe:1,esp:2};
@@ -63,18 +111,25 @@ window.EYGSuperCobro = (function(){
       return `<tr><td><b>${esc(p.name)}</b><div style="font-size:11.5px;color:#5C6B64">${f} · <a href="${ODOO}/web#id=${p.id}&model=sale.order&view_type=form" target="_blank" rel="noopener">Odoo ↗</a></div></td>
         <td>${esc(p.partner_id?p.partner_id[1]:"")}<div style="font-size:11.5px;color:#5C6B64">${esc(p.user_id?p.user_id[1]:"sin comercial")}</div></td>
         <td class="n"><b>${money(p.amount_total)}</b></td>
-        <td>${chip(p)}${adj?"<div style=\"margin-top:3px\">"+adj+"</div>":""}</td>
+        <td>${chip(p)}${adj?"<div style=\"margin-top:3px\">"+adj+"</div>":""}${mpHTML(p)}</td>
         <td class="n">${puede()?`<button class="as" ${OCUP?"disabled":""} onclick="EYGSuperCobro.pedir(${p.id})">${ef?"Asentar efectivo":"Asentar y liberar"}</button>`:""}</td></tr>`;
     }).join("");
     return `<div class="sc">
       <h3>💵 Superofertas a asentar <span style="font-weight:400;font-size:13px;color:#5C6B64">(${ls.length})</span></h3>
       <div class="sub">Transferencias a <b>Mercado Pago</b> (alias eyg.mpago): verificá la acreditación y tocá <b>Asentar y liberar</b> — se crea el recibo RE-X, se imputa a la factura (o queda a cuenta y se imputa sola al facturar) y se libera la entrega. Efectivo (proforma): cuando el repartidor trae la plata, <b>Asentar efectivo</b> (Efectivo B).</div>
       ${ls.length?`<div style="overflow-x:auto"><table><thead><tr><th>Pedido</th><th>Cliente · comercial</th><th class="n">Total</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>`:'<div class="vacio">No hay superofertas pendientes de asentar.</div>'}
+      ${sinAsignarHTML()}
       ${MSG?`<div class="msg">${esc(MSG)}</div>`:""}
     </div>`;
   }
   function pintar(){ if(EL) EL.innerHTML=html(); }
   function cerrar(){ const m=document.getElementById("sc-modal"); if(m) m.remove(); }
+  function mpModal(p){
+    const c=cruce(p);
+    if(c&&c.n===1&&c.unico) return '<p style="background:#EEF6E8;border-radius:8px;padding:8px 10px">✓ Transferencia de Mercado Pago: <b>'+money(c.t.importe)+'</b> el '+fmtFH(c.t.fecha_aprobado)+' (operación '+esc(String(c.t.id))+'). Queda anotada en el recibo.</p>';
+    if(tipo(p)!=="efe") return '<p style="background:#FFF6E0;border-radius:8px;padding:8px 10px">No hay una transferencia de Mercado Pago que coincida sola con este pedido: verificala a mano antes de asentar.</p>';
+    return "";
+  }
   function pedir(id){
     const p=PED.find(x=>x.id===id); if(!p||OCUP) return;
     const ef=tipo(p)==="efe";
@@ -82,6 +137,7 @@ window.EYGSuperCobro = (function(){
     const d=document.createElement("div"); d.className="sc-modal"; d.id="sc-modal";
     d.innerHTML=`<div class="bx"><h4>${ef?"Asentar cobro en efectivo":"Asentar cobro y liberar"}</h4>
       <p><b>${esc(p.name)}</b> · ${esc(p.partner_id?p.partner_id[1]:"")} · <b>${money(p.amount_total)}</b></p>
+      ${mpModal(p)}
       <p>${ef?"Se crea el recibo RE-X en <b>Efectivo B</b> por el total. Confirmalo sólo si la plata ya está en Cobranzas."
              :"Se crea el recibo RE-X en <b>Mercado Pago</b> por el total y se libera la entrega para que el depósito lo arme. Confirmalo sólo si ya viste la transferencia acreditada."}</p>
       <div class="bt"><button onclick="EYGSuperCobro.cerrar()">Cancelar</button><button class="si" onclick="EYGSuperCobro.asentar(${p.id})">${ef?"Sí, asentar":"Sí, asentar y liberar"}</button></div></div>`;
@@ -93,7 +149,9 @@ window.EYGSuperCobro = (function(){
     OCUP=true; MSG="Asentando "+p.name+"…"; pintar();
     try{
       const quien=(PERFIL&&PERFIL.nombre)||"el Core";
-      await rpc("ir.actions.server","run",[[ACCION]],{context:{active_model:"sale.order",active_id:id,active_ids:[id],eyg_quien:quien}});
+      const c=cruce(p); const ctx={active_model:"sale.order",active_id:id,active_ids:[id],eyg_quien:quien};
+      if(c&&c.n===1&&c.unico) ctx.eyg_mp_id=String(c.t.id);
+      await rpc("ir.actions.server","run",[[ACCION]],{context:ctx});
       const pg=await rpc("account.payment","search_read",[[["ref","=","Superoferta "+p.name],["state","=","posted"]]],{fields:["name","journal_id"],limit:1});
       MSG="✓ "+p.name+": recibo "+(pg[0]?pg[0].name+" ("+pg[0].journal_id[1]+")":"creado")+(tipo(p)==="efe"?".":". Entrega liberada.");
     }catch(e){ MSG="No se pudo asentar "+p.name+": "+String(e.message||e).slice(0,300); }
