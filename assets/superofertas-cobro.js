@@ -150,7 +150,7 @@ window.EYGSuperCobro = (function(){
     try{
       const quien=(PERFIL&&PERFIL.nombre)||"el Core";
       const c=cruce(p); const ctx={active_model:"sale.order",active_id:id,active_ids:[id],eyg_quien:quien};
-      if(c&&c.n===1&&c.unico) ctx.eyg_mp_id=String(c.t.id);
+      if(c&&c.n===1&&c.unico){ ctx.eyg_mp_id=String(c.t.id); ctx.eyg_mp_importe=Number(c.t.importe); if(c.t.neto!=null) ctx.eyg_mp_neto=Number(c.t.neto); }   // recibo por lo transferido; comisión a gastos
       await rpc("ir.actions.server","run",[[ACCION]],{context:ctx});
       const pg=await rpc("account.payment","search_read",[[["ref","=","Superoferta "+p.name],["state","=","posted"]]],{fields:["name","journal_id"],limit:1});
       MSG="✓ "+p.name+": recibo "+(pg[0]?pg[0].name+" ("+pg[0].journal_id[1]+")":"creado")+(tipo(p)==="efe"?".":". Entrega liberada.");
