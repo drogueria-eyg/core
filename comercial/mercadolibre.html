@@ -130,6 +130,15 @@
    cada unidad vendida en ML (una publicación "caja x 20" de un producto
    que en Odoo se lleva por unidad = factor 20).
 
+   EL COSTO VA CON FECHA (regla de Diego, 17/11/2026): cada venta se mide con
+   el costo del motor que regía CUANDO se vendió. Si el costo cambia, vale de
+   ahí en adelante, nunca hacia atrás (si no, se come el margen de lo ya
+   vendido). El historial vive en la tabla ml_costo_historial del Supabase de
+   EyG: el primer costo conocido de un producto cubre lo vendido antes; cada
+   cambio se anota con la hora en que se detecta (al abrir esta pantalla y con
+   el cron de ml-vendra). El costo NO se carga acá: se carga en el motor
+   (Costos y Rentabilidad), que recalcula sólo ese producto.
+
    LA CUENTA NO ESTÁ INSCRIPTA EN IVA (autónomo, factura sin IVA): todo va
    con IVA incluido y no hay crédito fiscal. Vendra ya la trata así ("cf").
 
@@ -154,7 +163,7 @@ const fCorta = d => d ? d.slice(8,10)+"/"+d.slice(5,7) : "";
 const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 
 const ST = { tab:"resumen", per:"mes", from:null, to:null, qV:"", qP:"", fV:"todas", fP:"vendieron", ordV:{k:"fecha",d:-1}, ordP:{k:"ganancia",d:-1}, abiertaV:null, abiertaP:null };
-const D = { g:null, ventas:[], prod:[], pubs:null, pubsErr:null, odoo:{}, vinc:{}, tasas:{}, cargando:false };
+const D = { g:null, ventas:[], prod:[], pubs:null, pubsErr:null, odoo:{}, vinc:{}, tasas:{}, hist:{}, cargando:false };
 
 /* ---------------- llamadas ---------------- */
 async function fn(accion, extra){
@@ -203,21 +212,46 @@ function factorTitulo(t){
   return n>=2 && n<=2000 ? n : 0;
 }
 /* Para un item de ML: {pr, factor, via, unit} — unit = costo por unidad vendida en ML (0 si no hay) */
-function costoItem(itemId){
+function costoItem(itemId, fecha){
   const pub = (D.pubs||[]).find(p=>p.id===itemId);
   const v = D.vinc[itemId];
   let pr=null, factor=1, via="";
   if(v && v.pid && D.odoo.byId[v.pid]){ pr=D.odoo.byId[v.pid]; factor=+v.factor||1; via="a mano"; }
   else if(pub && pub.sku && D.odoo.bySku[String(pub.sku).trim()]){ pr=D.odoo.bySku[String(pub.sku).trim()]; via="por SKU"; }
   else if(pub && pub.gtin && D.odoo.byBar[String(pub.gtin).trim()]){ pr=D.odoo.byBar[String(pub.gtin).trim()]; via="por código de barras"; }
-  const base = costoProd(pr);
+  const ce = costoEnFecha(pr, fecha);
+  const base = ce.base;
   const sug = factorTitulo(pub ? pub.titulo : "");
   // revisar = el título dice que se vende una caja de N, el vínculo es automático (factor 1) y
   // multiplicar el costo por N todavía entra en el precio (si no, Odoo ya lo lleva por caja:
   // guantes "caja x 100" a $4.600 en Odoo no pueden costar $460.000)
   const revisar = !!pr && base>0 && via!=="a mano" && sug>1 && !!pub && base*sug <= (+pub.precio||0);
   const estado = !pr ? "sin-vincular" : (base>0 ? "ok" : "sin-costo-odoo");
-  return {pr, factor, via, unit: r2(base*factor), base, sug, revisar, estado};
+  return {pr, factor, via, unit: r2(base*factor), base, sug, revisar, estado, vigDesde: ce.desde, conHist: ce.conHist};
+}
+
+/* Historial de costos: anota los cambios de los productos vinculados y trae su historial.
+   D.hist[pid] = [{desde(ms), base}] ordenado por fecha. */
+async function leerHistorial(){
+  const ids = new Set();
+  for(const p of (D.pubs||[])){ const c = costoItem(p.id); if(c.pr) ids.add(c.pr.id); }
+  for(const v of Object.values(D.vinc)) if(v&&v.pid) ids.add(+v.pid);
+  if(!ids.size) return;
+  const j = await fn("costos",{product_ids:[...ids]});
+  D.hist = {};
+  for(const r of (j.historial||[])) (D.hist[r.product_id] ??= []).push({desde:new Date(r.desde).getTime(), base:+r.costo_base, fuente:r.fuente});
+  for(const k in D.hist) D.hist[k].sort((a,b)=>a.desde-b.desde);
+}
+/* Costo por unidad de Odoo que regía en esa fecha. Sin fecha = el de hoy. */
+function costoEnFecha(pr, fecha){
+  const h = pr && D.hist[pr.id];
+  if(h && h.length){
+    const t = fecha ? new Date(fecha).getTime() : Date.now();
+    let x = h[0];
+    for(const r of h){ if(r.desde<=t) x=r; else break; }
+    return {base:x.base, desde:x.desde, conHist:true};
+  }
+  return {base:costoProd(pr), desde:null, conHist:false};
 }
 
 /* ---------------- carga ---------------- */
@@ -238,6 +272,7 @@ async function cargarPublicaciones(){
   try{ const j = await fn("publicaciones"); D.pubs = j.publicaciones||[]; D.pubsAvisos = j.avisos||[]; }
   catch(e){ D.pubs = []; D.pubsErr = String(e.message||e); }
   try{ await leerProductos(); }catch(e){ D.pubsErr = (D.pubsErr? D.pubsErr+" · ":"")+"Odoo: "+String(e.message||e); }
+  try{ await leerHistorial(); }catch(e){ D.pubsErr = (D.pubsErr? D.pubsErr+" · ":"")+"Historial de costos: "+String(e.message||e); }
   pintar();
 }
 
@@ -247,7 +282,7 @@ async function cargarPublicaciones(){
 function ventasCalc(){
   return D.ventas.map(v=>{
     let costo=0, sinCosto=0;
-    for(const it of (v.items||[])){ const c=costoItem(it.id); if(c.unit>0) costo+=c.unit*(+it.q||0); else sinCosto+=(+it.q||0); }
+    for(const it of (v.items||[])){ const c=costoItem(it.id, v.fecha||v.day); if(c.unit>0) costo+=c.unit*(+it.q||0); else sinCosto+=(+it.q||0); }
     const liq = v.exacto && v.neto!=null;
     const cargos = r2((+v.comision||0)+(+v.costo_fijo||0)+(+v.cuotas||0)+(+v.envio||0)+(+v.retencion||0)+(+v.cheque||0)+(+v.cobro_mp||0)+(+v.cupon_vend||0)+(+v.otros||0));
     const recibe = liq ? r2((+v.neto||0)+(+v.reintegro_flex||0)) : null;
@@ -271,7 +306,7 @@ function pubsCalc(VC){
     for(const it of its){
       const w = tot ? ((+it.q||0)*(pu[it.id]||1))/tot : 1/its.length;
       const a = (ag[it.id] ??= nuevo(it.id, it.t));
-      const c = costoItem(it.id);
+      const c = costoItem(it.id, v.fecha||v.day);
       a.ventas += 1; a.unidades += +it.q||0; a.precio += w*(+v.precio||0);
       if(v.liq){ a.cargos += w*v.cargos; a.recibe += w*v.recibe; a.costo += c.unit*(+it.q||0); a.ganancia += w*v.recibe - c.unit*(+it.q||0); }
       else a.pendientes += 1;
@@ -286,7 +321,10 @@ function pubsCalc(VC){
 /* Costo del motor de lo vendido en el período (para el Resumen), por unidades de orders_daily_prod */
 function costoPeriodo(){
   let costo=0, sinU=0; const sinItems=new Set();
-  for(const r of D.prod){ const c=costoItem(r.item_id); if(c.unit>0) costo += c.unit*(+r.unidades||0); else { sinU += +r.unidades||0; sinItems.add(r.item_id); } }
+  for(const v of D.ventas) for(const it of (v.items||[])){
+    const c=costoItem(it.id, v.fecha||v.day);
+    if(c.unit>0) costo += c.unit*(+it.q||0); else { sinU += +it.q||0; sinItems.add(it.id); }
+  }
   return {costo:r2(costo), sinU, sinItems:sinItems.size};
 }
 
@@ -346,7 +384,7 @@ function pintarResumen(cu, R){
       ${kp("cargos","Cargos de ML",-cargos,pctTxt(cargos,ventas)+" de lo vendido","Comisión, costo fijo por unidad, cuotas, envíos y demás cargos que factura Mercado Libre (sin la publicidad). Tocá para el detalle.")}
       ${kp("publi","Publicidad",-publi,pctTxt(publi,ventas)+" de lo vendido","Product Ads + Display que factura ML, más los cupones que ponemos nosotros. Tocá para el detalle.")}
       ${kp("imp","Impuestos",-imp,`retenciones al cobrar${(+g.percepciones)?` · percep. ${money(g.percepciones)} aparte`:""}`,"Las retenciones que Mercado Pago descuenta al cobrar cada venta. Las PERCEPCIONES que ML factura aparte se muestran pero NO se restan (criterio de Vendra: son pagos a cuenta de impuestos). La cuenta no está inscripta en IVA: no hay IVA a pagar ni crédito. Tocá para el detalle.")}
-      ${kp("costo","Costo (motor)",-costo,sinCostoTxt,"Unidades vendidas × el costo que usa el motor de precios de Odoo (costo 3 fuentes, + IVA de compra si se vende exento). Tocá para verlo por publicación.")}
+      ${kp("costo","Costo (motor)",-costo,sinCostoTxt,"Cada unidad vendida × el costo del motor de precios QUE REGÍA EL DÍA DE LA VENTA (costo 3 fuentes, + IVA de compra si se vende exento). Si el costo cambia, vale desde ese momento: no se recalcula lo vendido antes. Tocá para verlo por publicación.")}
     </div>
     <h2 class="sec">Ventas por día <span class="ayuda">${esc(R.label)} · pasá el mouse por cada barra</span></h2>
     <div class="card pad">${grafico(g.series||[])}</div>
@@ -447,7 +485,7 @@ function filaVenta(v){
 }
 function detalleVenta(v){
   const L = (t,x,tip)=> (+x) ? `<div title="${esc(tip||"")}">${t}</div><div class="m">${money(x)}</div>` : "";
-  const items = (v.items||[]).map(i=>{ const c=costoItem(i.id); return `<div>• ${esc(i.t)} × ${i.q} <small style="color:var(--gris2)">${esc(i.id)}</small></div><div class="m">${c.unit>0?`costo ${money(c.unit)} c/u <small style="color:var(--gris2)">(${esc(c.pr.display_name)}${c.factor!==1?" × "+c.factor:""}, ${c.via})</small>${c.revisar?` <span class="pill warn">¿factor ${c.sug}?</span>`:""}`:costoPill(c)}</div>`; }).join("");
+  const items = (v.items||[]).map(i=>{ const c=costoItem(i.id, v.fecha||v.day); return `<div>• ${esc(i.t)} × ${i.q} <small style="color:var(--gris2)">${esc(i.id)}</small></div><div class="m">${c.unit>0?`costo ${money(c.unit)} c/u <small style="color:var(--gris2)">(${esc(c.pr.display_name)}${c.factor!==1?" × "+c.factor:""}, ${c.via}; ${c.conHist?(c.vigDesde>Date.UTC(2001,0,1)?"vigente desde el "+new Date(c.vigDesde).toLocaleDateString("es-AR"):"primer costo registrado"):"costo de hoy"})</small>${c.revisar?` <span class="pill warn">¿factor ${c.sug}?</span>`:""}`:costoPill(c)}</div>`; }).join("");
   if(!v.liq) return `<div class="desg">${items}<div class="tot">Precio</div><div class="m tot">${money(v.precio)}</div></div><p style="font-size:12px;color:var(--gris);margin-top:10px">Todavía sin liquidar: cuando Mercado Pago acredite el pago aparece el desglose completo.</p>`;
   const otros = r2((+v.cheque||0)+(+v.cobro_mp||0)+(+v.otros||0));
   return `<div class="desg">${items}
@@ -505,9 +543,10 @@ function pintarPubs(cu, R){
 }
 function costoPill(c){
   if(c.estado==="sin-vincular") return `<span class="pill warn" title="No encontré el producto de Odoo (ni por SKU ni por código de barras): vinculalo para tomar su costo">sin vincular</span>`;
-  if(c.estado==="sin-costo-odoo") return `<span class="pill warn" title="El producto de Odoo (${esc(c.pr.display_name)}) no tiene costo cargado: ni el motor ni esta pantalla pueden calcular su margen">sin costo en Odoo</span>`;
+  if(c.estado==="sin-costo-odoo") return `<span class="pill warn" title="El producto de Odoo (${esc(c.pr.display_name)}) no tiene costo cargado: ni el motor ni esta pantalla pueden calcular su margen">sin costo en Odoo</span> <a class="pill neu" href="${linkMotor(c.pr)}" target="_blank" rel="noopener" title="Abre Costos y Rentabilidad (el motor de precios) en este producto para cargarle el costo. El motor recalcula SÓLO ese producto. El costo nuevo vale para las ventas desde ese momento; las anteriores sin costo toman el primero que se cargue.">cargar en el motor ›</a>`;
   return "";
 }
+function linkMotor(pr){ return EYG.abs("comercial/precios.html") + "?q=" + encodeURIComponent((pr&&(pr.default_code||pr.display_name))||""); }
 function estadoPill(p){
   if(!p) return `<span class="pill neu" title="ML no devolvió esta publicación (puede estar borrada)">sin datos</span>`;
   const m={active:["ok","activa"],paused:["warn","pausada"],closed:["neu","finalizada"],under_review:["bad","en revisión"]}[p.estado]||["neu",p.estado];
@@ -540,9 +579,10 @@ function detallePub(x){
       <div>Producto de Odoo</div><div class="m">${x.c.pr?esc(x.c.pr.display_name)+" <small>("+esc(x.c.via)+")</small>":"— sin vincular —"}</div>
       ${x.c.pr?`<div title="Costo que usa el motor de precios para este producto">Costo del motor (por unidad de Odoo)</div><div class="m">${money(x.c.base)}</div>
       <div title="Cuántas unidades de Odoo salen por cada unidad vendida en ML">Factor</div><div class="m">× ${x.c.factor}</div>
-      <div class="tot">Costo por unidad vendida en ML</div><div class="m tot">${money(x.c.unit)}</div>`:""}
+      <div class="tot">Costo por unidad vendida en ML (hoy)</div><div class="m tot">${money(x.c.unit)}</div>`:""}
+      ${x.c.pr && (D.hist[x.c.pr.id]||[]).length>1 ? `<div style="grid-column:1/-1;margin-top:8px;font-weight:800">Historial del costo (cada venta usa el de su fecha)</div>${D.hist[x.c.pr.id].map(h=>`<div>${h.desde>Date.UTC(2001,0,1)?"desde el "+new Date(h.desde).toLocaleString("es-AR",{timeZone:"America/Argentina/Buenos_Aires"}):"primer costo registrado"}</div><div class="m">${money(h.base)} por unidad de Odoo</div>`).join("")}` : ""}
     </div>
-    <p style="margin-top:10px"><button class="btn" data-vinc="${esc(x.id)}" title="Cambiar el producto de Odoo o el factor de esta publicación">${x.c.pr?"Cambiar vínculo con Odoo":"Vincular con Odoo"}</button></p>`;
+    <p style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-vinc="${esc(x.id)}" title="Cambiar el producto de Odoo o el factor de esta publicación">${x.c.pr?"Cambiar vínculo con Odoo":"Vincular con Odoo"}</button>${x.c.pr?`<a class="btn" href="${linkMotor(x.c.pr)}" target="_blank" rel="noopener" title="El costo se carga y se corrige SIEMPRE en el motor de precios (Costos y Rentabilidad), que recalcula sólo ese producto. Vale para las ventas desde ese momento.">Ver / cargar costo en el motor ›</a>`:""}</p>`;
   const ventas = x.ventas ? `<div class="desg" style="margin-top:12px">
       <div>Ventas en el período</div><div class="m">${x.ventas} (${x.unidades} u.)</div>
       <div>Vendido</div><div class="m">${money(x.precio)}</div>
@@ -583,7 +623,7 @@ function abrirVincular(itemId){
     const f = +document.getElementById("vf").value;
     if(!elegido || !(f>0)) return;
     ok.disabled=true; ok.textContent="Guardando…";
-    try{ await leerVinculos(); D.vinc[itemId]={pid:elegido.id, factor:f, por:"core", en:new Date().toISOString().slice(0,10)}; await guardarVinculos(); cerrarVentana(); pintar(); }
+    try{ await leerVinculos(); D.vinc[itemId]={pid:elegido.id, factor:f, por:"core", en:new Date().toISOString().slice(0,10)}; await guardarVinculos(); await leerHistorial().catch(()=>{}); cerrarVentana(); pintar(); }
     catch(e){ ok.disabled=false; ok.textContent="Guardar"; alert("No se pudo guardar: "+(e.message||e)); }
   };
   const del = document.getElementById("vdel");
