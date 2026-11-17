@@ -677,16 +677,19 @@ async function cargar(){
     //  ?reanudar=ID → abre ese presupuesto para seguir cargándolo.
     //  ?nuevo=1     → salta el listado y va directo a elegir cliente (crear la venta).
     const P=new URLSearchParams(location.search);
-    const _rean=P.get("reanudar"), _nuevo=P.get("nuevo");
+    const _rean=P.get("reanudar"), _nuevo=P.get("nuevo"), _avis=P.get("avisar");
     // Consumimos el parámetro apenas se lee: así un refresh o un descarte que vuelve a cargar()
     // NO reintenta abrir el mismo presupuesto (evita el loop "no existe ese presupuesto").
-    if(_rean||_nuevo){
+    if(_rean||_nuevo||_avis){
       const keep=new URLSearchParams(); if(P.get("c")) keep.set("c",P.get("c"));   // preservamos ?c= (comercial)
       try{ history.replaceState(null,"",location.pathname+(keep.toString()?"?"+keep.toString():"")); }catch(e){}
     }
     if(_rean){ ST.view="inicio"; render(); reanudar(parseInt(_rean,10)); return; }
     if(_nuevo){ ST.view="picker"; ST.qCliente=""; render(); return; }
     ST.view="inicio"; render();
+    // ?avisar=ID → viene del panel (botón "Avisar pago" en la lista de pedidos): abre el aviso a Cobranzas de ese pedido
+    if(_avis){ const aid=parseInt(_avis,10); ctCargarEspera().then(()=>{ if(ST.view==="inicio") render();
+      if((CT.espera||[]).some(o=>o.id===aid)) ctPedirPago(aid); else toast("Ese pedido ya no está esperando el pago"); }); }
   }catch(e){
     document.getElementById("app").innerHTML='<div class="errbox"><b>No pude cargar.</b><br>'+esc(e.message)+'</div>';
   }
@@ -1377,7 +1380,7 @@ async function ofertasDelCliente(){
 const CT_LISTA = 3;
 const CT_ORIGEN = "Core · superofertas de contado";
 const CT_ORIGEN_COMUN = "Core · carga del comercial";
-const CT = {activa:false, pids:new Set(), esp:0, pag:0, efe:0, modo:"transf", pago:null, aparte:null, enviado:false};
+const CT = {activa:false, pids:new Set(), esp:0, pag:0, efe:0, inf:0, modo:"transf", pago:null, aparte:null, enviado:false};
 async function cargarContado(){
   CT.activa=false; CT.pids=new Set();
   try{
@@ -1386,7 +1389,7 @@ async function cargarContado(){
     const d=JSON.parse(raw||"null");
     const hoy=EYG.argToday();
     if(d && d.estado==="activa" && (!d.hasta || d.hasta>=hoy)){ CT.activa=true; (d.items||[]).forEach(i=>{ if(i&&i.pid) CT.pids.add(+i.pid); }); }
-    const t=String(tg||"").split(","); CT.esp=parseInt(t[0],10)||0; CT.pag=parseInt(t[1],10)||0; CT.efe=parseInt(t[2],10)||0;
+    const t=String(tg||"").split(","); CT.esp=parseInt(t[0],10)||0; CT.pag=parseInt(t[1],10)||0; CT.efe=parseInt(t[2],10)||0; CT.inf=parseInt(t[3],10)||0;
     try{ CT.pago=JSON.parse(pg||"null"); }catch(e){ CT.pago=null; }
   }catch(e){ console.warn("contado:",e); }
 }
@@ -1539,7 +1542,7 @@ function ctConfirmarModal(){
   modal(`<div class="ct-modal-h"><span class="k">💵 SUPEROFERTAS DE CONTADO</span>
       <h3>¿Cómo paga el cliente?</h3><p>${esc(ST.order.partnerName)} · ${money(ST.amount.total)}</p></div>
     <div class="mb" style="flex-direction:column;align-items:stretch;gap:9px;margin-top:0">
-      <button class="btn grn" style="text-align:left;line-height:1.35" onclick="ctEnviarAPagar('transf')"><b>💵 Transferencia antes de preparar</b><br><span style="font-weight:400;font-size:12.5px">Se confirma y la entrega queda trabada hasta que registres el pago. Te damos los datos para pasarle.</span></button>
+      <button class="btn grn" style="text-align:left;line-height:1.35" onclick="ctEnviarAPagar('transf')"><b>💵 Transferencia antes de preparar</b><br><span style="font-weight:400;font-size:12.5px">Se confirma y la entrega queda trabada hasta que Cobranzas asiente el pago. Te damos los datos para pasarle.</span></button>
       <button class="btn ghost" style="text-align:left;line-height:1.35" onclick="ctEnviarAPagar('proforma')"><b>🧾 Proforma · transferencia antes de preparar</b><br><span style="font-weight:400;font-size:12.5px">Igual que la anterior, por el talonario Proforma.</span></button>
       <button class="btn ghost" style="text-align:left;line-height:1.35;border-color:#8DB600" onclick="ctEnviarAPagar('efectivo')"><b>🧾 Proforma · paga en EFECTIVO al recibir</b><br><span style="font-weight:400;font-size:12.5px">La entrega sale habilitada y el remito dice <b>COBRAR ${money(ST.amount.total)} EN EFECTIVO</b>: lo cobra el repartidor y lo entrega a Cobranzas.</span></button>
       <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
@@ -1623,8 +1626,8 @@ function ctSuccess(){
     <div class="big">💵</div>
     <h2>${ef?"Pedido confirmado · efectivo al recibir":"Pedido confirmado · esperando pago"}</h2>
     <p>Pedido <b>${esc(n)}</b> de <b>${esc(ST.order.partnerName)}</b>${CT.modo!=="transf"?" <b>como proforma</b>":""}. ${ef
-      ?"La entrega sale <b>habilitada</b>: el depósito lo arma y el repartidor cobra al entregar."
-      :"La mercadería quedó reservada y la <b>entrega trabada</b>: el depósito lo arma cuando registres el pago. Pasale estos datos al cliente:"}</p>
+      ?"La entrega sale <b>habilitada</b>: el depósito lo arma, el repartidor cobra al entregar y Cobranzas lo asienta cuando llega la plata."
+      :"La mercadería quedó reservada y la <b>entrega trabada</b>: el depósito lo arma cuando Cobranzas asiente el pago. Pasale estos datos al cliente y, cuando te mande el comprobante, tocá <b>Avisar pago</b> en el inicio de Cargar venta:"}</p>
     ${ctPagoHTML(n,t,ef)}
     <div class="btns">
       <button class="btn grn big" onclick="ctCopiarPago(this,'${esc(n)}',${+t||0},${ef})">📋 Copiar mensaje para el cliente</button>
@@ -1650,22 +1653,26 @@ async function ctCargarEspera(){
   }catch(e){ console.warn("contado espera:",e); }
 }
 const ctEsEfectivo=o=>!!(CT.efe && o.tag_ids.includes(CT.efe));
+const ctInformado=o=>!!(CT.inf && o.tag_ids.includes(CT.inf));
 function ctEsperaHTML(){
   if(!CT.espera||!CT.espera.length) return "";
   const rows=CT.espera.map(o=>{
     let f=""; if(o.date_order){ const ap=EYG.argParts(o.date_order); f=ap.date.slice(8,10)+"/"+ap.date.slice(5,7); }
-    const ef=ctEsEfectivo(o);
+    const ef=ctEsEfectivo(o), inf=ctInformado(o);
+    const chip = ef ? '<span class="chip-ct">💵 EFECTIVO · a cobrar en la entrega</span>'
+      : inf ? '<span class="chip-ct" style="background:#FFF1C9;color:#7A5500">📨 PAGO AVISADO · lo asienta Cobranzas</span>'
+      : '<span class="chip-ct pend">💵 ESPERANDO PAGO · '+(o.state==="sale"?"entrega trabada":"sin confirmar")+'</span>';
     return `<div class="draft ct-esp" style="cursor:default">
-      <div class="di"><div class="cli">${esc(o.partner_id?o.partner_id[1]:"")}<span class="chip-ct${ef?"":" pend"}">${ef?"💵 EFECTIVO · a cobrar en la entrega":"💵 ESPERANDO PAGO · "+(o.state==="sale"?"entrega trabada":"sin confirmar")}</span></div>
+      <div class="di"><div class="cli">${esc(o.partner_id?o.partner_id[1]:"")}${chip}</div>
         <div class="meta">${esc(o.name)}${f?" · "+f:""}</div></div>
       <div class="tot">${money(o.amount_total)}</div>
       <div class="acts" style="gap:6px">
         <button class="ibtn" title="${ef?"Mensaje para el cliente":"Datos de pago para el cliente"}" aria-label="Datos de pago" onclick="ctVerDatos(${o.id})">💵</button>
-        <button class="btn grn" style="width:auto;padding:8px 12px;font-size:13px" onclick="ctPedirPago(${o.id})">${ef?"✓ Cobrado":"✓ Pago recibido"}</button>
+        ${(!ef && !inf)?`<button class="btn grn" style="width:auto;padding:8px 12px;font-size:13px" onclick="ctPedirPago(${o.id})">📨 Avisar pago</button>`:""}
       </div>
     </div>`; }).join("");
   return `<div class="sect-t">💵 Superofertas a cobrar (${CT.espera.length})</div>
-    <div class="ctsub" style="font-size:12.5px;color:var(--gris);margin:-4px 0 8px">Por transferencia: la entrega queda trabada hasta que registres el pago. En efectivo: la entrega sale y se cobra al entregar; marcalo cuando la plata llegó a Cobranzas.</div>
+    <div class="ctsub" style="font-size:12.5px;color:var(--gris);margin:-4px 0 8px">Transferencia: cuando el cliente te mande el comprobante, tocá <b>Avisar pago</b> y adjuntalo. Cobranzas verifica en Mercado Pago, asienta el cobro y recién ahí se libera la entrega. Efectivo: la entrega sale y el repartidor cobra; Cobranzas lo asienta cuando llega la plata.</div>
     <div class="draft-list">${rows}</div>`;
 }
 function ctVerDatos(id){
@@ -1679,37 +1686,39 @@ function ctVerDatos(id){
       <button class="btn ghost" onclick="cerrarModal()">Cerrar</button>
     </div>`);
 }
+/* Avisar pago (comercial): el cliente le mandó el comprobante. NO libera la entrega: pone la etiqueta PAGO INFORMADO,
+   adjunta el comprobante al pedido y deja una nota. Cobranzas lo verifica en Mercado Pago y lo asienta
+   (Core: Cobranzas → Superofertas a asentar; Odoo: Acción → "💵 Superoferta: asentar cobro y liberar"). */
 function ctPedirPago(id){
   const o=(CT.espera||[]).find(x=>x.id===id); if(!o) return;
-  const ef=ctEsEfectivo(o);
-  modal(`<div class="ct-modal-h"><span class="k">✓ ${ef?"COBRADO EN EFECTIVO":"PAGO RECIBIDO"}</span><h3>${esc(o.partner_id?o.partner_id[1]:"")}</h3><p>Pedido ${esc(o.name)} · ${money(o.amount_total)}</p></div>
-    <p style="font-size:13.5px">${ef
-      ?`Confirmalo sólo cuando los <b>${money(o.amount_total)}</b> en efectivo <b>llegaron a Cobranzas</b>. Queda anotado a tu nombre en el pedido.`
-      :`Confirmalo sólo si <b>ya tenés el comprobante</b> de la transferencia por <b>${money(o.amount_total)}</b>. Se libera la entrega y el depósito lo puede armar. Queda anotado a tu nombre en el pedido.`}</p>
+  modal(`<div class="ct-modal-h"><span class="k">📨 AVISAR PAGO A COBRANZAS</span><h3>${esc(o.partner_id?o.partner_id[1]:"")}</h3><p>Pedido ${esc(o.name)} · ${money(o.amount_total)}</p></div>
+    <p style="font-size:13.5px">¿El cliente te mandó el comprobante de la transferencia? Adjuntalo (foto o PDF) y avisá. <b>Cobranzas</b> verifica que esté acreditado en Mercado Pago, asienta el cobro y <b>recién ahí se libera la entrega</b>.</p>
+    <label style="display:block;font-size:13px;font-weight:700;margin:0 0 4px">Comprobante (opcional pero recomendado)</label>
+    <input type="file" id="ctComp" accept="image/*,application/pdf" style="width:100%;margin:0 0 6px">
     <div class="mb" style="flex-direction:column;align-items:stretch;gap:9px">
-      <button class="btn grn" onclick="ctPagoRecibido(${o.id})">${ef?"✓ Sí, la plata llegó a Cobranzas":"✓ Sí, ya me mandó el comprobante"}</button>
+      <button class="btn grn" onclick="ctAvisarPago(${o.id})">📨 Avisar a Cobranzas</button>
       <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
     </div>`);
 }
-async function ctPagoRecibido(id){
-  cerrarModal();
+function ctLeerArchivo(f){ return new Promise((ok,mal)=>{ const r=new FileReader(); r.onload=()=>ok(String(r.result).split(",")[1]||""); r.onerror=()=>mal(r.error); r.readAsDataURL(f); }); }
+async function ctAvisarPago(id){
   const o=(CT.espera||[]).find(x=>x.id===id); if(!o) return;
-  const ef=ctEsEfectivo(o);
+  const inp=document.getElementById("ctComp"); const f=inp&&inp.files&&inp.files[0];
+  if(f && f.size>8*1024*1024){ toast("El archivo pesa más de 8 MB: mandá una foto más liviana"); return; }
+  cerrarModal();
   try{
-    await rpc("sale.order","write",[[id],{tag_ids:[[3,CT.esp],[4,CT.pag]]}],{context:ES});
-    if(o.state!=="sale"){
-      try{ await rpc("sale.order","action_confirm",[[id]],{context:ES}); await copiarEntregaAlRemito(id); }
-      catch(e){ await rpc("sale.order","write",[[id],{tag_ids:[[3,CT.pag],[4,CT.esp]]}],{context:ES}).catch(()=>{}); throw e; }
+    let adj=[];
+    if(f){
+      const ext=(f.name.match(/\.[a-z0-9]+$/i)||[""])[0];
+      const aid=await rpc("ir.attachment","create",[{name:"Comprobante "+o.name+ext, datas:await ctLeerArchivo(f), res_model:"sale.order", res_id:id, mimetype:f.type||undefined}],{context:ES});
+      adj=[aid];
     }
-    // Odoo libera la entrega solo al ver PAGADO; esto es por las dudas
-    const pk=await rpc("stock.picking","search",[[["sale_id","=",id],["picking_type_code","=","outgoing"],["state","not in",["done","cancel"]]]],{context:ES});
-    if(pk&&pk.length) await rpc("stock.picking","write",[pk,{x_eyg_espera_pago:false}],{context:ES});
-    const quien=(ST.perfil&&ST.perfil.nombre)||COMERCIAL||"el Core";
-    await rpc("sale.order","message_post",[[id]],{body:ef
-      ?"Superofertas de contado: cobro en EFECTIVO (contra entrega) registrado en el Core por "+quien+"."
-      :"Superofertas de contado: pago por transferencia registrado en el Core por "+quien+" (comprobante recibido). Entrega liberada para preparar.",message_type:"comment",subtype_xmlid:"mail.mt_note"}).catch(()=>{});
-    toast(ef?"✓ Cobro registrado: "+o.name:"✓ Pago registrado: "+o.name+" ya lo puede armar el depósito", true);
-  }catch(e){ modal(`<h3>⛔ No pude registrar el pago</h3><p>${esc(String(e.message||e).slice(0,300))}</p><div class="mb"><button class="btn ghost" onclick="cerrarModal()">Entendido</button></div>`); }
+    if(CT.inf) await rpc("sale.order","write",[[id],{tag_ids:[[4,CT.inf]]}],{context:ES});
+    const quien=(ST.perfil&&ST.perfil.nombre)||COMERCIAL||"la comercial";
+    await rpc("sale.order","message_post",[[id]],{body:"Superofertas de contado: "+quien+" avisa que el cliente pagó por transferencia"+(adj.length?" (comprobante adjunto)":" (sin comprobante adjunto)")+". Falta que Cobranzas verifique en Mercado Pago y asiente el cobro; la entrega sigue trabada hasta entonces.",
+      message_type:"comment",subtype_xmlid:"mail.mt_note",attachment_ids:adj}).catch(()=>{});
+    toast("📨 Avisado a Cobranzas: "+o.name, true);
+  }catch(e){ modal(`<h3>⛔ No pude avisar el pago</h3><p>${esc(String(e.message||e).slice(0,300))}</p><div class="mb"><button class="btn ghost" onclick="cerrarModal()">Entendido</button></div>`); }
   await ctCargarEspera(); if(ST.view==="inicio") render();
 }
 
@@ -3199,7 +3208,7 @@ EYG.guard(["comercial","lider","admin","direccion"]).then(perfil=>{
    recargan, y desde adentro parece que "el botón no anda" (pasó con el borrado de
    presupuestos, arreglado el 4/9 y todavía fallando en las tablets el 9/9).
    Se compara la versión del archivo publicado con la que está corriendo. */
-const VERSION_MODULO = "2026-11-16-ct4";
+const VERSION_MODULO = "2026-11-16-ct6";
 async function chequearVersion(){
   try{
     const r = await fetch(location.pathname + "?_v=" + Date.now(), {cache:"no-store"});

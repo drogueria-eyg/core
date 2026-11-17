@@ -481,6 +481,8 @@
   .ppempty{text-align:center;padding:26px 16px;color:var(--gris);background:var(--surface);border:1px dashed var(--line);border-radius:12px}
   .pprow .ntslot:empty{display:none}   /* panel ajeno: no hay boton, la columna se cierra */
   .pprow .ntslot{display:flex;gap:4px;align-items:center;justify-content:flex-end}
+  .csrc.ctesp{background:#F5E4DD;color:#A6453A}.csrc.ctinf{background:#FFF1C9;color:#7A5500}.csrc.ctef{background:#E3EEDD;color:#2E7A4E}.csrc.ctpag{background:#E3EEDD;color:#2E7A4E}
+  .pprow .ppsend.ctav{font-size:12px;font-weight:800;background:#0F3D33;color:#D7F75B;padding:6px 10px;border-radius:8px;white-space:nowrap}
   .pprow .ppsend{background:none;border:none;cursor:pointer;font-size:15px;line-height:1;padding:4px 6px;border-radius:9px;color:var(--teal-deep)}
   .pprow .ppsend:hover{background:var(--agua)}
   @media(max-width:560px){ .pprow{grid-template-columns:1fr auto auto} .pprow .go{display:none} }
@@ -1084,7 +1086,7 @@ async function cargar(){
       rpc("account.payment","read_group",[[["partner_id","in",ids],["payment_type","=","inbound"],["state","=","posted"],["date",">=",hace(100)]],["amount:sum"],[]],{lazy:false}).catch(()=>[]),
       rpc("account.move","search_read",[[["partner_id","in",ids],["move_type","in",["out_invoice","out_refund"]],["state","=","posted"],["invoice_date",">=",hace(190)],EYG.VENTA_REAL]],{fields:["invoice_date","amount_untaxed","move_type"],limit:0}).catch(()=>[]),
       // Presupuestos abiertos del comercial (draft=borrador/carrito web · sent=enviado o pedido web cerrado sin confirmar).
-      rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["draft","sent"]]]],{fields:["id","name","partner_id","amount_total","amount_untaxed","create_date","write_date","website_id","order_line","state","is_abandoned_cart","cart_quantity"],order:"write_date desc",limit:0}).catch(()=>[])
+      rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["draft","sent"]]]],{fields:["id","name","partner_id","amount_total","amount_untaxed","create_date","write_date","website_id","order_line","state","is_abandoned_cart","cart_quantity","tag_ids"],order:"write_date desc",limit:0}).catch(()=>[])
     ]);
     // aplicar bóveda: los contactos archivados salen de la cartera (los revisa la gerencia)
     { const seen=new Set(), bov=new Set();
@@ -1092,6 +1094,7 @@ async function cargar(){
         if(seen.has(m.res_id)) return; seen.add(m.res_id);
         if(/salir/i.test((m.body||"").replace(/<[^>]+>/g," "))) return; bov.add(m.res_id); });
       if(bov.size) ST.contactos=ST.contactos.filter(c=>!bov.has(c.id)); }
+    try{ CT_TAGS=String(await rpc("ir.config_parameter","get_param",["eyg.ofertas_contado_tags"])||"").split(",").map(x=>parseInt(x,10)||0); }catch(e){}
     ST.orders={}; og.forEach(g=>{if(g.partner_id)ST.orders[g.partner_id[0]]={ultima:g.date_order,pedidos:g.__count,total:g.amount_total};});
     // Historial de pedidos (190 d) = fuente única de la vista de pedidos y de las métricas.
     // La fecha se pasa a hora ARGENTINA una sola vez (Odoo guarda en UTC: sin convertir, todo lo
@@ -1624,7 +1627,11 @@ function ntResumen(){
 /* ===== PEDIDOS: fechas, orígenes y métricas =====
    Todo lo que se filtra o se cuenta acá usa la fecha ARGENTINA del pedido (o.__d), no el
    date_order crudo de Odoo (que viene en UTC). */
-const PED_FIELDS=["partner_id","date_order","amount_total","amount_untaxed","website_id","name","origin","create_uid","invoice_status","state"];
+const PED_FIELDS=["partner_id","date_order","amount_total","amount_untaxed","website_id","name","origin","create_uid","invoice_status","state","tag_ids"];
+/* Superofertas de contado: etiquetas [ESPERANDO PAGO, PAGADO, EFECTIVO, PAGO INFORMADO] (eyg.ofertas_contado_tags).
+   En la lista de pedidos/presupuestos se marca el estado del cobro y, si espera el pago, el botón "Avisar pago"
+   (abre Cargar venta en el aviso a Cobranzas, con el comprobante). */
+let CT_TAGS=[0,0,0,0];
 const pedFechaAR=f=>{ if(!f) return ""; try{ return EYG.argParts(f).date; }catch(e){ return String(f).slice(0,10); } };
 const dSum=(s,n)=>{ const d=new Date(s+"T12:00:00"); d.setDate(d.getDate()+n); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
 const lunesDe=s=>{ const d=new Date(s+"T12:00:00"); return dSum(s,-((d.getDay()+6)%7)); };
@@ -2109,11 +2116,19 @@ function ppRow(o,t){
   const pin=ntEsMiPanel()?`<button class="ntpin${ent?" ent":fac?" fac":""}" onclick="event.stopPropagation();ntDelPedido(${o.id})"
       title="${ntTit}">${ntIc}${nAnot?`<b> ${nAnot}</b>`:""}</button>`:"";
   const send=(t==="pres")?`<button class="ppsend" title="Enviar o imprimir este presupuesto" onclick="event.stopPropagation();EYGPP.abrir(${o.id})">📤</button>`:"";
+  // superofertas de contado: estado del cobro + Avisar pago
+  const tg=o.tag_ids||[], [cE,cP,cF,cI]=CT_TAGS; let ctTag="", ctBtn="";
+  if(cE && !(cP&&tg.includes(cP)) && (tg.includes(cE)||(cF&&tg.includes(cF)))){
+    if(cF&&tg.includes(cF)) ctTag='<span class="csrc ctef" title="Se cobra en efectivo al entregar; Cobranzas lo asienta cuando llega la plata">💵 efectivo · a cobrar</span>';
+    else if(cI&&tg.includes(cI)) ctTag='<span class="csrc ctinf" title="Ya avisaste el pago: Cobranzas lo verifica, lo asienta y libera la entrega">📨 pago avisado</span>';
+    else { ctTag='<span class="csrc ctesp" title="Superoferta de contado: la entrega está trabada hasta que Cobranzas asiente el pago">💵 esperando pago</span>';
+      ctBtn=`<button class="ppsend ctav" title="El cliente te mandó el comprobante: avisale a Cobranzas (podés adjuntarlo)" onclick="event.stopPropagation();location.href='${venderURL('avisar='+o.id)}'">📨 Avisar pago</button>`; }
+  } else if(cP && tg.includes(cP)) ctTag='<span class="csrc ctpag" title="Superoferta de contado: cobro asentado por Cobranzas">💵 pagado</span>';
   return `<div class="pprow${cerrado?' urge':''}" onclick="${click}">
-    <div><div class="cli">${esc(cli)}${tag}</div>
+    <div><div class="cli">${esc(cli)}${tag}${ctTag}</div>
     <div class="meta">${esc(o.name||'')}${extra?' · '+extra:''}${f?' · '+f:''}</div></div>
     <div class="tot">${money(monto)}</div>
-    <div class="ntslot">${send}${pin}</div>
+    <div class="ntslot">${ctBtn}${send}${pin}</div>
     <div class="go">${go}</div>
   </div>`;
 }

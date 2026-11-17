@@ -26,7 +26,7 @@ window.EYGContado = (function(){
   const nf=n=>Math.round(n||0).toLocaleString("es-AR");
   const esc=s=>EYG.esc(s);
   const precioDe=(ref,d)=>Math.floor(ref*(1-d/100)*100+0.5)/100;   // la cuenta del motor
-  let DOC=null, VIVO={}, ERR="", OCUPADO=false, MSG="", PED=[], TAGS={esp:0,pag:0,efe:0};
+  let DOC=null, VIVO={}, ERR="", OCUPADO=false, MSG="", PED=[], TAGS={esp:0,pag:0,efe:0,inf:0};
   try{ MSG=sessionStorage.getItem("ct_msg")||""; sessionStorage.removeItem("ct_msg"); }catch(e){}
   /* después de activar o desactivar se recarga la página: así el módulo relee las ofertas y su sincronización
      de listas institucionales saca las copias de las ofertas que se pausaron */
@@ -56,7 +56,7 @@ window.EYGContado = (function(){
     PED=[];
     try{
       const t=String(await gp("eyg.ofertas_contado_tags")||"").split(",").map(x=>parseInt(x,10)||0);
-      TAGS={esp:t[0]||0, pag:t[1]||0, efe:t[2]||0}; if(!TAGS.esp) return;
+      TAGS={esp:t[0]||0, pag:t[1]||0, efe:t[2]||0, inf:t[3]||0}; if(!TAGS.esp) return;
       const desde=new Date(Date.now()-30*864e5).toISOString().slice(0,10);
       PED=await rpc("sale.order","search_read",[[["tag_ids","in",[TAGS.esp,TAGS.pag,TAGS.efe].filter(Boolean)],["state","in",["sent","sale"]],["date_order",">=",desde]]],
         {fields:["name","partner_id","amount_total","state","date_order","tag_ids","user_id"],order:"date_order desc",limit:200})||[];
@@ -72,31 +72,25 @@ window.EYGContado = (function(){
       <td>${esc(p.partner_id?p.partner_id[1]:"")}<div class="ctsub">${esc(p.user_id?p.user_id[1]:"sin comercial")}</div></td>
       <td class="n"><b>${c2(p.amount_total)}</b></td>
       <td>${pend?(efe(p)?'<span class="chip" style="background:#F4F8E4;color:#3D5A00;font-weight:700">EFECTIVO CONTRA ENTREGA · a cobrar (proforma)</span>':'<span class="chip" style="background:#F5E4DD;color:#A6453A;font-weight:700">ESPERANDO PAGO · '+(p.state==="sale"?"confirmado, entrega trabada":"sin confirmar")+'</span>'):'<span class="chip" style="background:#E3EEDD;color:#2E7A4E;font-weight:700">PAGADO · '+(p.state==="sale"?"confirmado":"sin confirmar")+'</span>'}</td>
-      <td class="n">${pend?`<button class="btn sm" ${OCUPADO?"disabled":""} onclick="EYGContado.pagoRecibido(${p.id})">${efe(p)?"Cobrado":"Pago recibido"}</button>`:""}</td></tr>`;
+      <td class="n">${pend?`<button class="btn sm" ${OCUPADO?"disabled":""} onclick="EYGContado.pagoRecibido(${p.id})">${efe(p)?"Asentar efectivo":"Asentar y liberar"}</button>`:""}</td></tr>`;
     return `<div class="ctped">
       <div class="ctpedt">Pedidos de superofertas <span class="ctsub">· últimos 30 días · se pagan por transferencia antes de prepararse (o en efectivo al recibir, sólo proforma)</span></div>
       ${PED.length?`<div class="cttw"><table class="cttab"><thead><tr><th>Pedido</th><th>Cliente</th><th class="n">Total</th><th>Estado</th><th></th></tr></thead><tbody>${esp.map(p=>fila(p,true)).join("")}${pag.map(p=>fila(p,false)).join("")}</tbody></table></div>`
         :'<div class="ctsub" style="padding:6px 0">Todavía no hay pedidos de superofertas.</div>'}
-      <div class="ctsub">Cuando llegue el comprobante por WhatsApp, verificá la acreditación en Mercado Pago (alias eyg.mpago) y tocá <b>Pago recibido</b>: se libera la entrega (hasta ahí está en gris y trabada en Odoo) y el depósito lo puede armar. Cobranzas también puede hacerlo desde Odoo: en el pedido, Acción → "💵 Superoferta: pago recibido".</div>
+      <div class="ctsub">Cuando llegue el comprobante por WhatsApp, verificá la acreditación en Mercado Pago (alias eyg.mpago) y tocá <b>Asentar y liberar</b> (crea el recibo RE-X en Mercado Pago, o en Efectivo B si es efectivo): se libera la entrega (hasta ahí está en gris y trabada en Odoo) y el depósito lo puede armar. Cobranzas también puede hacerlo desde Odoo: en el pedido, Acción → "💵 Superoferta: asentar cobro y liberar"; y en el Core, Cobranzas → Superofertas a asentar.</div>
     </div>`;
   }
   async function pagoRecibido(id){
     const p=PED.find(x=>x.id===id); if(!p||OCUPADO) return;
     if(!confirm("¿Registrar el pago de "+c2(p.amount_total)+" del pedido "+p.name+" ("+(p.partner_id?p.partner_id[1]:"")+")?\n\n"+((TAGS.efe&&p.tag_ids.includes(TAGS.efe))?"Es EFECTIVO contra entrega: confirmalo cuando la plata llegó a Cobranzas.":"Confirmalo sólo si ya viste la plata acreditada en Mercado Pago. Se libera la entrega y el depósito lo puede armar."))) return;
-    OCUPADO=true; MSG="Registrando el pago de "+p.name+"…"; repintar();
+    OCUPADO=true; MSG="Asentando el cobro de "+p.name+"…"; repintar();
     try{
-      await rpc("sale.order","write",[[id],{tag_ids:[[3,TAGS.esp],[4,TAGS.pag]]}]);
-      if(p.state!=="sale"){
-        try{ await rpc("sale.order","action_confirm",[[id]]); }
-        catch(e){ await rpc("sale.order","write",[[id],{tag_ids:[[3,TAGS.pag],[4,TAGS.esp]]}]).catch(()=>{}); throw e; }
-      }
-      // Odoo libera la entrega solo al ver PAGADO (automatización); esto es por las dudas
-      const pk=await rpc("stock.picking","search",[[["sale_id","=",id],["picking_type_code","=","outgoing"],["state","not in",["done","cancel"]]]]).catch(()=>[]);
-      if(pk&&pk.length) await rpc("stock.picking","write",[pk,{x_eyg_espera_pago:false}]).catch(()=>{});
+      // misma acción que Cobranzas usa en Odoo y en el Core: crea el RE-X (Mercado Pago / Efectivo B), imputa, PAGADO y libera
       const quien=(window.EYG&&EYG.perfil&&EYG.perfil.nombre)||"el Core";
-      await rpc("sale.order","message_post",[[id]],{body:((TAGS.efe&&p.tag_ids.includes(TAGS.efe))?"Superofertas de contado: cobro en EFECTIVO (contra entrega) registrado":"Superofertas de contado: pago por transferencia registrado")+" en el Core ("+quien+"). Entrega liberada para preparar.",message_type:"comment",subtype_xmlid:"mail.mt_note"}).catch(()=>{});
-      MSG="Pago registrado: "+p.name+" quedó liberado; el depósito ya lo puede armar.";
-    }catch(e){ MSG="No se pudo confirmar "+p.name+": "+String(e.message||e).slice(0,300)+"\nEl pedido sigue esperando pago."; }
+      await rpc("ir.actions.server","run",[[1336]],{context:{active_model:"sale.order",active_id:id,active_ids:[id],eyg_quien:quien}});
+      const pg=await rpc("account.payment","search_read",[[["ref","=","Superoferta "+p.name],["state","=","posted"]]],{fields:["name","journal_id"],limit:1}).catch(()=>[]);
+      MSG="Cobro asentado: "+p.name+(pg&&pg[0]?" · recibo "+pg[0].name+" ("+pg[0].journal_id[1]+")":"")+". Entrega liberada.";
+    }catch(e){ MSG="No se pudo asentar "+p.name+": "+String(e.message||e).slice(0,300)+"\nEl pedido sigue esperando pago."; }
     await cargarPedidos(); OCUPADO=false; repintar();
   }
   const activa=()=>DOC&&DOC.estado==="activa";
