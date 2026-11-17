@@ -806,6 +806,12 @@ window.EYG = (function(){
        la droguería (ventas, compras, margen, pedidos, canales, rubros y mapa por
        departamento de Santa Fe). Reemplaza al placeholder "Radiografía". Sólo
        admin/dirección: muestra toda la plata de la empresa. */
+    /* PLAN RUEDA (17/11/2026): el seguimiento de la estrategia que arrancó el 16/11 — que el stock
+       gire y vuelva como plata de contado (Superofertas de contado + freno de compras + stock hacia
+       la meta de fondo). Día a día contra los N días anteriores, márgenes con y sin comisión, cobro,
+       clientes y proyección. El cálculo vive en assets/rueda.js (sólo lee Odoo). Muestra plata y
+       márgenes: sólo Dirección. */
+    {key:"rueda", dept:"direccion", cat:"Dirección", ico:"🔄", titulo:"Plan Rueda", desc:"Cómo rinde la estrategia de stock que gira y plata de contado: superofertas día a día, márgenes exactos con y sin comisión, cobro, clientes, compras y stock, comparado con lo que venía pasando.", roles:["direccion"], ready:true, path:()=>"direccion/rueda.html"},
     {key:"metricas",dept:"direccion", cat:"Dirección", ico:"📊", titulo:"Métricas", desc:"Ventas, compras y margen de toda la droguería desde marzo 2025, con pedidos sin facturar, canales, rubros, productos, comerciales y el mapa de ventas por departamento de Santa Fe. Cada número se comprueba al centavo.", roles:["direccion"], ready:true, path:()=>"direccion/metricas.html"},
     /* EN PRUEBAS: el mapa vivo del sistema (registro maestro / ley). Sólo super-admins
        hasta liberarlo: borrar la línea `pruebas` de acá y el {pruebas:…} del
