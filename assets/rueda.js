@@ -74,13 +74,37 @@
     let CIERRE = null;
     if(ultCierre){ try{ CIERRE = JSON.parse(await gp("eyg.comisiones_cierre_"+ultCierre)||"null"); }catch(e){} }
 
+    let DIN=null; try{ DIN=JSON.parse(await gp("eyg.ofertas_contado_dinamico")||"null"); }catch(e){}
+    let SYNC=[]; try{ const x=JSON.parse(await gp("eyg.sync_ofertas")||"[]"); SYNC=Array.isArray(x)?x:Object.values(x); }catch(e){}
     const T0 = dUTC(OF.activadaEn);
     const dia0 = diaAR(T0);
     const desde = addDias(dia0, -DIAS_ANTES);
     const desdeUTC = odooUTC(new Date(new Date(desde+"T00:00:00Z").getTime()+AR_OFF));
     const altaDe = {}; for(const a of (OF.agregados||[])) altaDe[a.tmpl] = a.at;
     const items = OF.items.map(i=>({ ...i, alta: altaDe[i.tmpl] || OF.activadaEn, diaAlta: diaAR(altaDe[i.tmpl] || OF.activadaEn) }));
+    const CAMB = (OF.cambios||[]).slice().sort((a,b)=>String(a.at)<String(b.at)?-1:1);
+    /* precio que tenía la oferta en un instante: el del último cambio anterior; antes del primero, su "antes" */
+    function precioEn(it, cuando){
+      const t = dUTC(cuando)||new Date(); const cs = CAMB.filter(c=>c.tmpl===it.tmpl);
+      let pr = null; for(const c of cs){ if(dUTC(c.at) <= t) pr = +c.precio; }
+      if(pr==null){ const prim = cs.find(c=>c.antes!=null); pr = prim ? +prim.antes : +it.precio; }
+      return pr||0;
+    }
+    /* la regla estuvo pausada hasta que la acción dinámica la reactivó ("estaba pausada" en el registro) */
+    function estabaPausada(it, cuando){
+      const t = dUTC(cuando); if(!t) return false;
+      const c = CAMB.find(c=>c.tmpl===it.tmpl && c.auto && /estaba pausada/.test(c.motivo||"") && dUTC(c.at) > t);
+      return !!c && t >= dUTC(OF.activadaEn);
+    }
     const pids = items.map(i=>i.pid);
+    const PIT = await rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",items.map(i=>i.tmpl)]]],{fields:["product_tmpl_id","fixed_price","min_quantity"]});
+    const PVPS = {}; for(const t of await rpc("product.template","read",[items.map(i=>i.tmpl),["list_price"]])) PVPS[t.id]=+t.list_price||0;
+    for(const it of items){
+      const regla = SYNC.find(x=>x&&x.id==="ct"+it.tmpl)||null;
+      const esc = PIT.filter(p=>id0(p.product_tmpl_id)===it.tmpl).sort((a,b)=>a.min_quantity-b.min_quantity).map(p=>[p.min_quantity,+p.fixed_price||0]);
+      it.odoo = { pausada: !!(regla&&regla.pausada), pausaPvp: regla&&regla.pausa_pvp||null, sinRegla: !regla, escalera: esc, pvpHoy: PVPS[it.tmpl]||null,
+        ok: esc.length===1 && Math.abs(esc[0][1]-(+it.precio||0))<0.011 && !(regla&&regla.pausada) };
+    }
     const PID = {}; items.forEach(i=>PID[i.pid]=i);
 
     /* ---------- comisión por comercial (última liquidación) ---------- */
@@ -97,7 +121,7 @@
     /* ---------- renglones de los productos del plan (antes y después) ---------- */
     progreso("Trayendo las ventas de los productos de la oferta…");
     const L = await rpc("sale.order.line","search_read",[[["product_id","in",pids],["state","in",["sale","done","sent","draft"]],["order_id.date_order",">=",desdeUTC]]],
-      {fields:["product_id","product_uom_qty","qty_delivered","price_subtotal","price_total","price_unit","discount","purchase_price","margin","order_id","order_partner_id","salesman_id","state"],limit:50000});
+      {fields:["product_id","product_uom_qty","qty_delivered","price_subtotal","price_total","price_unit","discount","purchase_price","margin","order_id","order_partner_id","salesman_id","state","create_date"],limit:50000});
     const orderIds = [...new Set(L.map(l=>id0(l.order_id)))];
     /* pedidos con etiqueta de superoferta desde el inicio (por si alguno no tiene renglón de los 36: se avisa) */
     const tagOrders = TAGS.length ? await rpc("sale.order","search",[[["tag_ids","in",TAGS],["date_order",">=",odooUTC(new Date(T0.getTime()-2*864e5))]]]) : [];
@@ -121,14 +145,32 @@
       const it = PID[id0(l.product_id)];
       const uid = id0(o.user_id);
       const com = COMERCIAL[uid];
-      const qty = +l.product_uom_qty||0, neto = +l.price_subtotal||0, margen = +l.margin||0;
+      const qty = +l.product_uom_qty||0, neto = +l.price_subtotal||0, margenOdoo = +l.margin||0;
+      const costoOdoo = r2(neto-margenOdoo), sup = esSuper(o);
+      /* COSTO DEL PRODUCTO para una superoferta = el del plan, que es sobre el que se fija el 10% (Diego, 17/11:
+         "el 10% es solo sobre el costo del producto, el resto le va comiendo"): el mayor entre el costo del motor y
+         la última factura, y lo mantiene al día la acción "Superofertas: precio dinámico". La comisión de la
+         comercial y la de Mercado Pago salen DE ESE margen. El costo con que Odoo valuó la salida (purchase_price)
+         queda sólo como referencia: puede venir de la orden de compra y no de la factura (alcohol en gel: OC
+         1.056,25 contra factura 982,31 neto). */
+      const costoPlan = it ? r2((+it.costo||0)*qty) : costoOdoo;
+      const costo = sup && it ? costoPlan : costoOdoo;
+      const margen = r2(neto - costo);
+      /* ¿se cobró al precio de la oferta? neto por unidad contra el precio anunciado (sin IVA) */
+      const unit = qty ? neto/qty : 0;
+      const desvio = sup && it && qty ? r2(neto - precioEn(it, l.create_date)*qty) : 0;
       return {
         id:l.id, pid:id0(l.product_id), tmpl:it?it.tmpl:null, order:id0(l.order_id), pedido:o.name||nm(l.order_id),
         estado:o.state||l.state, confirmado: ["sale","done"].includes(o.state||l.state),
         fecha:o.date_order, dia:diaAR(o.date_order), lista:id0(o.pricelist_id), farmacia:id0(o.pricelist_id)===3,
         canal:canalDe(o), partner:id0(o.partner_id)||id0(l.order_partner_id), cliente:nm(o.partner_id)||nm(l.order_partner_id),
-        uid, vendedor:nm(o.user_id), super:esSuper(o), pago:estadoPago(o),
-        qty, entregado:+l.qty_delivered||0, neto, total:+l.price_total||0, costo:r2(neto-margen), margen,
+        uid, vendedor:nm(o.user_id), super:sup, pago:estadoPago(o),
+        qty, entregado:+l.qty_delivered||0, neto, total:+l.price_total||0, costo, margen, costoOdoo, margenOdoo, costoPlan,
+        unit, precioOferta: it ? precioEn(it, l.create_date) : null,
+        desvio: Math.abs(desvio) >= Math.max(0.02*qty, 0.5) ? desvio : 0,
+        /* por qué no coincide: el renglón se cargó antes de que el producto entrara en la oferta, o venía de un
+           presupuesto armado antes del arranque (al separar el pedido se copió el precio viejo) */
+        causa: !(sup && it) ? null : estabaPausada(it, l.create_date) ? "la oferta estaba pausada por un cambio de PVP (se cobró el precio normal)" : (dUTC(l.create_date) < dUTC(it.alta) ? (dUTC(o.create_date) < T0 ? "presupuesto anterior al arranque" : "cargado antes de que el producto entrara en la oferta") : (/aparte de/i.test(String(o.origin||"")) ? "se separó de un presupuesto y quedó con el precio viejo" : "precio distinto al de la oferta")),
         precio:+l.price_unit||0, desc:+l.discount||0,
         comision: com ? r2(neto*com.tasa) : 0, comisionNivel: com ? r2(neto*com.tasa*com.mult) : 0,
         despuesAlta: it ? (dUTC(o.date_order) >= dUTC(it.alta)) : false,
@@ -155,7 +197,9 @@
       const uid=id0(o.user_id), com=COMERCIAL[uid];
       return { id:o.id, name:o.name, fecha:o.date_order, creado:o.create_date, dia:diaAR(o.date_order), estado:o.state, confirmado:["sale","done"].includes(o.state),
         canal:canalDe(o), partner:id0(o.partner_id), cliente:nm(o.partner_id), uid, vendedor:nm(o.user_id), comercial:com||null,
-        pago:estadoPago(o), neto:+o.amount_untaxed||0, total:+o.amount_total||0, margen:+o.margin||0,
+        pago:estadoPago(o), neto:+o.amount_untaxed||0, total:+o.amount_total||0,
+        margen: ls.length ? r2(ls.reduce((a,l)=>a+l.margen,0) + ((+o.margin||0) - ls.reduce((a,l)=>a+l.margenOdoo,0))) : +o.margin||0,
+        desvio: r2(ls.reduce((a,l)=>a+l.desvio,0)),
         comision: com?r2((+o.amount_untaxed||0)*com.tasa):0, comisionNivel: com?r2((+o.amount_untaxed||0)*com.tasa*com.mult):0,
         cobro:c, horasAlCobro: c&&c.cuando ? Math.max(0,(dUTC(c.cuando)-dUTC(o.create_date||o.date_order))/36e5) : null,
         renglones: ls.length, unidades: ls.reduce((a,l)=>a+l.qty,0) };
@@ -277,7 +321,7 @@
     progreso("Listo.");
     return {
       generado: ahora.toISOString(), hoy, dia0, T0: OF.activadaEn, desde, diasAntes: DIAS_ANTES,
-      oferta: { nombre:OF.nombre, estado:OF.estado, hasta:OF.hasta||null, margenMin:OF.margenMin, items, cambios:OF.cambios||[] },
+      oferta: { nombre:OF.nombre, estado:OF.estado, hasta:OF.hasta||null, margenMin:OF.margenMin, items, cambios:OF.cambios||[] }, dinamico: DIN,
       tags: TAG, comerciales: COMERCIAL, tasas, ultCierre,
       lineas, pedidos, cobros, clientes, prod36, serie, stockSerie,
       stockHoy: r2(valorCierre[hoy]), stockQuants: r2(valorHoy), dsoFarm, dsoCli, CANALES, feriados: COMI.feriados||[],

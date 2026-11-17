@@ -129,7 +129,7 @@
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js?v=127"></script>
-<script src="../assets/rueda.js?v=1"></script>
+<script src="../assets/rueda.js?v=2"></script>
 <script>
 /* =====================================================================
    PLAN RUEDA — el seguimiento de la estrategia que arrancó el 16/11/2026:
@@ -313,6 +313,9 @@ function pintar(){
     {id:"p-stock", l:"Stock valorizado", v:$M(D.stockHoy), d:`${delta(C.stockArr,D.stockHoy,true)} desde el arranque (${$M(D.stockHoy-C.stockArr)})<div class="barra" title="Cuánto falta para la meta de fondo"><span style="width:${Math.max(1.5,Math.min(100,(C.stockArr-D.stockHoy)/(C.stockArr-META_STOCK)*100)).toFixed(1)}%"></span></div><span class="muted">avance hacia la meta de fondo (${$M(META_STOCK)}): ${pc(Math.max(0,(C.stockArr-D.stockHoy)/(C.stockArr-META_STOCK)),1)}</span>`},
     {id:"p-drog", l:"Compras por día hábil", v:$M(g.compras[1]), d:`${delta(g.compras[0],g.compras[1],true)} contra ${$M(g.compras[0])} antes<br>el freno de compras`},
   ];
+  const caidas=D.oferta.items.filter(i=>i.odoo&&!i.odoo.ok);
+  $("alerta-odoo").innerHTML=caidas.length?`<div class="alerta bad"><b>⚠ ${caidas.length} superoferta${caidas.length>1?"s":""} NO ${caidas.length>1?"están":"está"} vigente${caidas.length>1?"s":""} en Odoo</b>: hoy se venden a otro precio que el anunciado (y el portal las esconde porque el precio no coincide).
+    <div class="tblw" style="margin-top:8px"><table class="t" style="font-size:12px"><thead><tr><th>Producto</th><th>Qué pasó</th><th class="n">Precio de la oferta</th><th>Lista Farmacias hoy</th><th class="n">PVP al armarla → hoy</th></tr></thead><tbody>${caidas.map(i=>`<tr><td>${esc(corto(i.nombre))}</td><td>${i.odoo.pausada?(i.odoo.pausaPvp?"pausada sola el "+esc(i.odoo.pausaPvp)+" porque AlfaBeta cambió el PVP":"pausada"):i.odoo.sinRegla?"sin regla en el motor":"el precio no coincide"}</td><td class="n">${$2(i.precio)}</td><td>${i.odoo.escalera.map(e=>"desde "+e[0]+" u "+$2(e[1])).join(" · ")||"—"}</td><td class="n">${$2(i.ref)} → ${$2(i.odoo.pvpHoy)}</td></tr>`).join("")}</tbody></table></div></div>`:"";
   $("kpis").innerHTML=k.map(x=>`<div class="kpi" data-go="${x.id}"><div class="l">${x.l}</div><div class="v">${x.v}</div><div class="d">${x.d}</div></div>`).join("");
   $("kpis").querySelectorAll(".kpi").forEach(e=>e.onclick=()=>{ const p=$(e.dataset.go); if(p) p.scrollIntoView({behavior:"smooth",block:"start"}); });
 
@@ -370,12 +373,17 @@ function pintarMargen(C){
   $("cascada").innerHTML=`<div class="h">Concepto</div><div class="h n">Pesos</div><div class="h n">% sobre la venta</div>
     ${fila("Venta con IVA (lo que paga la farmacia)",t.total,"menos","Total de los renglones con IVA",true)}
     ${fila("Venta neta sin IVA",t.neto,"tot","Lo que factura la droguería, sin IVA")}
-    ${fila("− Costo de la mercadería",-t.costo,"","Costo del renglón en Odoo (el que usa para el margen del pedido)")}
-    ${fila("= Margen bruto · SIN comisión",t.margen,"tot","Venta neta − costo")}
+    ${fila("− Costo del producto",-t.costo,"","El costo del plan: el mayor entre el costo del motor y la última factura, el mismo sobre el que se fija el 10%")}
+    ${fila("= Margen sobre el costo del producto · SIN comisión",t.margen,"tot","Venta neta − costo del producto. Es el margen sobre el que se fijó el mínimo de 10%")}
     ${fila(`− Comisión de la comercial (${comiN?"con nivel":"tasa base"})`,-t.comi,"","Neto × tasa base del perfil"+(comiN?" × multiplicador de nivel del último mes liquidado":""))}
     ${fila("= Margen CON comisión",t.margen-t.comi,"tot","")}
     ${fila("− Comisión de Mercado Pago (real)",-t.mp,"","Lo que Mercado Pago descontó de cada transferencia (asiento a Gastos Bancarios)")}
     ${fila("= Te queda limpio",t.queda,"fin","Margen − comisión de la comercial − Mercado Pago")}`;
+  const desv=C.sup.filter(l=>l.desvio);
+  const mgOdoo=sum(C.sup,l=>l.margenOdoo);
+  $("margen-alertas").innerHTML=(desv.length?`<div class="alerta ${desv.some(l=>l.desvio<0)?"bad":""}"><b>⚠ ${desv.length} renglón${desv.length>1?"es":""} cobrado${desv.length>1?"s":""} a un precio distinto al de la oferta</b> (${desv.some(l=>l.desvio>0)?"de más: "+$0(sum(desv.filter(l=>l.desvio>0),l=>l.desvio)):""}${desv.some(l=>l.desvio>0)&&desv.some(l=>l.desvio<0)?" · ":""}${desv.some(l=>l.desvio<0)?"de menos: "+$0(-sum(desv.filter(l=>l.desvio<0),l=>l.desvio)):""}, sin IVA)
+      <div class="tblw" style="margin-top:8px;max-height:260px"><table class="t" style="font-size:12px"><thead><tr><th>Pedido</th><th>Cliente</th><th>Comercial</th><th>Producto</th><th class="n">Unid.</th><th class="n">Cobrado c/u</th><th class="n" title="Precio que tenía la oferta cuando se cargó el renglón">Oferta c/u</th><th class="n">Diferencia</th><th>Por qué</th></tr></thead><tbody>${desv.map(l=>{ const it=D.oferta.items.find(i=>i.pid===l.pid)||{}; return `<tr><td>${esc(l.pedido)}</td><td>${esc(l.cliente)}</td><td>${esc(l.vendedor)}</td><td>${esc(corto(it.nombre))}</td><td class="n">${u(l.qty)}</td><td class="n">${$2(l.unit)}</td><td class="n">${$2(l.precioOferta)}</td><td class="n ${l.desvio<0?"neg":""}">${$2(l.desvio)}</td><td>${esc(l.causa||"")}</td></tr>`; }).join("")}</tbody></table></div></div>`:'<div class="nota" style="margin-top:0">✓ Todos los renglones se cobraron al precio exacto de la oferta.</div>')
+    +`<div class="nota">El margen se mide contra el <b>costo del producto del plan</b> (el mayor entre el costo del motor y la última factura), que es sobre el que se fija el mínimo de 10%. Con el costo con que Odoo valuó cada salida daría ${pc(mgOdoo/n)}: Odoo a veces toma el de la orden de compra en vez del de la factura.</div>`;
   // en qué se va cada $100
   const parts=[{n:"Costo",v:t.costo,c:"var(--gris2)"},{n:"Comisión comercial",v:t.comi,c:"var(--s2)"},{n:"Mercado Pago",v:t.mp,c:"var(--s4)"},{n:"Te queda",v:Math.max(0,t.queda),c:"var(--s3)"}];
   $("peso").innerHTML=parts.map(p=>`<div style="flex:${Math.max(p.v,0)} 1 0;background:${p.c}" title="${esc(p.n)}: ${$0(p.v)} (${pc(p.v/n)})">${p.v/n>.06?pc(p.v/n,0):""}</div>`).join("");
@@ -400,6 +408,11 @@ function pintarProductos(C){
   const ord={neto:p=>-p.neto, liq:p=>-p.liq, lift:p=>-(p.lift===Infinity?1e9:(p.lift||0)), stock:p=>-p.valorHoy, cob:p=>-(p.cobD==null?1e9:p.cobD), nombre:p=>p.it.nombre}[ST.ordProd]||(p=>-p.neto);
   const ps=C.prods.filter(p=>!q||p.it.nombre.toLowerCase().includes(q)||String(p.it.sku||"").toLowerCase().includes(q)).sort((a,b)=>{ const x=ord(a),y=ord(b); return x<y?-1:x>y?1:0; });
   const sinVenta=C.prods.filter(p=>!p.qS).length;
+  const din=D.dinamico||{}, hist=(din.historial||[]).slice().reverse(), al=din.alertas||[];
+  $("prod-din").innerHTML=`<details class="como" ${al.length?"open":""}><summary>Precio dinámico · ${din.at?"última revisión "+esc(din.at):"todavía no corrió"} · ${hist.length} cambio${hist.length===1?"":"s"} automático${hist.length===1?"":"s"}${al.length?" · ⚠ "+al.length+" alerta"+(al.length>1?"s":""):""}</summary>
+    <div class="nota" style="margin-top:4px">Cada 30 minutos, y en el momento en que AlfaBeta cambia un PVP, Odoo recalcula cada superoferta con la regla: costo = el mayor entre el costo del motor y la última factura; descuento = el entero más alto que deje al menos 10% de margen, sobre el PVP de hoy en los éticos y sobre el precio de lista en el resto. Si cambia, actualiza el motor y verifica la lista Farmacias al centavo. No se pausa salvo que ni sin descuento llegue al 10%. Si el costo salta más de 15% de golpe, no toca el precio y avisa para revisar la factura.</div>
+    ${al.map(a=>`<div class="alerta ${a.tipo==="pausa"?"bad":""}">${esc(corto(a.nombre))}: ${esc(a.msg)}</div>`).join("")}
+    ${hist.length?`<div class="tblw" style="margin-top:8px;max-height:260px"><table class="t" style="font-size:12px"><thead><tr><th>Cuándo</th><th>Producto</th><th class="n">Antes</th><th class="n">Ahora</th><th class="n">Margen</th><th>Por qué</th></tr></thead><tbody>${hist.map(c=>`<tr><td style="white-space:nowrap">${esc(c.at)}</td><td>${esc(corto(c.nombre))}</td><td class="n">−${esc(c.desc_antes)}% ${$2(c.antes)}</td><td class="n">−${esc(c.desc)}% ${$2(c.precio)}</td><td class="n">${nf1.format(c.margen)}%</td><td>${esc(c.motivo)}${c.verificado===false?' <span class="chip bad">no verificó</span>':""}</td></tr>`).join("")}</tbody></table></div>`:""}</details>`;
   $("prod-res").innerHTML=`<div class="mini">
     <div><div class="l">Productos con venta</div><div class="v">${C.prods.length-sinVenta} de ${C.prods.length}</div><div class="d">${sinVenta} todavía sin vender</div></div>
     <div><div class="l">Unidades vendidas</div><div class="v">${u(sum(C.prods,p=>p.qS))}</div><div class="d">de ${u(sum(C.prods,p=>p.alAlta))} en stock al arrancar</div></div>
@@ -412,7 +425,7 @@ function pintarProductos(C){
       <td class="n"><div class="barra" style="width:70px;margin:0 0 0 auto" title="Vendido en superofertas sobre el stock al arrancar"><span style="width:${Math.min(100,p.vendidoPct*100).toFixed(1)}%"></span></div>${pc(p.vendidoPct,0)}</td>
       <td class="n">${nf2.format(p.ritA)}<span class="sub">${nf2.format(p.ritAf)} farm.</span></td><td class="n">${nf2.format(p.ritD)}</td><td class="n">${lift}</td><td class="n">${cob(p.cobA)} → ${cob(p.cobD)}</td>
       <td class="n">${p.neto?$0(p.neto):'<span class="muted">—</span>'}</td><td class="n">${p.neto?pc(p.margen/p.neto):""}${p.neto?`<span class="sub">${pc((p.margen-p.comi)/p.neto)} c/com.</span>`:""}</td><td class="n">${$M(p.valorHoy)}</td></tr>
-      <tr class="det" hidden><td colspan="13">${p.ls.length?`<table class="t" style="font-size:12px"><thead><tr><th>Pedido</th><th>Día</th><th>Cliente</th><th>Comercial</th><th>Tipo</th><th class="n">Unid.</th><th class="n">Precio</th><th class="n">Neto</th><th class="n">Costo</th><th class="n">Margen</th></tr></thead><tbody>${p.ls.map(l=>`<tr><td>${esc(l.pedido)}</td><td>${fd(l.dia)}</td><td>${esc(l.cliente)}</td><td>${esc(l.vendedor)}</td><td>${l.super?'<span class="chip ok">superoferta</span>':'<span class="chip neu">fuera de la oferta</span>'}</td><td class="n">${u(l.qty)}</td><td class="n">${$2(l.precio)}${l.desc?`<span class="sub">−${nf2.format(l.desc)}%</span>`:""}</td><td class="n">${$2(l.neto)}</td><td class="n">${$2(l.costo)}</td><td class="n">${$2(l.margen)} <span class="sub">${pc(l.neto?l.margen/l.neto:0)}</span></td></tr>`).join("")}</tbody></table>`:'<span class="muted">Todavía no se vendió desde que entró en la oferta.</span>'}
+      <tr class="det" hidden><td colspan="13">${p.ls.length?`<table class="t" style="font-size:12px"><thead><tr><th>Pedido</th><th>Día</th><th>Cliente</th><th>Comercial</th><th>Tipo</th><th class="n">Unid.</th><th class="n">Precio</th><th class="n">Neto</th><th class="n" title="Costo del producto (plan, o Odoo si es más alto)">Costo</th><th class="n">Margen</th></tr></thead><tbody>${p.ls.map(l=>`<tr><td>${esc(l.pedido)}</td><td>${fd(l.dia)}</td><td>${esc(l.cliente)}</td><td>${esc(l.vendedor)}</td><td>${l.super?'<span class="chip ok">superoferta</span>':'<span class="chip neu">fuera de la oferta</span>'}</td><td class="n">${u(l.qty)}</td><td class="n">${$2(l.precio)}${l.desc?`<span class="sub">−${nf2.format(l.desc)}%</span>`:""}${l.desvio?`<span class="sub neg">⚠ oferta ${$2(l.precioOferta)}</span>`:""}</td><td class="n">${$2(l.neto)}</td><td class="n">${$2(l.costo)}</td><td class="n">${$2(l.margen)} <span class="sub">${pc(l.neto?l.margen/l.neto:0)}</span></td></tr>`).join("")}</tbody></table>`:'<span class="muted">Todavía no se vendió desde que entró en la oferta.</span>'}
         <div class="nota">Antes de la oferta (${C.N} días): ${u(p.qA)} u vendidas (${u(p.qAf)} a farmacias). Precio anterior en la escalera: ${(it.antes||[]).map(a=>`desde ${a[0]} u ${$2(a[1])}`).join(" · ")||"—"}. Costo del plan ${$2(it.costo)}; costo de hoy en el depósito ${$2(p.costoHoy)}.</div></td></tr>`; }).join("");
   $("tb-prod").innerHTML=`<thead><tr><th class="s" data-o="nombre">Producto</th><th class="n" title="Margen de la superoferta sobre el costo del plan">Margen oferta</th><th class="n" title="Unidades en el depósito cuando el producto entró en la oferta">Stock al alta</th><th class="n" title="Unidades vendidas en pedidos de superoferta confirmados">Vendidas</th><th class="n">Stock hoy</th><th class="n s" data-o="liq">Vendido %</th><th class="n" title="Unidades por día hábil en los ${C.N} días antes (todas las listas; abajo, sólo farmacias)">Ritmo antes</th><th class="n" title="Unidades por día hábil desde que entró en la oferta">Ritmo ahora</th><th class="n s" data-o="lift">× vs antes</th><th class="n s" data-o="cob" title="Días hábiles de stock al ritmo de antes → al ritmo de ahora">Cobertura</th><th class="n s" data-o="neto">Vendido $</th><th class="n">Margen</th><th class="n s" data-o="stock" title="Stock de hoy a costo">Stock $</th></tr></thead><tbody>${filas}</tbody>`;
   $("tb-prod").querySelectorAll("th.s").forEach(th=>th.onclick=()=>{ ST.ordProd=th.dataset.o; pintarProductos(C); });
@@ -545,6 +558,7 @@ const MAIN=`<div class="rd">
     <span class="sp"></span><button class="btn" id="btn-act">↻ Actualizar</button>
   </div>
   <div class="status" id="status">Cargando…</div>
+  <div id="alerta-odoo"></div>
   <div class="kpis" id="kpis"></div>
 
   <div class="panel" id="p-dia"><div class="ph"><h2>Día a día</h2><div class="legend" id="leg-dia"></div></div>
@@ -558,14 +572,14 @@ const MAIN=`<div class="rd">
   </div>
 
   <div class="panel" id="p-margen"><div class="ph"><h2>Márgenes exactos · con y sin comisión</h2><span class="hint">Renglón por renglón, al centavo</span></div>
-    <div class="g2"><div><div class="cascada" id="cascada"></div></div>
+    <div class="g2"><div><div class="cascada" id="cascada"></div><div id="margen-alertas" style="margin-top:10px"></div></div>
       <div><div class="ctit">En qué se va cada $100 de venta neta</div><div class="peso" id="peso"></div><div class="pesoleg" id="pesoleg"></div><div id="margen-vs" style="margin-top:12px"></div></div></div>
     <div class="ctit" style="margin-top:14px">Por comercial</div><div class="tblw"><table class="t" id="tb-com"></table></div>
-    <details class="como"><summary>Cómo se calcula</summary><b>Margen</b> = el de Odoo en cada renglón (venta neta sin IVA − costo del renglón). <b>Comisión de la comercial</b> = venta neta × la tasa BASE de su perfil (eyg.comisiones del mes: farmacias 2,3%, instituciones 2%); "con nivel" la multiplica por el nivel del último mes liquidado. Es una estimación: la comisión real se liquida sobre lo facturado del mes, con la escalera y la salud. Sólo cuentan las comerciales que entran en la liquidación (Gerencia, líderes y cuentas genéricas no cobran). <b>Mercado Pago</b> = lo que MP descontó de verdad en cada transferencia (asiento "Comisión Mercado Pago"). No incluye IIBB, impuesto al cheque ni flete.</details>
+    <details class="como"><summary>Cómo se calcula</summary><b>Margen</b> = venta neta sin IVA − <b>costo del producto</b> del plan (el mayor entre el costo del motor y la última factura), que es sobre el que se fija el mínimo de 10%. La comisión de la comercial y la de Mercado Pago salen de ese margen: "el resto le va comiendo". <b>Comisión de la comercial</b> = venta neta × la tasa BASE de su perfil (eyg.comisiones del mes: farmacias 2,3%, instituciones 2%); "con nivel" la multiplica por el nivel del último mes liquidado. Es una estimación: la comisión real se liquida sobre lo facturado del mes, con la escalera y la salud. Sólo cuentan las comerciales que entran en la liquidación (Gerencia, líderes y cuentas genéricas no cobran). <b>Mercado Pago</b> = lo que MP descontó de verdad en cada transferencia (asiento "Comisión Mercado Pago"). No incluye IIBB, impuesto al cheque ni flete.</details>
   </div>
 
   <div class="panel" id="p-prod"><div class="ph"><h2>Productos de la oferta</h2><div class="tools"><input class="search" id="q-prod" placeholder="Buscar producto o código…"></div></div>
-    <div id="prod-res"></div>
+    <div id="prod-res"></div><div id="prod-din" style="margin-bottom:10px"></div>
     <div class="tblw" style="max-height:640px"><table class="t" id="tb-prod"></table></div>
     <details class="como"><summary>Cómo se calcula</summary><b>Ritmo</b> = unidades por día hábil (todas las listas; debajo, sólo farmacias). Antes: los N días previos al arranque. Ahora: desde que el producto entró en la oferta (Neuryl y Frevia, desde el 17/11). <b>× vs antes</b> = ritmo ahora ÷ ritmo antes. <b>Cobertura</b> = cuántos días hábiles dura el stock a cada ritmo. <b>Stock al alta</b> = stock de hoy + lo que salió − lo que entró desde el alta. Tocá un producto para ver cada venta.</details>
   </div>
