@@ -67,7 +67,9 @@ window.EYGSuperCobro = (function(){
 .sc-modal h4{margin:0 0 8px;font-size:17px;color:#0F3D33}.sc-modal p{font-size:13.5px;line-height:1.5;margin:0 0 10px}
 .sc-modal .bt{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}.sc-modal button{border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer;border:1px solid #CBD5CF;background:#fff}
 .sc-modal button.si{background:#0F3D33;color:#D7F75B;border-color:#0F3D33}
-.sc button.ya{border:1.5px solid #0F3D33;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer;background:#fff;color:#0F3D33;white-space:nowrap;margin-top:6px;display:block;margin-left:auto}
+.sc td.acc{width:172px;padding-left:12px}.sc .accs{display:flex;flex-direction:column;gap:6px;width:172px;margin-left:auto}
+.sc .accs button{width:100%;box-sizing:border-box;min-height:34px;padding:7px 10px;font-size:13px;line-height:1.2;text-align:center;border-radius:8px;cursor:pointer;white-space:nowrap}
+.sc button.ya{border:1.5px solid #0F3D33;font-weight:700;background:#fff;color:#0F3D33}.sc button.ya:hover{background:#EEF4EF}
 .sc button.ya[disabled]{opacity:.5;cursor:default}.sc .recya{margin-top:4px;font-size:12px;color:#7A4A00;font-weight:700;background:#FFF1C9;border-radius:6px;padding:3px 7px}.sc .recotro{margin-top:4px;font-size:11.5px;color:#5C6B64}
 .sc-modal label.rc{display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:6px 8px;border:1px solid #DCE4DE;border-radius:8px;margin:0 0 6px;cursor:pointer}.sc-modal label.rc input{margin-top:3px}`;
     document.head.appendChild(s);
@@ -100,7 +102,7 @@ window.EYGSuperCobro = (function(){
   async function leerRecibos(){
     REC={};
     try{
-      const EF=PED.filter(p=>tipo(p)==="efe"); if(!EF.length) return;
+      const EF=PED.slice(); if(!EF.length) return;
       const CP={};
       const pids=[...new Set(EF.map(p=>p.partner_id&&p.partner_id[0]).filter(Boolean))];
       (await rpc("res.partner","read",[pids,["commercial_partner_id"]])||[]).forEach(x=>CP[x.id]=x.commercial_partner_id?x.commercial_partner_id[0]:x.id);
@@ -174,11 +176,11 @@ window.EYGSuperCobro = (function(){
         <td>${esc(p.partner_id?p.partner_id[1]:"")}<div style="font-size:11.5px;color:#5C6B64">${esc(p.user_id?p.user_id[1]:"sin comercial")}</div></td>
         <td class="n"><b>${money(p.amount_total)}</b></td>
         <td>${chip(p)}${adj?"<div style=\"margin-top:3px\">"+adj+"</div>":""}${mpHTML(p)}${recHTML(p)}</td>
-        <td class="n">${puede()?`<button class="as" ${OCUP?"disabled":""} onclick="EYGSuperCobro.pedir(${p.id})">${ef?"Asentar efectivo":"Asentar y liberar"}</button>${(ACC_YA&&ef)?`<button class="ya" ${OCUP?"disabled":""} title="El efectivo ya lo cargaste a mano en Odoo: no se crea otro recibo" onclick="EYGSuperCobro.pedirYa(${p.id})">✓ Ya está asentado</button>`:""}`:""}</td></tr>`;
+        <td class="acc">${puede()?`<div class="accs"><button class="as" ${OCUP?"disabled":""} onclick="EYGSuperCobro.pedir(${p.id})">${ef?"Asentar efectivo":"Asentar y liberar"}</button>${ACC_YA?`<button class="ya" ${OCUP?"disabled":""} title="${ef?"El efectivo ya lo cargaste a mano en Odoo":"Pagó a otro banco y ya cargaste el recibo en Odoo"}: no se crea otro recibo" onclick="EYGSuperCobro.pedirYa(${p.id})">✓ Ya está asentado</button>`:""}</div>`:""}</td></tr>`;
     }).join("");
     return `<div class="sc">
       <h3>💵 Superofertas a asentar <span style="font-weight:400;font-size:13px;color:#5C6B64">(${ls.length})</span></h3>
-      <div class="sub">Transferencias a <b>Mercado Pago</b> (alias eyg.mpago): verificá la acreditación y tocá <b>Asentar y liberar</b> — se crea el recibo RE-X, se imputa a la factura (o queda a cuenta y se imputa sola al facturar) y se libera la entrega. Efectivo (proforma): cuando el repartidor trae la plata, <b>Asentar efectivo</b> (Efectivo B).<br><b>Cruce automático:</b> cada 5 minutos el sistema lee Mercado Pago y, si una transferencia coincide sin dudas con un solo pedido, lo asienta y libera solo (queda firmado \"Mercado Pago (cruce automático)\"). Acá quedan los que no se pudieron cruzar solos.<br><b>¿El efectivo ya lo cargaste a mano en Odoo?</b> Tocá <b>✓ Ya está asentado</b>: no se crea otro recibo, se marca PAGADO y, si la entrega no salió, deja de decir «cobrar en efectivo» para que Martina la despache.</div>
+      <div class="sub">Transferencias a <b>Mercado Pago</b> (alias eyg.mpago): verificá la acreditación y tocá <b>Asentar y liberar</b> — se crea el recibo RE-X, se imputa a la factura (o queda a cuenta y se imputa sola al facturar) y se libera la entrega. Efectivo (proforma): cuando el repartidor trae la plata, <b>Asentar efectivo</b> (Efectivo B).<br><b>Cruce automático:</b> cada 5 minutos el sistema lee Mercado Pago y, si una transferencia coincide sin dudas con un solo pedido, lo asienta y libera solo (queda firmado \"Mercado Pago (cruce automático)\"). Acá quedan los que no se pudieron cruzar solos.<br><b>¿Ya lo cargaste a mano en Odoo?</b> (efectivo, o una transferencia que llegó a <b>otro banco</b> y Mercado Pago no ve) Tocá <b>✓ Ya está asentado</b>: no se crea otro recibo, se marca PAGADO y se libera la entrega para que Martina la arme (en efectivo, el remito deja de decir «cobrar en efectivo»).</div>
       ${ls.length?`<div style="overflow-x:auto"><table><thead><tr><th>Pedido</th><th>Cliente · comercial</th><th class="n">Total</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>`:'<div class="vacio">No hay superofertas pendientes de asentar.</div>'}
       ${difsHTML()}
       ${sinAsignarHTML()}
@@ -201,7 +203,7 @@ window.EYGSuperCobro = (function(){
     d.innerHTML=`<div class="bx"><h4>${ef?"Asentar cobro en efectivo":"Asentar cobro y liberar"}</h4>
       <p><b>${esc(p.name)}</b> · ${esc(p.partner_id?p.partner_id[1]:"")} · <b>${money(p.amount_total)}</b></p>
       ${mpModal(p)}
-      ${(ef&&(REC[p.id]||[]).some(r=>mismoImporte(r,p)))?'<p style="background:#FFE7DF;border-radius:8px;padding:8px 10px;color:#8A2A1A"><b>⚠ Ojo:</b> ya hay un recibo de este importe cargado a mano para este cliente ('+esc((REC[p.id]||[]).filter(r=>mismoImporte(r,p))[0].name)+'). Si es este cobro, cancelá y usá <b>Ya está asentado</b>: así no queda duplicado.</p>':''}
+      ${((REC[p.id]||[]).some(r=>mismoImporte(r,p)))?'<p style="background:#FFE7DF;border-radius:8px;padding:8px 10px;color:#8A2A1A"><b>⚠ Ojo:</b> ya hay un recibo de este importe cargado a mano para este cliente ('+esc((REC[p.id]||[]).filter(r=>mismoImporte(r,p))[0].name)+'). Si es este cobro, cancelá y usá <b>Ya está asentado</b>: así no queda duplicado.</p>':''}
       <p>${ef?"Se crea el recibo RE-X en <b>Efectivo B</b> por el total. Confirmalo sólo si la plata ya está en Cobranzas."
              :"Se crea el recibo RE-X en <b>Mercado Pago</b> por el total y se libera la entrega para que el depósito lo arme. Confirmalo sólo si ya viste la transferencia acreditada."}</p>
       <div class="bt"><button onclick="EYGSuperCobro.cerrar()">Cancelar</button><button class="si" onclick="EYGSuperCobro.asentar(${p.id})">${ef?"Sí, asentar":"Sí, asentar y liberar"}</button></div></div>`;
@@ -222,15 +224,16 @@ window.EYGSuperCobro = (function(){
     await cargar(); OCUP=false; pintar();
   }
   function pedirYa(id){
-    const p=PED.find(x=>x.id===id); if(!p||OCUP||!ACC_YA||tipo(p)!=="efe") return;
+    const p=PED.find(x=>x.id===id); if(!p||OCUP||!ACC_YA) return; const ef=tipo(p)==="efe";
     cerrar();
     const rs=REC[p.id]||[]; const pre=rs.findIndex(r=>mismoImporte(r,p));
     const ops=rs.map((r,i)=>'<label class="rc"><input type="radio" name="sc-rec" value="'+r.id+'" '+(i===pre?"checked":"")+'><span><b>'+esc(r.name)+'</b> · '+money(r.amount)+(mismoImporte(r,p)?' <b style="color:#1F6B3A">(mismo importe)</b>':'')+'<br><span style="color:#5C6B64">'+esc(r.journal_id[1])+' · '+fdm(r.date)+' · cargado por '+esc(r.create_uid?r.create_uid[1]:"")+'</span></span></label>').join("")+
       '<label class="rc"><input type="radio" name="sc-rec" value="" '+(pre<0?"checked":"")+'><span>'+(rs.length?"Otro recibo / no está en la lista":"Lo cargué, pero no aparece acá (por ejemplo, a nombre de otro contacto)")+'</span></label>';
     const d=document.createElement("div"); d.className="sc-modal"; d.id="sc-modal";
-    d.innerHTML=`<div class="bx"><h4>✓ El efectivo ya está asentado</h4>
+    d.innerHTML=`<div class="bx"><h4>✓ ${ef?"El efectivo ya está asentado":"La transferencia ya está asentada"}</h4>
       <p><b>${esc(p.name)}</b> · ${esc(p.partner_id?p.partner_id[1]:"")} · <b>${money(p.amount_total)}</b></p>
-      <p><b>No se crea otro recibo.</b> Se marca PAGADO, en el pedido queda anotado qué recibo lo cubre y, si la entrega todavía no salió, deja de decir «cobrar en efectivo»: Martina la despacha sin cobro.</p>
+      ${ef?"":'<p style="background:#EEF4FB;border-radius:8px;padding:8px 10px">Para cuando el cliente transfirió a <b>otro banco</b> (Credicoop, Macro…) y ya cargaste el recibo en Odoo: Mercado Pago no lo ve y el cruce automático no lo va a asentar.</p>'}
+      <p><b>No se crea otro recibo.</b> Se marca PAGADO, en el pedido queda anotado qué recibo lo cubre y ${ef?"si la entrega todavía no salió, deja de decir «cobrar en efectivo»: Martina la despacha sin cobro.":"se libera la entrega para que Martina la arme."}</p>
       <p style="margin:0 0 6px;font-weight:700">¿Con qué recibo lo asentaste?</p>${ops}
       <div class="bt"><button onclick="EYGSuperCobro.cerrar()">Cancelar</button><button class="si" onclick="EYGSuperCobro.yaAsentado(${p.id})">Sí, ya está asentado</button></div></div>`;
     d.addEventListener("click",e=>{ if(e.target===d) cerrar(); });
@@ -245,7 +248,7 @@ window.EYGSuperCobro = (function(){
       if(rid) ctx.eyg_recibo=rid;
       await rpc("ir.actions.server","run",[[ACC_YA]],{context:ctx});
       const r=(REC[p.id]||[]).find(x=>x.id===rid);
-      MSG="✓ "+p.name+": marcado como ya asentado"+(r?" ("+r.name+")":"")+", sin crear otro recibo. Si la entrega no había salido, ya no dice cobrar en efectivo.";
+      MSG="✓ "+p.name+": marcado como ya asentado"+(r?" ("+r.name+")":"")+", sin crear otro recibo."+(tipo(p)==="efe"?" Si la entrega no había salido, ya no dice cobrar en efectivo.":" Entrega liberada para Martina.");
     }catch(e){ MSG="No se pudo marcar "+p.name+": "+String(e.message||e).slice(0,300); }
     await cargar(); OCUP=false; pintar();
   }
