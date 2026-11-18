@@ -5,14 +5,19 @@
    - en efectivo (proforma): el repartidor trae la plata; se toca "Asentar efectivo".
    El botón corre la acción de Odoo 1336 "💵 Superoferta: asentar cobro y liberar" (la misma que Cobranzas tiene
    en Odoo, menú Acción): crea el recibo RE-X (Mercado Pago / Efectivo B), lo imputa a la factura si ya
-   existe (si no, se imputa solo al facturar), pone PAGADO y libera la entrega para que Martina la arme. */
+   existe (si no, se imputa solo al facturar), pone PAGADO y libera la entrega para que Martina la arme.
+   EFECTIVO YA ASENTADO (18/11/2026, Diego: "esto aplica para los pagos en efectivo solamente"): si Federico /
+   Cobranzas ya cargó el efectivo a mano en Odoo, "✓ Ya está asentado" corre la acción "💵 Superoferta: efectivo ya
+   asentado a mano · liberar" (param eyg.ofertas_contado_ya_asentado): NO crea recibo, pone PAGADO, anota qué recibo
+   lo cubre y, si la entrega todavía no salió, le saca el COBRAR EN EFECTIVO. Cada pedido en efectivo muestra los
+   recibos del cliente cargados desde el día anterior al pedido (sin los de otras superofertas). */
 window.EYGSuperCobro = (function(){
   "use strict";
   const ACCION=1336, ODOO="https://drogueriaeyg.odoo.com";
   const rpc=(m,me,a,k)=>EYG.rpc(m,me,a,k||{});
   const esc=s=>EYG.esc(s);
   const money=n=>"$ "+Number(n||0).toLocaleString("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2});
-  let EL=null, PERFIL=null, T={esp:0,pag:0,efe:0,inf:0,dif:0}, PED=[], DIFS=[], ADJ={}, MSG="", OCUP=false;
+  let EL=null, PERFIL=null, T={esp:0,pag:0,efe:0,inf:0,dif:0}, PED=[], DIFS=[], ADJ={}, MSG="", OCUP=false, REC={}, ACC_YA=0;
   /* Cruce con Mercado Pago (17/11/2026): la función mp-transferencias lee los cobros que entran a la cuenta
      (sólo lectura). Mercado Pago no dice quién transfirió, así que se cruza por IMPORTE (±$1: hay clientes
      que redondean) y por fecha (desde dos días antes del pedido). Cada transferencia se usa una sola vez: al
@@ -61,7 +66,10 @@ window.EYGSuperCobro = (function(){
 .sc-modal .bx{background:#fff;border-radius:14px;max-width:460px;width:100%;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
 .sc-modal h4{margin:0 0 8px;font-size:17px;color:#0F3D33}.sc-modal p{font-size:13.5px;line-height:1.5;margin:0 0 10px}
 .sc-modal .bt{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}.sc-modal button{border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer;border:1px solid #CBD5CF;background:#fff}
-.sc-modal button.si{background:#0F3D33;color:#D7F75B;border-color:#0F3D33}`;
+.sc-modal button.si{background:#0F3D33;color:#D7F75B;border-color:#0F3D33}
+.sc button.ya{border:1.5px solid #0F3D33;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer;background:#fff;color:#0F3D33;white-space:nowrap;margin-top:6px;display:block;margin-left:auto}
+.sc button.ya[disabled]{opacity:.5;cursor:default}.sc .recya{margin-top:4px;font-size:12px;color:#7A4A00;font-weight:700;background:#FFF1C9;border-radius:6px;padding:3px 7px}.sc .recotro{margin-top:4px;font-size:11.5px;color:#5C6B64}
+.sc-modal label.rc{display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:6px 8px;border:1px solid #DCE4DE;border-radius:8px;margin:0 0 6px;cursor:pointer}.sc-modal label.rc input{margin-top:3px}`;
     document.head.appendChild(s);
   }
   async function cargar(){
@@ -76,8 +84,10 @@ window.EYGSuperCobro = (function(){
       if(PED.length){
         const ad=await rpc("ir.attachment","search_read",[[["res_model","=","sale.order"],["res_id","in",PED.map(p=>p.id)],["name","ilike","comprobante"]]],{fields:["id","name","res_id"],limit:400});
         (ad||[]).forEach(a=>{ (ADJ[a.res_id]=ADJ[a.res_id]||[]).push(a); });
+        await leerRecibos();
       }
     }catch(e){ MSG="No pude leer los pedidos de superofertas: "+String(e.message||e).slice(0,200); }
+    try{ ACC_YA=parseInt(await rpc("ir.config_parameter","get_param",["eyg.ofertas_contado_ya_asentado"])||"0",10)||0; }catch(e){ ACC_YA=0; }
     await leerMP();
     // pedidos ya cobrados cuya factura no dio igual a lo pagado (más que un redondeo): los marca Odoo al facturar
     DIFS=[];
@@ -85,6 +95,34 @@ window.EYGSuperCobro = (function(){
       if(T.dif) DIFS=(await rpc("sale.order","search_read",[[["tag_ids","in",[T.dif]],["state","in",["sale","done"]]]],
         {fields:["id","name","partner_id","user_id","amount_total","date_order"],order:"date_order desc",limit:100}))||[];
     }catch(e){}
+  }
+  // recibos que Cobranzas cargó a mano para el cliente desde el día anterior al pedido (sólo pedidos en efectivo)
+  async function leerRecibos(){
+    REC={};
+    try{
+      const EF=PED.filter(p=>tipo(p)==="efe"); if(!EF.length) return;
+      const CP={};
+      const pids=[...new Set(EF.map(p=>p.partner_id&&p.partner_id[0]).filter(Boolean))];
+      (await rpc("res.partner","read",[pids,["commercial_partner_id"]])||[]).forEach(x=>CP[x.id]=x.commercial_partner_id?x.commercial_partner_id[0]:x.id);
+      const dia=p=>{ const d=new Date(String(p.date_order||"").replace(" ","T")+"Z"); d.setUTCDate(d.getUTCDate()-1); return d.toISOString().slice(0,10); };
+      const desde=EF.map(dia).sort()[0];
+      const pg=await rpc("account.payment","search_read",[[["partner_id.commercial_partner_id","in",[...new Set(Object.values(CP))]],["payment_type","=","inbound"],["state","=","posted"],["date",">=",desde]]],
+        {fields:["id","name","amount","date","journal_id","ref","create_uid","partner_id"],order:"date desc, id desc",limit:300});
+      const faltan=[...new Set((pg||[]).map(x=>x.partner_id&&x.partner_id[0]).filter(id=>id&&!CP[id]))];
+      if(faltan.length) (await rpc("res.partner","read",[faltan,["commercial_partner_id"]])||[]).forEach(x=>CP[x.id]=x.commercial_partner_id?x.commercial_partner_id[0]:x.id);
+      const porCli={};
+      (pg||[]).filter(x=>!/^Superoferta /.test(String(x.ref||""))).forEach(x=>{ const c=CP[x.partner_id[0]]; (porCli[c]=porCli[c]||[]).push(x); });
+      EF.forEach(p=>{ const c=CP[p.partner_id&&p.partner_id[0]]; REC[p.id]=(porCli[c]||[]).filter(x=>String(x.date)>=dia(p)).slice(0,5); });
+    }catch(e){ REC={}; }
+  }
+  const mismoImporte=(r,p)=>Math.abs(Number(r.amount)-Number(p.amount_total))<=1.0;
+  const fdm=d=>String(d||"").slice(0,10).split("-").reverse().slice(0,2).join("/");
+  const quienCargo=r=>r.create_uid?String(r.create_uid[1]).split(" ")[0]:"";
+  function recHTML(p){
+    const rs=REC[p.id]||[]; if(!rs.length) return "";
+    const igual=rs.filter(r=>mismoImporte(r,p));
+    if(igual.length) return '<div class="recya">🧾 Ya hay un recibo de este importe cargado a mano: <b>'+esc(igual[0].name)+'</b> · '+money(igual[0].amount)+' · '+esc(igual[0].journal_id[1])+' · '+fdm(igual[0].date)+' · '+esc(quienCargo(igual[0]))+'. Si es este cobro, tocá <b>Ya está asentado</b>.</div>';
+    return '<div class="recotro">🧾 Recibos del cliente desde el pedido: '+rs.map(r=>esc(String(r.name).replace(/^RE-X 0001-0*/,"RE-X "))+' '+money(r.amount)+' ('+esc(quienCargo(r))+')').join(" · ")+'</div>';
   }
   function difsHTML(){
     if(!DIFS.length) return "";
@@ -135,12 +173,12 @@ window.EYGSuperCobro = (function(){
       return `<tr><td><b>${esc(p.name)}</b><div style="font-size:11.5px;color:#5C6B64">${f} · <a href="${ODOO}/web#id=${p.id}&model=sale.order&view_type=form" target="_blank" rel="noopener">Odoo ↗</a></div></td>
         <td>${esc(p.partner_id?p.partner_id[1]:"")}<div style="font-size:11.5px;color:#5C6B64">${esc(p.user_id?p.user_id[1]:"sin comercial")}</div></td>
         <td class="n"><b>${money(p.amount_total)}</b></td>
-        <td>${chip(p)}${adj?"<div style=\"margin-top:3px\">"+adj+"</div>":""}${mpHTML(p)}</td>
-        <td class="n">${puede()?`<button class="as" ${OCUP?"disabled":""} onclick="EYGSuperCobro.pedir(${p.id})">${ef?"Asentar efectivo":"Asentar y liberar"}</button>`:""}</td></tr>`;
+        <td>${chip(p)}${adj?"<div style=\"margin-top:3px\">"+adj+"</div>":""}${mpHTML(p)}${recHTML(p)}</td>
+        <td class="n">${puede()?`<button class="as" ${OCUP?"disabled":""} onclick="EYGSuperCobro.pedir(${p.id})">${ef?"Asentar efectivo":"Asentar y liberar"}</button>${(ACC_YA&&ef)?`<button class="ya" ${OCUP?"disabled":""} title="El efectivo ya lo cargaste a mano en Odoo: no se crea otro recibo" onclick="EYGSuperCobro.pedirYa(${p.id})">✓ Ya está asentado</button>`:""}`:""}</td></tr>`;
     }).join("");
     return `<div class="sc">
       <h3>💵 Superofertas a asentar <span style="font-weight:400;font-size:13px;color:#5C6B64">(${ls.length})</span></h3>
-      <div class="sub">Transferencias a <b>Mercado Pago</b> (alias eyg.mpago): verificá la acreditación y tocá <b>Asentar y liberar</b> — se crea el recibo RE-X, se imputa a la factura (o queda a cuenta y se imputa sola al facturar) y se libera la entrega. Efectivo (proforma): cuando el repartidor trae la plata, <b>Asentar efectivo</b> (Efectivo B).<br><b>Cruce automático:</b> cada 5 minutos el sistema lee Mercado Pago y, si una transferencia coincide sin dudas con un solo pedido, lo asienta y libera solo (queda firmado \"Mercado Pago (cruce automático)\"). Acá quedan los que no se pudieron cruzar solos.</div>
+      <div class="sub">Transferencias a <b>Mercado Pago</b> (alias eyg.mpago): verificá la acreditación y tocá <b>Asentar y liberar</b> — se crea el recibo RE-X, se imputa a la factura (o queda a cuenta y se imputa sola al facturar) y se libera la entrega. Efectivo (proforma): cuando el repartidor trae la plata, <b>Asentar efectivo</b> (Efectivo B).<br><b>Cruce automático:</b> cada 5 minutos el sistema lee Mercado Pago y, si una transferencia coincide sin dudas con un solo pedido, lo asienta y libera solo (queda firmado \"Mercado Pago (cruce automático)\"). Acá quedan los que no se pudieron cruzar solos.<br><b>¿El efectivo ya lo cargaste a mano en Odoo?</b> Tocá <b>✓ Ya está asentado</b>: no se crea otro recibo, se marca PAGADO y, si la entrega no salió, deja de decir «cobrar en efectivo» para que Martina la despache.</div>
       ${ls.length?`<div style="overflow-x:auto"><table><thead><tr><th>Pedido</th><th>Cliente · comercial</th><th class="n">Total</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>`:'<div class="vacio">No hay superofertas pendientes de asentar.</div>'}
       ${difsHTML()}
       ${sinAsignarHTML()}
@@ -163,6 +201,7 @@ window.EYGSuperCobro = (function(){
     d.innerHTML=`<div class="bx"><h4>${ef?"Asentar cobro en efectivo":"Asentar cobro y liberar"}</h4>
       <p><b>${esc(p.name)}</b> · ${esc(p.partner_id?p.partner_id[1]:"")} · <b>${money(p.amount_total)}</b></p>
       ${mpModal(p)}
+      ${(ef&&(REC[p.id]||[]).some(r=>mismoImporte(r,p)))?'<p style="background:#FFE7DF;border-radius:8px;padding:8px 10px;color:#8A2A1A"><b>⚠ Ojo:</b> ya hay un recibo de este importe cargado a mano para este cliente ('+esc((REC[p.id]||[]).filter(r=>mismoImporte(r,p))[0].name)+'). Si es este cobro, cancelá y usá <b>Ya está asentado</b>: así no queda duplicado.</p>':''}
       <p>${ef?"Se crea el recibo RE-X en <b>Efectivo B</b> por el total. Confirmalo sólo si la plata ya está en Cobranzas."
              :"Se crea el recibo RE-X en <b>Mercado Pago</b> por el total y se libera la entrega para que el depósito lo arme. Confirmalo sólo si ya viste la transferencia acreditada."}</p>
       <div class="bt"><button onclick="EYGSuperCobro.cerrar()">Cancelar</button><button class="si" onclick="EYGSuperCobro.asentar(${p.id})">${ef?"Sí, asentar":"Sí, asentar y liberar"}</button></div></div>`;
@@ -182,6 +221,34 @@ window.EYGSuperCobro = (function(){
     }catch(e){ MSG="No se pudo asentar "+p.name+": "+String(e.message||e).slice(0,300); }
     await cargar(); OCUP=false; pintar();
   }
+  function pedirYa(id){
+    const p=PED.find(x=>x.id===id); if(!p||OCUP||!ACC_YA||tipo(p)!=="efe") return;
+    cerrar();
+    const rs=REC[p.id]||[]; const pre=rs.findIndex(r=>mismoImporte(r,p));
+    const ops=rs.map((r,i)=>'<label class="rc"><input type="radio" name="sc-rec" value="'+r.id+'" '+(i===pre?"checked":"")+'><span><b>'+esc(r.name)+'</b> · '+money(r.amount)+(mismoImporte(r,p)?' <b style="color:#1F6B3A">(mismo importe)</b>':'')+'<br><span style="color:#5C6B64">'+esc(r.journal_id[1])+' · '+fdm(r.date)+' · cargado por '+esc(r.create_uid?r.create_uid[1]:"")+'</span></span></label>').join("")+
+      '<label class="rc"><input type="radio" name="sc-rec" value="" '+(pre<0?"checked":"")+'><span>'+(rs.length?"Otro recibo / no está en la lista":"Lo cargué, pero no aparece acá (por ejemplo, a nombre de otro contacto)")+'</span></label>';
+    const d=document.createElement("div"); d.className="sc-modal"; d.id="sc-modal";
+    d.innerHTML=`<div class="bx"><h4>✓ El efectivo ya está asentado</h4>
+      <p><b>${esc(p.name)}</b> · ${esc(p.partner_id?p.partner_id[1]:"")} · <b>${money(p.amount_total)}</b></p>
+      <p><b>No se crea otro recibo.</b> Se marca PAGADO, en el pedido queda anotado qué recibo lo cubre y, si la entrega todavía no salió, deja de decir «cobrar en efectivo»: Martina la despacha sin cobro.</p>
+      <p style="margin:0 0 6px;font-weight:700">¿Con qué recibo lo asentaste?</p>${ops}
+      <div class="bt"><button onclick="EYGSuperCobro.cerrar()">Cancelar</button><button class="si" onclick="EYGSuperCobro.yaAsentado(${p.id})">Sí, ya está asentado</button></div></div>`;
+    d.addEventListener("click",e=>{ if(e.target===d) cerrar(); });
+    document.body.appendChild(d);
+  }
+  async function yaAsentado(id){
+    const p=PED.find(x=>x.id===id); if(!p||OCUP) return;
+    const sel=document.querySelector('#sc-modal input[name="sc-rec"]:checked'); const rid=sel&&sel.value?parseInt(sel.value,10):0;
+    cerrar(); OCUP=true; MSG="Marcando "+p.name+" como ya asentado…"; pintar();
+    try{
+      const ctx={active_model:"sale.order",active_id:id,active_ids:[id],eyg_quien:(PERFIL&&PERFIL.nombre)||"el Core"};
+      if(rid) ctx.eyg_recibo=rid;
+      await rpc("ir.actions.server","run",[[ACC_YA]],{context:ctx});
+      const r=(REC[p.id]||[]).find(x=>x.id===rid);
+      MSG="✓ "+p.name+": marcado como ya asentado"+(r?" ("+r.name+")":"")+", sin crear otro recibo. Si la entrega no había salido, ya no dice cobrar en efectivo.";
+    }catch(e){ MSG="No se pudo marcar "+p.name+": "+String(e.message||e).slice(0,300); }
+    await cargar(); OCUP=false; pintar();
+  }
   async function montar(el, perfil){ EL=el; PERFIL=perfil; if(!EL) return; css(); await cargar(); pintar(); }
-  return { montar, pedir, asentar, cerrar, resuelto, recargar:async()=>{ await cargar(); pintar(); } };
+  return { montar, pedir, asentar, cerrar, resuelto, pedirYa, yaAsentado, recargar:async()=>{ await cargar(); pintar(); } };
 })();
