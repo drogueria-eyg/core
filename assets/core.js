@@ -587,6 +587,16 @@ window.EYG = (function(){
     {key:"direccion", nom:"Dirección"},
     {key:"admin",     nom:"Sistema"},
   ];
+  /* Subgrupos dentro de un área. Un módulo con "grupo" se dibuja bajo su subtítulo,
+     tanto en el menú lateral como en el inicio. Sirve para que un área grande
+     (Administración tiene 11 herramientas) se lea por lo que uno está haciendo
+     y no como una lista larga. Un área sin grupos se dibuja como siempre. */
+  const GRUPOS = {
+    clientes:  {nom:"Clientes",  ico:"👥"},
+    tesoreria: {nom:"Tesorería", ico:"💰"},
+    egresos:   {nom:"Egresos",   ico:"💸"},
+  };
+
   const MODULOS = [
     /* Portal web = TODO lo del portal de clientes (drogueriaeyg.odoo.com) junto:
        cómo viene el portal, la cinta de avisos que ven los clientes y las noticias.
@@ -685,49 +695,48 @@ window.EYG = (function(){
          le quiere dar a una comercial, se le concede desde "Usuarios y accesos"
          (modulos_extra), que el encierro sí respeta. */
       roles:["lider","direccion"], ready:true, path:()=>"comercial/plan100.html"},
-    {key:"rentabilidad", dept:"precios", cat:"Precios y Rentabilidad", ico:"📊", titulo:"Rentabilidad por rubro", desc:"Cuánto vende y cuánto deja cada tipo de cliente — farmacias, sanatorios, SAMCO, veterinarias, distribuidoras — y cuánto de ese margen se lo come el plazo de pago.", roles:["finanzas","direccion"], ready:true, path:()=>"comercial/rentabilidad.html"},
     {key:"config-precios", dept:"precios", cat:"Precios y Rentabilidad", ico:"⚙️", titulo:"Motor de precios", desc:"Reglas del motor por categoría: recargo, cortes, descuentos, IVA al costo y piso de margen. Las ofertas se crean en Oportunidades y Ofertas.", roles:["finanzas"], ready:true, path:()=>"comercial/config-precios.html"},
     /* EN PRUEBAS: Facturación (el puesto de Vanesa). La cola de pedidos por facturar
        con las notas que le dejan las comerciales pegadas al pedido, y los botones de
        Confirmar / Facturar que escriben en Odoo. Oculto al equipo hasta probarlo con
        ella: para liberarlo, borrar la línea `pruebas` de acá y el {pruebas:…} del
        EYG.guard() de finanzas/facturacion.html. */
-    {key:"facturacion", dept:"finanzas", cat:"Administración", ico:"🧾", titulo:"Facturación", desc:"La cola de pedidos por facturar, con lo que te avisó cada comercial a la vista. Confirmá y facturá sin entrar a Odoo, y mirá cómo viene el día y el mes.", roles:["finanzas"], ready:true,
+    {key:"facturacion", dept:"finanzas", grupo:"clientes", cat:"Clientes", ico:"🧾", titulo:"Facturación", desc:"La cola de pedidos por facturar, con lo que te avisó cada comercial a la vista. Confirmá y facturá sin entrar a Odoo, y mirá cómo viene el día y el mes.", roles:["finanzas"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/facturacion.html"},
-    {key:"cobranzas", dept:"finanzas", cat:"Administración", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","cobranzas"], ready:true, path:()=>"finanzas/cobranzas.html"},
+    {key:"cobranzas", dept:"finanzas", grupo:"clientes", cat:"Clientes", ico:"💳", titulo:"Cobranzas", desc:"Deuda por cliente con antigüedad (+30/+60/+90/+120) para reclamar y detectar incobrables.", roles:["finanzas","cobranzas"], ready:true, path:()=>"finanzas/cobranzas.html"},
     /* EN PRUEBAS: legajos de clientes (documentación de alta). Lo gestiona Administración
        (Vanesa/Bárbara). Oculto al equipo hasta liberarlo: se le da acceso puntual por persona
        (modulos_extra) desde "Usuarios y accesos", o se borra la línea `pruebas` de acá y el
        {pruebas:…} del EYG.guard() de finanzas/legajos.html para abrirlo a los roles. */
-    {key:"legajos", dept:"finanzas", cat:"Administración", ico:"📁", titulo:"Legajos de clientes", desc:"Documentación de alta de cada cliente: habilitación sanitaria y constancia de CUIT, con vencimientos y estado a simple vista. Los archivos quedan pegados al contacto.", roles:["finanzas","cobranzas","admin","direccion"], ready:true,
+    {key:"legajos", dept:"finanzas", grupo:"clientes", cat:"Clientes", ico:"📁", titulo:"Legajos de clientes", desc:"Documentación de alta de cada cliente: habilitación sanitaria y constancia de CUIT, con vencimientos y estado a simple vista. Los archivos quedan pegados al contacto.", roles:["finanzas","cobranzas","admin","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/legajos.html"},
     /* Altas de clientes: las solicitudes del formulario drogueriaeyg.odoo.com/alta.
        Ninguna se aprueba sola. Aprueban Germán y Bárbara (concesión por persona,
        modulos_extra) y los admin; quién puede aprobar lo decide la función portal-alta. */
-    {key:"altas", dept:"finanzas", cat:"Administración", ico:"🪪", titulo:"Altas de clientes", desc:"Clientes que pidieron acceso al portal desde el formulario /alta: la habilitación leída, el CUIT en ARCA y lo que hay en Odoo, para aprobar o rechazar. Nada se crea en Odoo hasta aprobar.", roles:["admin"], ready:true,
+    {key:"altas", dept:"finanzas", grupo:"clientes", cat:"Clientes", ico:"🪪", titulo:"Altas de clientes", desc:"Clientes que pidieron acceso al portal desde el formulario /alta: la habilitación leída, el CUIT en ARCA y lo que hay en Odoo, para aprobar o rechazar. Nada se crea en Odoo hasta aprobar.", roles:["admin"], ready:true,
       path:()=>"finanzas/altas.html"},
     /* EN PRUEBAS: consulta crediticia por CUIT (Central de Deudores del BCRA, fuente pública/gratis).
        La página le pega directo al BCRA (no usa Supabase). Gateada al super-admin hasta revisarla.
        Para liberarla: borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/situacion-crediticia.html. */
-    {key:"credito", dept:"finanzas", cat:"Administración", ico:"🔎", titulo:"Situación crediticia", desc:"Consultá por CUIT la deuda en bancos, cheques rechazados y el historial de 2 años, directo del BCRA. Para decidir beneficios de pago sin pagar Veraz/Nosis.", roles:["finanzas","direccion","comercial","lider"], ready:true,
+    {key:"credito", dept:"finanzas", grupo:"clientes", cat:"Clientes", ico:"🔎", titulo:"Situación crediticia", desc:"Consultá por CUIT la deuda en bancos, cheques rechazados y el historial de 2 años, directo del BCRA. Para decidir beneficios de pago sin pagar Veraz/Nosis.", roles:["finanzas","direccion","comercial","lider"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/situacion-crediticia.html"},
     /* EN PRUEBAS: módulo de Egresos (espejo de Cobranzas). Oculto para todo el equipo
        hasta terminarlo — sólo la huella del dueño. Para liberarlo: borrar la línea
        `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/egresos.html. */
-    {key:"egresos", dept:"finanzas", cat:"Administración", ico:"💸", titulo:"Egresos", desc:"Todo lo que sale: compras de mercadería, gastos operativos, financieros, impuestos y pagos a proveedores. El panorama del egreso, por naturaleza y por proveedor.", roles:["finanzas","direccion"], ready:true,
+    {key:"egresos", dept:"finanzas", grupo:"egresos", cat:"Egresos", ico:"💸", titulo:"Egresos", desc:"Todo lo que sale: compras de mercadería, gastos operativos, financieros, impuestos y pagos a proveedores. El panorama del egreso, por naturaleza y por proveedor.", roles:["finanzas","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/egresos.html"},
     /* EN PRUEBAS: herramienta para cargar préstamos bancarios (comprobantes OC-X) en Odoo.
        Gateada al super-admin hasta terminarla. */
-    {key:"creditos-banc", dept:"finanzas", cat:"Administración", ico:"🏦", titulo:"Cargar crédito bancario", desc:"Cargá los préstamos que pedís a los bancos: pegás el PDF del banco y el neto acreditado, y genera el comprobante OC-X en Odoo con capital, interés, sellados, IVA y todas las cuotas.", roles:["finanzas","direccion"], ready:true,
+    {key:"creditos-banc", dept:"finanzas", grupo:"egresos", cat:"Egresos", ico:"🏦", titulo:"Cargar crédito bancario", desc:"Cargá los préstamos que pedís a los bancos: pegás el PDF del banco y el neto acreditado, y genera el comprobante OC-X en Odoo con capital, interés, sellados, IVA y todas las cuotas.", roles:["finanzas","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/creditos-bancarios.html"},
     /* EN PRUEBAS: Tesorería (el día a día de Federico). SOLO LECTURA: no escribe nada en Odoo.
        Para liberarlo: borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/tesoreria.html. */
-    {key:"tesoreria", dept:"finanzas", cat:"Administración", ico:"💰", titulo:"Tesorería", desc:"Dónde está la plata hoy: saldo de cada banco y caja, cheques de terceros en cartera con sus vencimientos, y qué falta cruzar con el resumen del banco.", roles:["finanzas","direccion"], ready:true,
+    {key:"tesoreria", dept:"finanzas", grupo:"tesoreria", cat:"Tesorería", ico:"💰", titulo:"Tesorería", desc:"Dónde está la plata hoy: saldo de cada banco y caja, cheques de terceros en cartera con sus vencimientos, y qué falta cruzar con el resumen del banco.", roles:["finanzas","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/tesoreria.html"},
     /* EN PRUEBAS: Conciliación bancaria. ESCRIBE en Odoo (carga el extracto, imputa impuestos,
@@ -735,7 +744,7 @@ window.EYG = (function(){
        día contando repeticiones, porque hay movimientos legítimamente idénticos (seis comisiones
        de $600 el mismo día son seis e-cheq distintos, no un duplicado).
        Para liberarlo: borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/conciliacion.html. */
-    {key:"conciliacion", dept:"finanzas", cat:"Administración", ico:"🏦", titulo:"Conciliación bancaria", desc:"Subís el resumen del banco y se carga solo: valida que el saldo cierre, detecta lo que ya estaba, imputa impuestos, crea los pagos de comisiones y empareja los cobros con su cliente. Lo que queda en duda te lo muestra para que decidas.", roles:["finanzas","direccion"], ready:true,
+    {key:"conciliacion", dept:"finanzas", grupo:"tesoreria", cat:"Tesorería", ico:"🏦", titulo:"Conciliación bancaria", desc:"Subís el resumen del banco y se carga solo: valida que el saldo cierre, detecta lo que ya estaba, imputa impuestos, crea los pagos de comisiones y empareja los cobros con su cliente. Lo que queda en duda te lo muestra para que decidas.", roles:["finanzas","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/conciliacion.html"},
     /* EN PRUEBAS: emision de cheques propios para pagar a proveedores. Es el circuito
@@ -746,13 +755,13 @@ window.EYG = (function(){
        mes) y valida la tanda antes de escribir: numero sin repetir contra Odoo y contra
        las otras filas, fecha de cobro razonable, y suma exacta.
        Para liberarlo: borrar la linea pruebas de aca y el {pruebas:...} del guard. */
-    {key:"pagoscheque", dept:"finanzas", cat:"Administración", ico:"💳", titulo:"Pagos con cheque", desc:"Elegís el proveedor, ves su deuda con lo vencido marcado, tildás qué comprobantes cancela el pago y calcula la retención de Ganancias sola. Cargás la tanda de cheques emitidos y los crea en Odoo, imputados a esas facturas.", roles:["finanzas","direccion"], ready:true,
+    {key:"pagoscheque", dept:"finanzas", grupo:"tesoreria", cat:"Tesorería", ico:"💳", titulo:"Pagos con cheque", desc:"Elegís el proveedor, ves su deuda con lo vencido marcado, tildás qué comprobantes cancela el pago y calcula la retención de Ganancias sola. Cargás la tanda de cheques emitidos y los crea en Odoo, imputados a esas facturas.", roles:["finanzas","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/pagos-cheque.html"},
     /* EN PRUEBAS: carga de cheques de terceros (lo urgente de Federico). Crea el recibo RE-X
        en el diario "Cheques de terceros" igual que Odoo, y lo imputa a las facturas del cliente.
        Para liberarlo: borrar la línea `pruebas` de acá y el {pruebas:…} del EYG.guard() de finanzas/cheques.html. */
-    {key:"cheques", dept:"finanzas", cat:"Administración", ico:"🧾", titulo:"Cargar cheques", desc:"Cargá los cheques de terceros que trae un cliente, todos juntos, y se imputan solos a sus facturas pendientes. Guarda el CUIT del emisor y el banco, que hoy casi nunca quedan registrados.", roles:["finanzas","direccion"], ready:true,
+    {key:"cheques", dept:"finanzas", grupo:"tesoreria", cat:"Tesorería", ico:"🧾", titulo:"Cargar cheques", desc:"Cargá los cheques de terceros que trae un cliente, todos juntos, y se imputan solos a sus facturas pendientes. Guarda el CUIT del emisor y el banco, que hoy casi nunca quedan registrados.", roles:["finanzas","direccion"], ready:true,
       pruebas:["a3dfd1b309dd41ad2c8ae3562a8e00c09ae03f8dd8194b75eea5a3db5c003122"],
       path:()=>"finanzas/cheques.html"},
     {key:"stock",     dept:"compras", cat:"Compras", ico:"📦", titulo:"Stock, Compras y Reposición", desc:"Qué conviene comprar y cuándo, pedido por proveedor (borrador en Odoo), productos ganadores, sobrestock y vencimientos. Con tarjeta de salud del abastecimiento.", roles:["finanzas","inventario"], ready:true, path:()=>"inventario/stock.html"},
@@ -889,10 +898,19 @@ window.EYG = (function(){
       <div class="sbrand"><a href="${BASE}"><span class="mono">E<span class="y">y</span>G</span><span class="ctag">Core</span></a></div>
       <nav class="snav">
         <a class="item ${activeKey==="home"?"active":""}" href="${BASE}"><span class="ic">🏠</span>Inicio</a>
-        ${grupos.map(({d,mods})=>`<div class="grp">${d.nom}</div>`+mods.map(m=>{
-          const dis=!m.ready; const href=dis?"#":abs(m.path(perfil));
-          return `<a class="item ${activeKey===m.key?"active":""} ${dis?"dis":""}" href="${href}" ${dis?'onclick="return false"':""}><span class="ic">${m.ico}</span><span class="tx">${esc(T(m.titulo,perfil))}</span>${dis?'<span class="soon">pronto</span>':""}</a>`;
-        }).join("")).join("")}
+        ${grupos.map(({d,mods})=>{
+          const item = m => {
+            const dis=!m.ready; const href=dis?"#":abs(m.path(perfil));
+            return `<a class="item ${activeKey===m.key?"active":""} ${dis?"dis":""}" href="${href}" ${dis?'onclick="return false"':""}><span class="ic">${m.ico}</span><span class="tx">${esc(T(m.titulo,perfil))}</span>${dis?'<span class="soon">pronto</span>':""}</a>`;
+          };
+          let html = `<div class="grp">${d.nom}</div>` + mods.filter(m=>!m.grupo).map(item).join("");
+          const vistos = Object.keys(GRUPOS).filter(g=>mods.some(m=>m.grupo===g));
+          vistos.forEach(g=>{
+            html += `<div class="sgrp"><span class="ic">${GRUPOS[g].ico}</span>${esc(GRUPOS[g].nom)}</div>`
+                  + mods.filter(m=>m.grupo===g).map(item).join("");
+          });
+          return html;
+        }).join("")}
       </nav>
       <div class="sfoot"><div class="u"><b>${esc(perfil.nombre||perfil.email)}</b><span>${esc(perfil.rol)}</span></div><a href="#" onclick="EYG.showChangePwd();return false" style="display:block;font-size:12px;color:var(--gris);text-decoration:none;margin:2px 0 8px">🔑 Cambiar contraseña</a><button class="out" onclick="EYG.logout()">Salir ↪</button></div>
     </aside>`;
@@ -907,12 +925,22 @@ window.EYG = (function(){
     const grupos = DEPTS.map(d=>({d, mods:vis.filter(m=>m.dept===d.key)})).filter(x=>x.mods.length);
     const nombre = (perfil.nombre||perfil.email||"").split(" ")[0];
     return `<div class="hero"><h1>Hola, ${esc(nombre)} 👋</h1><p>Tus herramientas de Droguería EyG, conectadas en vivo a Odoo. Elegí un módulo del menú o de las tarjetas.</p></div>
-      ${grupos.map(({d,mods})=>`<div class="dept"><h2>${d.nom}</h2><div class="grid">${mods.map(m=>{
-        const dis=!m.ready; const href=dis?"#":abs(m.path(perfil));
-        const badge=dis?'<span class="badge soon">Próximamente</span>':'<span class="badge ready">Abrir</span>';
-        const inner=`${badge}<div class="ico">${m.ico}</div><div class="cat">${esc(T(m.cat,perfil))}</div><h3>${esc(T(m.titulo,perfil))}</h3><p>${esc(T(m.desc,perfil))}</p>`;
-        return dis?`<div class="card soon">${inner}</div>`:`<a class="card" href="${href}">${inner}</a>`;
-      }).join("")}</div></div>`).join("")}`;
+      ${grupos.map(({d,mods})=>{
+        const card = m => {
+          const dis=!m.ready; const href=dis?"#":abs(m.path(perfil));
+          const badge=dis?'<span class="badge soon">Próximamente</span>':'<span class="badge ready">Abrir</span>';
+          const inner=`${badge}<div class="ico">${m.ico}</div><div class="cat">${esc(T(m.cat,perfil))}</div><h3>${esc(T(m.titulo,perfil))}</h3><p>${esc(T(m.desc,perfil))}</p>`;
+          return dis?`<div class="card soon">${inner}</div>`:`<a class="card" href="${href}">${inner}</a>`;
+        };
+        const sueltos = mods.filter(m=>!m.grupo);
+        const vistos = Object.keys(GRUPOS).filter(g=>mods.some(m=>m.grupo===g));
+        let cuerpo = sueltos.length ? `<div class="grid">${sueltos.map(card).join("")}</div>` : "";
+        vistos.forEach(g=>{
+          cuerpo += `<div class="sgrp2"><span class="ic">${GRUPOS[g].ico}</span>${esc(GRUPOS[g].nom)}</div>`
+                  + `<div class="grid">${mods.filter(m=>m.grupo===g).map(card).join("")}</div>`;
+        });
+        return `<div class="dept"><h2>${d.nom}</h2>${cuerpo}</div>`;
+      }).join("")}`;
   }
 
   /* ---- Rail lateral para ADMIN en módulos de chrome propio (panel/cobranzas/precios/…) ----
