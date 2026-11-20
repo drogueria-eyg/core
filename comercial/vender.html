@@ -678,7 +678,7 @@ async function cargar(){
       // CONTACTOS-persona de la empresa (a los que no se factura): la sucursal aparece en el paso
       // "¿a dónde entregás?" y las personas irán a la libreta de contactos de la ficha.
       rpc("res.partner","search_read",[[["user_id","=",ST.userId],["parent_id","=",false]]],
-        {fields:["id","name","property_product_pricelist","property_payment_term_id","city","vat",AFIP_FIELD,EYG.FANT], limit:0, context:ES}),
+        {fields:["id","name","property_product_pricelist","property_payment_term_id","city","vat",AFIP_FIELD,EYG.FANT,"sale_warn","sale_warn_msg"], limit:0, context:ES}),
       rpc("sale.order","search_read",[[["user_id","=",ST.userId],["state","in",["draft","sent"]]]],
         {fields:["id","name","partner_id","amount_total","order_line","write_date","origin","state","tag_ids"], order:"write_date desc", limit:50}),
     ]);
@@ -1048,6 +1048,27 @@ function fiscalHTML(){
     title="${esc(AYUDA_FISCAL)} Tocá para ver el detalle y los contactos con el mismo nombre.">⚠ <b>A este cliente todavía no se le puede facturar:</b> ${esc(faltaTxt(faltaFiscal(p)))}. El pedido se carga igual, pero Facturación no va a poder emitirlo. <u>Ver detalle</u></div>`;
 }
 function pintarFiscal(){ const el=document.getElementById("fiscWarn"); if(el) el.innerHTML=fiscalHTML(); }
+/* CUENTA BLOQUEADA (sale_warn de Odoo = "block"; la pone Cobranzas por deuda, o una baja de
+   cliente): se puede armar el presupuesto pero NO confirmar el pedido. Este freno existía desde
+   el 26/8 (commit 5371448) y se perdió el 28/8, cuando se publicó una copia vieja de esta
+   pantalla (commit 4cee9ef); se repuso el 20/11/2026 al dar de baja a Fcia. Alessandroni.
+   Al confirmar se lee FRESCO de Odoo (no de la cartera ya cargada): un bloqueo puesto hace un
+   minuto también frena. Se mira la ficha del pedido y su cuenta principal. */
+function clienteBloqueado(pid){ const c=(ST.cartera||[]).find(x=>x.id===pid); return (c && c.sale_warn==="block") ? (c.sale_warn_msg||"CUENTA BLOQUEADA") : null; }
+async function bloqueoFresco(pid){
+  if(!pid) return null;
+  try{
+    const [p]=await rpc("res.partner","read",[[pid]],{fields:["sale_warn","sale_warn_msg","commercial_partner_id"],context:ES});
+    let w=p; const cp=p&&p.commercial_partner_id&&p.commercial_partner_id[0];
+    if(cp && cp!==pid){ const [q]=await rpc("res.partner","read",[[cp]],{fields:["sale_warn","sale_warn_msg"],context:ES}); if(q&&q.sale_warn==="block") w=q; }
+    return (w && w.sale_warn==="block") ? (w.sale_warn_msg||"CUENTA BLOQUEADA") : null;
+  }catch(e){ return clienteBloqueado(pid); }
+}
+function avisoBloqueo(msg){ modal(`<h3>🚫 Cuenta bloqueada</h3>
+    <p><b>${esc(ST.order&&ST.order.partnerName||"")}</b> no puede comprar:</p>
+    <p style="background:#FBE4E3;border:1px solid #F3B5B2;color:#8A2E2B;border-radius:10px;padding:10px 12px;font-weight:600;margin:6px 0 10px">${esc(msg)}</p>
+    <p>El presupuesto queda guardado, pero <b>no se puede confirmar el pedido</b>. Consultá con Cobranzas (Bárbara / Vanesa).</p>
+    <div class="mb"><button class="btn ghost" onclick="cerrarModal()">Entendido</button></div>`); }
 
 /* ---------- PICKER de cliente ---------- */
 function abrirPicker(){ ST.view="picker"; ST.qCliente=""; render(); }
@@ -1609,6 +1630,7 @@ async function ctEnviarAPagar(modo){
   cerrarModal();
   if(ST.dirty||ST.syncing){ await syncOrder(); }
   document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Confirmando el pedido de contado…</div>';
+  const _blq=await bloqueoFresco(ST.order.partnerId); if(_blq){ ST.view="venta"; render(); avisoBloqueo(_blq); return; }
   let faltantes=null;
   try{ faltantes=await chequearDisponibilidad(); }catch(e){ faltantes=null; }
   if(faltantes && faltantes.length){ ST.view="venta"; render(); mostrarBloqueoStock(faltantes); return; }
@@ -2633,6 +2655,8 @@ function vVenta(){
       </div>
     </div>
     <div class="fisc-line" id="fiscWarn">${fiscalHTML()}</div>
+    ${(function(){const bmsg=clienteBloqueado(o.partnerId); if(!bmsg)return"";
+      return `<div style="grid-column:1/-1;background:#FBE4E3;border:1px solid #E88;color:#8A2E2B;border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:13.5px">🚫 <b>Cuenta bloqueada:</b> ${esc(bmsg)}<br><span style="font-size:12.5px">Podés armar el presupuesto, pero <b>no se puede confirmar el pedido</b>.</span></div>`;})()}
     ${(function(){const r=ST.riesgos[o.partnerId]; if(!r||!r.nivel||r.nivel==="ok")return""; const alto=r.nivel==="alto";
       return `<div style="grid-column:1/-1;background:${alto?'#FBE4E3':'#FBF0DA'};border:1px solid ${alto?'#F3B5B2':'#EAD6A6'};color:${alto?'#8A2E2B':'#7A5B12'};border-radius:12px;padding:11px 14px;margin-bottom:12px;font-size:13.5px">⚠ ${alto?'<b>Riesgo de pago — no ofrecer plazos.</b>':'<b>Atención:</b> este cliente tiene deuda vencida.'}${r.motivo?` · <span>${esc(r.motivo)}</span>`:''}</div>`;})()}
 
@@ -3016,6 +3040,7 @@ async function doConfirmar(proforma){
   cerrarModal();
   if(ST.dirty||ST.syncing){ await syncOrder(); }
   document.getElementById("app").innerHTML='<div class="loading"><div class="spinner"></div>Confirmando el pedido'+(proforma?" como proforma":"")+'…</div>';
+  const _blq=await bloqueoFresco(ST.order.partnerId); if(_blq){ ST.view="venta"; render(); avisoBloqueo(_blq); return; }
   // CHEQUEO DURO de disponibilidad (dato fresco): no se confirma si algún producto está comprometido a otros pedidos.
   let faltantes=null;
   try{ faltantes=await chequearDisponibilidad(); }catch(e){ faltantes=null; }   // ante error de red no bloqueamos la venta
