@@ -1217,6 +1217,7 @@ window.capaBuscar=q=>{ clearTimeout(_capaBusqT); _capaBusqT=setTimeout(async()=>
 }, 300); };
 window.capaElegirProd=async(tmpl,nombre)=>{
   if(!rgDraft||rgDraft.clase!=='esc') return;
+  if(ctFreno(tmpl,nombre,"una escalera ni un precio especial")) return;
   const E=rgDraft.esc; E.sel={tmpl, nombre, cargando:true}; render();
   try{ await EYGCapa.cargarReglas(); const info=await EYGCapa.infoProducto(tmpl);
     E.sel=Object.assign({tmpl, nombre:info.nombre||nombre}, {info});
@@ -1627,14 +1628,16 @@ function grpTraerInfos(){
     if(grpG()===G) grpPintar();
   },250);
 }
-window.grpTilde=(tmpl,nombre,on)=>{ const G=grpG(); if(!G) return;
+window.grpTilde=(tmpl,nombre,on)=>{ const G=grpG(); if(!G) return; if(on && ctFreno(tmpl,nombre,"una oferta en grupo")){ grpPintar(); return; }
   G.sel=G.sel.filter(s=>s.tmpl!==tmpl); if(on) G.sel.push({tmpl, nombre:nombre||("#"+tmpl)});
   G.sel.sort((a,b)=>String(a.nombre).localeCompare(String(b.nombre),"es",{numeric:true}));
   grpPintar(); if(on) grpTraerInfos(); };
 window.grpTodos=on=>{ const G=grpG(); if(!G) return;
   if(!on){ G.sel=[]; grpPintar(); return; }
   const ya=new Set(G.sel.map(s=>s.tmpl));
-  G.res.filter(r=>(!G.soloStock||r.stock>0)&&!ya.has(r.tmpl)).forEach(r=>G.sel.push({tmpl:r.tmpl, nombre:r.nombre}));
+  const ctFuera=G.res.filter(r=>(!G.soloStock||r.stock>0)&&!ya.has(r.tmpl)&&ctOf(r.tmpl)).length;   // los de superoferta no se tildan (freno 20/11)
+  G.res.filter(r=>(!G.soloStock||r.stock>0)&&!ya.has(r.tmpl)&&!ctOf(r.tmpl)).forEach(r=>G.sel.push({tmpl:r.tmpl, nombre:r.nombre}));
+  if(ctFuera) toast(ctFuera+" producto"+(ctFuera===1?"":"s")+" en superoferta de contado quedaron afuera: no se les puede armar otra oferta");
   G.sel.sort((a,b)=>String(a.nombre).localeCompare(String(b.nombre),"es",{numeric:true}));
   grpPintar(); grpTraerInfos(); };
 
@@ -3042,6 +3045,22 @@ function snapPvp(pr,pvp){
 }
 const rgPct=x=>EYG.r4((x||0)*100).toLocaleString("es-AR",{maximumFractionDigits:4});   // SOLO para mostrar, como Odoo (4 decimales). El campo editable usa EYG.pctIn: lo que se muestra en el campo es lo que se vuelve a guardar (13/11/2026)
 function rgUserRules(){ return SYNC_OF.filter(o=>o._origen!=='oportunidades'); }
+/* FRENO SUPEROFERTAS DE CONTADO (20/11/2026, Diego: "al intentar seleccionar un producto que está en superoferta,
+   sea individual o combo, no se lo permita y les dé una advertencia del porqué"). La superoferta (regla ct<plantilla>
+   de eyg.sync_ofertas, contado:true) pisa cualquier otro descuento: una oferta, escalera o grupo nuevo quedaría pausado
+   con la placa desactualizada, y Odoo no deja confirmar un pedido que mezcle superofertas con otros productos (un combo
+   con ese producto no se puede vender). Las superofertas se manejan sólo desde su sección. */
+function ctOf(tmpl){ return SYNC_OF.find(o=>o&&o.contado&&!o.pausada&&o.tipo==='p'&&+o.target===+tmpl&&(!o.hasta||o.hasta>=hoy()))||null; }
+function ctAviso(titulo, cuerpo){
+  document.getElementById("modal").innerHTML=`<div class="scrim" onclick="if(event.target===this)cerrarModal()"><div class="modal" style="max-width:600px">
+    <div class="mh"><h3>💵 ${titulo}</h3></div><div class="mb">${cuerpo}<div style="text-align:right;margin-top:12px"><button class="btn" onclick="cerrarModal()">Entendido</button></div></div></div></div>`; }
+function ctFreno(tmpl, nombre, que){ const o=ctOf(tmpl); if(!o) return false;
+  ctAviso(esc(String(nombre||o.targetName||("#"+tmpl)).slice(0,80))+" está en superoferta de contado",
+    `<p style="margin:0 0 10px">Hoy se vende a <b>${money(o.valor)}</b>, sólo de contado. Mientras esté en superoferta <b>no se le puede armar ${que}</b>:</p>
+    <ul style="margin:0 0 10px;padding-left:18px"><li>La superoferta pisa cualquier otro descuento o promoción: lo nuevo quedaría pausado y su placa, desactualizada.</li>
+    <li>Odoo no deja confirmar un pedido que mezcle superofertas con otros productos, así que un combo con este producto no se podría vender.</li></ul>
+    <p style="margin:0;color:var(--gris)">Si hace falta otro precio, primero hay que sacarlo de las superofertas (sección 💵 Superofertas de contado).</p>`);
+  return true; }
 function rgEstado(o){ if(o.pausada) return {t:"Pausada",c:"pau"}; if(o.hasta && o.hasta<hoy()) return {t:"Vencida",c:"ven"}; return {t:"Activa",c:"act"}; }
 function rgDesc(o){
   const v=o.modo==='pct'?(rgPct(o.valor)+"%"):EYG.money(o.valor||0);
@@ -3302,6 +3321,7 @@ window.rgSetClase=async c=>{ if(!rgDraft) return; rgDraft.clase=c;
    Por eso acá se resuelve la variante ANTES de agregar el renglón, y de ahí en adelante
    l.id es SIEMPRE una variante. (Al editar un combo guardado ya viene resuelta.) */
 window.rgAddCombo=async(id,sku,nombre)=>{
+  if(ctFreno(id,nombre,"un combo")) return;
   if(!rgDraft.lineas) rgDraft.lineas=[];
   let vid=id, tmpl=id;
   try{
@@ -3437,12 +3457,12 @@ window.rgNueva=(clase,donde)=>{ if((donde||'ofertas')==='ofertas') COLAPSA['ofer
   if(clase==='combo') rgProximoCodigo().then(c=>{ if(rgDraft&&!rgDraft.codigo){ rgDraft.codigo=c; render(); } });
   rgBusq=[];rgBusqQ="";rgCosto=null;rgRentPara=null;rgTramos=null;rgTramosBase=null;rgApplied=null;
   render(); rgAsomar(); };
-window.rgEditar=async id=>{ const o=SYNC_OF.find(x=>x.id===id); if(!o)return; COLAPSA['ofertas']=false; rgDraft=JSON.parse(JSON.stringify(o)); rgDraft.clase='desc'; rgDraft._edit=true; rgDraft._donde='rg:'+id; rgCanalDe(o.tipo, o.target); rgBusq=[];rgBusqQ="";rgCosto=null;rgRentPara=null;rgTramos=null;rgTramosBase=null;
+window.rgEditar=async id=>{ const o=SYNC_OF.find(x=>x.id===id); if(!o)return; if(o.contado){ ctAviso("Es una superoferta de contado",`<p style="margin:0">«${esc(String(o.targetName||"").slice(0,80))}» se maneja sólo desde la sección <b>💵 Superofertas de contado</b>: su precio lo ajusta solo el sistema para sostener el margen, y desde acá se rompería ese ajuste.</p>`); return; } COLAPSA['ofertas']=false; rgDraft=JSON.parse(JSON.stringify(o)); rgDraft.clase='desc'; rgDraft._edit=true; rgDraft._donde='rg:'+id; rgCanalDe(o.tipo, o.target); rgBusq=[];rgBusqQ="";rgCosto=null;rgRentPara=null;rgTramos=null;rgTramosBase=null;
   // la oferta guardada YA está aplicada al pricelist → guardo sus datos para deshacerla y recuperar la base
   rgApplied = o.tipo==='p'?{modo:o.modo,valor:o.valor,reemplaza:o.reemplaza,pausada:o.pausada,hasta:o.hasta}:null;
   render(); rgAsomar(); if(o.tipo==='p'&&o.target){ await rgCargarRent(o.target); render(); rgActualizarRent(); } };
 /* abrir el editor desde una oportunidad (por costo o por stock): apunta al producto en modo descuento */
-window.rgDesde=(o, sug, desdeKey, desdeId)=>{ COLAPSA['ofertas']=false;
+window.rgDesde=(o, sug, desdeKey, desdeId)=>{ if(o&&ctFreno(o.tmpl,o.nombre,"otra oferta ni descuento")) return; COLAPSA['ofertas']=false;
   rgDraft={id:"of"+Date.now(),clase:'desc',tipo:'p',target:o.tmpl,targetName:o.nombre,modo:(sug?'precio':'pct'),valor:(sug||''),reemplaza:true,hasta:masDias(7),stock:(o.stock||''),pausada:false,items:[],titulo:"",precio:0,precioAntes:0,nota:""};
   if(desdeKey==='opo'){ rgDraft._desdeOpo=desdeId; rgDraft._donde='opo:'+desdeId; }
   if(desdeKey==='stock'){ rgDraft._desdeStock=desdeId; rgDraft._donde='stk:'+desdeId; }
@@ -3467,7 +3487,7 @@ window.rgBuscar=EYG.debounce(async q=>{
   if(rgBusqQ!==q) return;   // llegó tarde: ya hay una búsqueda más nueva
   rgBusq=cats.concat(prods); EYG.repintar(render);
 },350);
-window.rgElegir=async(k,id,name)=>{ if(!rgDraft)return; rgDraft.tipo=k; rgDraft.target=id; rgCanalDe(k,id); rgDraft.target=id; rgDraft.targetName=name; rgDraft._pvp=0; rgBusq=[];rgBusqQ=""; rgCosto=null;rgRentPara=null;rgPiso=0;rgTramos=null;rgTramosBase=null;rgApplied=null; render(); if(k==='p'){ await rgCargarRent(id); render(); rgActualizarRent(); } else { rgCargarCatSim(id); } };
+window.rgElegir=async(k,id,name)=>{ if(!rgDraft)return; if(k==='p' && ctFreno(id,name,"otra oferta ni descuento")) return; rgDraft.tipo=k; rgDraft.target=id; rgCanalDe(k,id); rgDraft.target=id; rgDraft.targetName=name; rgDraft._pvp=0; rgBusq=[];rgBusqQ=""; rgCosto=null;rgRentPara=null;rgPiso=0;rgTramos=null;rgTramosBase=null;rgApplied=null; render(); if(k==='p'){ await rgCargarRent(id); render(); rgActualizarRent(); } else { rgCargarCatSim(id); } };
 /* ---- Destino de la oferta (Farmacias / Instituciones / Ambos) ----
    Al elegir el producto o la categoría se calcula a quién se le vendió en el último año y se
    sugiere el destino. Se puede cambiar a mano; "Automático" deja que lo decidan las ventas. */
