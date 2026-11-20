@@ -179,7 +179,7 @@
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js?v=130"></script>
-<script src="../assets/rueda.js?v=2"></script>
+<script src="../assets/rueda.js?v=3"></script>
 <script>
 /* =====================================================================
    PLAN RUEDA — el seguimiento de la estrategia que arrancó el 16/11/2026:
@@ -261,9 +261,11 @@ function calc(){
     comi:sum(sup,l=>l[comiK]), comiBase:sum(sup,l=>l.comision), comiNivel:sum(sup,l=>l.comisionNivel), mp, pedidos:pedConf.length, clientes:new Set(pedConf.map(p=>p.partner)).size};
   tot.otros=tot.neto*(ST.otros||0)/100;   // otros gastos sobre la venta (IIBB, impuesto al cheque, flete): % que carga Dirección
   tot.queda=tot.margen-tot.comi-tot.mp-tot.otros;
-  const cobrado=sum(pedConf.filter(p=>p.cobro),p=>p.cobro.monto);
-  const efectivoPend=sum(pedConf.filter(p=>p.pago==="efectivo"),p=>p.total);
-  const esperando=ped.filter(p=>["esperando","informado"].includes(p.pago));
+  /* COBRADO = la plata asentada en Odoo (facturas cobradas + recibos a cuenta), no las etiquetas (20/11/2026, ver rueda.js cobroDe) */
+  const cobrado=sum(pedConf,p=>p.cobrado||0);
+  const efectivoPend=sum(pedConf.filter(p=>p.pago==="efectivo"),p=>p.pendiente!=null?p.pendiente:p.total);
+  const esperando=ped.filter(p=>["esperando","informado"].includes(p.pago)&&(p.pendiente==null||p.pendiente>1));
+  const aRevisar=pedConf.filter(p=>p.alerta);
   // productos
   const prods=D.oferta.items.map(it=>{
     const ls=D.lineas.filter(l=>l.pid===it.pid&&l.confirmado);
@@ -281,7 +283,7 @@ function calc(){
       liq: alAlta>0? (alAlta-(st.hoy||0))/alAlta : 0, vendidoPct: alAlta>0? qS/alAlta : 0,
       neto, margen, comi, total:sum(supL,l=>l.total), clientes:new Set(supL.map(l=>l.partner)).size, habIt};
   });
-  return {N, d0, desdeAntes, antes, desp, habAntes, habDesp, habPlan, habPlanReal, glob, stockArr, stockAntes, pendAntes, pendDesp, diasCal, sup, fueraDesp, tot, cobrado, efectivoPend, esperando, prods, comiK};
+  return {N, d0, desdeAntes, antes, desp, habAntes, habDesp, habPlan, habPlanReal, glob, stockArr, stockAntes, pendAntes, pendDesp, diasCal, sup, fueraDesp, tot, cobrado, efectivoPend, esperando, aRevisar, prods, comiK};
 }
 
 /* ---------------- gráficos (SVG simple, con tooltip) ---------------- */
@@ -359,7 +361,7 @@ function pintar(){
   const k=[
     {id:"p-dia", l:"Vendido en superofertas", v:$M(t.neto), d:`<b>${t.pedidos}</b> pedidos · <b>${t.clientes}</b> farmacias · ${u(t.qty)} u<br>${$M(t.neto/C.habPlan)} por día hábil · sin IVA`},
     {id:"p-margen", l:"Te queda limpio", v:$M(t.queda), d:`<b>${pc(t.neto?t.queda/t.neto:0)}</b> sobre la venta<br>margen ${pc(t.neto?t.margen/t.neto:0)} − comisión (${comiTxt}) − MP`},
-    {id:"p-cobro", l:"Cobrado de contado", v:$M(C.cobrado), d:`<b>${pc(t.total?C.cobrado/t.total:0,0)}</b> de lo vendido (con IVA)<br>${C.esperando.length} esperando pago${C.efectivoPend?` · ${$M(C.efectivoPend)} en efectivo a cobrar`:""}`},
+    {id:"p-cobro", l:"Cobrado de contado", v:$M(C.cobrado), d:`<b>${pc(t.total?C.cobrado/t.total:0,0)}</b> de lo vendido (con IVA)<br>${C.esperando.length} esperando pago${C.efectivoPend?` · ${$M(C.efectivoPend)} en efectivo a cobrar`:""}${C.aRevisar.length?` · <b style="color:var(--bad)">${C.aRevisar.length} a revisar</b>`:""}`},
     {id:"p-prod", l:"Ritmo de salida", v:ritA>0?nf1.format(ritD/ritA)+"×":"—", d:`de los ${D.oferta.items.length} productos vs. antes<br>liquidado ${$M(liqVal)} a costo`},
     {id:"p-stock", l:"Stock valorizado", v:$M(D.stockHoy), d:`${delta(C.stockArr,D.stockHoy,true)} desde el arranque (${$M(D.stockHoy-C.stockArr)})<div class="barra" title="Cuánto falta para la meta de fondo"><span style="width:${Math.max(1.5,Math.min(100,(C.stockArr-D.stockHoy)/(C.stockArr-META_STOCK)*100)).toFixed(1)}%"></span></div><span class="muted">avance hacia la meta de fondo (${$M(META_STOCK)}): ${pc(Math.max(0,(C.stockArr-D.stockHoy)/(C.stockArr-META_STOCK)),1)}</span>`},
     {id:"p-drog", l:"Compras por día hábil", v:$M(g.compras[1]), d:`${delta(g.compras[0],g.compras[1],true)} contra ${$M(g.compras[0])} antes<br>el freno de compras`},
@@ -370,7 +372,7 @@ function pintar(){
   $("kpis").innerHTML=k.map(x=>`<div class="kpi" data-go="${x.id}"><div class="l">${x.l}</div><div class="v">${x.v}</div><div class="d">${x.d}</div></div>`).join("");
   $("kpis").querySelectorAll(".kpi").forEach(e=>e.onclick=()=>{ const p=$(e.dataset.go); if(p) p.scrollIntoView({behavior:"smooth",block:"start"}); });
 
-  pintarDia(C); pintarMargen(C); pintarProductos(C); pintarCanales(C); pintarCobro(C); pintarClientes(C); pintarDrogueria(C); pintarProyeccion(C);
+  pintarDia(C); pintarMargen(C); pintarProductos(C); pintarCanales(C); pintarCobro(C); pintarRevisar(C); pintarClientes(C); pintarDrogueria(C); pintarProyeccion(C);
 }
 
 /* ===== 0 · ENCABEZADO: CÓMO VAMOS DE UN VISTAZO =====
@@ -412,8 +414,8 @@ function pintarHero(C, ritA, ritD, versos, pocos){
      e:chipEst(eVen, rit==null?"sin comparación":nf1.format(rit)+"× el ritmo de antes"), t:"Superofertas vendidas (sin IVA), por día. El semáforo compara cuán rápido salen esos productos contra antes de la oferta."},
     {go:"p-margen", l:"Margen", v:pc(mS), sub:`limpio ${pc(mL)} después de comisión y MP`, vis:bala(0.2,[{v:mS,c:"var(--hacc)",o:.45},{v:Math.max(0,mL),c:"var(--hacc)"}],[{v:0.10,t:"10%"}]),
      e:chipEst(eMg, eMg==="ok"?"cumple el 10%":eMg==="warn"?"al límite del 10%":"bajo el 10%"), t:"Margen sobre el costo del producto (barra clara) y lo que queda limpio (barra llena). La marca es el mínimo de 10%."},
-    {go:"p-cobro", l:"Cobrado", v:$M(C.cobrado), sub:`${C.esperando.length} esperando pago`, vis:anillo, ring:true,
-     e:chipEst(eCo, eCo==="ok"?"se cobra":eCo==="warn"?"falta cobrar":"mucho sin cobrar"), t:"Parte de lo vendido en superofertas (con IVA) que ya entró."},
+    {go:"p-cobro", l:"Cobrado", v:$M(C.cobrado), sub:`${C.esperando.length} esperando pago${C.aRevisar.length?` · ${C.aRevisar.length} a revisar`:""}`, vis:anillo, ring:true,
+     e:chipEst(eCo, eCo==="ok"?"se cobra":eCo==="warn"?"falta cobrar":"mucho sin cobrar"), t:"Parte de lo vendido en superofertas (con IVA) que ya está asentada en Odoo: facturas cobradas y recibos a cuenta. No alcanza con la etiqueta PAGADO."},
     {go:"p-dia", l:"Stock", v:$M(D.stockHoy), sub:`${dSt<=0?"−":"+"}${$M(Math.abs(dSt))} desde el arranque`, vis:linea,
      e:chipEst(eSt, eSt==="ok"?"baja más rápido":eSt==="warn"?"baja":"no baja"), t:`Stock valorizado de los últimos ${C.N} días (la línea punteada es el arranque). Meta de fondo: ${$M(META_STOCK)}.`},
   ];
@@ -593,6 +595,13 @@ function pintarCobro(C){
   $("cob-esp").innerHTML=esp.length?`<div class="tblw"><table class="t"><thead><tr><th>Pedido</th><th>Cliente</th><th>Comercial</th><th>Estado</th><th class="n">Total</th><th class="n">Hace</th></tr></thead><tbody>${esp.map(p=>{ const h=(ahora-new Date(String(p.creado||p.fecha).replace(" ","T")+"Z"))/36e5; return `<tr><td>${esc(p.name)}${p.confirmado?"":' <span class="chip neu">presupuesto</span>'}</td><td>${esc(p.cliente)}</td><td>${esc(p.vendedor)}</td><td>${chipPago(p.pago)}</td><td class="n">${$2(p.total)}</td><td class="n ${h>24?"neg":""}">${horas(h)}${h>24?" ⚠":""}</td></tr>`; }).join("")}</tbody></table></div>`:'<div class="muted">No hay pedidos esperando pago.</div>';
 }
 
+/* cobros a revisar: la etiqueta dice una cosa y la plata asentada otra (20/11/2026) */
+function pintarRevisar(C){
+  const el=$("cob-rev"); if(!el) return;
+  const L=C.aRevisar.slice().sort((a,b)=>(b.pendiente||0)-(a.pendiente||0));
+  el.innerHTML=L.length?`<div class="tblw"><table class="t"><thead><tr><th>Pedido</th><th>Cliente</th><th>Comercial</th><th>Etiqueta</th><th class="n">A cobrar</th><th class="n">Cobrado en Odoo</th><th>Qué pasa</th></tr></thead><tbody>${L.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.cliente)}</td><td>${esc(p.vendedor)}</td><td>${chipPago(p.pago)}</td><td class="n">${$2(p.base!=null?p.base:p.total)}</td><td class="n ${p.cobrado>0?"":"neg"}">${$2(p.cobrado||0)}</td><td>${esc(p.alerta)}</td></tr>`).join("")}</tbody></table></div>`:'<div class="muted">Todo cuadra: cada pedido figura como está su plata en Odoo.</div>';
+}
+
 /* ===== 6 · CLIENTES ===== */
 function pintarClientes(C){
   const cl=D.clientes.slice().sort((a,b)=>b.neto-a.neto);
@@ -711,6 +720,8 @@ const MAIN=`<div class="rd">
       <details class="como"><summary>Cómo se calcula</summary>Días de cobro = promedio, ponderado por monto, entre la fecha de la factura y la fecha en que se imputó el cobro, de las imputaciones hechas en los 90 días previos al arranque. "Plata adelantada" = lo cobrado de contado, que a plazo normal hubiera entrado esos días después; su valor financiero se calcula a la tasa mensual que pongas (por ejemplo, lo que cuesta descontar un cheque).</details></div>
     <div class="panel"><div class="ph"><h2>Esperando pago</h2><span class="hint">más de 24 h en rojo</span></div><div id="cob-esp"></div></div>
   </div>
+  <div class="fila"><div class="panel" id="p-rev"><div class="ph"><h2>Cobros a revisar</h2><span class="hint">la etiqueta del pedido no coincide con la plata asentada en Odoo</span></div><div id="cob-rev"></div>
+    <details class="como"><summary>Cómo se calcula</summary>Cobrado = lo facturado menos el saldo de sus facturas (las notas de crédito restan) más lo que quede sin imputar de sus recibos "Superoferta" (pago a cuenta de un pedido sin facturar). Así entra todo lo que asentó Cobranzas, por el botón o a mano. Un pedido va acá si figura PAGADO y en Odoo no hay cobro, si ya se cobró y la etiqueta sigue diciendo que falta, o si el cliente tiene saldo a favor sin imputar que puede ser ese pago. Una diferencia de hasta 2% en un pedido PAGADO se toma como bonificada por Cobranzas.</details></div></div>
 
   <div class="panel" id="p-cli"><div class="ph"><h2>Clientes</h2></div><div id="cli-res"></div><div class="tblw"><table class="t" id="tb-cli"></table></div>
     <details class="como"><summary>Cómo se calcula</summary>Nueva = nunca tuvo un pedido confirmado antes del arranque. Recuperada = el último fue hace más de 60 días. "Su compra común" compara lo que estas farmacias compran FUERA de las superofertas por día hábil desde el arranque contra su promedio de los 90 días previos: si baja, la oferta reemplaza compra con margen normal.</details></div>

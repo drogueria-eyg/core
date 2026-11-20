@@ -67,7 +67,7 @@
     if(!OF.items || !OF.items.length || !OF.activadaEn) throw new Error("La oferta de contado no está activada: no hay plan que medir.");
     const COMI = JSON.parse(rawComi||"{}");
     const T = String(rawTags||"").split(",").map(x=>parseInt(x,10)||0);
-    const TAG = {esp:T[0]||0, pag:T[1]||0, efe:T[2]||0, inf:T[3]||0, dif:T[4]||0};
+    const TAG = {esp:T[0]||0, pag:T[1]||0, efe:T[2]||0, inf:T[3]||0, dif:T[4]||0, sal:T[5]||0};
     const TAGS = T.filter(Boolean);
     let cierres=[]; try{ cierres = JSON.parse(rawCierres||"[]"); }catch(e){}
     const ultCierre = (cierres||[]).slice().sort().pop()||null;
@@ -128,7 +128,7 @@
     const allOrd = [...new Set([...orderIds, ...tagOrders])];
     const ORD = {};
     for(const ch of chunk(allOrd, 300)){
-      const rs = await rpc("sale.order","read",[ch,["name","date_order","state","pricelist_id","website_id","origin","create_uid","user_id","tag_ids","amount_untaxed","amount_total","margin","partner_id","invoice_status","create_date"]],{context:TZ});
+      const rs = await rpc("sale.order","read",[ch,["name","date_order","state","pricelist_id","website_id","origin","create_uid","user_id","tag_ids","amount_untaxed","amount_total","margin","partner_id","invoice_status","create_date","invoice_ids"]],{context:TZ});
       for(const o of rs) ORD[o.id] = o;
     }
     const estadoPago = o => { const t=o.tag_ids||[];
@@ -181,7 +181,7 @@
     progreso("Leyendo los cobros de las superofertas…");
     const desdeCobro = diaAR(new Date(T0.getTime()-2*864e5));
     const [PAY, FEE] = await Promise.all([
-      rpc("account.payment","search_read",[[["ref","=like","Superoferta %"],["state","=","posted"],["date",">=",desdeCobro]]],{fields:["name","ref","date","create_date","amount","journal_id","payment_reference"],limit:2000}),
+      rpc("account.payment","search_read",[[["ref","=like","Superoferta %"],["state","=","posted"],["date",">=",desdeCobro]]],{fields:["name","ref","date","create_date","amount","journal_id","payment_reference","move_id"],limit:2000}),
       rpc("account.move","search_read",[[["ref","=like","Comisión Mercado Pago · %"],["state","=","posted"],["date",">=",desdeCobro]]],{fields:["ref","amount_total","date"],limit:2000}),
     ]);
     const cobros = {};   // nombre de pedido → {recibos, monto, cuando, diario, mp, comisionMP}
@@ -189,6 +189,62 @@
       c.recibos.push(p.name); c.monto=r2(c.monto+(+p.amount||0)); c.diario=nm(p.journal_id); if(/^MP\s/.test(p.payment_reference||"")) c.mp=true;
       if(!c.cuando || p.create_date < c.cuando) c.cuando=p.create_date; }
     for(const f of FEE){ const m=/·\s*(\S+)\s*·/.exec(f.ref||""); if(!m) continue; const c=cobros[m[1]]||(cobros[m[1]]={recibos:[],monto:0,cuando:null,diario:"",mp:true,comisionMP:0}); c.comisionMP=r2(c.comisionMP+(+f.amount_total||0)); }
+
+    /* ---------- LO COBRADO DE CADA PEDIDO, POR LA PLATA (20/11/2026, Diego: "tenés que poder detectar todo, bien, sin fallas").
+       Antes se contaban sólo los recibos "Superoferta <pedido>" (los que crea la acción 1336): lo que Cobranzas asentaba a mano
+       (botón "Ya está asentado", el efectivo de Federico) no aparecía aunque el pedido dijera PAGADO, y un PAGADO sin ningún
+       recibo pasaba igual (Airaldi, $2,85M). Ahora:
+         cobrado = (facturado − saldo de sus facturas publicadas, las notas de crédito restan) + lo que quede SIN IMPUTAR de sus
+                   recibos "Superoferta" (pago a cuenta de un pedido todavía sin facturar).
+       Las etiquetas dicen lo que se declaró; la plata dice lo que hay. Si no coinciden, el pedido va a "A revisar". */
+    progreso("Cruzando los cobros con las facturas…");
+    const supConf = Object.values(ORD).filter(o=>esSuper(o) && ["sale","done"].includes(o.state));
+    const invIds = [...new Set(supConf.flatMap(o=>o.invoice_ids||[]))];
+    const INV = {};
+    for(const ch of chunk(invIds, 300)){ const rs = await rpc("account.move","read",[ch,["name","move_type","state","amount_total","amount_residual","payment_state"]]); for(const m of rs) INV[m.id]=m; }
+    const payMoves = [...new Set(PAY.map(p=>id0(p.move_id)).filter(Boolean))];
+    const sinImputar = {};   // asiento del recibo → lo que todavía no se imputó (positivo)
+    for(const ch of chunk(payMoves, 300)){
+      const ls = await rpc("account.move.line","search_read",[[["move_id","in",ch],["account_id.account_type","=","asset_receivable"]]],{fields:["move_id","amount_residual"],limit:5000});
+      for(const l of ls){ const k=id0(l.move_id); sinImputar[k]=r2((sinImputar[k]||0)-(+l.amount_residual||0)); }
+    }
+    for(const p of PAY){ const so=String(p.ref||"").replace(/^Superoferta\s+/,"").trim(); const c=cobros[so]; if(c) c.aCuenta=r2((c.aCuenta||0)+(sinImputar[id0(p.move_id)]||0)); }
+    /* recibos del cliente que no están imputados a nada (y no son "Superoferta"): la pista de un cobro asentado a mano sin imputar */
+    const partIds = [...new Set(supConf.map(o=>id0(o.partner_id)).filter(Boolean))];
+    const CPde = {};
+    for(const ch of chunk(partIds, 300)){ const rs = await rpc("res.partner","read",[ch,["commercial_partner_id"]]); for(const r of rs) CPde[r.id]=id0(r.commercial_partner_id)||r.id; }
+    const cps = [...new Set(Object.values(CPde))];
+    const credito = {};      // cliente (empresa) → [{recibo, monto}]
+    if(cps.length){
+      const ls = await rpc("account.move.line","search_read",[[["account_id.account_type","=","asset_receivable"],["parent_state","=","posted"],["reconciled","=",false],["amount_residual","<",-0.5],["partner_id.commercial_partner_id","in",cps],["date",">=",desdeCobro]]],{fields:["move_id","move_name","partner_id","amount_residual"],limit:5000});
+      const pp = [...new Set(ls.map(l=>id0(l.partner_id)).filter(x=>x && !CPde[x]))];
+      for(const ch of chunk(pp, 300)){ const rs = await rpc("res.partner","read",[ch,["commercial_partner_id"]]); for(const r of rs) CPde[r.id]=id0(r.commercial_partner_id)||r.id; }
+      for(const l of ls){ if(payMoves.includes(id0(l.move_id))) continue; const k=CPde[id0(l.partner_id)]; if(!k) continue; (credito[k]=credito[k]||[]).push({recibo:l.move_name, monto:r2(-(+l.amount_residual||0))}); }
+    }
+    const tieneTag = (o,t) => !!t && (o.tag_ids||[]).includes(t);
+    const cobroDe = o => {
+      const c = cobros[o.name]||null, total = +o.amount_total||0;
+      const invs = (o.invoice_ids||[]).map(i=>INV[i]).filter(m=>m && m.state==="posted" && ["out_invoice","out_refund"].includes(m.move_type));
+      const sg = m => m.move_type==="out_refund" ? -1 : 1;
+      const facturado = r2(invs.reduce((a,m)=>a+sg(m)*(+m.amount_total||0),0)), saldo = r2(invs.reduce((a,m)=>a+sg(m)*(+m.amount_residual||0),0));
+      const aCuenta = c ? r2(c.aCuenta||0) : 0;
+      const base = invs.length ? facturado : total;            // lo que se le cobra: la factura, si ya está facturado
+      let cobrado = r2((facturado - saldo) + aCuenta);
+      if(cobrado > base) cobrado = base;
+      let pendiente = r2(base - cobrado), bonificado = 0;
+      const pag = tieneTag(o,TAG.pag), sal = tieneTag(o,TAG.sal);
+      /* PAGADO con una diferencia chica que Cobranzas ya resolvió (bonificada con un ajuste, como Bucci: $40 de $14.773,88) */
+      if(pag && !sal && cobrado > 0 && pendiente > 1 && pendiente <= Math.max(1, base*0.02)){ bonificado = pendiente; pendiente = 0; }
+      const estado = pendiente <= 1 ? "cobrado" : (cobrado > 1 ? "parcial" : "sin_cobrar");
+      const cred = credito[CPde[id0(o.partner_id)]]||[], credMonto = r2(cred.reduce((a,x)=>a+x.monto,0));
+      let alerta = null;
+      if(pag && !sal && estado !== "cobrado") alerta = credMonto > 0
+        ? "Figura PAGADO, pero el recibo del cliente no está imputado a la factura ("+cred.map(x=>x.recibo).join(", ")+")"
+        : "Figura PAGADO y no hay ningún cobro en Odoo: falta el recibo";
+      else if(!pag && estado === "cobrado") alerta = "Ya está cobrado, pero la etiqueta todavía dice que falta cobrar";
+      else if(estado !== "cobrado" && credMonto > 0) alerta = "El cliente tiene saldo a favor sin imputar ("+cred.map(x=>x.recibo+" $"+x.monto).join(", ")+"): ver si corresponde a este pedido";
+      return {facturado, saldo, aCuenta, base, cobrado, pendiente, bonificado, estadoCobro:estado, alerta, credito:credMonto};
+    };
 
     /* pedidos de superoferta (cabecera) */
     const pedidos = Object.values(ORD).filter(o=>esSuper(o) && dUTC(o.date_order) >= new Date(T0.getTime()-2*864e5)).map(o=>{
@@ -202,6 +258,7 @@
         desvio: r2(ls.reduce((a,l)=>a+l.desvio,0)),
         comision: com?r2((+o.amount_untaxed||0)*com.tasa):0, comisionNivel: com?r2((+o.amount_untaxed||0)*com.tasa*com.mult):0,
         cobro:c, horasAlCobro: c&&c.cuando ? Math.max(0,(dUTC(c.cuando)-dUTC(o.create_date||o.date_order))/36e5) : null,
+        ...((["sale","done"].includes(o.state)) ? cobroDe(o) : {cobrado:0, pendiente:+o.amount_total||0, estadoCobro:"presupuesto", alerta:null}),
         renglones: ls.length, unidades: ls.reduce((a,l)=>a+l.qty,0) };
     }).sort((a,b)=>a.fecha<b.fecha?1:-1);
 
