@@ -221,6 +221,30 @@
       for(const ch of chunk(pp, 300)){ const rs = await rpc("res.partner","read",[ch,["commercial_partner_id"]]); for(const r of rs) CPde[r.id]=id0(r.commercial_partner_id)||r.id; }
       for(const l of ls){ if(payMoves.includes(id0(l.move_id))) continue; const k=CPde[id0(l.partner_id)]; if(!k) continue; (credito[k]=credito[k]||[]).push({recibo:l.move_name, monto:r2(-(+l.amount_residual||0))}); }
     }
+    /* CÓMO SE COBRÓ cada factura (20/11/2026, Diego: "¿detecta cuando un pago se carga manualmente?"): los recibos y
+       créditos imputados a la factura, con quién los cargó. "botón" = recibo "Superoferta …" (acción 1336 o cruce de
+       Mercado Pago); "a mano" = recibo cargado en Odoo por Cobranzas (Fede, Bárbara); "crédito" = nota de crédito o ajuste. */
+    const invRec = {};
+    const invLines = [];
+    for(const ch of chunk(invIds, 300)) invLines.push(...await rpc("account.move.line","search_read",[[["move_id","in",ch],["account_id.account_type","=","asset_receivable"]]],{fields:["move_id","matched_credit_ids"],limit:5000}));
+    const partIdsR = [...new Set(invLines.flatMap(l=>l.matched_credit_ids||[]))];
+    const PART = {};
+    for(const ch of chunk(partIdsR, 300)) for(const p of await rpc("account.partial.reconcile","read",[ch,["credit_move_id","amount"]])) PART[p.id]=p;
+    const CL = {};
+    for(const ch of chunk([...new Set(Object.values(PART).map(p=>id0(p.credit_move_id)))], 300)) for(const l of await rpc("account.move.line","read",[ch,["move_id","move_name","payment_id","journal_id","create_uid","date"]])) CL[l.id]=l;
+    const PY = {};
+    for(const ch of chunk([...new Set(Object.values(CL).map(l=>id0(l.payment_id)).filter(Boolean))], 300)) for(const p of await rpc("account.payment","read",[ch,["name","ref","journal_id","create_uid","date"]])) PY[p.id]=p;
+    for(const l of invLines){ const k=id0(l.move_id);
+      for(const pid of (l.matched_credit_ids||[])){ const pr=PART[pid]; const cl=pr&&CL[id0(pr.credit_move_id)]; if(!cl) continue; const py=PY[id0(cl.payment_id)];
+        const auto = !!py && /^Superoferta\s/.test(py.ref||"");
+        (invRec[k]=invRec[k]||[]).push({doc: py?py.name:cl.move_name, monto:r2(pr.amount), diario:nm((py||cl).journal_id), quien:nm((py||cl).create_uid), fecha:py?py.date:cl.date, tipo: py?(auto?"boton":"manual"):"credito"}); } }
+    /* cobros del cliente desde el pedido: si pagó y el recibo se imputó a OTRAS facturas, el de la superoferta queda abierto */
+    let PCLI = [];
+    if(cps.length){
+      PCLI = await rpc("account.payment","search_read",[[["partner_id.commercial_partner_id","in",cps],["payment_type","=","inbound"],["state","=","posted"],["date",">=",desdeCobro]]],{fields:["name","date","amount","partner_id","reconciled_invoice_ids","journal_id","create_uid"],limit:5000});
+      const pp = [...new Set(PCLI.map(y=>id0(y.partner_id)).filter(x=>x && !CPde[x]))];
+      for(const ch of chunk(pp, 300)){ const rs = await rpc("res.partner","read",[ch,["commercial_partner_id"]]); for(const r of rs) CPde[r.id]=id0(r.commercial_partner_id)||r.id; }
+    }
     const tieneTag = (o,t) => !!t && (o.tag_ids||[]).includes(t);
     const cobroDe = o => {
       const c = cobros[o.name]||null, total = +o.amount_total||0;
@@ -236,14 +260,22 @@
       /* PAGADO con una diferencia chica que Cobranzas ya resolvió (bonificada con un ajuste, como Bucci: $40 de $14.773,88) */
       if(pag && !sal && cobrado > 0 && pendiente > 1 && pendiente <= Math.max(1, base*0.02)){ bonificado = pendiente; pendiente = 0; }
       const estado = pendiente <= 1 ? "cobrado" : (cobrado > 1 ? "parcial" : "sin_cobrar");
-      const cred = credito[CPde[id0(o.partner_id)]]||[], credMonto = r2(cred.reduce((a,x)=>a+x.monto,0));
+      const cp = CPde[id0(o.partner_id)], cred = credito[cp]||[], credMonto = r2(cred.reduce((a,x)=>a+x.monto,0));
+      /* cómo se cobró: lo imputado a sus facturas + los recibos "Superoferta" todavía a cuenta */
+      const cobradoCon = invs.flatMap(m=>invRec[m.id]||[]);
+      if(c) for(const p of PAY){ if(String(p.ref||"").replace(/^Superoferta\s+/,"").trim()!==o.name) continue; const sinImp=sinImputar[id0(p.move_id)]||0; if(sinImp>0.5 && !cobradoCon.some(x=>x.doc===p.name)) cobradoCon.push({doc:p.name, monto:r2(sinImp), diario:nm(p.journal_id), quien:"", fecha:p.date, tipo:"boton", aCuenta:true}); }
+      /* pagó después del pedido, pero imputado a otras facturas */
+      const diaPed = diaAR(o.date_order);
+      const otros = PCLI.filter(y=>CPde[id0(y.partner_id)]===cp && y.date>=diaPed && !(y.reconciled_invoice_ids||[]).some(i=>(o.invoice_ids||[]).includes(i)) && !cobradoCon.some(x=>x.doc===y.name));
+      const otrosMonto = r2(otros.reduce((a,y)=>a+(+y.amount||0),0));
       let alerta = null;
       if(pag && !sal && estado !== "cobrado") alerta = credMonto > 0
         ? "Figura PAGADO, pero el recibo del cliente no está imputado a la factura ("+cred.map(x=>x.recibo).join(", ")+")"
         : "Figura PAGADO y no hay ningún cobro en Odoo: falta el recibo";
       else if(!pag && estado === "cobrado") alerta = "Ya está cobrado, pero la etiqueta todavía dice que falta cobrar";
       else if(estado !== "cobrado" && credMonto > 0) alerta = "El cliente tiene saldo a favor sin imputar ("+cred.map(x=>x.recibo+" $"+x.monto).join(", ")+"): ver si corresponde a este pedido";
-      return {facturado, saldo, aCuenta, base, cobrado, pendiente, bonificado, estadoCobro:estado, alerta, credito:credMonto};
+      else if(estado !== "cobrado" && otrosMonto >= pendiente - 1) alerta = "El cliente pagó después del pedido ("+otros.map(y=>y.name+" $"+y.amount+", "+nm(y.journal_id)+", "+nm(y.create_uid)).join("; ")+"), pero se imputó a otras facturas: ver si incluye este pedido";
+      return {facturado, saldo, aCuenta, base, cobrado, pendiente, bonificado, estadoCobro:estado, alerta, credito:credMonto, cobradoCon, manual: cobradoCon.some(x=>x.tipo==="manual")};
     };
 
     /* pedidos de superoferta (cabecera) */
@@ -259,7 +291,8 @@
         comision: com?r2((+o.amount_untaxed||0)*com.tasa):0, comisionNivel: com?r2((+o.amount_untaxed||0)*com.tasa*com.mult):0,
         cobro:c, horasAlCobro: c&&c.cuando ? Math.max(0,(dUTC(c.cuando)-dUTC(o.create_date||o.date_order))/36e5) : null,
         ...((["sale","done"].includes(o.state)) ? cobroDe(o) : {cobrado:0, pendiente:+o.amount_total||0, estadoCobro:"presupuesto", alerta:null}),
-        renglones: ls.length, unidades: ls.reduce((a,l)=>a+l.qty,0) };
+        renglones: ls.length, unidades: ls.reduce((a,l)=>a+l.qty,0),
+        superTotal: r2(ls.reduce((a,l)=>a+l.total,0)) };   // sólo los productos de la oferta (un presupuesto mixto no es todo superoferta)
     }).sort((a,b)=>a.fecha<b.fecha?1:-1);
 
     /* ---------- stock: hoy y reconstruido día por día ---------- */

@@ -179,7 +179,7 @@
 <body>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../assets/core.js?v=130"></script>
-<script src="../assets/rueda.js?v=3"></script>
+<script src="../assets/rueda.js?v=4"></script>
 <script>
 /* =====================================================================
    PLAN RUEDA — el seguimiento de la estrategia que arrancó el 16/11/2026:
@@ -264,7 +264,9 @@ function calc(){
   /* COBRADO = la plata asentada en Odoo (facturas cobradas + recibos a cuenta), no las etiquetas (20/11/2026, ver rueda.js cobroDe) */
   const cobrado=sum(pedConf,p=>p.cobrado||0);
   const efectivoPend=sum(pedConf.filter(p=>p.pago==="efectivo"),p=>p.pendiente!=null?p.pendiente:p.total);
-  const esperando=ped.filter(p=>["esperando","informado"].includes(p.pago)&&(p.pendiente==null||p.pendiente>1));
+  /* esperando pago = pedidos CONFIRMADOS con saldo; los presupuestos sin confirmar van aparte: no son deuda (20/11/2026) */
+  const esperando=pedConf.filter(p=>["esperando","informado"].includes(p.pago)&&(p.pendiente==null||p.pendiente>1));
+  const presup=ped.filter(p=>!p.confirmado&&["esperando","informado"].includes(p.pago));
   const aRevisar=pedConf.filter(p=>p.alerta);
   // productos
   const prods=D.oferta.items.map(it=>{
@@ -283,7 +285,7 @@ function calc(){
       liq: alAlta>0? (alAlta-(st.hoy||0))/alAlta : 0, vendidoPct: alAlta>0? qS/alAlta : 0,
       neto, margen, comi, total:sum(supL,l=>l.total), clientes:new Set(supL.map(l=>l.partner)).size, habIt};
   });
-  return {N, d0, desdeAntes, antes, desp, habAntes, habDesp, habPlan, habPlanReal, glob, stockArr, stockAntes, pendAntes, pendDesp, diasCal, sup, fueraDesp, tot, cobrado, efectivoPend, esperando, aRevisar, prods, comiK};
+  return {N, d0, desdeAntes, antes, desp, habAntes, habDesp, habPlan, habPlanReal, glob, stockArr, stockAntes, pendAntes, pendDesp, diasCal, sup, fueraDesp, tot, cobrado, efectivoPend, esperando, presup, aRevisar, prods, comiK};
 }
 
 /* ---------------- gráficos (SVG simple, con tooltip) ---------------- */
@@ -469,7 +471,7 @@ function pintarDia(C){
   abribles($("tb-dia"));
 }
 function tablaPedidos(peds,C){
-  return `<table class="t" style="font-size:12px"><thead><tr><th>Pedido</th><th>Hora</th><th>Cliente</th><th>Comercial</th><th>Canal</th><th>Pago</th><th class="n">Total c/IVA</th><th class="n">Neto</th><th class="n">Margen</th><th class="n">Comisión</th><th class="n">MP</th><th class="n" title="Desde que se cargó el pedido hasta el recibo">Al cobro</th></tr></thead><tbody>${peds.map(p=>`<tr><td><a href="https://drogueriaeyg.odoo.com/web#id=${p.id}&model=sale.order&view_type=form" target="_blank" rel="noopener">${esc(p.name)}</a>${p.confirmado?"":' <span class="chip neu">presupuesto</span>'}</td><td>${fh(p.fecha).slice(-5)}</td><td>${esc(p.cliente)}</td><td>${esc(p.vendedor)}</td><td>${esc(D.CANALES[p.canal])}</td><td>${chipPago(p.pago)}${p.cobro?`<span class="sub">${esc(p.cobro.recibos.join(", "))} · ${esc(p.cobro.diario)}</span>`:""}</td><td class="n">${$2(p.total)}</td><td class="n">${$2(p.neto)}</td><td class="n">${$2(p.margen)} <span class="sub">${pc(p.neto?p.margen/p.neto:0)}</span></td><td class="n">${$2(ST.comi==="nivel"?p.comisionNivel:p.comision)}</td><td class="n">${p.cobro&&p.cobro.comisionMP?$2(p.cobro.comisionMP):"—"}</td><td class="n">${p.horasAlCobro!=null?horas(p.horasAlCobro):"—"}</td></tr>`).join("")}</tbody></table>`;
+  return `<table class="t" style="font-size:12px"><thead><tr><th>Pedido</th><th>Hora</th><th>Cliente</th><th>Comercial</th><th>Canal</th><th>Pago</th><th class="n">Total c/IVA</th><th class="n">Neto</th><th class="n">Margen</th><th class="n">Comisión</th><th class="n">MP</th><th class="n" title="Desde que se cargó el pedido hasta el recibo">Al cobro</th></tr></thead><tbody>${peds.map(p=>`<tr><td><a href="https://drogueriaeyg.odoo.com/web#id=${p.id}&model=sale.order&view_type=form" target="_blank" rel="noopener">${esc(p.name)}</a>${p.confirmado?"":' <span class="chip neu">presupuesto</span>'}</td><td>${fh(p.fecha).slice(-5)}</td><td>${esc(p.cliente)}</td><td>${esc(p.vendedor)}</td><td>${esc(D.CANALES[p.canal])}</td><td>${chipPago(p.pago)}${(p.cobradoCon||[]).length?`<span class="sub">${p.cobradoCon.map(x=>esc(x.doc)+" · "+esc(x.diario)+(x.tipo==="manual"?" · a mano ("+esc(x.quien)+")":x.tipo==="credito"?" · crédito o ajuste":x.aCuenta?" · a cuenta":"")).join("<br>")}</span>`:(p.cobro?`<span class="sub">${esc(p.cobro.recibos.join(", "))} · ${esc(p.cobro.diario)}</span>`:"")}</td><td class="n">${$2(p.total)}</td><td class="n">${$2(p.neto)}</td><td class="n">${$2(p.margen)} <span class="sub">${pc(p.neto?p.margen/p.neto:0)}</span></td><td class="n">${$2(ST.comi==="nivel"?p.comisionNivel:p.comision)}</td><td class="n">${p.cobro&&p.cobro.comisionMP?$2(p.cobro.comisionMP):"—"}</td><td class="n">${p.horasAlCobro!=null?horas(p.horasAlCobro):"—"}</td></tr>`).join("")}</tbody></table>`;
 }
 const corto=n=>String(n||"").replace(/\s*\((Precio|Caja|Pack)[^)]*\)\s*/gi," ").trim();
 const presen=n=>{ const m=/\(((?:Precio|Caja|Pack)[^)]*)\)/i.exec(String(n||"")); return m?m[1]:""; };
@@ -567,7 +569,7 @@ function pintarCanales(C){
 /* ===== 5 · COBRO Y LIQUIDEZ ===== */
 function pintarCobro(C){
   const ped=D.pedidos;
-  const est={}; ped.forEach(p=>{ const k=p.confirmado?(p.pago||"—"):"presupuesto"; const o=est[k]||(est[k]={n:0,v:0}); o.n++; o.v+=p.total; });
+  const est={}; ped.forEach(p=>{ const k=p.confirmado?(p.pago||"—"):"presupuesto"; const o=est[k]||(est[k]={n:0,v:0}); o.n++; o.v+=p.confirmado?p.total:(p.superTotal!=null?p.superTotal:p.total); });
   const orden=["pagado","efectivo_cobrado","informado","esperando","efectivo","diferencia","presupuesto"];
   $("cob-est").innerHTML=orden.filter(k=>est[k]).map(k=>`<div><div class="l">${k==="presupuesto"?"Presupuestos sin confirmar":esc((PAGO[k]||{}).t||k)}</div><div class="v">${$M(est[k].v)}</div><div class="d">${est[k].n} pedido${est[k].n>1?"s":""} ${k==="presupuesto"?'<span class="chip neu">no es venta todavía</span>':chipPago(k)}</div></div>`).join("");
   // horas al cobro
@@ -593,6 +595,9 @@ function pintarCobro(C){
   const esp=C.esperando.slice().sort((a,b)=>a.fecha<b.fecha?-1:1);
   const ahora=new Date(D.generado);
   $("cob-esp").innerHTML=esp.length?`<div class="tblw"><table class="t"><thead><tr><th>Pedido</th><th>Cliente</th><th>Comercial</th><th>Estado</th><th class="n">Total</th><th class="n">Hace</th></tr></thead><tbody>${esp.map(p=>{ const h=(ahora-new Date(String(p.creado||p.fecha).replace(" ","T")+"Z"))/36e5; return `<tr><td>${esc(p.name)}${p.confirmado?"":' <span class="chip neu">presupuesto</span>'}</td><td>${esc(p.cliente)}</td><td>${esc(p.vendedor)}</td><td>${chipPago(p.pago)}</td><td class="n">${$2(p.total)}</td><td class="n ${h>24?"neg":""}">${horas(h)}${h>24?" ⚠":""}</td></tr>`; }).join("")}</tbody></table></div>`:'<div class="muted">No hay pedidos esperando pago.</div>';
+  /* presupuestos sin confirmar con superofertas: no son deuda (de uno mixto sólo cuenta la parte de superofertas) */
+  const pre=C.presup.slice().sort((a,b)=>a.fecha<b.fecha?-1:1);
+  if(pre.length) $("cob-esp").innerHTML+=`<div class="ctit" style="margin-top:14px">Presupuestos con superofertas sin confirmar <span class="hint">no son deuda: si no se van a comprar, conviene borrarlos</span></div><div class="tblw"><table class="t"><thead><tr><th>Presupuesto</th><th>Cliente</th><th>Comercial</th><th class="n">Superofertas</th><th class="n">Total</th><th class="n">Hace</th></tr></thead><tbody>${pre.map(p=>{ const h=(ahora-new Date(String(p.creado||p.fecha).replace(" ","T")+"Z"))/36e5; return `<tr><td>${esc(p.name)}</td><td>${esc(p.cliente)}</td><td>${esc(p.vendedor)}</td><td class="n">${$2(p.superTotal!=null?p.superTotal:p.total)}</td><td class="n">${$2(p.total)}</td><td class="n">${horas(h)}</td></tr>`; }).join("")}</tbody></table></div>`;
 }
 
 /* cobros a revisar: la etiqueta dice una cosa y la plata asentada otra (20/11/2026) */
@@ -721,7 +726,7 @@ const MAIN=`<div class="rd">
     <div class="panel"><div class="ph"><h2>Esperando pago</h2><span class="hint">más de 24 h en rojo</span></div><div id="cob-esp"></div></div>
   </div>
   <div class="fila"><div class="panel" id="p-rev"><div class="ph"><h2>Cobros a revisar</h2><span class="hint">la etiqueta del pedido no coincide con la plata asentada en Odoo</span></div><div id="cob-rev"></div>
-    <details class="como"><summary>Cómo se calcula</summary>Cobrado = lo facturado menos el saldo de sus facturas (las notas de crédito restan) más lo que quede sin imputar de sus recibos "Superoferta" (pago a cuenta de un pedido sin facturar). Así entra todo lo que asentó Cobranzas, por el botón o a mano. Un pedido va acá si figura PAGADO y en Odoo no hay cobro, si ya se cobró y la etiqueta sigue diciendo que falta, o si el cliente tiene saldo a favor sin imputar que puede ser ese pago. Una diferencia de hasta 2% en un pedido PAGADO se toma como bonificada por Cobranzas.</details></div></div>
+    <details class="como"><summary>Cómo se calcula</summary>Cobrado = lo facturado menos el saldo de sus facturas (las notas de crédito restan) más lo que quede sin imputar de sus recibos "Superoferta" (pago a cuenta de un pedido sin facturar). Así entra todo lo que asentó Cobranzas, por el botón o a mano: en la lista de pedidos cada cobro dice con qué recibo, de qué caja o banco, y si se cargó a mano y quién. También avisa si el cliente pagó después del pedido pero el recibo se imputó a otras facturas. Los presupuestos sin confirmar van aparte: no son deuda, y de un presupuesto mixto sólo cuenta la parte de superofertas. Un pedido va acá si figura PAGADO y en Odoo no hay cobro, si ya se cobró y la etiqueta sigue diciendo que falta, o si el cliente tiene saldo a favor sin imputar que puede ser ese pago. Una diferencia de hasta 2% en un pedido PAGADO se toma como bonificada por Cobranzas.</details></div></div>
 
   <div class="panel" id="p-cli"><div class="ph"><h2>Clientes</h2></div><div id="cli-res"></div><div class="tblw"><table class="t" id="tb-cli"></table></div>
     <details class="como"><summary>Cómo se calcula</summary>Nueva = nunca tuvo un pedido confirmado antes del arranque. Recuperada = el último fue hace más de 60 días. "Su compra común" compara lo que estas farmacias compran FUERA de las superofertas por día hábil desde el arranque contra su promedio de los 90 días previos: si baja, la oferta reemplaza compra con margen normal.</details></div>
