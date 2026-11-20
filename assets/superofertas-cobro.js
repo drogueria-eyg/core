@@ -17,7 +17,7 @@ window.EYGSuperCobro = (function(){
   const rpc=(m,me,a,k)=>EYG.rpc(m,me,a,k||{});
   const esc=s=>EYG.esc(s);
   const money=n=>"$ "+Number(n||0).toLocaleString("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2});
-  let EL=null, PERFIL=null, T={esp:0,pag:0,efe:0,inf:0,dif:0}, PED=[], DIFS=[], ADJ={}, MSG="", OCUP=false, REC={}, ACC_YA=0;
+  let EL=null, PERFIL=null, T={esp:0,pag:0,efe:0,inf:0,dif:0,sal:0}, PED=[], DIFS=[], ADJ={}, MSG="", OCUP=false, REC={}, ACC_YA=0;
   /* Cruce con Mercado Pago (17/11/2026): la función mp-transferencias lee los cobros que entran a la cuenta
      (sólo lectura). Mercado Pago no dice quién transfirió, así que se cruza por IMPORTE (±$1: hay clientes
      que redondean) y por fecha (desde dos días antes del pedido). Cada transferencia se usa una sola vez: al
@@ -40,7 +40,21 @@ window.EYGSuperCobro = (function(){
     }catch(e){ MPERR=String(e.message||e).slice(0,160); }
   }
   const libres=()=>MP.filter(t=>!USADOS.has(String(t.id)));
-  const coincide=(t,p)=>Math.abs(Number(t.importe)-Number(p.amount_total))<=1.0 && new Date(t.fecha_aprobado||t.fecha_creado).getTime() >= new Date(String(p.date_order||"").replace(" ","T")+"Z").getTime()-2*864e5;
+  const imp=p=>(p&&p.saldo!=null)?Number(p.saldo):Number(p.amount_total);
+  const coincide=(t,p)=>Math.abs(Number(t.importe)-imp(p))<=1.0 && new Date(t.fecha_aprobado||t.fecha_creado).getTime() >= new Date(String(p.date_order||"").replace(" ","T")+"Z").getTime()-2*864e5;
+  // 20/11: transferencias libres con un importe PARECIDO (hasta 3% de diferencia) que no coinciden justo con ningún pedido
+  const TOL_PARECIDO=0.03;
+  function parecidos(p){
+    if(MPERR || tipo(p)==="efe") return [];
+    const c=cruce(p); if(c && c.n>0) return [];
+    const exactas=new Set(); PED.forEach(q=>{ libres().forEach(t=>{ if(tipo(q)!=="efe" && coincide(t,q)) exactas.add(t.id); }); });
+    const desde=new Date(String(p.date_order||"").replace(" ","T")+"Z").getTime()-2*864e5;
+    return libres().filter(t=>!exactas.has(t.id) && new Date(t.fecha_aprobado||t.fecha_creado).getTime()>=desde)
+      .map(t=>({t, dif:Math.round((Number(t.importe)-imp(p))*100)/100}))
+      .filter(x=>Math.abs(x.dif)>1 && Math.abs(x.dif)<=Math.max(imp(p)*TOL_PARECIDO, 0))
+      .sort((a,b)=>Math.abs(a.dif)-Math.abs(b.dif)).slice(0,3);
+  }
+  const difTxt=d=>money(Math.abs(d))+(d<0?" menos":" más");
   function cruce(p){
     if(tipo(p)==="efe") return null;
     const cands=libres().filter(t=>coincide(t,p));
@@ -55,34 +69,49 @@ window.EYGSuperCobro = (function(){
     s.textContent=`.sc{border:1.5px solid #8DB600;background:#F8FBEE;border-radius:14px;padding:14px 16px;margin:0 0 16px}
 .sc h3{margin:0 0 4px;font-size:17px;color:#0F3D33}.sc .sub{font-size:12.5px;color:#5C6B64;margin:0 0 10px}
 .sc table{width:100%;border-collapse:collapse;font-size:13px}.sc th{text-align:left;font-size:11.5px;color:#5C6B64;font-weight:600;padding:6px 8px;border-bottom:1px solid #DCE4DE}
-.sc td{padding:8px;border-bottom:1px solid #E7EEE9;vertical-align:middle}.sc td.n{text-align:right;white-space:nowrap}
-.sc .chip{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;white-space:nowrap}
-.sc .c-esp{background:#F5E4DD;color:#A6453A}.sc .c-inf{background:#FFF1C9;color:#7A5500}.sc .c-efe{background:#E3EEDD;color:#2E7A4E}
-.sc button.as{border:0;border-radius:8px;padding:7px 12px;font-weight:800;cursor:pointer;background:#0F3D33;color:#D7F75B;white-space:nowrap}
+.sc td{padding:10px 8px;border-bottom:1px solid #E7EEE9;vertical-align:middle}.sc th.acc{width:176px}.sc td.n{text-align:right;white-space:nowrap}
+.sc .chip{display:inline-block;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap;line-height:1.4}
+.sc .aviso{display:block;margin-top:6px;font-size:12px;line-height:1.45;padding:4px 8px;border-radius:6px;max-width:460px}
+.sc .a-ok{background:#E6F2E4;color:#1F6B3A}.sc .a-warn{background:#FFF1C9;color:#7A4A00}.sc .a-mute{background:transparent;color:#8A9690;padding-left:0;padding-right:0}
+.sc .c-esp{background:#F5E4DD;color:#A6453A}.sc .c-sal{background:#E4ECF7;color:#2B4F86}.sc th.n{text-align:right}.sc details.como{margin:-4px 0 10px;font-size:12.5px;color:#5C6B64}.sc details.como summary{cursor:pointer;font-weight:700;color:#0F3D33;width:max-content}.sc details.como ul{margin:6px 0 0;padding-left:18px}.sc details.como li{margin:3px 0;line-height:1.45}.sc td .fh{font-size:11.5px;color:#5C6B64;white-space:nowrap;margin-top:2px}.sc-modal .nw{white-space:nowrap}.sc td.n small{display:block;font-size:11.5px;font-weight:600;color:#2B4F86;margin-top:2px}.sc .c-inf{background:#FFF1C9;color:#7A5500}.sc .c-efe{background:#E3EEDD;color:#2E7A4E}
+.sc button.as{border:1.5px solid #0F3D33;border-radius:8px;padding:7px 12px;font-weight:700;cursor:pointer;background:#0F3D33;color:#D7F75B;white-space:nowrap;font-family:inherit}.sc button.as:hover{background:#174F43;border-color:#174F43}
 .sc button.as[disabled]{opacity:.5;cursor:default}.sc .msg{white-space:pre-wrap;font-size:13px;margin:8px 0 0;padding:8px 10px;border-radius:8px;background:#fff;border:1px solid #DCE4DE}
 .sc a{color:#0F6E56}.sc .scdif{margin-top:12px;border-top:1px dashed #E3C9A0;padding-top:10px}.sc .scdif h4{margin:0 0 4px;font-size:14.5px;color:#8A5A00}.sc .dfila{font-size:13px;padding:5px 0;border-bottom:1px dashed #EFE3CF}.sc button.as.sm{padding:4px 9px;font-size:12px;margin-left:6px}.sc .mpok{margin-top:4px;font-size:12px;color:#1F6B3A;font-weight:700}.sc .mpdu{margin-top:4px;font-size:12px;color:#8A5A00;font-weight:700}.sc .mpno{margin-top:4px;font-size:11.5px;color:#8A9690}
 .sc details.mpsin{margin-top:10px;font-size:13px}.sc details.mpsin summary{cursor:pointer;font-weight:700;color:#0F3D33}.sc .mpfila{padding:3px 0;border-bottom:1px dashed #E1E8E3}.sc .vacio{font-size:13px;color:#5C6B64;padding:4px 0}
 .sc-modal{position:fixed;inset:0;z-index:3000;background:rgba(10,30,26,.5);display:flex;align-items:center;justify-content:center;padding:16px}
 .sc-modal .bx{background:#fff;border-radius:14px;max-width:460px;width:100%;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
 .sc-modal h4{margin:0 0 8px;font-size:17px;color:#0F3D33}.sc-modal p{font-size:13.5px;line-height:1.5;margin:0 0 10px}
-.sc-modal .bt{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}.sc-modal button{border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer;border:1px solid #CBD5CF;background:#fff}
+.sc-modal .bt{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}.sc-modal button{height:38px;min-width:110px;border-radius:8px;padding:0 16px;font-size:13.5px;font-weight:700;cursor:pointer;border:1.5px solid #CBD5CF;background:#fff;color:#0F3D33;font-family:inherit}
+.sc-modal .mx{border-radius:8px;padding:8px 10px;font-size:13px}.sc-modal .mx-ok{background:#EEF6E8;color:#1F4D2E}.sc-modal .mx-warn{background:#FFF6E0;color:#5A4300}
+.sc-modal .rcs{color:#5C6B64;font-size:12px}.sc-modal b.neg{color:#A6453A}.sc-modal b.pos{color:#1F6B3A}
 .sc-modal button.si{background:#0F3D33;color:#D7F75B;border-color:#0F3D33}
-.sc td.acc{width:172px;padding-left:12px}.sc .accs{display:flex;flex-direction:column;gap:6px;width:172px;margin-left:auto}
-.sc .accs button{width:100%;box-sizing:border-box;min-height:34px;padding:7px 10px;font-size:13px;line-height:1.2;text-align:center;border-radius:8px;cursor:pointer;white-space:nowrap}
-.sc button.ya{border:1.5px solid #0F3D33;font-weight:700;background:#fff;color:#0F3D33}.sc button.ya:hover{background:#EEF4EF}
-.sc button.ya[disabled]{opacity:.5;cursor:default}.sc .recya{margin-top:4px;font-size:12px;color:#7A4A00;font-weight:700;background:#FFF1C9;border-radius:6px;padding:3px 7px}.sc .recotro{margin-top:4px;font-size:11.5px;color:#5C6B64}
-.sc-modal label.rc{display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:6px 8px;border:1px solid #DCE4DE;border-radius:8px;margin:0 0 6px;cursor:pointer}.sc-modal label.rc input{margin-top:3px}`;
+.sc td.acc{width:176px;padding-left:14px}.sc .accs{display:flex;flex-direction:column;gap:6px;width:176px;margin-left:auto}
+.sc .accs button{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;box-sizing:border-box;height:36px;padding:0 12px;font-size:13px;font-weight:700;line-height:1;border-radius:8px;cursor:pointer;white-space:nowrap;font-family:inherit}
+.sc button.ya{border:1.5px solid #0F3D33;background:#fff;color:#0F3D33}.sc button.ya:hover{background:#EEF4EF}
+.sc button.ya[disabled]{opacity:.5;cursor:default}.sc .recya{display:block;margin-top:6px;font-size:12px;line-height:1.45;color:#7A4A00;background:#FFF1C9;border-radius:6px;padding:4px 8px;max-width:460px}.sc .recotro{display:block;margin-top:6px;font-size:12px;line-height:1.45;color:#5C6B64;max-width:460px}
+.sc-modal label.rc{display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.45;padding:8px 10px;border:1px solid #DCE4DE;border-radius:8px;margin:0 0 6px;cursor:pointer}.sc-modal label.rc:has(input:checked){border-color:#0F3D33;background:#F3F8F4}.sc-modal label.rc input{margin:3px 0 0;flex:none}`;
     document.head.appendChild(s);
   }
   async function cargar(){
     PED=[]; ADJ={};
     try{
       const t=String(await rpc("ir.config_parameter","get_param",["eyg.ofertas_contado_tags"])||"").split(",").map(x=>parseInt(x,10)||0);
-      T={esp:t[0]||0,pag:t[1]||0,efe:t[2]||0,inf:t[3]||0,dif:t[4]||0}; if(!T.esp) return;
+      T={esp:t[0]||0,pag:t[1]||0,efe:t[2]||0,inf:t[3]||0,dif:t[4]||0,sal:t[5]||0}; if(!T.esp) return;
       const desde=new Date(Date.now()-90*864e5).toISOString().slice(0,10);
-      PED=(await rpc("sale.order","search_read",[[["tag_ids","in",[T.esp,T.efe,T.inf].filter(Boolean)],["state","in",["sale","sent"]],["date_order",">=",desde]]],
+      PED=(await rpc("sale.order","search_read",[[["tag_ids","in",[T.esp,T.efe,T.inf,T.sal].filter(Boolean)],["state","in",["sale","sent"]],["date_order",">=",desde]]],
         {fields:["id","name","partner_id","user_id","amount_total","state","date_order","tag_ids"],order:"date_order asc",limit:200}))||[];
-      PED=PED.filter(p=>!p.tag_ids.includes(T.pag));
+      PED=PED.filter(p=>!p.tag_ids.includes(T.pag) || (T.sal && p.tag_ids.includes(T.sal)));
+      // 20/11: saldo = total − recibos "Superoferta X" ± ajustes "Superoferta X · ajuste"
+      const conSaldo=PED.filter(p=>T.sal&&p.tag_ids.includes(T.sal));
+      if(conSaldo.length){
+        const refs=conSaldo.map(p=>"Superoferta "+p.name);
+        const pg=await rpc("account.payment","search_read",[[["ref","in",refs],["state","=","posted"]]],{fields:["ref","amount"],limit:500});
+        const aj=await rpc("account.move.line","search_read",[[["move_id.ref","in",refs.map(r=>r+" · ajuste")],["parent_state","=","posted"],["account_id.account_type","=","asset_receivable"]]],{fields:["move_id","balance"],limit:500});
+        conSaldo.forEach(p=>{ const r="Superoferta "+p.name;
+          const cob=(pg||[]).filter(x=>x.ref===r).reduce((a,x)=>a+Number(x.amount||0),0);
+          const ajs=(aj||[]).filter(x=>String(x.move_id[1]||"").indexOf(r+" · ajuste")>=0).reduce((a,x)=>a+Number(x.balance||0),0);
+          p.saldo=Math.round((Number(p.amount_total)-cob+ajs)*100)/100; });
+      }
       if(PED.length){
         const ad=await rpc("ir.attachment","search_read",[[["res_model","=","sale.order"],["res_id","in",PED.map(p=>p.id)],["name","ilike","comprobante"]]],{fields:["id","name","res_id"],limit:400});
         (ad||[]).forEach(a=>{ (ADJ[a.res_id]=ADJ[a.res_id]||[]).push(a); });
@@ -117,7 +146,7 @@ window.EYGSuperCobro = (function(){
       EF.forEach(p=>{ const c=CP[p.partner_id&&p.partner_id[0]]; REC[p.id]=(porCli[c]||[]).filter(x=>String(x.date)>=dia(p)).slice(0,5); });
     }catch(e){ REC={}; }
   }
-  const mismoImporte=(r,p)=>Math.abs(Number(r.amount)-Number(p.amount_total))<=1.0;
+  const mismoImporte=(r,p)=>Math.abs(Number(r.amount)-imp(p))<=1.0;
   const fdm=d=>String(d||"").slice(0,10).split("-").reverse().slice(0,2).join("/");
   const quienCargo=r=>r.create_uid?String(r.create_uid[1]).split(" ")[0]:"";
   function recHTML(p){
@@ -144,17 +173,19 @@ window.EYGSuperCobro = (function(){
     }catch(e){ MSG="No pude marcarla: "+String(e.message||e).slice(0,200); }
     await cargar(); OCUP=false; pintar();
   }
-  const tipo=p=>(T.efe&&p.tag_ids.includes(T.efe))?"efe":(T.inf&&p.tag_ids.includes(T.inf))?"inf":"esp";
+  const tipo=p=>(T.sal&&p.tag_ids.includes(T.sal))?"sal":(T.efe&&p.tag_ids.includes(T.efe))?"efe":(T.inf&&p.tag_ids.includes(T.inf))?"inf":"esp";
   function mpHTML(p){
     if(MPERR || tipo(p)==="efe") return "";
     const c=cruce(p); if(!c) return "";
-    if(c.n===1 && c.unico) return '<div class="mpok">✓ Acreditado en Mercado Pago: <b>'+money(c.t.importe)+'</b> · '+fmtFH(c.t.fecha_aprobado)+' · op. '+esc(String(c.t.id))+'</div>';
-    if(c.n>=1) return '<div class="mpdu">⚠ '+(c.n>1?'Hay '+c.n+' transferencias de ese importe':'La transferencia de ese importe también coincide con otro pedido')+': verificá en Mercado Pago</div>';
-    return '<div class="mpno">Sin transferencia de ese importe en Mercado Pago (últimos 20 días)</div>';
+    if(c.n===1 && c.unico) return '<div class="aviso a-ok">✓ Acreditado en Mercado Pago: <b>'+money(c.t.importe)+'</b> · '+fmtFH(c.t.fecha_aprobado)+' · op. '+esc(String(c.t.id))+'</div>';
+    if(c.n>=1) return '<div class="aviso a-warn">⚠ '+(c.n>1?'Hay '+c.n+' transferencias de ese importe':'La transferencia de ese importe también coincide con otro pedido')+': verificá en Mercado Pago</div>';
+    const pa=parecidos(p);
+    if(pa.length) return '<div class="aviso a-warn">⚠ Transferencia parecida en Mercado Pago: <b>'+money(pa[0].t.importe)+'</b> ('+difTxt(pa[0].dif)+') · '+fmtFH(pa[0].t.fecha_aprobado)+' · op. '+esc(String(pa[0].t.id))+(pa.length>1?' · y '+(pa.length-1)+' más':'')+'. Si es este pago, asentala con <b>'+(tipo(p)==="sal"?'Asentar saldo':'Asentar y liberar')+'</b>.</div>';
+    return '<div class="aviso a-mute">Sin transferencia de ese importe en Mercado Pago (últimos 20 días)</div>';
   }
   function sinAsignarHTML(){
     if(MPERR) return '<div class="vacio">No pude leer Mercado Pago: '+esc(MPERR)+'</div>';
-    const asign=new Set(); PED.forEach(p=>{ const c=cruce(p); if(c&&c.t) asign.add(c.t.id); });
+    const asign=new Set(); PED.forEach(p=>{ const c=cruce(p); if(c&&c.t) asign.add(c.t.id); parecidos(p).forEach(x=>asign.add(x.t.id)); });
     const ls=libres().filter(t=>!asign.has(t.id) && (Date.now()-new Date(t.fecha_aprobado).getTime())<7*864e5);
     if(!ls.length) return "";
     return '<details class="mpsin"><summary>Cobros de Mercado Pago de los últimos 7 días sin pedido de superofertas ('+ls.length+')</summary>'+
@@ -163,25 +194,32 @@ window.EYGSuperCobro = (function(){
   }
   function html(){
     if(!T.esp && !MSG) return "";
-    const orden={inf:0,efe:1,esp:2};
+    const orden={inf:0,sal:1,efe:2,esp:3};
     const ls=PED.slice().sort((a,b)=>orden[tipo(a)]-orden[tipo(b)]);
-    const chip=p=>({inf:'<span class="chip c-inf">PAGO INFORMADO · verificar y asentar</span>',
+    const chip=p=>({sal:'<span class="chip c-sal">SALDO A COBRAR · falta '+money(p.saldo)+'</span>',
+      inf:'<span class="chip c-inf">PAGO INFORMADO · verificar y asentar</span>',
       efe:'<span class="chip c-efe">EFECTIVO · a cobrar en la entrega</span>',
       esp:'<span class="chip c-esp">ESPERANDO PAGO · '+(p.state==="sale"?"entrega trabada":"sin confirmar")+'</span>'})[tipo(p)];
     const filas=ls.map(p=>{
       const f=String(p.date_order||"").slice(0,10).split("-").reverse().join("/");
       const adj=(ADJ[p.id]||[]).map(a=>`<a href="${ODOO}/web/content/${a.id}?download=true" target="_blank" rel="noopener">📎 comprobante</a>`).join(" ");
       const ef=tipo(p)==="efe";
-      return `<tr><td><b>${esc(p.name)}</b><div style="font-size:11.5px;color:#5C6B64">${f} · <a href="${ODOO}/web#id=${p.id}&model=sale.order&view_type=form" target="_blank" rel="noopener">Odoo ↗</a></div></td>
+      return `<tr><td><b>${esc(p.name)}</b><div class="fh">${f} · <a href="${ODOO}/web#id=${p.id}&model=sale.order&view_type=form" target="_blank" rel="noopener">Odoo&nbsp;↗</a></div></td>
         <td>${esc(p.partner_id?p.partner_id[1]:"")}<div style="font-size:11.5px;color:#5C6B64">${esc(p.user_id?p.user_id[1]:"sin comercial")}</div></td>
-        <td class="n"><b>${money(p.amount_total)}</b></td>
+        <td class="n"><b>${money(p.amount_total)}</b>${p.saldo!=null?'<small>falta '+money(p.saldo)+'</small>':''}</td>
         <td>${chip(p)}${adj?"<div style=\"margin-top:3px\">"+adj+"</div>":""}${mpHTML(p)}${recHTML(p)}</td>
-        <td class="acc">${puede()?`<div class="accs"><button class="as" ${OCUP?"disabled":""} onclick="EYGSuperCobro.pedir(${p.id})">${ef?"Asentar efectivo":"Asentar y liberar"}</button>${ACC_YA?`<button class="ya" ${OCUP?"disabled":""} title="${ef?"El efectivo ya lo cargaste a mano en Odoo":"Pagó a otro banco y ya cargaste el recibo en Odoo"}: no se crea otro recibo" onclick="EYGSuperCobro.pedirYa(${p.id})">✓ Ya está asentado</button>`:""}</div>`:""}</td></tr>`;
+        <td class="acc">${puede()?`<div class="accs"><button class="as" ${OCUP?"disabled":""} onclick="EYGSuperCobro.pedir(${p.id})">${ef?"Asentar efectivo":tipo(p)==="sal"?"Asentar saldo":"Asentar y liberar"}</button>${ACC_YA?`<button class="ya" ${OCUP?"disabled":""} title="${ef?"El efectivo ya lo cargaste a mano en Odoo":"Pagó a otro banco y ya cargaste el recibo en Odoo"}: no se crea otro recibo" onclick="EYGSuperCobro.pedirYa(${p.id})">✓ Ya está asentado</button>`:""}</div>`:""}</td></tr>`;
     }).join("");
     return `<div class="sc">
       <h3>💵 Superofertas a asentar <span style="font-weight:400;font-size:13px;color:#5C6B64">(${ls.length})</span></h3>
-      <div class="sub">Transferencias a <b>Mercado Pago</b> (alias eyg.mpago): verificá la acreditación y tocá <b>Asentar y liberar</b> — se crea el recibo RE-X, se imputa a la factura (o queda a cuenta y se imputa sola al facturar) y se libera la entrega. Efectivo (proforma): cuando el repartidor trae la plata, <b>Asentar efectivo</b> (Efectivo B).<br><b>Cruce automático:</b> cada 5 minutos el sistema lee Mercado Pago y, si una transferencia coincide sin dudas con un solo pedido, lo asienta y libera solo (queda firmado \"Mercado Pago (cruce automático)\"). Acá quedan los que no se pudieron cruzar solos.<br><b>¿Ya lo cargaste a mano en Odoo?</b> (efectivo, o una transferencia que llegó a <b>otro banco</b> y Mercado Pago no ve) Tocá <b>✓ Ya está asentado</b>: no se crea otro recibo, se marca PAGADO y se libera la entrega para que Martina la arme (en efectivo, el remito deja de decir «cobrar en efectivo»).</div>
-      ${ls.length?`<div style="overflow-x:auto"><table><thead><tr><th>Pedido</th><th>Cliente · comercial</th><th class="n">Total</th><th>Estado</th><th></th></tr></thead><tbody>${filas}</tbody></table></div>`:'<div class="vacio">No hay superofertas pendientes de asentar.</div>'}
+      <div class="sub">Asentá los cobros de superofertas: se crea el recibo y se libera la entrega para que Martina la arme. Lo que Mercado Pago cruza solo (cada 5 minutos) no aparece acá.</div>
+      <details class="como"><summary>¿Cómo funciona?</summary><ul>
+        <li><b>Asentar y liberar</b> — transferencia a Mercado Pago (alias eyg.mpago): verificá la acreditación; se crea el recibo RE-X y se imputa a la factura (o queda a cuenta y se imputa sola al facturar).</li>
+        <li><b>Asentar efectivo</b> — proforma: cuando el repartidor trae la plata (Efectivo B).</li>
+        <li><b>¿Transfirió otro importe?</b> La fila lo avisa. Al asentar elegís <b>bonificar</b> la diferencia (hasta $500, queda saldado) o <b>pago parcial</b>: queda <b>SALDO A COBRAR</b> en esta lista, con <b>Asentar saldo</b>.</li>
+        <li><b>✓ Ya está asentado</b> — si ya lo cargaste a mano en Odoo (efectivo, o una transferencia a <b>otro banco</b> que Mercado Pago no ve): no se crea otro recibo, se marca PAGADO y se libera la entrega.</li>
+      </ul></details>
+      ${ls.length?`<div style="overflow-x:auto"><table><thead><tr><th>Pedido</th><th>Cliente · comercial</th><th class="n">Total</th><th>Estado</th><th class="acc"></th></tr></thead><tbody>${filas}</tbody></table></div>`:'<div class="vacio">No hay superofertas pendientes de asentar.</div>'}
       ${difsHTML()}
       ${sinAsignarHTML()}
       ${MSG?`<div class="msg">${esc(MSG)}</div>`:""}
@@ -191,35 +229,55 @@ window.EYGSuperCobro = (function(){
   function cerrar(){ const m=document.getElementById("sc-modal"); if(m) m.remove(); }
   function mpModal(p){
     const c=cruce(p);
-    if(c&&c.n===1&&c.unico) return '<p style="background:#EEF6E8;border-radius:8px;padding:8px 10px">✓ Transferencia de Mercado Pago: <b>'+money(c.t.importe)+'</b> el '+fmtFH(c.t.fecha_aprobado)+' (operación '+esc(String(c.t.id))+'). Queda anotada en el recibo.</p>';
-    if(tipo(p)!=="efe") return '<p style="background:#FFF6E0;border-radius:8px;padding:8px 10px">No hay una transferencia de Mercado Pago que coincida sola con este pedido: verificala a mano antes de asentar.</p>';
+    if(c&&c.n===1&&c.unico) return '<p class="mx mx-ok">✓ Transferencia de Mercado Pago: <b>'+money(c.t.importe)+'</b> el '+fmtFH(c.t.fecha_aprobado)+' (operación '+esc(String(c.t.id))+'). Queda anotada en el recibo.</p>';
+    const pa=parecidos(p);
+    if(pa.length) return '<p class="mx mx-warn">No hay una transferencia del importe justo, pero hay '+(pa.length>1?'transferencias parecidas':'una parecida')+'. Si el cliente se equivocó al tipear, elegila: el recibo sale por <b>lo que transfirió</b> y abajo decidís qué hacer con la diferencia.</p>'+
+      pa.map((x,i)=>'<label class="rc"><input type="radio" name="sc-mp" value="'+esc(String(x.t.id))+'" '+(i===0&&pa.length===1?"checked":"")+'><span><b>'+money(x.t.importe)+'</b> · <b class="'+(x.dif<0?'neg':'pos')+'">'+difTxt(x.dif)+'</b><br><span class="rcs">'+fmtFH(x.t.fecha_aprobado)+' · op. '+esc(String(x.t.id))+' · '+(x.dif<0?'falta cobrar ':'saldo a favor ')+money(Math.abs(x.dif))+'</span></span></label>').join("")+
+      '<label class="rc"><input type="radio" name="sc-mp" value="" '+(pa.length>1?"checked":"")+'><span>Ninguna: el pago entró por otro lado (asentar el total, sin Mercado Pago)</span></label>';
+    if(tipo(p)!=="efe") return '<p class="mx mx-warn">No hay una transferencia de Mercado Pago que coincida sola con este pedido: verificala a mano antes de asentar.</p>';
     return "";
+  }
+  // 20/11: con una transferencia de otro importe, qué hacer con la diferencia
+  function modosHTML(p){
+    const pa=parecidos(p); if(!pa.length) return "";
+    const max=Math.max(...pa.map(x=>Math.abs(x.dif)));
+    return '<div class="modos"><p style="margin:10px 0 6px;font-weight:700">Si usás una transferencia parecida, ¿qué hacemos con la diferencia?</p>'+
+      '<label class="rc"><input type="radio" name="sc-modo" value="bonificar" '+(max>500?'disabled':'')+'><span><b>Bonificarla</b>: el pedido queda saldado, sin saldos.<br><span class="rcs">'+(max>500?'No disponible: pasa de $500 (hace falta una nota de crédito).':'Se cierra contra Ajuste por redondeo, sin comprobante (hasta $500, como los redondeos de Cobranzas).')+'</span></span></label>'+
+      '<label class="rc"><input type="radio" name="sc-modo" value="parcial"><span><b>Pago parcial</b>: queda el saldo a cobrar.<br><span class="rcs">Se libera la entrega y el pedido queda acá como <b>SALDO A COBRAR</b> hasta que pague lo que falta. Si pagó de más, queda como saldo a favor (Diferencias).</span></span></label></div>';
   }
   function pedir(id){
     const p=PED.find(x=>x.id===id); if(!p||OCUP) return;
     const ef=tipo(p)==="efe";
     cerrar();
     const d=document.createElement("div"); d.className="sc-modal"; d.id="sc-modal";
-    d.innerHTML=`<div class="bx"><h4>${ef?"Asentar cobro en efectivo":"Asentar cobro y liberar"}</h4>
-      <p><b>${esc(p.name)}</b> · ${esc(p.partner_id?p.partner_id[1]:"")} · <b>${money(p.amount_total)}</b></p>
+    const sal=tipo(p)==="sal";
+    d.innerHTML=`<div class="bx"><h4>${ef?"Asentar cobro en efectivo":sal?"Asentar el saldo":"Asentar cobro y liberar"}</h4>
+      <p><b>${esc(p.name)}</b> · ${esc(p.partner_id?p.partner_id[1]:"")} · <b class="nw">${money(p.amount_total)}</b>${sal?' · falta <b class="nw">'+money(p.saldo)+'</b>':''}</p>
       ${mpModal(p)}
       ${((REC[p.id]||[]).some(r=>mismoImporte(r,p)))?'<p style="background:#FFE7DF;border-radius:8px;padding:8px 10px;color:#8A2A1A"><b>⚠ Ojo:</b> ya hay un recibo de este importe cargado a mano para este cliente ('+esc((REC[p.id]||[]).filter(r=>mismoImporte(r,p))[0].name)+'). Si es este cobro, cancelá y usá <b>Ya está asentado</b>: así no queda duplicado.</p>':''}
-      <p>${ef?"Se crea el recibo RE-X en <b>Efectivo B</b> por el total. Confirmalo sólo si la plata ya está en Cobranzas."
-             :"Se crea el recibo RE-X en <b>Mercado Pago</b> por el total y se libera la entrega para que el depósito lo arme. Confirmalo sólo si ya viste la transferencia acreditada."}</p>
-      <div class="bt"><button onclick="EYGSuperCobro.cerrar()">Cancelar</button><button class="si" onclick="EYGSuperCobro.asentar(${p.id})">${ef?"Sí, asentar":"Sí, asentar y liberar"}</button></div></div>`;
+      ${modosHTML(p)}
+      <p>${sal?"Se crea un recibo RE-X en <b>Mercado Pago</b> por lo que pagó"+(parecidos(p).length?"":" (el saldo)")+" y, si cubre el saldo, el pedido deja de figurar acá.":ef?"Se crea el recibo RE-X en <b>Efectivo B</b> por el total. Confirmalo sólo si la plata ya está en Cobranzas."
+             :"Se crea el recibo RE-X en <b>Mercado Pago</b>"+(parecidos(p).length?"":" por el total")+" y se libera la entrega para que el depósito lo arme. Confirmalo sólo si ya viste la transferencia acreditada."}${sal?" Confirmalo sólo si ya viste el pago acreditado.":""}</p>
+      <div class="bt"><button onclick="EYGSuperCobro.cerrar()">Cancelar</button><button class="si" onclick="EYGSuperCobro.asentar(${p.id})">${ef?"Sí, asentar":sal?"Sí, asentar saldo":"Sí, asentar y liberar"}</button></div></div>`;
     d.addEventListener("click",e=>{ if(e.target===d) cerrar(); });
     document.body.appendChild(d);
   }
   async function asentar(id){
-    cerrar(); const p=PED.find(x=>x.id===id); if(!p||OCUP) return;
-    OCUP=true; MSG="Asentando "+p.name+"…"; pintar();
+    const p=PED.find(x=>x.id===id); if(!p||OCUP) return;
+    const selMp=document.querySelector('#sc-modal input[name="sc-mp"]:checked'); const otra=selMp&&selMp.value?parecidos(p).find(x=>String(x.t.id)===selMp.value):null;
+    const selModo=document.querySelector('#sc-modal input[name="sc-modo"]:checked'); const modo=selModo?selModo.value:"";
+    if(otra && !modo){ alert("Elegí qué hacer con la diferencia de "+difTxt(otra.dif)+": bonificarla o dejarla como pago parcial."); return; }
+    if(otra && modo==="bonificar" && Math.abs(otra.dif)>500){ alert("Más de $500 no se bonifica con un ajuste: elegí pago parcial."); return; }
+    cerrar(); OCUP=true; MSG="Asentando "+p.name+"…"; pintar();
     try{
       const quien=(PERFIL&&PERFIL.nombre)||"el Core";
       const c=cruce(p); const ctx={active_model:"sale.order",active_id:id,active_ids:[id],eyg_quien:quien};
       if(c&&c.n===1&&c.unico){ ctx.eyg_mp_id=String(c.t.id); ctx.eyg_mp_importe=Number(c.t.importe); if(c.t.neto!=null) ctx.eyg_mp_neto=Number(c.t.neto); ctx.eyg_mp_fecha=c.t.fecha_aprobado||c.t.fecha_creado; }   // recibo por lo transferido; comisión a gastos
+      else if(otra){ ctx.eyg_mp_id=String(otra.t.id); ctx.eyg_mp_importe=Number(otra.t.importe); if(otra.t.neto!=null) ctx.eyg_mp_neto=Number(otra.t.neto); ctx.eyg_mp_fecha=otra.t.fecha_aprobado||otra.t.fecha_creado; ctx.eyg_mp_otro_importe=true; ctx.eyg_dif_modo=modo; }   // 20/11: importe parecido elegido a propósito
+      if(tipo(p)==="sal") ctx.eyg_saldo=true;
       await rpc("ir.actions.server","run",[[ACCION]],{context:ctx});
       const pg=await rpc("account.payment","search_read",[[["ref","=","Superoferta "+p.name],["state","=","posted"]]],{fields:["name","journal_id"],limit:1});
-      MSG="✓ "+p.name+": recibo "+(pg[0]?pg[0].name+" ("+pg[0].journal_id[1]+")":"creado")+(tipo(p)==="efe"?".":". Entrega liberada.");
+      MSG="✓ "+p.name+": recibo "+(pg[0]?pg[0].name+" ("+pg[0].journal_id[1]+")":"creado")+(tipo(p)==="efe"?".":". Entrega liberada.")+(otra?(modo==="bonificar"?" Diferencia de "+difTxt(otra.dif)+" bonificada: el pedido quedó saldado.":(otra.dif<0?" Pago parcial: queda SALDO A COBRAR de "+money(Math.abs(otra.dif))+", en esta misma lista.":" Pagó "+money(otra.dif)+" de más: queda como saldo a favor, en Diferencias.")):(tipo(p)==="sal"?" Saldo asentado.":""));
     }catch(e){ MSG="No se pudo asentar "+p.name+": "+String(e.message||e).slice(0,300); }
     await cargar(); OCUP=false; pintar();
   }
