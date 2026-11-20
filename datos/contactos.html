@@ -294,7 +294,7 @@ const norm2 = s => (s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"")
    ofrecen sólo los vigentes (EYG.RUBROS). */
 const RUBRO_FIELD=EYG.RUBRO_FIELD;
 const RUBROS_TODOS=EYG.RUBROS.concat(EYG.RUBROS_VIEJOS).map(r=>r.v);
-const PFIELDS=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","create_date","create_uid","customer_rank","supplier_rank","parent_id","function","comment","website","x_studio_selection_field_6ui_1j42g6fu9","property_payment_term_id","property_product_pricelist",EYG.FANT];
+const PFIELDS=["id","name","company_type","is_company","phone","mobile","email","street","zip","city","state_id","vat","l10n_ar_afip_responsibility_type_id","l10n_latam_identification_type_id","category_id","user_id","create_date","create_uid","customer_rank","supplier_rank","parent_id","function","comment","website","x_studio_selection_field_6ui_1j42g6fu9","property_payment_term_id","property_product_pricelist",EYG.FANT,"sale_warn","sale_warn_msg"];
 /* ---- Condición de pago (plazo) ----------------------------------------
    Es el campo que DETERMINA EL VENCIMIENTO de cada factura, así que si el
    cliente no lo tiene cargado, Odoo factura a vencimiento inmediato y
@@ -947,7 +947,7 @@ function renderLista(){
     const chk = working?`<input type="checkbox" class="rowchk" ${SEL.has(c.id)?'checked':''} onclick="event.stopPropagation();toggleSel(${c.id})">`:'';
     return `<div class="row ${SEL.has(c.id)?'selrow':''}" onclick="abrir(${c.id})">
       <div style="display:flex;gap:9px;align-items:flex-start">${chk}<div style="min-width:0;flex:1">
-        <div class="nmrow"><span class="cname">${esc(c.nombre)}</span>${EYG.chipFant(c.fant, c.nombre)}${portalIcon(c)}${(c.dupVat||c.dupName)?'<span class="badge warn" style="font-size:10px">⚠ dup</span>':''}</div>
+        <div class="nmrow"><span class="cname">${esc(c.nombre)}</span>${EYG.chipFant(c.fant, c.nombre)}${portalIcon(c)}${c.part&&c.part.sale_warn==="block"?'<span class="badge bad" style="font-size:10px" title="'+esc(c.part.sale_warn_msg||'Bloqueado')+'">⛔ bloqueado</span>':''}${(c.dupVat||c.dupName)?'<span class="badge warn" style="font-size:10px">⚠ dup</span>':''}</div>
         <div style="margin-top:3px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">${EYG.badgeRiesgo(c.riesgo&&c.riesgo.nivel)}${rubroBadge(c.rubro)}${!c.empresa?'<span class="rub" style="background:#EEE9F6;color:#6B4FA0">👤 persona</span>':''}${c.enPadron?'<span class="pad">✓ padrón</span>':''}${c.proveedor?'<span class="rub" style="background:#EFE3D0;color:#8A6D1A">🏭 prov.</span>':''}</div>
         <div class="cmeta">${esc(c.ciudad||"—")}${c.padre?` · ↳ dentro de ${esc(c.padre)}`:""}</div>
         ${c.faltantes.length?`<div class="flags">${c.faltantes.map(f=>`<span class="flag">falta ${f}</span>`).join("")}</div>`:''}</div></div>
@@ -1796,6 +1796,7 @@ function abrir(id){
           : `<p class="muted" style="margin-bottom:8px">Si en realidad es un proveedor (no un cliente de la droguería), marcalo: sale de esta lista y queda en Odoo como proveedor.</p>
              <button class="abtn" style="background:#EFE3D0;color:#8A6D1A;width:100%" onclick="marcarProveedor(${id})">🏭 Marcar como proveedor</button>`}
       </div>
+      <div class="dsec" id="blqsec"><h4>⛔ Bloquear al cliente</h4><p class="muted">Cargando…</p></div>
       <div class="dsec"><h4>🔒 Bóveda</h4>
         ${c.boveda
           ? `<div class="bovbox">Archivado — está fuera de todas las vistas.${c.boveda.nota?`<div style="margin-top:5px"><b>Motivo:</b> ${esc(c.boveda.nota)}</div>`:''}
@@ -1814,7 +1815,7 @@ function abrir(id){
       </div>
     </div>`;
   d.classList.add("on"); document.getElementById("scrim").classList.add("on");
-  cargarPortal(id);
+  Promise.resolve(cargarPortal(id)).catch(()=>{}).then(()=>pintarBloqueo(id));
   cargarEntregasFicha(id);
   cargarLibretaFicha(id);
 }
@@ -2014,6 +2015,126 @@ async function sacarBoveda(id){
     c.boveda=null; delete BOVEDA[id];
     if(UNI) cruzar(); recalcComs(); toast("🔓 Sacado de la bóveda"); render(); abrir(id);
   }catch(e){ toast("⚠ No se pudo: "+(e.message||e)); }
+}
+
+/* ================= Bloquear al cliente (no puede comprar) =================
+   20/11/2026, Diego: "dar de baja un cliente: que no pueda comprar, revocarle el acceso al
+   portal… que no toque el historial, que bloquee a partir de ahí, que permita desbloquear y
+   que salga una ventana pidiendo motivo". NO es "Dar de baja y archivar" (ése es para el que
+   cerró): acá la ficha queda ACTIVA y pedidos, facturas, deuda y notas no se tocan; Cobranzas
+   la sigue viendo. Bloquear hace:
+     1. sale_warn = "block" en la cuenta principal: Odoo frena la venta, el Core no deja
+        confirmar (bloqueoFresco en vender.html), el alta del portal no le da acceso
+        (portal-alta) y Cobranzas la ve en "Bloqueados";
+     2. archiva los usuarios del portal ACTIVOS de la cuenta y de sus contactos: no entran ni
+        compran por la web (no se borran);
+     3. deja nota con motivo, quién y qué usuarios se archivaron, con la marca [BAJA-CLIENTE] y
+        los datos después de "‖". Desbloquear lee esa nota y devuelve exactamente lo que se
+        sacó: reactiva esos usuarios y, si Cobranzas ya la tenía bloqueada por deuda, vuelve a
+        quedar con ese bloqueo.
+   Sólo admin y dirección. Motivo obligatorio en los dos sentidos. */
+const BAJA_TAG="[BAJA-CLIENTE]";
+const puedeBloquear=()=>!!PERFIL&&(PERFIL.rol==="admin"||PERFIL.rol==="direccion"||EYG.esSuper(PERFIL._h));
+const _blqTxt=html=>{ const t=document.createElement("textarea"); t.innerHTML=String(html||"").replace(/<[^>]+>/g," "); return t.value; };
+const _blqDia=f=>{ try{ return new Date(String(f).replace(" ","T")+"Z").toLocaleDateString("es-AR",{timeZone:"America/Argentina/Buenos_Aires"}); }catch(_){ return String(f||"").slice(0,10); } };
+const _blqQuien=()=>(PERFIL&&(PERFIL.nombre||PERFIL.email))||"—";
+async function estadoBloqueo(id){
+  const [p]=await rpc("res.partner","read",[[id]],{fields:["commercial_partner_id"],context:{lang:"es_AR"}});
+  const cp=(p&&p.commercial_partner_id&&p.commercial_partner_id[0])||id;
+  const [[cuenta],usuarios,msgs]=await Promise.all([
+    rpc("res.partner","read",[[cp]],{fields:["name","sale_warn","sale_warn_msg"],context:{lang:"es_AR"}}),
+    rpc("res.users","search_read",[[["partner_id","child_of",cp],["share","=",true]]],{fields:["id","login","active"],context:{active_test:false}}),
+    rpc("mail.message","search_read",[[["model","=","res.partner"],["res_id","=",cp],["body","like",BAJA_TAG]]],{fields:["body","date"],order:"id desc",limit:1})]);
+  let ult=null;
+  if(msgs.length){ const t=_blqTxt(msgs[0].body), j=t.lastIndexOf("‖"); if(j>=0){ try{ ult=JSON.parse(t.slice(j+1).trim()); ult.fecha=msgs[0].date; }catch(_){ ult=null; } } }
+  return {cp, cuenta, usuarios, ult, porBaja: cuenta.sale_warn==="block" && !!ult && ult.accion==="bloquear"};
+}
+async function pintarBloqueo(id){
+  const box=document.getElementById("blqsec"); if(!box) return;
+  let e; try{ e=await estadoBloqueo(id); }
+  catch(err){ box.innerHTML='<h4>⛔ Bloquear al cliente</h4><p class="muted">No pude leer el estado ('+esc(err.message||err)+').</p>'; return; }
+  if(!document.getElementById("blqsec")) return;
+  const act=e.usuarios.filter(u=>u.active), puede=puedeBloquear();
+  let h='<h4>⛔ Bloquear al cliente</h4>';
+  if(e.porBaja){
+    h+=`<div class="bovbox" style="background:#FBE4E3;color:#8A2E2B">⛔ <b>Bloqueado</b> desde el ${_blqDia(e.ult.fecha)} por ${esc(e.ult.por||"—")}.
+        <div style="margin-top:5px"><b>Motivo:</b> ${esc(e.ult.motivo||"—")}</div>
+        <div style="margin-top:5px">No se le pueden confirmar pedidos${(e.ult.usuarios||[]).length?" y su acceso al portal está revocado":""}. El historial y la deuda siguen igual.</div>
+        ${puede?`<button class="abtn" style="background:#E2F1EF;color:#047a75;width:100%;margin-top:9px" onclick="pedirMotivoBloqueo(${id},false)">🔓 Desbloquear</button>`:""}</div>`;
+    const pb=document.getElementById("portalbox");
+    if(pb && (e.ult.usuarios||[]).length) pb.innerHTML=`<div class="alert aten">⛔ <b>Acceso revocado por el bloqueo del cliente.</b> Vuelve solo al desbloquearlo; mientras tanto el alta del portal no se lo devuelve.</div>`;
+  } else if(e.cuenta.sale_warn==="block"){
+    h+=`<div class="bovbox">🚫 Ya está bloqueado para vender por Cobranzas: <b>${esc(e.cuenta.sale_warn_msg||"cuenta bloqueada")}</b>. Ese bloqueo se levanta desde Cobranzas.${act.length?" Todavía tiene acceso al portal.":""}</div>
+        ${puede?`<button class="abtn" style="background:#FBE4E3;color:#B0322F;width:100%;margin-top:8px" onclick="pedirMotivoBloqueo(${id},true)">⛔ Bloquear al cliente${act.length?" (también el portal)":""}</button>`:""}`;
+  } else {
+    h+=`<p class="muted" style="margin-bottom:8px">Deja de poder comprar desde ahora: no se le confirman pedidos (Core y Odoo)${act.length?" y pierde el acceso al portal":""}. <b>No toca su historial ni su deuda</b>: la ficha sigue activa y Cobranzas la sigue viendo. Se puede desbloquear.</p>
+        ${puede?`<button class="abtn" style="background:#FBE4E3;color:#B0322F;width:100%" onclick="pedirMotivoBloqueo(${id},true)">⛔ Bloquear al cliente</button>`:`<p class="muted">Lo bloquea Dirección.</p>`}`;
+  }
+  box.innerHTML=h;
+}
+function pedirMotivoBloqueo(id,bloquear){
+  const c=DATA.find(x=>x.id===id);
+  let w=document.getElementById("blqmodal"); if(w) w.remove();
+  w=document.createElement("div"); w.id="blqmodal";
+  w.style.cssText="position:fixed;inset:0;z-index:100000;background:rgba(15,30,28,.45);display:flex;align-items:center;justify-content:center;padding:16px";
+  w.innerHTML=`<div role="dialog" aria-modal="true" style="background:#fff;border-radius:14px;max-width:460px;width:100%;padding:18px;box-shadow:0 18px 50px rgba(0,0,0,.25);font-family:inherit;color:#173C39">
+    <h3 style="margin:0 0 6px;font-size:17px;color:${bloquear?"#8A2E2B":"#047a75"}">${bloquear?"⛔ Bloquear al cliente":"🔓 Desbloquear al cliente"}</h3>
+    <p style="margin:0 0 10px;font-size:13.5px;line-height:1.45"><b>${esc(c?c.nombre:"")}</b><br>${bloquear
+      ?"Desde ahora no se le confirman pedidos y pierde el acceso al portal. El historial y la deuda no se tocan, y se puede desbloquear."
+      :"Vuelve a poder comprar y se le devuelve el acceso al portal que tenía, con el mismo usuario y contraseña."}</p>
+    <label for="blqmotivo" style="font-size:12.5px;font-weight:700">Motivo (obligatorio, queda registrado en la ficha)</label>
+    <textarea id="blqmotivo" rows="3" style="width:100%;margin-top:5px;padding:9px 10px;border:1px solid #DCE4DE;border-radius:9px;font-family:inherit;font-size:13.5px;box-sizing:border-box" placeholder="${bloquear?"Ej.: deuda impaga, decisión de Dirección…":"Ej.: regularizó la deuda…"}"></textarea>
+    <div id="blqerr" style="color:#B0322F;font-size:12.5px;min-height:16px;margin-top:4px"></div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button type="button" class="abtn" style="flex:1;background:#EEF1F0;color:#5b6b68" onclick="document.getElementById('blqmodal').remove()">Cancelar</button>
+      <button type="button" class="abtn" id="blqok" style="flex:1;background:${bloquear?"#B0322F":"#047a75"};color:#fff" onclick="confirmarBloqueo(${id},${bloquear})">${bloquear?"Bloquear":"Desbloquear"}</button></div></div>`;
+  w.addEventListener("click",ev=>{ if(ev.target===w) w.remove(); });
+  document.body.appendChild(w);
+  setTimeout(()=>{ const t=document.getElementById("blqmotivo"); if(t) t.focus(); },50);
+}
+async function confirmarBloqueo(id,bloquear){
+  const motivo=String((document.getElementById("blqmotivo")||{}).value||"").trim().replace(/\s+/g," ");
+  const err=document.getElementById("blqerr"), btn=document.getElementById("blqok");
+  if(motivo.length<4){ if(err) err.textContent="Escribí el motivo: queda registrado en la ficha."; return; }
+  if(btn){ btn.disabled=true; btn.textContent=bloquear?"Bloqueando…":"Desbloqueando…"; }
+  try{
+    const r=bloquear? await bloquearCliente(id,motivo) : await desbloquearCliente(id,motivo);
+    const m=document.getElementById("blqmodal"); if(m) m.remove();
+    const c=DATA.find(x=>x.id===id); if(c&&c.part){ c.part.sale_warn=r.sale_warn; }
+    toast(r.msg); render(); abrir(id);
+  }catch(e){ if(err) err.textContent="No se pudo: "+(e.message||e); if(btn){ btn.disabled=false; btn.textContent=bloquear?"Bloquear":"Desbloquear"; } }
+}
+async function bloquearCliente(id,motivo){
+  if(!puedeBloquear()) throw new Error("lo bloquea Dirección");
+  const e=await estadoBloqueo(id);
+  const quien=_blqQuien(), hoy=new Date().toLocaleDateString("es-AR",{timeZone:"America/Argentina/Buenos_Aires"});
+  const act=e.usuarios.filter(u=>u.active);
+  // lo que había ANTES, para devolverlo al desbloquear (si ya estaba bloqueado desde acá, se conserva el previo original)
+  const previo=e.porBaja ? (e.ult.previo||{sale_warn:"no-message",msg:""}) : {sale_warn:e.cuenta.sale_warn||"no-message", msg:e.cuenta.sale_warn_msg||""};
+  const yaRevocados=e.porBaja ? (e.ult.usuarios||[]) : [];
+  const msg=`CLIENTE BLOQUEADO (${hoy}): ${motivo}. No vender: sólo gestión de cobro.`;
+  await rpc("res.partner","write",[[e.cp],{sale_warn:"block",sale_warn_msg:msg}]);
+  if(act.length) await rpc("res.users","write",[act.map(u=>u.id),{active:false}],{context:{active_test:false}});
+  const datos={accion:"bloquear",motivo,por:quien,usuarios:[...new Set(yaRevocados.concat(act.map(u=>u.id)))],logins:act.map(u=>u.login),previo};
+  await rpc("res.partner","message_post",[[e.cp]],{message_type:"comment",
+    body:`⛔ ${BAJA_TAG} bloqueado · motivo: ${motivo} · por ${quien}${act.length?" · portal revocado: "+act.map(u=>u.login).join(", "):""} · el historial y la deuda no se tocan ‖ ${JSON.stringify(datos)}`});
+  try{ await rpc("res.partner","message_post",[[e.cp]],{body:`🔒 [BLOQUEO] bloqueado | ${msg}`,message_type:"comment"}); }catch(_){}
+  return {msg:"⛔ Cliente bloqueado"+(act.length?" · portal revocado":""), sale_warn:"block"};
+}
+async function desbloquearCliente(id,motivo){
+  if(!puedeBloquear()) throw new Error("lo desbloquea Dirección");
+  const e=await estadoBloqueo(id);
+  if(!e.porBaja) throw new Error("no hay un bloqueo hecho desde Contactos para deshacer (si es por deuda, se levanta desde Cobranzas)");
+  const quien=_blqQuien(), prev=e.ult.previo||{sale_warn:"no-message",msg:""};
+  const vuelve=prev.sale_warn==="block" ? {sale_warn:"block",sale_warn_msg:prev.msg||"CUENTA BLOQUEADA POR DEUDA"} : {sale_warn:"no-message",sale_warn_msg:false};
+  await rpc("res.partner","write",[[e.cp],vuelve]);
+  const ids=e.ult.usuarios||[], reac=e.usuarios.filter(u=>ids.includes(u.id)&&!u.active);
+  if(reac.length) await rpc("res.users","write",[reac.map(u=>u.id),{active:true}],{context:{active_test:false}});
+  const datos={accion:"desbloquear",motivo,por:quien,usuarios:reac.map(u=>u.id)};
+  await rpc("res.partner","message_post",[[e.cp]],{message_type:"comment",
+    body:`✅ ${BAJA_TAG} desbloqueado · motivo: ${motivo} · por ${quien}${reac.length?" · portal reactivado: "+reac.map(u=>u.login).join(", "):""}${vuelve.sale_warn==="block"?" · sigue bloqueado por Cobranzas: "+vuelve.sale_warn_msg:""} ‖ ${JSON.stringify(datos)}`});
+  if(vuelve.sale_warn!=="block"){ try{ await rpc("res.partner","message_post",[[e.cp]],{body:`✅ [BLOQUEO] baja definitiva | desbloqueado desde Contactos: ${motivo}`,message_type:"comment"}); }catch(_){} }
+  return {msg: vuelve.sale_warn==="block" ? "🔓 Desbloqueado · sigue bloqueado por deuda (Cobranzas)" : "🔓 Cliente desbloqueado"+(reac.length?" · portal reactivado":""), sale_warn:vuelve.sale_warn};
 }
 
 /* ================= Acciones en LOTE (curar rápido) ================= */
