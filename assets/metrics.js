@@ -56,7 +56,9 @@ window.EYGM = (function(){
     const _nHechos=(d.nuevosCompraron!=null)?d.nuevosCompraron:(d.nuevos||0);
     const rN=Math.min(_nHechos/_nMeta,1); P.push({ic:"🆕",lab:"Nuevos",max:20,pts:20*rN,det:_nHechos+" de "+_nMeta});
     if(d.contactosUltDia!=null){
-      const _cM=(d.cfg&&d.cfg.contactosDia)||15, rC=Math.min(d.contactosUltDia/_cM,1);
+      const _mcf=d.cfg||{};
+      const _cM=(_mcf.contactosDiaDesde&&_mcf.contactosDiaPerfil&&String(d.mes||"").slice(0,7)>=_mcf.contactosDiaDesde&&(_mcf.contactosDiaPerfil[d.perfil]>0))?_mcf.contactosDiaPerfil[d.perfil]:(_mcf.contactosDia||15);
+      const rC=Math.min(d.contactosUltDia/_cM,1);
       P.push({ic:"🔥",lab:"Constancia ("+_cM+"/día)",max:5,pts:5*rC,det:d.contactosUltDia+" contactos"});
     }
     if(d.semanasMin && d.semanasMin.habilesTot>0){

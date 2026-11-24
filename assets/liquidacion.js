@@ -277,7 +277,10 @@ function nivelDe(g,perfil,cfg,mes){
   const nuevo=EYG.paqueteRige(mes,cfg);
   const pk=perfil==="externo"?"farm":perfil;
   // antes del paquete: 10 contactos/día y una meta única de 3 clientes nuevos dados de alta
-  const _cMeta=nuevo?((cfg&&cfg.contactosDia)||15):10;
+  // Mínimo de contactos/día por rubro desde cfg.contactosDiaDesde (MISMA regla que panel.html y metrics.js):
+  // así farmacias puede ir a 50 desde noviembre sin tocar a instituciones ni a los meses previos.
+  const _cd=(cfg&&cfg.contactosDiaDesde&&cfg.contactosDiaPerfil&&String(mes).slice(0,7)>=cfg.contactosDiaDesde&&(cfg.contactosDiaPerfil[perfil]>0))?cfg.contactosDiaPerfil[perfil]:((cfg&&cfg.contactosDia)||15);
+  const _cMeta=nuevo?_cd:10;
   const cuentanCompraron=nuevo&&(((cfg&&cfg.nuevosCuentan)||"compraron")==="compraron");
   const _nMeta=nuevo?(((cfg&&cfg.nuevosMeta)||{inst:5,farm:10,externo:10})[perfil]||10):3;
   const _nHechos=cuentanCompraron?(g.nuevosCompraron||0):(g.nuevosAltas||g.nuevos||0);
