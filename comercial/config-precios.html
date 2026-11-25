@@ -131,6 +131,17 @@
   .etinline{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink);flex-wrap:wrap}
   .etinline input,.etinline select{height:34px;border:1px solid var(--line);border-radius:8px;padding:0 9px;font-family:inherit;font-size:13px;background:#fff}
   .etnote{font-size:11.5px;color:var(--gris2);margin-top:8px;line-height:1.4}
+  /* cantidades fijas por laboratorio: bloque en la regla del lab + vista previa */
+  .tlbox{border:1px solid #d9cdf5;background:#faf7ff;border-radius:10px;padding:10px 12px;margin-top:10px}
+  .tlhd{font-weight:800;font-size:13px;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+  .tlbox select,.tlbox input[type=text]{height:34px;border:1px solid var(--line);border-radius:8px;padding:0 9px;font-family:inherit;font-size:13px;background:#fff;width:100%}
+  .tltabla{max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fff}
+  .tltabla table{width:100%;border-collapse:collapse;font-size:12px}
+  .tltabla th{position:sticky;top:0;background:#f3f6f5;text-align:left;padding:6px 8px;font-size:11.5px;color:var(--gris)}
+  .tltabla td{padding:5px 8px;border-top:1px solid var(--line);vertical-align:top}
+  .tltabla tr.prop td{color:var(--gris2);background:#fafafa}
+  .tltabla tr.bp td{background:#fdf6ea} .tltabla tr.bc td{background:#fbeceb}
+  @media(max-width:720px){ .tlbox .grid{grid-template-columns:1fr!important} }
   /* avisos de la capa: una linea general arriba y una linea por fila afectada */
   .capaviso{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-radius:10px;padding:8px 12px;margin:0 0 10px;font-size:12.5px;font-weight:700}
   .capaviso.ok{background:#eef5f4;color:var(--gris)}
@@ -168,6 +179,12 @@ const KEY_ESC="eyg.eticos_escala";       // {subcatId:'A'|'B'} clasificación de
 let ESCALA={}, escFiltro="todos", editEsc=null, editLab=null;   // clasificación, filtro, regla de escala en edición, regla de lab en edición
 // Regla "Escalera de éticos por precio" (el tope de cada ético sale de su PVP) + intervalo del cron del motor.
 let ET={on:false, bands:[], descmax:12, minstep:0, open:false}, ETCRON={num:15, type:"minutes"};
+/* CANTIDADES FIJAS POR LABORATORIO (25/11/2026, Dirección). Un laboratorio ético puede fijar las cantidades de sus
+   tramos (ej. 1, 2 y 3 unidades) en vez de usar la tabla general por PVP, y opcionalmente un descuento máximo
+   para el último tramo SOBRE EL PVP. Se guarda en la regla propia del lab (cantFijas / descMaxPvp) y viaja al
+   motor en los campos 11 y 12 de su línea del flat. LLAVE GENERAL: eyg.tramos_lab_activo ('1' prendida).
+   Apagada, el motor ignora esos campos y todos los éticos vuelven a la tabla por PVP (no se borra nada). */
+let TL={on:false};
 // Precios de venta FIJOS temporales (manuales, pisan al motor). Guardados en eyg.precios_fijos_flat.
 let FIJOS=[], _fijoSel=null, _fijoTimer=null, _fijoIdx=null;
 /* PLACAS DE LA CAPA (22/10/2026): la imagen de la oferta que las comerciales comparten desde su
@@ -261,6 +278,7 @@ async function cargar(){
     const _dm=parseFloat(etDm); ET.descmax = isNaN(_dm)?0:+(_dm*100).toPrecision(12);   // 0 = sin tope global (manda el piso)
     const etMs=await rpc("ir.config_parameter","get_param",["eyg.eticos_min_step"]);
     const _ms=parseFloat(etMs); ET.minstep = isNaN(_ms)?0:+(_ms*100).toPrecision(12);   // descuento minimo por escalon (0 = off)
+    TL.on = String(await rpc("ir.config_parameter","get_param",["eyg.tramos_lab_activo"])||"")==="1";
     try{ CAPA_PLACAS=JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.capa_placas"])||"{}")||{}; }catch(e){ CAPA_PLACAS={}; }
     await destacadasLeer();
     try{ PC_AL=(JSON.parse(await rpc("ir.config_parameter","get_param",["eyg.placas_control"])||"{}")||{}).alertas||{}; }catch(e){ PC_AL={}; }
@@ -1023,8 +1041,28 @@ function renderEtModal(){
       <button class="btn-save" onclick="guardarCron()">💾 Guardar</button>
       <span id="et-cron-msg" style="font-size:12.5px;color:var(--gris)"></span>
     </div>
+    <div class="etsec">
+      <h4>📶 Cantidades fijas por laboratorio <label class="etswitch"><input type="checkbox" id="tl-on" ${TL.on?"checked":""}> ${TL.on?"Prendida":"Apagada"}</label></h4>
+      <p class="d">Llave general de la herramienta. <b>Prendida</b>: los laboratorios éticos que tengan cantidades fijas en su regla (por ejemplo Vannier en 1, 2 y 3 unidades) las usan. <b>Apagada</b>: el motor las ignora y <b>todos</b> los éticos vuelven a la tabla por PVP (🎯), exactamente como antes. Apagar no borra nada: lo configurado queda guardado para cuando se vuelva a prender.</p>
+      <p class="d" style="margin:0 0 10px">Hoy usan cantidades fijas: <b>${Object.keys(CFG.reglas||{}).filter(k=>CFG.reglas[k]&&CFG.reglas[k].cantFijas&&CFG.reglas[k].cantFijas.length).map(k=>byId[k]?esc(byId[k].name):("#"+k)).join(", ")||"ningún laboratorio"}</b>.</p>
+      <div style="display:flex;align-items:center;gap:12px"><button class="btn-save" onclick="guardarTL()">💾 Guardar y recalcular</button><span id="tl-msg" style="font-size:12.5px;color:var(--gris)"></span></div>
+    </div>
    </div></div>`;
 }
+window.guardarTL=async()=>{
+  const el=document.getElementById("tl-on"); if(!el) return;
+  const on=el.checked, m=document.getElementById("tl-msg");
+  if(on===TL.on){ if(m) m.textContent="No hay cambios."; return; }
+  if(!confirm(on?"¿Prender las cantidades fijas por laboratorio? Los laboratorios que las tengan configuradas cambian sus tramos en el próximo recálculo.":"¿Apagar las cantidades fijas? Todos los éticos vuelven a la tabla por PVP. Lo configurado queda guardado.")) return;
+  try{
+    if(m) m.textContent="Guardando…";
+    await rpc("ir.config_parameter","set_param",["eyg.tramos_lab_activo", on?"1":"0"]);
+    TL.on=on;
+    if(m) m.textContent="Recalculando precios…";
+    await EYG.recalcularPreciosTodo();
+    toast(on?"Cantidades fijas prendidas ✓":"Cantidades fijas apagadas ✓"); render();
+  }catch(e){ if(m) m.textContent="Error: "+(e.message||e); }
+};
 window.guardarCron=async ()=>{
   const cn=document.getElementById("et-cron-num"); if(cn) ETCRON.num=parseInt(cn.value)||15;
   const ct=document.getElementById("et-cron-type"); if(ct) ETCRON.type=ct.value;
@@ -1156,17 +1194,33 @@ function filaEtico(c){
   let badge, extra="";
   if(res && res.own){
     badge=`<span class="badge own">regla propia</span>`;
+    if(res.rule && res.rule.cantFijas && res.rule.cantFijas.length)
+      badge+=` <span class="badge ${TL.on?"gen":"no"}" title="${TL.on?"Cantidades fijas activas en el motor":"Configuradas, pero la llave general (⚙️) está apagada: hoy usa la tabla por PVP"}">📶 ${res.rule.cantFijas.join("·")} u${res.rule.descMaxPvp?` · máx −${pct(res.rule.descMaxPvp)}%`:""}${TL.on?"":" (apagada)"}</span>`;
     extra=`<button class="btn-mini" onclick="editarLabEtico(${c.id})">Editar</button><button class="btn-mini del" onclick="quitarLabEtico(${c.id})" title="Quitar la regla propia: el lab vuelve a la general de su escala">Quitar</button>`;
   }
   else if(res){ badge=`<span class="badge inh">usa escala ${res.fromEsc}</span>`; extra=`<button class="btn-mini" onclick="editarLabEtico(${c.id})">+ Regla propia</button>`; }
   else { badge=`<span class="badge no">sin escala</span>`; extra=`<button class="btn-mini" onclick="editarLabEtico(${c.id})">+ Regla propia</button>`; }
   // la regla propia pisa a la general de su escala; arranca precargada con los valores efectivos actuales
-  const form = editLab===c.id ? formPvpHTML((res&&res.rule)||{genera:true}, 'fl', `guardarLabEtico(${c.id})`, 'editLab=null;render()', sub) : "";
+  const form = editLab===c.id ? formPvpHTML((res&&res.rule)||{genera:true}, 'fl', `guardarLabEtico(${c.id})`, 'editLab=null;render()', sub, false, c.id) : "";
   return `<div class="row">${chip}<div class="nm" style="flex:1">${esc(sub)} <small>#${c.id}</small></div>${badge}${extra}${form}</div>`;
 }
 // formulario PVP compartido (regla general de escala o regla propia de lab). idp = prefijo de ids ('fe'|'fl').
-function formPvpHTML(r, idp, saveCall, cancelCall, titulo, conIva){
+function formPvpHTML(r, idp, saveCall, cancelCall, titulo, conIva, labId){
   r=r||{};
+  // CANTIDADES FIJAS: sólo en la regla propia de un laboratorio (no en las generales A/B)
+  const cf=(r.cantFijas&&r.cantFijas.length)?r.cantFijas:null;
+  const tlFld = labId ? `<div class="tlbox">
+      <div class="tlhd">📶 Cantidades de los tramos ${TL.on?'':'<span class="badge no" title="La llave general (⚙️ arriba a la derecha) está apagada: aunque las configures, el motor usa la tabla por PVP">llave general apagada</span>'}</div>
+      <div class="grid" style="grid-template-columns:1.3fr 1fr 1fr;gap:10px">
+        <div class="fld2"><label>Cantidades</label><select id="${idp}-cmodo" onchange="tlModo('${idp}')">
+          <option value="auto" ${cf?"":"selected"}>Automáticas por PVP (tabla general)</option>
+          <option value="fijas" ${cf?"selected":""}>Fijas para este laboratorio</option></select>
+          <div class="hint">automáticas = como todos los éticos (🎯 arriba)</div></div>
+        <div class="fld2" id="${idp}-cfwrap" style="${cf?"":"opacity:.45"}"><label>Unidades de cada tramo</label><input type="text" id="${idp}-cfijas" value="${cf?cf.join(", "):"1, 2, 3"}" ${cf?"":"disabled"} placeholder="1, 2, 3"><div class="hint">de menor a mayor · el último tramo da el máximo descuento</div></div>
+        <div class="fld2" id="${idp}-dmwrap" style="${cf?"":"opacity:.45"}"><label>Descuento máx. del último tramo</label><div class="inpu"><input type="number" id="${idp}-dmp" step="any" value="${r.descMaxPvp?pct(r.descMaxPvp):""}" ${cf?"":"disabled"} placeholder="hasta el piso"><span class="suf">% s/PVP</span></div><div class="hint">vacío = baja hasta el piso de margen</div></div>
+      </div>
+      <button class="btn-mini" style="margin-top:8px" onclick="tlVista(${labId},'${idp}')">👁 Ver cómo quedan los precios (vista previa)</button>
+    </div>` : "";
   // La tilde "IVA al costo" va SOLO en las reglas generales de escala (A/B): los laboratorios
   // la heredan de su escala, no se define por subcategoría.
   const ivaFld = conIva ? `<div class="fld2"><label>IVA al costo</label><label class="chk" style="margin:0"><input type="checkbox" id="${idp}-iva" ${r.ivaCosto?"checked":""} disabled> <span style="color:var(--gris2)">sumarlo al costo</span></label><div class="hint">Ya <b>no se define acá</b>: desde el 17/9/2026 lo decide el <b>impuesto de venta de cada producto</b> — si se vende exento, el IVA de la compra es costo; si se vende con IVA, el costo va neto. Se muestra sólo para referencia y queda guardado por si Dirección apaga la regla nueva (parámetro <code>eyg.regimen_venta_activo</code>).</div></div>` : "";
@@ -1177,7 +1231,8 @@ function formPvpHTML(r, idp, saveCall, cancelCall, titulo, conIva){
       <div class="fld2"><label>Piso de margen</label><div class="inpu"><input type="number" id="${idp}-piso" step="any" value="${r.piso?pct(r.piso):''}" placeholder="ej: 9"><span class="suf">%</span></div><div class="hint">margen mínimo sobre costo · el descuento nunca lo perfora</div></div>
       ${ivaFld}
     </div>
-    <div class="hint" style="margin-top:9px">El <b>tope de cajas</b> y el <b>descuento máximo</b> se definen una sola vez en <b>🎯 Escalera de éticos por precio</b> (arriba), para todos los éticos. La cantidad de escalones sale sola del tope.</div>
+    ${tlFld}
+    <div class="hint" style="margin-top:9px">${labId?"Si las cantidades son <b>automáticas</b>, el":"El"} <b>tope de cajas</b> y el <b>descuento máximo</b> se definen una sola vez en <b>🎯 Escalera de éticos por precio</b> (arriba), para todos los éticos. La cantidad de escalones sale sola del tope.</div>
     <div class="acts"><button class="cancel" onclick="${cancelCall}">Cancelar</button><button class="ok" onclick="${saveCall}">Aplicar</button></div>
   </div>`;
 }
@@ -1191,7 +1246,129 @@ function leerFormPvp(idp){
   const out = { genera, base:'pvp', recargo, piso, descMax:0, modo:'auto', unidad:'', cortes, desc };
   const ivaEl = document.getElementById(idp+"-iva");
   if(ivaEl) out.ivaCosto = ivaEl.checked?1:0;   // solo las reglas generales A/B la definen
+  // cantidades fijas del laboratorio (sólo si el formulario las trae y están en "fijas")
+  const tl=tlLeer(idp);
+  if(tl && tl.cantFijas){ out.cantFijas=tl.cantFijas; if(tl.descMaxPvp>0) out.descMaxPvp=tl.descMaxPvp; }
   return out;
+}
+/* ---------- CANTIDADES FIJAS POR LABORATORIO: formulario, validación y vista previa ---------- */
+// lee y VALIDA lo cargado. Devuelve null si el formulario no tiene la sección; {cantFijas:null} si son automáticas.
+function tlLeer(idp){
+  const m=document.getElementById(idp+"-cmodo"); if(!m) return null;
+  if(m.value!=="fijas") return {cantFijas:null, descMaxPvp:0};
+  const raw=String(document.getElementById(idp+"-cfijas").value||"");
+  const nums=raw.split(/[,;\s]+/).filter(x=>x!=="").map(x=>Number(x));
+  let ok=nums.length>=1 && nums.every(n=>Number.isInteger(n) && n>=1);
+  for(let i=1;i<nums.length;i++) if(nums[i]<=nums[i-1]) ok=false;
+  const dm=parseFloat(document.getElementById(idp+"-dmp").value);
+  const dmp=isNaN(dm)?0:dm/100;
+  if(!ok) return {error:"Las unidades tienen que ser números enteros de menor a mayor, separados por coma (ej. 1, 2, 3)."};
+  if(dmp<0 || dmp>=1) return {error:"El descuento máximo tiene que estar entre 0 y 99%."};
+  return {cantFijas:nums, descMaxPvp:dmp};
+}
+window.tlModo=idp=>{
+  const fij=document.getElementById(idp+"-cmodo").value==="fijas";
+  [["-cfwrap","-cfijas"],["-dmwrap","-dmp"]].forEach(([w,i])=>{ const W=document.getElementById(idp+w), I=document.getElementById(idp+i); if(W) W.style.opacity=fij?"1":".45"; if(I) I.disabled=!fij; });
+};
+// cortes parejos de a a b en n tramos (la misma cuenta que _cortesA del motor)
+function tlCortesA(a,b,n){ if(n<=1||b<=a) return [a]; const out=[]; for(let i=0;i<n;i++){ let v=Math.round(a+(b-a)*i/(n-1)); if(out.length&&v<=out[out.length-1]) v=out[out.length-1]+1; out.push(v); } return out; }
+function tlTopePVP(pvp){ let t=1; ET.bands.slice().sort((a,b)=>a.pvp-b.pvp).forEach(b=>{ if(pvp>=b.pvp) t=b.tope; }); return Math.max(1,t); }
+function tlSnap(pr,pvp){ if(!(pvp>0)) return pr; let d=Math.floor((1-pr/pvp)*100+0.5); d=Math.max(0,Math.min(100,d)); return Math.round(pvp*(1-d/100)*100)/100; }
+/* la escalera de un ético con la MISMA cuenta que el motor (acción 1213). cfg = {recargo, piso, cantFijas, descMaxPvp}.
+   costoEf = costo con IVA si se vende exento. Sin cantidades fijas usa la tabla por PVP (🎯). */
+function tlEscalera(pvp, costoEf, cfg){
+  const base=pvp*(1-(cfg.recargo||0));
+  if(!(base>0)) return null;
+  const pisoP=costoEf>0 ? costoEf/(1-(cfg.piso||0)) : 0;
+  let T, cortes;
+  if(cfg.cantFijas && cfg.cantFijas.length){ T=cfg.cantFijas[cfg.cantFijas.length-1]; cortes=cfg.cantFijas.length>1?cfg.cantFijas.slice():[1]; }
+  else { T=ET.on?tlTopePVP(pvp):1; const n=Math.min(4,T); cortes=T>1?tlCortesA(1,T,n):[1]; }
+  let dm=1-pisoP/base; if(dm<0) dm=0;
+  const sf=2/(cortes[cortes.length-1]+1); if(sf<dm) dm=sf;
+  if(ET.descmax>0 && ET.descmax/100<dm && !(cfg.cantFijas&&cfg.cantFijas.length)) dm=ET.descmax/100;
+  if(cfg.descMaxPvp>0 && cortes.length>1){ let lim=1-(pvp*(1-cfg.descMaxPvp))/base; if(lim<0) lim=0; if(lim<dm) dm=lim; }
+  const pr=cortes.map((q,i)=>{ let p=base*(1-(cortes.length<=1?0:i/(cortes.length-1)*dm)); if(p<pisoP) p=pisoP; return tlSnap(Math.floor(p+0.5),pvp); });
+  if(pr.every(x=>Math.abs(x-pr[0])<0.005)) return {cortes:[cortes[0]], pr:[pr[0]], pisoP};
+  return {cortes, pr, pisoP};
+}
+let TLV=null;   // vista previa abierta
+window.tlVista=async(labId, idp)=>{
+  const tl=tlLeer(idp); if(tl && tl.error){ toast(tl.error); return; }
+  const recargo=frac(document.getElementById(idp+"-desc").value), piso=frac(document.getElementById(idp+"-piso").value);
+  const cfgNuevo={recargo, piso, cantFijas:(tl&&tl.cantFijas)||null, descMaxPvp:(tl&&tl.descMaxPvp)||0};
+  const res=resolverEtico(labId);
+  TLV={labId, idp, cfgNuevo, cargando:true, filas:[], lab:(byId[labId]?byId[labId].full.replace(/^ETICOS \/ /,""):"#"+labId), reglaHoy:res&&res.rule};
+  tlPintar();
+  try{
+    const ps=await rpc("product.product","search_read",[[["categ_id","=",labId],["active","=",true],["list_price",">",1]],["default_code","name","product_tmpl_id","list_price","x_costo_motor","x_iva_compra","taxes_id","qty_available"]],{limit:1000,context:{lang:"es_AR"}});
+    const tids=ps.map(p=>p.product_tmpl_id[0]);
+    const its=tids.length?await rpc("product.pricelist.item","search_read",[[["pricelist_id","=",3],["product_tmpl_id","in",tids]],["product_tmpl_id","min_quantity","fixed_price"]],{limit:5000}):[];
+    const capa=String(await rpc("ir.config_parameter","get_param",["eyg.precios_fijos_flat"])||"").split("\n");
+    const propias=new Set(capa.map(l=>parseInt(l.split("~")[0])).filter(n=>!isNaN(n)));
+    const labCapa=capa.find(l=>l.toUpperCase().startsWith("C"+labId+"~"));
+    TLV.labCapa=labCapa||"";
+    TLV.filas=ps.map(p=>{
+      const tid=p.product_tmpl_id[0];
+      const hoy=its.filter(i=>i.product_tmpl_id[0]===tid).sort((a,b)=>a.min_quantity-b.min_quantity).map(i=>({q:Math.round(i.min_quantity)||1,p:i.fixed_price}));
+      const costoEf=EYG.costoEfectivo(p.x_costo_motor,p.x_iva_compra,p.taxes_id,TASAS_VENTA);
+      const nuevo=tlEscalera(p.list_price, costoEf, cfgNuevo);
+      return {sku:p.default_code||"", nombre:p.name, tid, pvp:p.list_price, costoEf, stock:p.qty_available||0, hoy, nuevo, propia:propias.has(tid)};
+    }).sort((a,b)=>(b.stock>0)-(a.stock>0)||a.nombre.localeCompare(b.nombre));
+  }catch(e){ TLV.error=e.message||String(e); }
+  TLV.cargando=false; tlPintar();
+};
+window.tlCerrar=()=>{ TLV=null; tlPintar(); };
+window.tlUsar=(campo,valor)=>{ const el=document.getElementById(TLV.idp+"-"+campo); if(el){ el.value=valor; } const v=TLV.labId, i=TLV.idp; tlVista(v,i); };
+function tlPintar(){
+  let box=document.getElementById("tlmodal");
+  if(!TLV){ if(box) box.remove(); return; }
+  if(!box){ box=document.createElement("div"); box.id="tlmodal"; document.body.appendChild(box); }
+  const M=EYG.money, P=x=>(Math.round(x*10)/10).toLocaleString("es-AR")+"%";
+  const mg=(p,c)=>c>0&&p>0?(1-c/p)*100:null;
+  const C=TLV.cfgNuevo;
+  let cuerpo="";
+  if(TLV.cargando) cuerpo=`<div class="etsec">Cargando los productos del laboratorio…</div>`;
+  else if(TLV.error) cuerpo=`<div class="etsec" style="color:#b0322f">No pude cargar: ${esc(TLV.error)}</div>`;
+  else {
+    const F=TLV.filas, act=F.filter(f=>!f.propia);
+    // REFERENCIA: lo que hay hoy (para sugerir)
+    const last=act.filter(f=>f.hoy.length).map(f=>({d:1-f.hoy[f.hoy.length-1].p/f.pvp, m:mg(f.hoy[f.hoy.length-1].p,f.costoEf)}));
+    const med=a=>{ const s=a.filter(x=>x!=null&&!isNaN(x)).sort((x,y)=>x-y); return s.length?s[Math.floor(s.length/2)]:null; };
+    const dHoy=med(last.map(x=>x.d)), mHoy=med(last.map(x=>x.m));
+    const cantHoy={}; act.forEach(f=>{ const k=f.hoy.map(h=>h.q).join("·")||"sin precio"; cantHoy[k]=(cantHoy[k]||0)+1; });
+    const r=TLV.reglaHoy||{};
+    const sugD=dHoy!=null?Math.round(dHoy*100):null;
+    const ref=`<div class="etsec"><h4>📌 Lo que tiene hoy ${esc(TLV.lab)}</h4>
+      <div class="d">Regla: <b>PVP −${pct(r.recargo)}%</b> por 1 unidad · <b>piso de margen ${pct(r.piso)}%</b>${r.cantFijas?` · cantidades fijas <b>${r.cantFijas.join("·")}</b>`:" · cantidades automáticas por PVP"}.<br>
+      Hoy el <b>último tramo</b> queda, en el medio de la lista, en <b>−${dHoy!=null?Math.round(dHoy*100):"—"}% del PVP</b> con <b>${mHoy!=null?P(mHoy):"—"} de margen</b>.<br>
+      Cantidades hoy: ${Object.keys(cantHoy).map(k=>`<b>${k}</b> (${cantHoy[k]})`).join(" · ")}.</div>
+      <div class="d" style="margin:0">Sugerencias para el último tramo:
+        <button class="btn-mini" onclick="tlUsar('dmp','')">Hasta el piso (${pct(r.piso)}% de margen)</button>
+        ${sugD!=null?`<button class="btn-mini" onclick="tlUsar('dmp','${sugD}')">Igual que hoy: −${sugD}% s/PVP</button>`:""}</div>
+      ${TLV.labCapa?`<p class="etnote" style="color:#a1560f">⚠ Este laboratorio tiene una línea propia en la capa de Oportunidades (${esc(TLV.labCapa.split("~").slice(1,5).join(" · "))}): esa manda por encima de esta regla.</p>`:""}
+    </div>`;
+    // SIMULACIÓN
+    let bajoPiso=0, bajoCosto=0, cambian=0;
+    const filas=F.map(f=>{
+      const hoyTxt=f.hoy.length?f.hoy.map(h=>`${h.q}u −${Math.round((1-h.p/f.pvp)*100)}%`).join(" / "):"<i>sin precio</i>";
+      if(f.propia) return `<tr class="prop"><td>${esc(f.sku)}</td><td>${esc(f.nombre.slice(0,48))}</td><td>${f.stock}</td><td>${hoyTxt}</td><td colspan="2"><i>tiene línea propia en la capa: no cambia</i></td></tr>`;
+      const n=f.nuevo; if(!n) return `<tr><td>${esc(f.sku)}</td><td>${esc(f.nombre.slice(0,48))}</td><td>${f.stock}</td><td>${hoyTxt}</td><td colspan="2"><i>sin PVP</i></td></tr>`;
+      const nTxt=n.cortes.map((q,i)=>`${q}u ${M(n.pr[i])} <small>(−${Math.round((1-n.pr[i]/f.pvp)*100)}%)</small>`).join("<br>");
+      const m1=mg(n.pr[0],f.costoEf), mU=mg(n.pr[n.pr.length-1],f.costoEf);
+      const bp=f.costoEf>0 && n.pr.some(x=>x<n.pisoP*0.98), bc=f.costoEf>0 && n.pr.some(x=>x<f.costoEf);
+      if(bp) bajoPiso++; if(bc) bajoCosto++;
+      const igual=JSON.stringify(f.hoy.map(h=>[h.q,Math.round(h.p*100)]))===JSON.stringify(n.cortes.map((q,i)=>[q,Math.round(n.pr[i]*100)]));
+      if(!igual) cambian++;
+      return `<tr class="${bc?"bc":bp?"bp":""}"><td>${esc(f.sku)}</td><td>${esc(f.nombre.slice(0,48))}</td><td>${f.stock}</td><td>${hoyTxt}</td><td>${nTxt}</td><td>${m1!=null?P(m1):"—"} → <b>${mU!=null?P(mU):"—"}</b>${bc?" ⛔":bp?" ⚠":""}${igual?' <small style="color:var(--gris2)">igual</small>':""}</td></tr>`;
+    }).join("");
+    const resu=`<div class="d" style="margin:0 0 8px"><b>${F.length}</b> productos · <b>${cambian}</b> cambian · ${F.filter(f=>f.propia).length} con línea propia (no se tocan) · ${bajoCosto?`<b style="color:#b0322f">${bajoCosto} quedan bajo el costo</b>`:"ninguno bajo el costo"} · ${bajoPiso?`${bajoPiso} apenas bajo el piso por el redondeo al % entero`:"ninguno bajo el piso"}</div>`;
+    const conf=C.cantFijas?`cantidades <b>${C.cantFijas.join(" · ")}</b> unidades · último tramo ${C.descMaxPvp>0?`máx <b>−${pct(C.descMaxPvp)}% s/PVP</b>`:"<b>hasta el piso</b>"}`:"cantidades <b>automáticas por PVP</b>";
+    cuerpo=ref+`<div class="etsec"><h4>👁 Cómo quedarían (Farmacias) con: ${conf} · PVP −${pct(C.recargo)}% · piso ${pct(C.piso)}%</h4>
+      <p class="etnote" style="margin:0 0 8px">Es una simulación con la misma cuenta del motor. No se guarda nada hasta que apliques la regla y toques <b>💾 Guardar y recalcular</b>.${TL.on?"":" <b>La llave general está apagada</b>: aunque guardes, el motor no usa las cantidades fijas hasta prenderla (⚙️)."}</p>
+      ${resu}<div class="tltabla"><table><thead><tr><th>Código</th><th>Producto</th><th>Stock</th><th>Hoy</th><th>Quedaría</th><th>Margen 1º → último</th></tr></thead><tbody>${filas}</tbody></table></div></div>`;
+  }
+  box.innerHTML=`<div class="etmodal-bg" onclick="if(event.target===this)tlCerrar()"><div class="etmodal" style="max-width:1050px">
+    <div class="mhd">📶 Cantidades de ${esc(TLV.lab)} — vista previa <button class="btn-mini" style="margin-left:auto" onclick="tlCerrar()">✕ Cerrar</button></div>${cuerpo}</div></div>`;
 }
 window.setFiltroEsc = v => { escFiltro=v; render(); };
 window.editarEscala = e => { editEsc=e; editLab=null; editId=null; abiertos['ETICOS']=true; render(); };
@@ -1199,7 +1376,7 @@ window.quitarEscala = e => { if(!confirm("¿Quitar la regla general de la escala
 window.guardarEscala = e => { CFG.escala[e]=leerFormPvp('fe'); dirty=true; editEsc=null; render(); };
 window.editarLabEtico = id => { editLab=id; editEsc=null; editId=null; abiertos['ETICOS']=true; render(); };
 window.quitarLabEtico = id => { if(!confirm("¿Quitar la regla propia de este lab? Vuelve a heredar la general de su escala.")) return; delete CFG.reglas[id]; dirty=true; editLab=null; render(); };
-window.guardarLabEtico = id => { CFG.reglas[id]=leerFormPvp('fl'); dirty=true; editLab=null; render(); };
+window.guardarLabEtico = id => { const tl=tlLeer('fl'); if(tl && tl.error){ toast(tl.error); return; } CFG.reglas[id]=leerFormPvp('fl'); dirty=true; editLab=null; render(); };
 window.cicloEscala = id => { const cur=ESCALA[id]||null; ESCALA[id] = cur==='A'?'B':(cur==='B'?null:'A'); dirty=true; render(); };
 
 // Regla de TODA la categoría (el nodo raíz). La toman todas las subcategorías que no tengan la suya.
@@ -1289,7 +1466,10 @@ function construirFlat(){
       const rEsc=(e && CFG.escala) ? CFG.escala[e] : null;
       const ivaEt = (rEsc && rEsc.ivaCosto!==undefined) ? (rEsc.ivaCosto?1:0)
                   : ((r.ivaCosto!==undefined) ? (r.ivaCosto?1:0) : 1);
-      out.push([c.id, r.recargo, r.piso, (r.modo||"fijo"), (r.cortes||[]).join(","), (r.desc||[]).join(","), (r.unidad||"unidades"), ivaEt, "pvp", (r.descMax||0)].join("~"));
+      const lin=[c.id, r.recargo, r.piso, (r.modo||"fijo"), (r.cortes||[]).join(","), (r.desc||[]).join(","), (r.unidad||"unidades"), ivaEt, "pvp", (r.descMax||0)];
+      // cantidades fijas del lab (campos 11 y 12): SOLO si las tiene; el resto de las líneas queda idéntico
+      if(r.cantFijas && r.cantFijas.length) lin.push(r.cantFijas.join(","), (r.descMaxPvp||0));
+      out.push(lin.join("~"));
     }
   });
   return out.join("\n");
