@@ -166,8 +166,43 @@ async function cargar(){
        VA AL FINAL de la lista: el orden de acá tiene que ser el mismo que el de la
        línea de abajo, o cada variable se queda con los datos de otra consulta. */
     R("account.payment","search_read",[[["payment_method_line_id.code","=","check_printing"],["state","=","posted"],["is_matched","=",false]],["name","amount","date","partner_id","l10n_latam_check_payment_date","l10n_latam_check_number","journal_id"]],{limit:600,order:"l10n_latam_check_payment_date asc"}),
+    /* Lo que ENTRA: facturas de clientes todavía abiertas, por día de vencimiento.
+       Sin esto, «hay que juntar» cuenta sólo el saldo de los bancos y asusta más de
+       lo que corresponde. Si la consulta falla, la tabla sigue andando sin esta
+       columna en vez de tirar abajo todo el módulo. */
+    R("account.move.line","read_group",[[["parent_state","=","posted"],["amount_residual","!=",0],
+      ["account_id.account_type","=","asset_receivable"],["move_id.move_type","in",["out_invoice","out_refund"]]],
+      ["amount_residual:sum","id"],["date_maturity:day"]],{lazy:false,limit:800}).catch(function(){return [];}),
+    /* Las CUOTAS DE PRÉSTAMO que todavía no se pagaron, por día. Sin esto al calendario
+       le faltaban casi mil millones: son el otro gran egreso con fecha fija, además de
+       los cheques. Las cuentas 2.1.2.01.040 a .045 son un préstamo por banco. */
+    R("account.move.line","read_group",[[["parent_state","=","posted"],["amount_residual","!=",0],
+      ["account_id.code","in",["2.1.2.01.040","2.1.2.01.041","2.1.2.01.042","2.1.2.01.043","2.1.2.01.044","2.1.2.01.045"]]],
+      ["amount_residual:sum","id"],["date_maturity:day"]],{lazy:false,limit:600}).catch(function(){return [];}),
   ]);
-  const [sal,ext,noRec,noRecDet,chq,noMatch,draft,mov,chqP]=res;
+  const [sal,ext,noRec,noRecDet,chq,noMatch,draft,mov,chqP,cob,pres]=res;
+  /* 🔴 read_group con «:day» devuelve la fecha ESCRITA EN CASTELLANO («02 may. 2025»),
+     que new Date() no sabe leer. La fecha de verdad viene en __range, en ISO.
+     El importe va tal cual, sin valor absoluto: las notas de crédito son negativas
+     y tienen que restar de lo que se espera cobrar. */
+  D.cobDia={};
+  (cob||[]).forEach(function(g){
+    const r=g.__range&&g.__range["date_maturity:day"];
+    const k=r&&r.from&&String(r.from).slice(0,10);
+    if(!k) return;
+    D.cobDia[k]=(D.cobDia[k]||0)+(g.amount_residual||0);
+  });
+  /* Las cuotas de préstamo salen con el signo del pasivo (negativo): se da vuelta para
+     que sea «cuánto hay que pagar ese día». Las que no tienen fecha se cuentan aparte
+     y se avisan: son plata que el calendario no puede ubicar. */
+  D.presDia={}; D.presSinFecha=0;
+  (pres||[]).forEach(function(g){
+    const r=g.__range&&g.__range["date_maturity:day"];
+    const k=r&&r.from&&String(r.from).slice(0,10);
+    const m=-(g.amount_residual||0);
+    if(!k){ D.presSinFecha+=m; return; }
+    D.presDia[k]=(D.presDia[k]||0)+m;
+  });
 
   D.saldo={}; sal.forEach(x=>D.saldo[x.account_id[0]]={bal:x.balance,n:x.__count});
   D.ext={};   ext.forEach(x=>D.ext[x.journal_id[0]]={ultima:x.date,n:x.__count});
@@ -219,7 +254,7 @@ function renderTabs(){
   const T=[
     ["posicion","💰","Posición",0],
     ["cheques","🧾","Cheques",g?g.vencidos.length:0],
-    ["cubrir","💸","A cubrir",D.listo?(D.chqP||[]).filter(c=>{const f=c.l10n_latam_check_payment_date;return f&&f<lunesDe(HOY);}).length:0],
+    ["cubrir","💸","A cubrir",D.listo?(D.chqP||[]).filter(c=>{const f=c.l10n_latam_check_payment_date;return f&&f<HOY;}).length:0],
     ["concil","🔗","Conciliación",pend],
     ["movim","📈","Movimiento",0],
   ];
@@ -381,27 +416,46 @@ const lunesDe=function(f){
   return t.toISOString().slice(0,10);
 };
 const masDias=function(f,n){const t=new Date(f+"T00:00:00");t.setDate(t.getDate()+n);return t.toISOString().slice(0,10);};
+const DIAS_SEM=["domingo","lunes","martes","miércoles","jueves","viernes","sábado"];
+const MESES_LARGO=["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+/* «miércoles 26/11» — el día de la semana importa: los viernes hay que tener la plata
+   del lunes, porque el banco no debita sábado ni domingo. */
+const rotuloDia=function(k){
+  const d=new Date(k+"T00:00:00"), p=k.split("-");
+  return DIAS_SEM[d.getDay()]+" "+p[2]+"/"+p[1];
+};
+const nombreMes=function(k){
+  const p=k.split("-");
+  return MESES_LARGO[Number(p[1])-1]+" "+p[0];
+};
 const rotuloSem=function(k){
   const p=k.split("-"), q=masDias(k,6).split("-");
   return p[2]+"/"+p[1]+" al "+q[2]+"/"+q[1];
 };
 
 function cubrirDatos(){
-  const LUN=lunesDe(HOY);
   /* Tope de cordura: un cheque fechado más de 2 años adelante es un error de tipeo
      (hay uno cargado en 2206). Si entra al calendario, estira la tabla 180 años y
      ensucia el acumulado, así que va al panel de los que hay que corregir. */
   const TOPE=String(Number(HOY.slice(0,4))+2)+HOY.slice(4);
-  const g={vencidos:[],sinFecha:[],dudosas:[],sem:{}};
+  /* Se agrupa POR DÍA, no por semana: hay que saber cuánto cae cada día para poder
+     ordenar los pagos. Vencido = fecha anterior a HOY (no al lunes de esta semana:
+     un cheque que venció el lunes y hoy es miércoles ya está atrasado). */
+  const g={vencidos:[],sinFecha:[],dudosas:[],dia:{}};
   (D.chqP||[]).forEach(function(c){
     const f=c.l10n_latam_check_payment_date;
     if(!f) return g.sinFecha.push(c);
     if(f>TOPE) return g.dudosas.push(c);
-    if(f<LUN) return g.vencidos.push(c);          /* de semanas anteriores y sin debitar */
-    const k=lunesDe(f);
-    (g.sem[k]=g.sem[k]||[]).push(c);
+    if(f<HOY) return g.vencidos.push(c);
+    (g.dia[f]=g.dia[f]||[]).push(c);
   });
-  g.semanas=Object.keys(g.sem).sort();
+  /* Los días del calendario son los que tienen cheques, cuotas de préstamo o cobranzas:
+     un día en el que sólo cae una cuota también hay que verlo. */
+  const pd=D.presDia||{}, cd=D.cobDia||{};
+  g.presVenc=Object.keys(pd).filter(k=>k<HOY).reduce((s,k)=>s+pd[k],0);
+  g.dias=[...new Set(Object.keys(g.dia)
+    .concat(Object.keys(pd).filter(k=>k>=HOY))
+    .concat(Object.keys(cd).filter(k=>k>=HOY)))].sort();
   /* Saldo de los bancos: única contraparte que se cuenta. Los cheques de terceros en
      cartera NO entran — todavía hay que depositarlos y acreditan después. */
   const bancos=D.jrs.filter(j=>j.type==="bank");
@@ -409,15 +463,18 @@ function cubrirDatos(){
   g.saldos=bancos.map(j=>({nombre:j.name,saldo:bal(ctaDe(j)),ext:(D.ext[j.id]||{}).ultima||null}))
                  .filter(x=>x.saldo!==0)
                  .sort((a,b)=>a.saldo-b.saldo);
+  /* lo que ya venció y todavía no se cobró: entra en la fila de «Ya vencidos» */
+  g.cobVenc=Object.keys(D.cobDia||{}).filter(k=>k<HOY).reduce((s,k)=>s+D.cobDia[k],0);
   return g;
 }
 
 function vCubrir(){
   const g=cubrirDatos();
   const total=suma(D.chqP||[]);
-  const en30=masDias(HOY,30);
+  const en30=masDias(HOY,30), en7=masDias(HOY,7);
   const prox30=(D.chqP||[]).filter(function(c){const f=c.l10n_latam_check_payment_date;return f&&f>=HOY&&f<=en30;});
-  const estaSem=g.sem[lunesDe(HOY)]||[];
+  const hoyCae=g.dia[HOY]||[];
+  const prox7=(D.chqP||[]).filter(function(c){const f=c.l10n_latam_check_payment_date;return f&&f>HOY&&f<=en7;});
   /* Bancos con el extracto atrasado: ahí "sin debitar" no se puede afirmar — puede que
      el banco ya lo haya debitado y falte cargar el extracto. Se avisa, no se esconde. */
   const atrasados={};
@@ -431,11 +488,13 @@ function vCubrir(){
   const kpis='<div class="kpis">'+
     '<div class="kpi big" title="Todos los cheques propios ya emitidos que el banco todavía no debitó. Es plata comprometida que el saldo del banco no tiene descontada.">'+
       '<div class="l">🧾 Comprometido</div><div class="n">'+money(total)+'</div><div class="s">'+(D.chqP||[]).length+' cheques emitidos</div></div>'+
-    '<div class="kpi" title="Cheques cuya fecha de pago cayó en una semana anterior y siguen sin debitarse.">'+
+    '<div class="kpi" title="Cheques con fecha de pago anterior a hoy que siguen sin debitarse.">'+
       '<div class="l">🔴 Ya vencidos</div><div class="n '+(g.vencidos.length?"neg":"")+'">'+money(suma(g.vencidos))+'</div>'+
       '<div class="s">'+g.vencidos.length+' cheques</div></div>'+
-    '<div class="kpi" title="Cheques con fecha de pago entre el lunes y el domingo de esta semana.">'+
-      '<div class="l">📅 Esta semana</div><div class="n">'+money(suma(estaSem))+'</div><div class="s">'+estaSem.length+' cheques</div></div>'+
+    '<div class="kpi" title="Cheques que se pagan hoy.">'+
+      '<div class="l">📅 Hoy</div><div class="n">'+money(suma(hoyCae))+'</div><div class="s">'+hoyCae.length+' cheques</div></div>'+
+    '<div class="kpi" title="Cheques que caen en los 7 días siguientes a hoy, sin contar hoy.">'+
+      '<div class="l">📆 Próximos 7 días</div><div class="n">'+money(suma(prox7))+'</div><div class="s">'+prox7.length+' cheques</div></div>'+
     '<div class="kpi" title="Cheques que caen en los próximos 30 días, contando desde hoy.">'+
       '<div class="l">🗓️ Próximos 30 días</div><div class="n">'+money(suma(prox30))+'</div><div class="s">'+prox30.length+' cheques</div></div>'+
     '<div class="kpi" title="Suma de los saldos de todas las cuentas bancarias, según los extractos cargados. Es la única contraparte que cuenta este tablero.">'+
@@ -455,21 +514,54 @@ function vCubrir(){
         '<div class="dt">'+(x.ext?'extracto al '+fechaCorta(x.ext)+(at>10?' · <b>'+at+' días de atraso</b>':''):'sin extractos')+'</div></div>';
     }).join("")+'</div></div>';
 
-  /* Tabla semanal. El acumulado arranca con los vencidos: son los primeros que hay que
-     cubrir. "Hay que juntar" es lo que falta después de usar todo el saldo de bancos. */
-  let acum=suma(g.vencidos);
+  /* Tabla DÍA POR DÍA. Sólo salen los días que tienen algo que pagar: poner los días
+     vacíos estira la tabla a 120 filas y esconde justo lo que hay que mirar.
+     El acumulado arranca con los vencidos, que son los primeros que hay que cubrir.
+     "Hay que juntar" es lo que falta después de usar todo el saldo de los bancos. */
+  /* Saldo proyectado: arranca con lo que hay en los bancos, resta lo que cae cada día
+     y suma lo que se espera cobrar ese día. Es el flujo de caja. */
+  /* 🔴 Las cuotas de préstamo con vencimiento pasado NO entran en el proyectado: están
+     sin revisar. Son $431 M, de los cuales una sola línea del Nación son $251 M con el
+     año dudoso (Federico la tiene como Municipal y un año después). Meterlas acá haría
+     arrancar el saldo en −$523 M y el tablero dejaría de servir. Van a un aviso aparte. */
+  let proy=g.total-suma(g.vencidos)+(g.cobVenc||0);
   const filas=[];
-  if(g.vencidos.length) filas.push(fSemana("venc","Ya vencidos",g.vencidos,acum,g.total,false,true));
-  g.semanas.forEach(function(k){
-    const arr=g.sem[k]; acum+=suma(arr);
-    filas.push(fSemana(k,rotuloSem(k),arr,acum,g.total,k===lunesDe(HOY),false));
+  if(g.vencidos.length)
+    filas.push(fDia("venc","Ya vencidos",g.vencidos,0,"venc",g.cobVenc||0,proy));
+  let mesAnt="";
+  g.dias.forEach(function(k){
+    const arr=g.dia[k]||[];
+    const cuota=(D.presDia||{})[k]||0, entra=(D.cobDia||{})[k]||0;
+    proy+=entra-suma(arr)-cuota;
+    /* un separador por mes, para no perderse al bajar */
+    const mes=k.slice(0,7);
+    if(mes!==mesAnt){ mesAnt=mes;
+      filas.push('<tr><td colspan="6" style="background:var(--agua);font-weight:700;font-size:11px;'+
+        'text-transform:uppercase;letter-spacing:.4px;color:var(--gris)">'+esc(nombreMes(k))+'</td></tr>'); }
+    filas.push(fDia(k,rotuloDia(k),arr,cuota,k===HOY?"hoy":(dias(HOY,k)<=7?"pronto":""),entra,proy));
   });
 
-  const panelSem='<div class="panel"><h3>📆 Semana por semana</h3>'+
-    '<div class="sub">Cada fila es una semana de lunes a domingo. Tocá una fila para ver los cheques. El acumulado suma todo lo que cae hasta esa semana inclusive; <b>hay que juntar</b> es lo que falta después de usar todo el saldo de los bancos.</div>'+
+  const panelDias='<div class="panel"><h3>📆 Día por día</h3>'+
+    '<div class="sub">Cada fila es un día, y sólo aparecen los días en los que cae algo. Tocá una fila para ver los cheques. '+
+    '<b>Cheques</b> es lo que el banco debita ese día, <b>cuotas</b> son las de los préstamos y '+
+    '<b>entra</b> son las facturas de clientes que vencen ese día. '+
+    'El <b>saldo proyectado</b> arranca con lo que hay hoy en los bancos y va sumando y restando día a día.</div>'+
+    '<div class="nota" style="background:#EAF2F1;color:#0E1F1D"><b>Cómo leer el saldo proyectado.</b> '+
+    'Es el <b>peor caso</b>: cuenta sólo las facturas que ya están emitidas, así que a medida que pasan los días '+
+    'se hunde cada vez más porque las ventas de la semana que viene todavía no existen como factura. '+
+    'Sirve para comparar un día contra otro y ver dónde se junta la presión, no para leerlo como el saldo que va a tener el banco.'+
+    '</div>'+
+    ((D.presSinFecha||g.presVenc)?'<div class="nota" style="background:#FBF1DC;color:#8A6D1A">'+
+      '<b>Cuotas de préstamo que esta tabla no puede ubicar.</b> '+
+      (g.presVenc?'Hay <b>'+money(g.presVenc)+'</b> en cuotas con vencimiento ya pasado que siguen abiertas: '+
+        'o no se pagaron, o se pagaron y el pago no se imputó contra la cuota. <b>No se suman al saldo proyectado</b> '+
+        'hasta saber cuál de las dos cosas es. ':'')+
+      (D.presSinFecha?'Y hay <b>'+money(D.presSinFecha)+'</b> en cuotas <b>sin fecha de vencimiento cargada</b>, '+
+        'así que no caen en ningún día.':'')+'</div>':'')+
     '<div class="tscroll"><table>'+
-      '<thead><tr><th>Semana</th><th class="r">Cheques</th><th class="r">Cae esa semana</th><th class="r">Acumulado</th><th class="r">Hay que juntar</th></tr></thead>'+
-      '<tbody>'+(filas.join("")||'<tr><td colspan="5" class="vacio">No hay cheques emitidos sin debitar.</td></tr>')+'</tbody>'+
+      '<thead><tr><th>Día</th><th class="r">Chq</th><th class="r">Cheques</th><th class="r">Cuotas</th>'+
+      '<th class="r">Entra</th><th class="r">Saldo proyectado</th></tr></thead>'+
+      '<tbody>'+(filas.join("")||'<tr><td colspan="6" class="vacio">No hay nada por cubrir.</td></tr>')+'</tbody>'+
     '</table></div></div>';
 
   /* Los que no se pueden ubicar en el calendario: sin fecha, o con una fecha imposible.
@@ -485,26 +577,29 @@ function vCubrir(){
       '<td>'+esc(bancoCorto(c.journal_id[1]))+'</td><td>'+esc((c.partner_id&&c.partner_id[1])||"—")+'</td>'+
       '<td class="r"><b>'+money(c.amount)+'</b></td></tr>').join("")+'</tbody></table></div></div>':'';
 
-  return kpis+aviso+panelSaldos+panelSem+panelSin;
+  return kpis+aviso+panelSaldos+panelDias+panelSin;
 }
 
-/* Una fila de semana, más las filas del detalle si está abierta. */
-function fSemana(k,rotulo,arr,acum,saldo,esHoy,esVenc){
-  const m=suma(arr), falta=Math.max(0,acum-saldo), abierta=ABI_SEM[k];
+/* Una fila de día, más las filas del detalle si está abierta. */
+function fDia(k,rotulo,arr,cuota,marca,entra,proy){
+  const m=suma(arr), abierta=ABI_SEM[k];
   const porB={};
   arr.forEach(function(c){ const b=c.journal_id[1]; porB[b]=(porB[b]||0)+c.amount; });
   const bancos=Object.keys(porB).sort((a,b)=>porB[b]-porB[a]);
-  const chip=esVenc?' <span class="chip b-bad">atrasado</span>':esHoy?' <span class="chip b-warn">esta semana</span>':'';
-  let out='<tr style="cursor:pointer'+(esHoy?';background:var(--agua)':'')+'" onclick="abrirSem(\''+k+'\')">'+
+  const chip=marca==="venc"?' <span class="chip b-bad">atrasado</span>'
+           :marca==="hoy"?' <span class="chip b-warn">hoy</span>'
+           :marca==="pronto"?' <span class="chip b-info">en '+dias(HOY,k)+' días</span>':'';
+  let out='<tr style="cursor:pointer'+(marca==="hoy"?';background:var(--agua)':'')+'" onclick="abrirSem(\''+k+'\')">'+
     /* Solo los nombres de los bancos: con los importes acá la fila se parte en cinco
        renglones y empuja la última columna fuera. Los importes van en el detalle. */
     '<td style="white-space:nowrap"><b><span style="color:var(--gris2);margin-right:5px">'+(abierta?"▾":"▸")+'</span>'+esc(rotulo)+'</b>'+chip+
       '<div style="font-size:10.5px;color:var(--gris2);font-weight:600;margin:2px 0 0 15px">'+bancos.map(b=>esc(bancoCorto(b))).join(" · ")+'</div></td>'+
-    '<td class="r muted">'+arr.length+'</td>'+
-    '<td class="r"><b>'+money(m)+'</b></td>'+
-    '<td class="r muted">'+money(acum)+'</td>'+
-    '<td class="r '+(falta>0?"neg":"pos")+'"><b>'+(falta>0?money(falta):"cubierto")+'</b></td></tr>';
-  if(abierta) out+='<tr><td colspan="5" style="padding:0 9px 14px 24px">'+
+    '<td class="r muted">'+(arr.length||"—")+'</td>'+
+    '<td class="r">'+(m?'<b>'+money(m)+'</b>':'<span class="muted">—</span>')+'</td>'+
+    '<td class="r">'+(cuota?money(cuota):'<span class="muted">—</span>')+'</td>'+
+    '<td class="r '+(entra>0?"pos":"muted")+'">'+(entra>0?money(entra):"—")+'</td>'+
+    '<td class="r '+(proy<0?"neg":"pos")+'"><b>'+money(proy)+'</b></td></tr>';
+  if(abierta) out+='<tr><td colspan="6" style="padding:0 9px 14px 24px">'+
     '<div style="font-size:11px;color:var(--gris);font-weight:700;margin:2px 0 8px">'+
       bancos.map(b=>esc(bancoCorto(b))+' <span style="color:var(--ink)">'+money(porB[b])+'</span>').join(' &nbsp;·&nbsp; ')+'</div>'+
     '<table style="font-size:11.5px"><thead><tr><th>Paga</th><th>Nº</th><th>Banco</th><th>Beneficiario</th><th class="r">Importe</th></tr></thead><tbody>'+
